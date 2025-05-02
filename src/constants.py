@@ -65,3 +65,10 @@ class ImagingFilterStrength(_AbstractEnum):
 	SOFT = "soft"
 	MEDIUM = "medium"
 	AGGRESSIVE = "aggressive"
+
+class TransformationType(_AbstractEnum):
+	
+	TRANSLATION = "translation"
+	RIGID = "rigid"
+	AFFINE = "affine"
+	BSPLINE = "bspline"
