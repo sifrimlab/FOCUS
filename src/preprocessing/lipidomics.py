@@ -6,7 +6,7 @@ from tqdm import tqdm, trange
 import os
 import xml.etree.ElementTree as ET
 
-from src.constants import ImzMLFileParser
+from constants import ImzMLFileParser
 
 def preprocess_lipidomics(path: str, peak_picking: bool, prominence: float, window_tolerance: float, dynamic_window: bool, dynamic_window_factor: float) -> tuple[float, float]:
     '''

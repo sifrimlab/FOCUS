@@ -4,8 +4,8 @@ import matplotlib.pyplot as plt
 
 from sklearn.decomposition import PCA
 
-from src.preprocessing.microscopy_image import gamma_correction, enhance_contrast
-from src.constants import ModalityParameters, ModalityType
+from preprocessing.microscopy_image import gamma_correction, enhance_contrast
+from constants import ModalityParameters, ModalityType
 
 def generate_msi_image(path: str) -> np.ndarray[np.float32]:
     '''
@@ -84,7 +84,7 @@ def read_microscopy_image(path: str) -> np.ndarray[np.float32]:
     
     sample_id = path.split('/')[-2]
 
-    output = tifffile.imread(os.path.join(path, "processed", f"{sample_id}_processed.tiff"), dtype = np.float32)
+    output = tifffile.imread(os.path.join(path, "processed", f"{sample_id}_processed.tiff"))
     return output
     
 def align_modality_to_anchor(path: str, target_modality: dict, anchor_modality: dict, target_spacing: tuple[float, float], anchor_spacing: tuple[float, float]) -> None:
@@ -129,8 +129,4 @@ def align_modality_to_anchor(path: str, target_modality: dict, anchor_modality: 
     else:
         raise ValueError("Invalid anchor modality type. Please check the input values.")
     
-    plt.figure()
-    plt.imshow(target_image)
-
-    plt.figure()
-    plt.imshow(anchor_image)
+    #TODO: Proceed with implementation of Elastix

@@ -1,6 +1,6 @@
-import src.constants as constants
-import src.preprocessing.microscopy_image as microscopy_image
-import src.preprocessing.lipidomics as lipidomics
+import constants as constants
+import preprocessing.microscopy_image as microscopy_image
+import preprocessing.lipidomics as lipidomics
 
 def preprocess_modality(path: str, modality_type: str, preprocessing_settings: dict) -> tuple[float, float]:
     '''

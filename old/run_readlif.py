@@ -4,7 +4,7 @@ import os
 
 from pathlib import Path
 
-from src.preprocessing.raman.read_images_lif import read_lif
+from preprocessing.raman.read_images_lif import read_lif
 
 
 if __name__ == '__main__':

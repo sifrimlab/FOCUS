@@ -30,12 +30,14 @@ class ConfigParameters(_AbstractEnum):
 	SAMPLE_NAME = "sample_name"
 	MODALITIES = "modalities"
 	ANCHOR_MODALITY = "anchor_modality"
+	PERFORM_PREPROCESSING = "perform_preprocessing"
 
 class ModalityParameters(_AbstractEnum):
 
 	MODALITY_NAME = "modality_name"
 	MODALITY_TYPE = "modality_type"
 	PREPROCESSING_SETTINGS = "preprocessing_settings"
+	PHYSICAL_PIXEL_COVERAGE = "physical_pixel_coverage"
 
 class ImagingPreprocessing(_AbstractEnum):
 	

@@ -15,13 +15,11 @@
             "name": "Pipeline",
             "type": "debugpy",
             "request": "launch",
-            "program": "main.py",
+            "program": "src/main.py",
             "console": "integratedTerminal",
             "args": [
                 "--config",
-                "/home/luna.kuleuven.be/u0172804/FOCUS/configs/config.json",
-                "--registration",
-                "t"
+                "/home/luna.kuleuven.be/u0172804/FOCUS/configs/config.json"
             ]
         }
     ]

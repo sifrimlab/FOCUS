@@ -2,6 +2,7 @@
     "data_source_path": "/mnt/data/lorenzo/VSC_DATA/Jelle",
     "sample_name": "0001",
     "anchor_modality": "Confocal Image",
+    "perform_preprocessing": false,
     "modalities": [
         {
             "modality_name": "Confocal Image",
@@ -10,7 +11,8 @@
                 "crop": true,
                 "filter_strength": "medium",
                 "smoothing": true,
-                "color_enhancement": true
+                "color_enhancement": true,
+                "physical_pixel_coverage": [2.0, 2.0]
             }
         },
         {
@@ -21,7 +23,8 @@
                 "peak_prominence_threshold": 0.01,
                 "peak_window_tolerance_ppm": 20,
                 "dynamic_peak_window": true,
-                "dynamic_peak_window_factor": 1e4
+                "dynamic_peak_window_factor": 1e4,
+                "physical_pixel_coverage": [20.0, 20.0]
             }
         }
     ]

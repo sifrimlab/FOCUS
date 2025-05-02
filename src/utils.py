@@ -1,4 +1,4 @@
-import src.constants as constants
+import constants as constants
 
 def parse_config(config: dict) -> None:
     """

@@ -3,7 +3,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import skimage.io as skio
 import skimage.exposure
-import src.constants as constants
+import constants as constants
 
 
 def get_image_from_bounding_box(image: np.ndarray, x: int, y: int, w: int, h: int, offset: int = 10) -> np.ndarray:
