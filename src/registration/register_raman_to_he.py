@@ -4,7 +4,7 @@ import tifffile
 
 from sklearn.decomposition import PCA
 
-from .registration import Registration
+from .registration_algo import Registration
         
 
 class RegistrationRamanToHE(Registration):

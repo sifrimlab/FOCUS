@@ -6,7 +6,7 @@ from skimage.transform import downscale_local_mean
 
 from sklearn.decomposition import PCA
 
-from .registration import Registration
+from .registration_algo import Registration
 
 def enhance_contrast(channel: np.ndarray, saturated_pixels: float = 0.35) -> np.ndarray:
     '''
