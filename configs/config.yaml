@@ -1,4 +1,0 @@
-path: '$VSC_SCRATCH/RAMALDI'
-sample: 00103993-1
-run_BaSiC: True
-p_poly: 0 # Polynomial order for the baseline correction

@@ -15,11 +15,11 @@
             "name": "Pipeline",
             "type": "debugpy",
             "request": "launch",
-            "program": "run_pipeline.py",
+            "program": "main.py",
             "console": "integratedTerminal",
             "args": [
                 "--config",
-                "/home/luna.kuleuven.be/u0172804/raman-maldi/configs/config_jelle.yaml",
+                "/home/luna.kuleuven.be/u0172804/FOCUS/configs/config.json",
                 "--registration",
                 "t"
             ]

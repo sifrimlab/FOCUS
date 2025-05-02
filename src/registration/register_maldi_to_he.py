@@ -104,12 +104,12 @@ class RegistrationMaldiToHE(Registration):
 def register_maldi_to_he(path, sample, spacing_he, spacing_maldi, invert_maldi: bool=False):
     
     # Load the MALDI data and compute an RGB image (PCA)
-    maldi_data = np.load(f"{path}/{sample}/maldi/{sample}_intensities.npy")
-    maldi_row2grid = np.load(f"{path}/{sample}/maldi/{sample}_coordinates.npy")
+    maldi_data = np.load(f"{path}/{sample}/MALDI/processed/{sample}_intensities.npy")
+    maldi_row2grid = np.load(f"{path}/{sample}/MALDI/processed/{sample}_coordinates.npy")
     maldi_image = generate_maldi_image(maldi_data, maldi_row2grid)
     
     # Load the cropped Microscopy image
-    he_image = tifffile.imread(f'{path}/{sample}/h&e/{sample}_crop.tiff')
+    he_image = tifffile.imread(f'{path}/{sample}/Confocal Image/processed/{sample}_processed.tiff')
 
     # Perform the registration
     reg = RegistrationMaldiToHE(maldi_image, he_image, spacing_maldi, spacing_he, f"{path}/registration/{sample}/maldi")
@@ -135,12 +135,12 @@ def register_maldi_to_he(path, sample, spacing_he, spacing_maldi, invert_maldi: 
     #plt.imshow(aligned_cropped_image)
 
     resulting_image = downscale_local_mean(aligned_cropped_image, scaling_factor)
-    resulting_image = np.clip(resulting_image, 0, 255).astype(np.uint8)
+    #resulting_image = np.clip(resulting_image, 0, 255).astype(np.uint8)
 
     plt.figure()
     plt.imshow(resulting_image)
 
-    np.save(f"{path}/{sample}/h&e/cofocal_registered.npy", resulting_image)
+    np.save(f"{path}/{sample}/MALDI/processed/registered_confocal.npy", resulting_image)
     
     #np.save(f"{path}/{sample}/maldi/maldi_coordinates.npy", maldi_coordinates_he_space)
     

@@ -1,5 +1,0 @@
-path: '$VSC_SCRATCH/RAMALDI'
-sample: 00103994-1
-run_BaSiC: True
-p_poly: 0 # Polynomial order for the baseline correction
-iterations_raman_cropping: 2 # Iterations for the dilation/erosion operations of the raman cropping. If the cropping is not good, run the cropping script locally on the <sample>/raman/ashlar.npy file and use the visualization to adjust the parameter.
