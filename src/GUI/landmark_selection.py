@@ -7,41 +7,57 @@ import matplotlib.axis
 from typing import Callable, List
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
 from matplotlib.axes import Axes
-from screeninfo import get_monitors
+import screeninfo
 
 
-def find_closest_point(array_points, point):
-    x, y = point
-    distances = np.array([(x - px) ** 2 + (y - py) ** 2 for px, py in array_points])
-    return np.argmin(distances)
 
 
-class RegistrationFiducialTool(tk.Frame):
-    # This is a tool to locate the landmarks on images in order to register images
-    def __init__(self, image1: np.ndarray, image2: np.ndarray, callback: Callable, master=None, size_markers: float=30):
+
+class LandmarkSelectionGUI(tk.Frame):
+    '''
+    A GUI to allow the user to select landmarks on two images to proceed with alignment.
+
+    Parameters
+    ----------
+    fixed_image : np.ndarray
+        The fixed image to be used for alignment.
+    moving_image : np.ndarray
+        The moving image to be aligned to the fixed image.
+    save_landmarks_callback : Callable
+        A callback function to save the selected landmarks.
+    '''
+
+
+
+    def __init__(self, fixed_image: np.ndarray, moving_image: np.ndarray, save_landmarks_callback: Callable):
+
+        if not isinstance(fixed_image, np.ndarray) or not isinstance(moving_image, np.ndarray):
+            raise TypeError("The images must be numpy arrays.")
+        if not callable(save_landmarks_callback):
+            raise TypeError("The callback function must be callable.")
         
-        self.root = master
+        self.save_landmarks_callback = save_landmarks_callback
+        self.fixed_image = fixed_image
+        self.moving_image = moving_image
+        
+        # Verify if the application can access a display and retrive the screen size
+        self.screen_size: tuple[int, int, int] = (0, 0)
+        try:
+            for screen in screeninfo.get_monitors():
+                if screen.is_primary:
+                    self.screen_size = (screen.width, screen.height)
+                    break
+        except Exception as e:
+            raise RuntimeError("Could not access the display. Please check your display settings.") from e
+
+        # Define the TKinter window
+        self.root = tk.Tk()
         self.root.state('normal')
-        self.root.title('Registration Tool')
+        self.root.title('Landmark Selection Tool')
+
+        super().__init__(self.root, width = self.screen_size[0], height = self.screen_size[1])
+
         
-        # Get the main monitor and make the tool fullscreen
-        for m in get_monitors():
-            if m.is_primary:
-                break
-        
-        self.screen_width = m.width
-        self.screen_height = m.height
-        self.dpi = 1 * np.round(self.root.winfo_fpixels('1i'))
-        tk.Frame.__init__(self, master, width=self.screen_width, height=self.screen_height)
-        
-        self.axs: List[Axes]
-        self.shared = True
-        self.removing = False
-        self.size_markers = size_markers
-        self.callback = callback
-        self.set_image1(image1)
-        self.set_image2(image2)
-        self.createWidgets()
 
     def createWidgets(self):
         
@@ -119,11 +135,7 @@ class RegistrationFiducialTool(tk.Frame):
         self.canvas.mpl_connect('button_press_event', self.on_button)
         self.canvas.mpl_connect('button_release_event', self.on_button)
         
-    def set_image1(self, image1):
-        self.image1 = image1
-        
-    def set_image2(self, image2):
-        self.image2 = image2
+
         
     def update_console(self, text):
         self.console.config(state=tk.NORMAL)
@@ -191,13 +203,7 @@ class RegistrationFiducialTool(tk.Frame):
         self.points_added = []
         self.plot()
         
-    def share(self):
-        if self.shared:
-            self.update_console('The axes stopped sharing.')
-        else:
-            self.update_console('The axes started sharing.')
-            
-        self.shared = not self.shared
+
         
     def undo(self):
         if len(self.points_added) > 0:

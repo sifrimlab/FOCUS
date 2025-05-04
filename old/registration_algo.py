@@ -7,7 +7,7 @@ import tkinter as tk
 import os
 import matplotlib.pyplot as plt
     
-from .registration_fiducial_tool import RegistrationFiducialTool
+from ..src.GUI.landmark_selection import RegistrationFiducialTool
 
 
 def change_path_initial_transform(path):
