@@ -3,7 +3,7 @@ import os, json, argparse
 import utils
 from constants import ConfigParameters, ModalityParameters
 import preprocessing.preprocessing as preprocessing
-import alignment.alignment as alignment
+from alignment.alignment import Aligner
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='FOCUS: Flexible Multiomics data preprocessing and alignment pipeline.')
@@ -84,8 +84,13 @@ if __name__ == "__main__":
         
         print(f"Aligning {modality[ModalityParameters.MODALITY_NAME]} to {anchor_modality}")
 
-        alignment.align_modality_to_anchor(
+        alignment_engine = Aligner(
             path = sample_folder,
+            load_landmarks = False,
+            load_alignment_transformation = False
+        )
+        
+        alignment_engine.align_modality_to_anchor(
             target_modality = modality,
             anchor_modality = anchor_settings,
             target_spacing = spatial_resolution[modality[ModalityParameters.MODALITY_NAME]],

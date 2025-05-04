@@ -72,3 +72,15 @@ class TransformationType(_AbstractEnum):
 	RIGID = "rigid"
 	AFFINE = "affine"
 	BSPLINE = "bspline"
+
+class LandmarkSelectionGUIWidgets(_AbstractEnum):
+	
+	CONSOLE = "console"
+	INFOBOX = "infobox"
+	CLEAR_LANDMARKS = "clear_landmarks"
+	UNDO = "undo"
+	RESET_ZOOM = "reset_zoom"
+	CONFIRM = "confirm"
+
+	FIXED_IMAGE = "fixed_image"
+	MOVING_IMAGE = "moving_image"
