@@ -1,6 +1,5 @@
 import os, tifffile
 import numpy as np
-import matplotlib.pyplot as plt
 
 from sklearn.decomposition import PCA
 
@@ -195,12 +194,11 @@ class Aligner:
 
             # Create the GUI and wait for the user to select them
             landmarks_gui = LandmarkSelectionGUI(
-                fixed_image = anchor_image,
+               fixed_image = anchor_image,
                 moving_image = target_image,
                 save_landmarks_callback = self._get_landmarks_from_gui,
             )
 
-            landmarks_gui.mainloop()        # Pend until closed
+            landmarks_gui.enable_gui()
 
-            if len(self._fixed_landmarks) == 0 or len(self._moving_landmarks) == 0:
-                raise RuntimeError("Landmarks selection failed, no landmarks were selected.")
+            print("Ecco")

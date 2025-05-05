@@ -1,0 +1,719 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FOCUS: Landmark Picker</title>
+    <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+    <style>
+        /* Basic Reset and Body Styling */
+        body, html {
+            margin: 0;
+            padding: 0;
+            height: 100%;
+            font-family: 'Inter', sans-serif; /* Modern font */
+            background-color: #f4f7f6; /* Light background */
+            overflow: hidden; /* Prevent body scroll */
+            color: #333;
+        }
+
+        /* Main App Container */
+        #app {
+            display: flex;
+            flex-direction: column;
+            height: 100vh; /* Full viewport height */
+        }
+
+        /* Top Section for Images */
+        .image-section {
+            flex: 7; /* 70% height */
+            display: flex;
+            gap: 20px; /* Space between images */
+            padding: 20px;
+            background-color: #e9ecef; /* Slightly different background */
+            overflow: hidden; /* Important for containing images */
+            box-sizing: border-box;
+        }
+
+        /* Image title on top of the ImageViewer Element */
+        .image-title {
+            position: absolute;
+            top: 8px;
+            left: 8px;
+            background-color: rgba(0, 0, 0, 0.6);
+            color: white;
+            padding: 4px 8px;
+            font-size: 0.9rem;
+            border-radius: 4px;
+            z-index: 10;
+            pointer-events: none;
+        }
+
+        /* Bottom Section for Controls and Console */
+        .controls-section {
+            flex: 3; /* 30% height */
+            display: flex;
+            flex-direction: column;
+            padding: 15px 20px;
+            background-color: #ffffff; /* White background */
+            border-top: 1px solid #dee2e6; /* Separator line */
+            box-sizing: border-box;
+            overflow: hidden; /* Prevent overflow */
+        }
+
+        .buttons-container {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 15px;
+            flex-wrap: wrap; /* Allow buttons to wrap on smaller screens */
+        }
+
+        /* Modern Button Styling */
+        button {
+            padding: 10px 18px;
+            border: none;
+            border-radius: 6px;
+            color: white;
+            font-size: 1rem;
+            cursor: pointer;
+            transition: background-color 0.2s ease, transform 0.1s ease;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+        }
+
+        .btn-primary {
+            background-color: #007bff;
+        }
+
+        .btn-primary:hover {
+            background-color: #0056b3; /* Darker blue on hover */
+        }
+
+        .btn-undo {
+            background-color: #ffbf00;
+        }
+
+        .btn-undo:hover {
+            background-color: #ffae00; /* Darker blue on hover */
+        }
+
+        .btn-delete {
+            background-color: #ff0000;
+        }
+
+        .btn-delete:hover {
+            background-color: #b30000; /* Darker blue on hover */
+        }
+
+        .btn-confirm {
+            background-color: #18cd00;
+        }
+
+        .btn-confirm:hover {
+            background-color: #16a200; /* Darker blue on hover */
+        }
+
+
+        button:active {
+            transform: scale(0.98); /* Slight press effect */
+        }
+
+        /* Console Styling */
+        .console {
+            flex-grow: 1; /* Take remaining space */
+            border: 1px solid #ced4da;
+            border-radius: 6px;
+            padding: 10px;
+            overflow-y: auto; /* Allow scrolling */
+            background-color: #f8f9fa; /* Very light grey */
+            font-family: 'Courier New', Courier, monospace; /* Monospace for console */
+            font-size: 0.9rem;
+            line-height: 1.4;
+            color: #495057;
+        }
+
+        .console p {
+            margin: 0 0 5px 0;
+            word-wrap: break-word;
+        }
+
+        /* Image Viewer Component Styling */
+        .image-viewer {
+            flex: 1; /* Each viewer takes equal space */
+            border: 1px solid #ccc;
+            border-radius: 8px; /* Rounded corners */
+            overflow: hidden; /* Crucial: clips the zoomed image */
+            position: relative; /* For absolute positioning of image and dots */
+            background-color: #ddd; /* Placeholder background */
+            cursor: grab; /* Indicate draggable */
+            user-select: none; /* Prevent text selection during drag */
+            box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1); /* Subtle shadow */
+        }
+         .image-viewer:active {
+             cursor: grabbing;
+         }
+
+        .image-viewer img {
+            display: block;
+            /* REMOVED: transition: transform 0.1s linear; */
+             /* Prevent dragging the image element itself */
+            -webkit-user-drag: none;
+            user-drag: none;
+        }
+
+        /* Dot Styling */
+        .dot {
+            position: absolute;
+            width: 10px; /* Fixed size */
+            height: 10px; /* Fixed size */
+            background-color: rgba(255, 0, 0, 0.8); /* Red, slightly transparent */
+            border-radius: 50%;
+            border: 1px solid rgba(255, 255, 255, 0.7); /* White border */
+            pointer-events: none; /* Don't interfere with image events */
+            /* Centering the dot on the coordinate */
+            transform: translate(-50%, -50%);
+            box-shadow: 0 0 3px rgba(0,0,0,0.5);
+        }
+
+        /* Add Inter font */
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;700&display=swap');
+
+    </style>
+</head>
+<body>
+    <div id="app">
+        <div class="image-section">
+            <image-viewer
+                ref="fixedViewer"
+                title="Fixed Image (Anchor)" 
+                image-id="fixed_image"
+                :src="fixedImage"
+                @image-click="handleImageClick"
+                @log-message="logMessage"
+            ></image-viewer>
+            <image-viewer
+                ref="movingViewer"
+                title="Moving Image (Target)" 
+                image-id="moving_image"
+                :src="movingImage"
+                @image-click="handleImageClick"
+                @log-message="logMessage"
+            ></image-viewer>
+        </div>
+
+        <div class="controls-section">
+            <div class="buttons-container">
+                <button class="btn-delete" @click="clearAll">Delete Landmarks</button>
+                <button class="btn-undo" @click="undo">Undo</button>
+                <button class="btn-confirm" @click="sendLandmarks">Confirm</button>
+                <button class="btn-primary" @click="clearConsole">Clear Console</button>
+            </div>
+            <div class="console" ref="consoleOutput">
+                <p v-for="(msg, index) in consoleMessages" :key="index">{{ msg }}</p>
+            </div>
+        </div>
+    </div>
+
+    <script type="text/x-template" id="image-viewer-template">
+        <div
+            class="image-viewer"
+            ref="container"
+            @wheel.prevent="handleWheel"
+            @mousedown="handleMouseDown"
+            @mousemove="handleMouseMove"
+            @mouseup="handleMouseUp"
+            @mouseleave="handleMouseLeave"
+            @click="handleClick"
+            style="position: relative; width: 100%; height: 100%;"
+        >
+            <div class="image-title">
+                {{ title }}
+            </div>
+            <img
+                ref="image"
+                :src="src"
+                :style="imageStyle"
+                @load="onImageLoad"
+                @error="onImageError"
+                draggable="false"
+                alt="Interactive image"
+            />
+            <div
+                v-for="(point, index) in visiblePoints"
+                :key="index"
+                class="dot"
+                :style="{
+                    left: point.displayX + 'px',
+                    top: point.displayY + 'px',
+                    backgroundColor: point.color,
+                }"
+            ></div>
+        </div>
+    </script>
+
+    <script>
+        const { createApp, ref, reactive, computed, onMounted, nextTick, watch } = Vue;
+
+        // Reusable Image Viewer Component
+        const ImageViewer = {
+            template: '#image-viewer-template',
+            props: {
+                src: {
+                    type: String,
+                    required: true
+                },
+                imageId: { // Unique ID for logging
+                    type: String,
+                    required: true
+                },
+                title: {
+                    type: String,
+                    default: ''
+                }
+            },
+            emits: ['image-click', 'log-message'], // Declare emitted events
+            setup(props, { emit, expose }) {
+                const container = ref(null); // Ref for the container div
+                const image = ref(null); // Ref for the img element
+
+                // Image properties
+                const naturalWidth = ref(0);
+                const naturalHeight = ref(0);
+
+                // Interaction state
+                const zoom = ref(1);
+                const minZoom = 0.2;
+                const maxZoom = 10;
+                const offsetX = ref(0); // Panning offset X (in screen pixels)
+                const offsetY = ref(0); // Panning offset Y (in screen pixels)
+                const isPanning = ref(false);
+                const startPanX = ref(0);
+                const startPanY = ref(0);
+
+                // Store clicked points { x, y } relative to original image dimensions
+                const clickedPoints = reactive([]);
+
+                // --- Computed Properties ---
+
+                // Calculate the transform style for the image
+                const imageStyle = computed(() => {
+                    // Center the image initially if it's smaller than the container
+                    let initialTranslateX = 0;
+                    let initialTranslateY = 0;
+                    // No need for complex centering logic here if transform-origin is 0 0
+                    // The offset calculation handles positioning correctly.
+
+                    return {
+                        transform: `translate(${offsetX.value + initialTranslateX}px, ${offsetY.value + initialTranslateY}px) scale(${zoom.value})`,
+                        transformOrigin: '0 0', // Set origin to top-left for easier calculations
+                        cursor: isPanning.value ? 'grabbing' : 'grab',
+                        maxWidth: 'none', // Allow image to exceed container width when zoomed
+                        width: `${naturalWidth.value}px`,
+                        height: `${naturalHeight.value}px`,
+                        //width: naturalWidth.value ? `${naturalWidth.value}px` : 'auto', // Set explicit width based on natural size
+                        //height: naturalHeight.value ? `${naturalHeight.value}px` : 'auto' // Set explicit height
+                    };
+                });
+
+                 // Calculate which points are currently visible within the container
+                const visiblePoints = computed(() => {
+                    if (!container.value || !naturalWidth.value) return []; // Check naturalWidth too
+
+                    const containerRect = container.value.getBoundingClientRect();
+
+                    return clickedPoints
+                        .map(point => {
+                            // Calculate the display position of the dot based on current zoom/offset
+                            // point.x/y are coordinates on the *original* image
+                            const displayX = point.x * zoom.value + offsetX.value;
+                            const displayY = point.y * zoom.value + offsetY.value;
+                            return { ...point, displayX, displayY };
+                        })
+                        .filter(point => {
+                            // Check if the calculated display position is within the container bounds
+                            // Add a small buffer (e.g., half the dot size) if needed
+                            const buffer = 5; // Half dot width
+                            return (
+                                point.displayX >= -buffer &&
+                                point.displayX <= containerRect.width + buffer &&
+                                point.displayY >= -buffer &&
+                                point.displayY <= containerRect.height + buffer
+                            );
+                        });
+                });
+
+
+                // --- Methods ---
+
+                const fitToContainer = () => {
+                    const containerRect = container.value?.getBoundingClientRect();
+                    if (!containerRect || !naturalWidth.value || !naturalHeight.value) {
+                        console.warn("Fit failed: container or image size missing");
+                        return;
+                    }
+
+                    const widthRatio = containerRect.width / naturalWidth.value;
+                    const heightRatio = containerRect.height / naturalHeight.value;
+
+                    zoom.value = Math.min(widthRatio, heightRatio); // Best fit
+
+                    offsetX.value = 0;
+                    offsetY.value = 0;
+                };
+
+                // Called when the image successfully loads
+                const onImageLoad = () => {
+                    if (image.value) {
+                        // Store image natural dimensions
+                        if (image.value) {
+                            naturalWidth.value = image.value.naturalWidth;
+                            naturalHeight.value = image.value.naturalHeight;
+                        }
+
+                        // Wait for nextTick to ensure container is rendered
+                        nextTick(() => {
+                            fitToContainer();
+                        });
+                    }
+                };
+
+                 // Called if the image fails to load
+                 const onImageError = () => {
+                    emit('log-message', `${props.imageId}: Error loading image source: ${props.src}`);
+                    naturalWidth.value = 0; // Reset dimensions
+                    naturalHeight.value = 0;
+                    resetView(); // Also reset offset/zoom on error
+                    clickedPoints.length = 0; // Clear points on error
+                 };
+
+                const getDeterministicColor = (index) => {
+                    const hue = (index * 137.508) % 360; // Golden angle for good separation
+                    return `hsl(${hue}, 70%, 55%)`;
+                }
+
+                // Reset zoom and pan
+                const resetView = () => {
+                    zoom.value = 1;
+                    offsetX.value = 0;
+                    offsetY.value = 0;
+                     // Optionally clear points on reset:
+                     // clickedPoints.length = 0;
+                     emit('log-message', `${props.imageId}: View reset`);
+                };
+
+                // Handle mouse wheel for zooming
+                const handleWheel = (event) => {
+                    if (!container.value || !naturalWidth.value) return; // Check naturalWidth
+
+                    const rect = container.value.getBoundingClientRect();
+                    // Mouse position relative to container top-left
+                    const mouseX = event.clientX - rect.left;
+                    const mouseY = event.clientY - rect.top;
+
+                    // Calculate mouse position relative to the *image* top-left (before zoom)
+                    // This is the point on the original image under the mouse
+                    const imageX = (mouseX - offsetX.value) / zoom.value;
+                    const imageY = (mouseY - offsetY.value) / zoom.value;
+
+                    // Determine zoom direction and factor
+                    const zoomFactor = 1.1;
+                    let newZoom;
+                    if (event.deltaY < 0) {
+                        // Zoom in
+                        newZoom = Math.min(maxZoom, zoom.value * zoomFactor);
+                    } else {
+                        // Zoom out
+                        newZoom = Math.max(minZoom, zoom.value / zoomFactor);
+                    }
+
+                    if (newZoom === zoom.value) return; // No change
+
+                    // Calculate the new offset to keep the point under the mouse stationary
+                    // newOffsetX = mouseX_on_container - imageX_on_original * newZoom
+                    const newOffsetX = mouseX - imageX * newZoom;
+                    const newOffsetY = mouseY - imageY * newZoom;
+
+                    // Apply the new zoom and offset
+                    zoom.value = newZoom;
+                    offsetX.value = newOffsetX;
+                    offsetY.value = newOffsetY;
+
+                    // Log after state update
+                    // emit('log-message', `${props.imageId}: Zoomed to ${zoom.value.toFixed(2)}`);
+                };
+
+                // Start panning on mouse down
+                const handleMouseDown = (event) => {
+                    // Only pan with left mouse button (button 0)
+                    if (event.button !== 0 || !naturalWidth.value) return; // Check naturalWidth
+                    isPanning.value = true;
+                    // Store mouse position relative to the container top-left at the start of the drag
+                    startPanX.value = event.clientX;
+                    startPanY.value = event.clientY;
+                    // We also need the offset at the start of the drag
+                    const initialOffsetX = offsetX.value;
+                    const initialOffsetY = offsetY.value;
+
+                    // The move handler will calculate the new offset based on the difference
+                    // between current mouse position and startPanX/Y, added to the initial offset.
+                    // This avoids issues if multiple mousemove events fire before Vue updates.
+                    const handleMove = (moveEvent) => {
+                         if (!isPanning.value) return;
+                         moveEvent.preventDefault(); // Prevent text selection, etc.
+                         offsetX.value = initialOffsetX + (moveEvent.clientX - startPanX.value);
+                         offsetY.value = initialOffsetY + (moveEvent.clientY - startPanY.value);
+                    };
+
+                    // The mouseup handler needs to be attached to the window
+                    // to catch the mouseup even if it happens outside the image container.
+                    const handleUp = (upEvent) => {
+                        if (upEvent.button !== 0) return; // Only react to left button up
+                        if (isPanning.value) {
+                             isPanning.value = false;
+                             // container.value might not exist if component unmounted, though unlikely here
+                             if (container.value) container.value.style.cursor = 'grab';
+                             emit('log-message', `${props.imageId}: Panning stopped`);
+                        }
+                         // Clean up window listeners
+                        window.removeEventListener('mousemove', handleMove);
+                        window.removeEventListener('mouseup', handleUp);
+                    };
+
+                    // Attach listeners to window for robust dragging
+                    window.addEventListener('mousemove', handleMove);
+                    window.addEventListener('mouseup', handleUp);
+
+
+                    if (container.value) container.value.style.cursor = 'grabbing'; // Change cursor visually
+                };
+
+                // Handle clicks to add points
+                const handleClick = (event) => {
+                     // Check if it was a drag/pan. Compare current mouse position with mousedown position.
+                     // Use a small tolerance.
+                     const dx = Math.abs(event.clientX - startPanX.value);
+                     const dy = Math.abs(event.clientY - startPanY.value);
+                     const dragThreshold = 5; // Pixels threshold
+
+                     // Only register click if mouse didn't move much since mousedown AND isPanning is false
+                     if (!isPanning.value && dx < dragThreshold && dy < dragThreshold) {
+
+                        if (!container.value || !naturalWidth.value || event.button !== 0) return; // Ensure image loaded and left click
+
+                        const rect = container.value.getBoundingClientRect();
+                        // Click position relative to the container
+                        const clickX_container = event.clientX - rect.left;
+                        const clickY_container = event.clientY - rect.top;
+
+                        // Convert container coordinates to original image coordinates
+                        const originalX = (clickX_container - offsetX.value) / zoom.value;
+                        const originalY = (clickY_container - offsetY.value) / zoom.value;
+
+                        // Ensure click is within the image bounds (optional, but good practice)
+                        if (originalX >= 0 && originalX <= naturalWidth.value &&
+                            originalY >= 0 && originalY <= naturalHeight.value) {
+
+                            const newPoint = { x: Math.round(originalX), y: Math.round(originalY), color: getDeterministicColor(clickedPoints.length) };
+                            clickedPoints.push(newPoint);
+
+                        
+                            // Emit the coordinates to the parent
+                            emit('image-click', { imageId: props.imageId, x: Math.round(originalX), y: Math.round(originalY) });
+                        } else {
+                             emit('log-message', `${props.imageId}: Click ignored (outside image bounds)`);
+                        }
+                     } else {
+                         // If it was a pan, isPanning should be false now (set by window mouseup)
+                         // but the movement exceeded the threshold, so don't treat as a click.
+                         // Or if isPanning is somehow still true, definitely don't click.
+                         // console.log("Click ignored - likely a pan action.");
+                     }
+                };
+
+                // Remove all the points
+                const clearSelection = () => {
+                    clickedPoints.length = 0; // Clear clicked points
+                    emit('log-message', `${props.imageId}: All landmarks removed`);
+                };
+
+                const undoSelection = () => {
+                    if (clickedPoints.length > 0) {
+                        removed_point = clickedPoints.pop(); // Remove the last point
+                        emit('log-message', `${props.imageId}: Landmark removed at (${removed_point.x}, ${removed_point.y})`);
+                    } else {
+                        emit('log-message', `${props.imageId}: No landmarks to remove`);
+                    }
+                };
+
+                // Watch for src changes to reset the view
+                watch(() => props.src, () => {
+                    // Image element will trigger 'load' or 'error' which calls onImageLoad/Error
+                    // Resetting internal state here might be redundant but safe
+                    resetView();
+                    clickedPoints.length = 0; // Clear points when image source changes
+                });
+
+                expose({
+                    clearSelection,
+                    resetView,
+                    undoSelection,
+                });
+                
+                return {
+                    container,
+                    image,
+                    zoom,
+                    offsetX,
+                    offsetY,
+                    isPanning,
+                    imageStyle,
+                    clickedPoints,
+                    visiblePoints,
+                    onImageLoad,
+                    onImageError,
+                    handleWheel,
+                    handleMouseDown, // Keep this on the element to initiate drag
+                    handleClick, // Keep click handler on the element
+                };
+            }
+        };
+
+        // Main App Instance
+        const app = createApp({
+            components: {
+                'image-viewer': ImageViewer
+            },
+            setup() {
+                const consoleOutput = ref(null); // Ref for the console div
+                const consoleMessages = reactive([]);
+
+                const fixedViewer = ref(null); // Ref for the fixed image viewer
+                const movingViewer = ref(null); // Ref for the moving image viewer
+                let selectedLandmarks = []; // Store selected landmarks
+
+                // --- Data ---
+                // Use placeholder images - replace with your actual image URLs
+                const fixedImage = ref('http://localhost:5000//get_image/fixed');
+                const movingImage = ref('http://localhost:5000//get_image/moving');
+
+                // --- Methods ---
+
+                // Update the image in the viewer
+                const updateImage = (viewerId, dataUrl) => {
+                    if (viewerId === 'fixed') fixedImage.value = dataUrl;
+                    if (viewerId === 'moving') movingImage.value = dataUrl;
+                };
+
+                // Add a message to the console log
+                const logMessage = (message) => {
+                    const timestamp = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+                    consoleMessages.push(`[${timestamp}] ${message}`);
+                    // Auto-scroll console to the bottom
+                    nextTick(() => {
+                        if (consoleOutput.value) {
+                            consoleOutput.value.scrollTop = consoleOutput.value.scrollHeight;
+                        }
+                    });
+                };
+                
+                // Remove all the landmarks for both images
+                const clearAll = () => {
+                    fixedViewer.value?.clearSelection();
+                    movingViewer.value?.clearSelection();
+                    logMessage('Selection cleared in both viewers.');
+                };
+
+                // Undo the last landmark picking
+                const undo = () => {
+                    if (selectedLandmarks.length > 0) {
+                        const lastLandmark = selectedLandmarks.pop();
+                        
+                        if (lastLandmark.imageId === 'fixed_image') {
+                            fixedViewer.value?.undoSelection();
+                        } else if (lastLandmark.imageId === 'moving_image') {
+                            movingViewer.value?.undoSelection();
+                        }
+                    }
+                }
+
+                const sendLandmarks = () => {
+                    // Create two lists, based on the image that generated the landmark
+                    const fixedLandmarks = selectedLandmarks.filter(landmark => landmark.imageId === 'fixed_image');
+                    const movingLandmarks = selectedLandmarks.filter(landmark => landmark.imageId === 'moving_image');
+
+                    // Send the landmarks to backend with a POST request
+                    fetch('http://localhost:5000/save_landmarks', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify({
+                            fixed_landmarks: fixedLandmarks,
+                            moving_landmarks: movingLandmarks
+                        })
+                    })
+                    .then(response => {
+                        if (response.ok) {
+                            logMessage('Landmarks saved successfully.');
+                        } else {
+                            logMessage('Error saving landmarks.');
+                        }
+                    })
+                };
+
+                // Handle the click event emitted from the image viewer
+                const handleImageClick = (payload) => {
+                    const { imageId, x, y } = payload;
+                    selectedLandmarks.push({ imageId, x, y });
+                    logMessage(`${imageId}: Clicked at original coords (${x}, ${y})`);
+                };
+
+                // Clear the console messages
+                const clearConsole = () => {
+                    consoleMessages.length = 0; // Clear the array
+                    logMessage('Console cleared.');
+                };
+
+                // Log initial message
+                onMounted(() => {
+                    logMessage('Welcome to the Landmark Selection Tool!');
+                    logMessage('Click on the images to select landmarks.');
+
+                });
+
+                window.vueApp = {
+                    updateImage
+                };
+
+                return {
+                    fixedImage,
+                    movingImage,
+                    consoleMessages,
+                    consoleOutput,
+                    fixedViewer,
+                    movingViewer,
+                    logMessage,
+                    handleImageClick,
+                    clearConsole,
+                    clearAll,
+                    undo,
+                    sendLandmarks,
+                };
+            }
+        });
+        
+        app.mount('#app');
+
+    </script>
+
+    
+    <script>
+        // Interface with Python backend
+        function updateImage(viewerId, base64Image) {
+            if (window.vueApp) {
+                window.vueApp.updateImage(viewerId, base64Image);
+            }
+        }
+    </script>
+
+</body>
+</html>
