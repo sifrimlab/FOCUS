@@ -1,5 +1,6 @@
 import os, tifffile
 import numpy as np
+import matplotlib.pyplot as plt
 
 from sklearn.decomposition import PCA
 
@@ -201,4 +202,26 @@ class Aligner:
 
             landmarks_gui.enable_gui()
 
-            print("Ecco")
+            aligned_image = engine.align_images(
+                transformations = ["rigid"],
+                fixed_points = self._fixed_landmarks,
+                moving_points = self._moving_landmarks,
+            )
+
+            # Show the two images ovelapped with anchor_image in the background
+            plt.figure(figsize = (10, 10))
+            plt.imshow(anchor_image, cmap = "gray")
+            plt.imshow(aligned_image, cmap = "jet", alpha = 0.2)
+
+            plt.figure(figsize = (10, 10))
+            plt.imshow(anchor_image, cmap = "gray")
+            plt.imshow(aligned_image, cmap = "jet", alpha = 0.5)
+
+            plt.figure(figsize = (10, 10))
+            plt.imshow(anchor_image, cmap = "gray")
+            plt.imshow(aligned_image, cmap = "jet", alpha = 0.7)
+
+            plt.figure(figsize = (10, 10))
+            plt.imshow(anchor_image, cmap = "gray")
+            plt.imshow(aligned_image, cmap = "jet", alpha = 0.9)
+

@@ -1,8 +1,9 @@
 import numpy as np
 import SimpleITK as sitk
 import os
-
+import matplotlib.pyplot as plt
 from constants import TransformationType
+from scipy.spatial.distance import pdist
 
 class ElastixEngine:
     '''
@@ -41,7 +42,6 @@ class ElastixEngine:
             raise PermissionError(f"Invalid output path. The path {path} is not writable.")
         
         self.path = path
-        self.sample_id = path.split('/')[-2]
 
         # Convert the input images to Elastix format
         self.moving_image: sitk.Image = sitk.GetImageFromArray(moving_image, isVector = True)
@@ -56,8 +56,8 @@ class ElastixEngine:
         self.fixed_image.SetOrigin((0, 0))
 
         # The direction follows the way matplotlib reads the images (h, w) = (y, x) with y inverted (top-down)
-        self.moving_image.SetDirection((0, -1, 1, 0))
-        self.fixed_image.SetDirection((0, -1, 1, 0))
+        self.moving_image.SetDirection((1, 0, 0, 1))
+        self.fixed_image.SetDirection((1, 0, 0, 1))
 
     def _pixel_to_physical(self, image: sitk.Image, pixel_coords: np.ndarray) -> np.ndarray:
         '''
@@ -104,22 +104,29 @@ class ElastixEngine:
         # Translation is a special transformation used only to make the initial guess about moving image origin
         if transformation_type != TransformationType.TRANSLATION:
             transformation: sitk.ParameterMap = sitk.GetDefaultParameterMap(transformation_type)
-            transformation['DefaultPixelValue'] = ['0.0']
+            transformation['DefaultPixelValue'] = ['-1.0']
             transformation['ResampleInterpolator'] = ['FinalLinearInterpolator']
             transformation['Registration'] = ['MultiMetricMultiResolutionRegistration']
             transformation['AutomaticTransformInitialization'] = ['true']
-            transformation['AutomaticTransformInitializationMethod'] = ['CenterOfGravityAlign']
+            transformation['AutomaticTransformInitializationMethod'] = ['GeometricalCenter']
             transformation['AutomaticScalesEstimation'] = ['true']
+            transformation['NumberOfSpatialSamples'] = ['30000']
+            transformation['MaximumNumberOfIterations'] = ['1000']
+
 
             if transformation_type == TransformationType.RIGID:
-                transformation['Metric'] = ["CorrespondingPointsEuclideanDistanceMetric"]
-                transformation['Metric0Weight'] = ['1.0']
+                transformation['Metric'] = ["AdvancedMattesMutualInformation", "CorrespondingPointsEuclideanDistanceMetric"]
+                transformation['Metric0Weight'] = ['0.0']
+                transformation['Metric1Weight'] = ['1.0']
             elif transformation_type == TransformationType.AFFINE:
                 transformation['Metric'] = ["AdvancedMattesMutualInformation", "CorrespondingPointsEuclideanDistanceMetric"]
                 transformation['Metric0Weight'] = ['1.0']
                 transformation['Metric1Weight'] = ['1.0']
             elif transformation_type == TransformationType.BSPLINE:
-                raise NotImplementedError("BSpline transformation is not implemented yet.")
+                transformation['Metric'] = ["AdvancedMattesMutualInformation", 'TransformBendingEnergyPenalty', 'CorrespondingPointsEuclideanDistanceMetric']
+                transformation['Metric0Weight'] = ['1.0']
+                transformation['Metric1Weight'] = ['1.0']
+                transformation['Metric2Weight'] = ['1.0']
         else:
             transformation = None
         
@@ -164,20 +171,39 @@ class ElastixEngine:
         fixed_points_physical = self._pixel_to_physical(fixed_image, fixed_points)
         moving_points_physical = self._pixel_to_physical(moving_image, moving_points)
 
+        fixed_points_physical = self._pixel_to_physical(fixed_image, fixed_points)
+        moving_points_physical = self._pixel_to_physical(moving_image, moving_points)
+
         # For each couple of fixed and moving points, calculate the difference in physical space
-        offset = np.zeros_like(self.fixed_points)
-        offset[:, 0] = moving_points_physical[:, 0] - fixed_points_physical[:, 0]
-        offset[:, 1] = moving_points_physical[:, 1] - fixed_points_physical[:, 1]
+        offset = np.zeros_like(fixed_points_physical)
+        offset[:, 0] = fixed_points_physical[:, 0] - moving_points_physical[:, 0]
+        offset[:, 1] = fixed_points_physical[:, 1] - moving_points_physical[:, 1]
         offset = np.mean(offset, axis=0)
 
         # Get the absolute value of the offset, rounded to integer
-        offset = np.round(np.abs(offset)).astype(float)
-
+        #offset = np.round(np.abs(offset)).astype(int)
+        offset = np.round(offset).astype(int)
         return offset
     
-    def _rescale_translate(self, fixed_image: sitk.Image, moving_image: sitk.Image, offset: np.ndarray) -> sitk.Image:
+    def _compute_scaling_offset(self, fixed_landmarks: np.ndarray, moving_landmarks: np.ndarray) -> tuple[float, float]:
+
+
+        fixed_distances = pdist(fixed_landmarks, metric='euclidean')
+        moving_distances = pdist(moving_landmarks, metric='euclidean')
+        
+        # Compute the pairwise rateod
+        rateos = fixed_distances / moving_distances
+        rateos = rateos[~np.isnan(rateos)]
+        rateos = rateos[~np.isinf(rateos)]
+
+        # Compute the average distance for the fixed and moving images
+        scaling_offset = np.mean(rateos)
+
+        return scaling_offset
+
+    def _rescale_translate(self, fixed_image: sitk.Image, moving_image: sitk.Image) -> sitk.Image:
         '''
-        Rescale and translate the moving image to match the fixed image, based on the computed offset.
+        Rescale and translate the moving image to match the fixed image.
 
         Parameters
         ----------
@@ -185,9 +211,6 @@ class ElastixEngine:
             The fixed image to align to
         moving_image : sitk.Image
             The moving image to be aligned
-        offset : np.ndarray
-            The offset between the origins of the fixed and moving images in physical coordinates
-            The shape of the array is (2,).
         
         Returns
         ----------
@@ -197,14 +220,7 @@ class ElastixEngine:
 
         if isinstance(fixed_image, sitk.Image) == False or isinstance(moving_image, sitk.Image) == False:
             raise TypeError("Invalid image type. It must be a SimpleITK Image.")
-        if type(offset) != np.ndarray:
-            raise TypeError("Invalid offset type. It must be a numpy array.")
-        if offset.shape != (2,):
-            raise ValueError("Invalid offset shape. It must be of shape (2,).")
         
-        # Apply the offset to the moving image to update its origin
-        moving_image.SetOrigin(tuple(offset))
-
         # Define a ResampleImageFilter to rescale the moving image to match the fixed image
         resample_filter = sitk.ResampleImageFilter()
         resample_filter.SetReferenceImage(fixed_image)                          # The output must match the size of the fixed image
@@ -212,13 +228,9 @@ class ElastixEngine:
         resample_filter.SetInterpolator(sitk.sitkNearestNeighbor)               # Nearest neighbor interpolation: no interpolation, should never be used
         resample_filter.SetDefaultPixelValue(-1.0)
         resample_filter.SetOutputPixelType(sitk.sitkFloat32)
-
+        
         # Resample the moving image to match the fixed image
         resampled_moving_image: sitk.Image = resample_filter.Execute(moving_image)
-
-        # Update the moving image's metadata to match the fixed image, since now they are matching
-        resampled_moving_image.SetSpacing(fixed_image.GetSpacing())
-        resampled_moving_image.SetOrigin(fixed_image.GetOrigin())
 
         return resampled_moving_image
     
@@ -297,7 +309,7 @@ class ElastixEngine:
             fixed_image_grayscale = self.fixed_image
             fixed_channel = None
 
-        if self.moving_image.GetNumberOfComponentsPerPixel() == 1:
+        if self.moving_image.GetNumberOfComponentsPerPixel() > 1:
             moving_channel = None
             moving_array = sitk.GetArrayFromImage(self.moving_image)
 
@@ -312,11 +324,27 @@ class ElastixEngine:
             moving_image_grayscale = self.moving_image
             moving_channel = None
 
+        # Based on the landmarks, compute the scaling factor
+        scaling_offset = self._compute_scaling_offset(
+            self._pixel_to_physical(fixed_image_grayscale, fixed_points),
+            self._pixel_to_physical(moving_image_grayscale, moving_points)
+        )
+        moving_image_grayscale.SetSpacing(tuple(np.array(moving_image_grayscale.GetSpacing()) * scaling_offset))
+
         # Compute the initial offset between the fixed and moving images
         offset = self._compute_origin_offset(fixed_image_grayscale, moving_image_grayscale, fixed_points, moving_points)
 
+        # Apply the offset to the moving image to update its origin
+        moving_image_grayscale.SetOrigin(tuple(offset.astype(float)))
+
+        # Save the landmarks to file
+        fixed_landmarks_file = os.path.join(self.path, "fixed_landmarks.txt")
+        moving_landmarks_file = os.path.join(self.path, "moving_landmarks.txt")
+        self._save_landmarks_to_file(self._pixel_to_physical(fixed_image_grayscale, fixed_points), fixed_landmarks_file)
+        self._save_landmarks_to_file(self._pixel_to_physical(moving_image_grayscale, moving_points), moving_landmarks_file)
+
         # Rescale and translate the moving image to match the fixed image
-        moving_image_grayscale = self._rescale_translate(fixed_image_grayscale, moving_image_grayscale, offset)
+        moving_image_grayscale = self._rescale_translate(fixed_image_grayscale, moving_image_grayscale)
 
         # Initialize the Elastix engine
         elastixImageFilter = sitk.ElastixImageFilter()
@@ -329,13 +357,13 @@ class ElastixEngine:
             if transformation_settings is not None:
                 transformationVector.append(transformation_settings)
 
-        # Save the landmarks to file
-        fixed_landmarks_file = os.path.join(self.path, self.sample_id, "fixed_landmarks.txt")
-        moving_landmarks_file = os.path.join(self.path, self.sample_id, "moving_landmarks.txt")
-        self._save_landmarks_to_file(self._pixel_to_physical(fixed_points), fixed_landmarks_file)
-        self._save_landmarks_to_file(self._pixel_to_physical(moving_points), moving_landmarks_file)
+        # Load the landmarks
         elastixImageFilter.SetFixedPointSetFileName(fixed_landmarks_file)
         elastixImageFilter.SetMovingPointSetFileName(moving_landmarks_file)
+
+        # Now that the landmarks are saved, align the metadata
+        moving_image_grayscale.SetOrigin(self.fixed_image.GetOrigin())
+        moving_image_grayscale.SetSpacing(self.fixed_image.GetSpacing())
 
         # Set the images and the transformations
         elastixImageFilter.SetFixedImage(fixed_image_grayscale)
@@ -352,17 +380,26 @@ class ElastixEngine:
         transformix_filter.SetTransformParameterMap(computed_parameters_map)
 
         # Now that the transformation is computed, apply it to each channel of the moving image
-        output_image = np.zeros((self.moving_image.GetSize()[1], self.moving_image.GetSize()[0], self.moving_image.GetNumberOfComponentsPerPixel()), dtype = np.float32)
+        output_image = np.zeros((self.fixed_image.GetSize()[1], self.fixed_image.GetSize()[0], self.moving_image.GetNumberOfComponentsPerPixel()), dtype = np.float32)
 
         for index in range(output_image.shape[2]):
             # Obtain the channel
-            moving_image_channel = sitk.VectorIndexSelectionCast(self.moving_image, index)
+            moving_image_channel: sitk.Image = sitk.VectorIndexSelectionCast(self.moving_image, index)
+
+            # Set the channel origin as computed before
+            moving_image_channel.SetOrigin(tuple(offset.astype(float)))
+            moving_image_channel.SetSpacing(tuple(np.array(moving_image_channel.GetSpacing()) * scaling_offset))
 
             # Rescale the channel using the offset computed before
-            moving_image_channel = self._rescale_translate(fixed_image_grayscale, moving_image_channel, offset)
+            moving_image_channel = self._rescale_translate(fixed_image_grayscale, moving_image_channel)
+
+            # Align the channel spacing and origin to the fixed image
+            moving_image_channel.SetOrigin(self.fixed_image.GetOrigin())
+            moving_image_channel.SetSpacing(self.fixed_image.GetSpacing())
 
             # Apply the transformation to the channel
-            moving_image_channel = transformix_filter.Execute(moving_image_channel)
+            transformix_filter.SetMovingImage(moving_image_channel)
+            moving_image_channel = transformix_filter.Execute()
             moving_image_channel = sitk.GetArrayFromImage(moving_image_channel)
 
             # Store the transformed channel
@@ -370,7 +407,7 @@ class ElastixEngine:
 
         # Save the transformation parameters
         for index, param_map in enumerate(computed_parameters_map):
-            sitk.WriteParameterFile(param_map, os.path.join(self.path, self.sample_id, f"TransformParameters_{index}.txt"))
+            sitk.WriteParameterFile(param_map, os.path.join(self.path, f"TransformParameters_{index}.txt"))
 
         return output_image
 

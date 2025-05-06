@@ -113,6 +113,10 @@ def read_tiff_file(file: str) -> tuple[np.ndarray, float, float]:
             try:
                 physical_size_x = str(f.pages[0].tags['XResolution'].value[0] / f.pages[0].tags['XResolution'].value[1] ** 2)
                 physical_size_y = str(f.pages[0].tags['YResolution'].value[0] / f.pages[0].tags['YResolution'].value[1] ** 2)
+
+                # Convert to um
+                physical_size_x = float(physical_size_x) * 1e6
+                physical_size_y = float(physical_size_y) * 1e6
             except:
                 physical_size_x = 1.0
                 physical_size_y = 1.0

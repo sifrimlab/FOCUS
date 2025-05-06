@@ -619,6 +619,8 @@
                 const clearAll = () => {
                     fixedViewer.value?.clearSelection();
                     movingViewer.value?.clearSelection();
+
+                    selectedLandmarks.length = 0; // Clear the selected landmarks
                     logMessage('Selection cleared in both viewers.');
                 };
 
