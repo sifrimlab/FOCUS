@@ -10,6 +10,8 @@ from constants import ModalityParameters, ModalityType
 from alignment.elastix_engine import ElastixEngine
 from GUI.landmark_selection import LandmarkSelectionGUI
 
+from skimage.transform import downscale_local_mean      #TODO: Remove this import
+
 class Aligner:
     '''
     This class is used to align the target modality to the anchor modality using Elastix.
@@ -37,11 +39,12 @@ class Aligner:
 
         if load_landmarks == False:
             self._fixed_landmarks, self._moving_landmarks = [], []
+            self._moving_image_xflip, self._moving_image_yflip = False, False
         
         if load_alignment_transformation == False:
             self._transformation_parameters = None
 
-    def _get_landmarks_from_gui(self, fixed_landmarks: np.ndarray, moving_landmarks: np.ndarray) -> None:
+    def _get_landmarks_from_gui(self, fixed_landmarks: np.ndarray, moving_landmarks: np.ndarray, moving_image_xflip: bool = False, moving_image_yflip: bool = False) -> None:
         '''
         Callback function to get the landmarks from the GUI, once the user clicks to confirm.
         All the checks are performed in the GUI class.
@@ -52,6 +55,10 @@ class Aligner:
             The fixed landmarks
         moving_landmarks : np.ndarray
             The moving landmarks
+        moving_image_xflip : bool, optional
+            If True, the moving image is flipped in the x direction (default is False)
+        moving_image_yflip : bool, optional
+            If True, the moving image is flipped in the y direction (default is False)
         '''
 
         if type(fixed_landmarks) != np.ndarray or type(moving_landmarks) != np.ndarray:
@@ -59,6 +66,8 @@ class Aligner:
         
         self._fixed_landmarks = fixed_landmarks
         self._moving_landmarks = moving_landmarks
+        self._moving_image_xflip = moving_image_xflip
+        self._moving_image_yflip = moving_image_yflip
 
     def _generate_msi_image(self, path: str) -> np.ndarray[np.float32]:
         '''
@@ -179,15 +188,6 @@ class Aligner:
             anchor_image = self._generate_msi_image(os.path.join(self._path, anchor_modality[ModalityParameters.MODALITY_NAME]))
         else:
             raise ValueError("Invalid anchor modality type. Please check the input values.")
-        
-        # Create the Elastix engine
-        engine = ElastixEngine(
-            path = os.path.join(self._path, "alignment", target_modality[ModalityParameters.MODALITY_NAME]),
-            fixed_image = anchor_image,
-            moving_image = target_image,
-            fixed_spacing = anchor_spacing,
-            moving_spacing = target_spacing
-        )
 
         # Verify the presence of landmarks. If missing, request the user to pick them from the GUI
         if len(self._fixed_landmarks) == 0 or len(self._moving_landmarks) == 0:
@@ -202,26 +202,56 @@ class Aligner:
 
             landmarks_gui.enable_gui()
 
-            aligned_image = engine.align_images(
-                transformations = ["rigid"],
-                fixed_points = self._fixed_landmarks,
-                moving_points = self._moving_landmarks,
-            )
+        # Check if the moving image has to be flipped
+        if self._moving_image_xflip:
+            target_image = np.flip(target_image, axis = 1)
+        if self._moving_image_yflip:
+            target_image = np.flip(target_image, axis = 0)
 
-            # Show the two images ovelapped with anchor_image in the background
-            plt.figure(figsize = (10, 10))
-            plt.imshow(anchor_image, cmap = "gray")
-            plt.imshow(aligned_image, cmap = "jet", alpha = 0.2)
+        # Create the Elastix engine
+        engine = ElastixEngine(
+            path = os.path.join(self._path, "alignment", target_modality[ModalityParameters.MODALITY_NAME]),
+            fixed_image = anchor_image,
+            moving_image = target_image,
+            fixed_spacing = anchor_spacing,
+            moving_spacing = target_spacing
+        )
 
-            plt.figure(figsize = (10, 10))
-            plt.imshow(anchor_image, cmap = "gray")
-            plt.imshow(aligned_image, cmap = "jet", alpha = 0.5)
+        # Scaling offset compared to the metadata used
+        aligned_image, scaling_offset = engine.align_images(
+            transformations = ["rigid"],
+            fixed_points = self._fixed_landmarks,
+            moving_points = self._moving_landmarks,
+        )
 
-            plt.figure(figsize = (10, 10))
-            plt.imshow(anchor_image, cmap = "gray")
-            plt.imshow(aligned_image, cmap = "jet", alpha = 0.7)
+        #TMP: PRodurre immagine per Jelle
 
-            plt.figure(figsize = (10, 10))
-            plt.imshow(anchor_image, cmap = "gray")
-            plt.imshow(aligned_image, cmap = "jet", alpha = 0.9)
+        # Get a boolean mask of the aligned image
+        aligned_mask = np.zeros((aligned_image.shape[0:2]), dtype = np.bool_)
+        aligned_mask[np.max(aligned_image, axis=2) >= 0] = True
+
+        indexes = np.argwhere(aligned_mask)
+        row_start, col_start = indexes.min(axis=0)
+        row_end, col_end = indexes.max(axis=0) + 1
+
+        # Cut the anchor image based on the aligned mask
+        cut_anchor_image = np.zeros((row_end - row_start, col_end - col_start, anchor_image.shape[2]), dtype = np.float32)
+        cut_anchor_image = anchor_image[row_start:row_end, col_start:col_end]
+
+        # Compute the scaling factor
+        scaling_factor = (
+            int((cut_anchor_image.shape[0] / target_image.shape[0]) * 1),
+            int((cut_anchor_image.shape[1] / target_image.shape[1]) * 1),
+            1
+        )
+
+        # Downscale the cut anchor image to the target image size
+        resulting_image = downscale_local_mean(cut_anchor_image, scaling_factor)
+
+        # Save the resulting image
+        output_path = os.path.join(self._path, "alignment", target_modality[ModalityParameters.MODALITY_NAME], "resulting_image.tiff")
+        if not os.path.exists(os.path.dirname(output_path)):
+            os.makedirs(os.path.dirname(output_path))
+        tifffile.imwrite(output_path, resulting_image)
+
 

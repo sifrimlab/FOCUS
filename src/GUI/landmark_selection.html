@@ -197,6 +197,7 @@
                 :src="movingImage"
                 @image-click="handleImageClick"
                 @log-message="logMessage"
+                @flip-landmarks="flipLandmarks"
             ></image-viewer>
         </div>
 
@@ -219,9 +220,6 @@
             ref="container"
             @wheel.prevent="handleWheel"
             @mousedown="handleMouseDown"
-            @mousemove="handleMouseMove"
-            @mouseup="handleMouseUp"
-            @mouseleave="handleMouseLeave"
             @click="handleClick"
             style="position: relative; width: 100%; height: 100%;"
         >
@@ -247,6 +245,13 @@
                     backgroundColor: point.color,
                 }"
             ></div>
+            <div 
+            v-if="enableFlip"
+            style="position: absolute; bottom: 10px; left: 10px; display: flex; flex-direction: column; gap: 8px;"
+            >
+                <button @click="toggleMirrorX" @mousedown.stop class="btn-primary">Flip Horizontally</button>
+                <button @click="toggleMirrorY" @mousedown.stop class="btn-primary">Flip Vertically</button>
+            </div>
         </div>
     </script>
 
@@ -268,9 +273,9 @@
                 title: {
                     type: String,
                     default: ''
-                }
+                },
             },
-            emits: ['image-click', 'log-message'], // Declare emitted events
+            emits: ['image-click', 'log-message', 'flip-landmarks'], // Declare emitted events
             setup(props, { emit, expose }) {
                 const container = ref(null); // Ref for the container div
                 const image = ref(null); // Ref for the img element
@@ -281,13 +286,17 @@
 
                 // Interaction state
                 const zoom = ref(1);
-                const minZoom = 0.2;
-                const maxZoom = 10;
+                let minZoom = 0.1; // Minimum zoom level - Update by fitContainer
+                let maxZoom = 10;
                 const offsetX = ref(0); // Panning offset X (in screen pixels)
                 const offsetY = ref(0); // Panning offset Y (in screen pixels)
                 const isPanning = ref(false);
                 const startPanX = ref(0);
                 const startPanY = ref(0);
+                const enableFlip = ref(props.title === 'Moving Image (Target)'); // Enable flip for moving image
+
+                let mirrorX = ref(false);
+                let mirrorY = ref(false);
 
                 // Store clicked points { x, y } relative to original image dimensions
                 const clickedPoints = reactive([]);
@@ -299,11 +308,21 @@
                     // Center the image initially if it's smaller than the container
                     let initialTranslateX = 0;
                     let initialTranslateY = 0;
-                    // No need for complex centering logic here if transform-origin is 0 0
-                    // The offset calculation handles positioning correctly.
+                    let flipx = (enableFlip && mirrorX.value) ? -1 : 1;
+                    let flipy = (enableFlip && mirrorY.value) ? -1 : 1;
+                    const translateX = mirrorX.value ? naturalWidth.value * zoom.value : 0;
+                    const translateY = mirrorY.value ? naturalHeight.value * zoom.value : 0;
+
+
+                    let transform = `translate(
+                        ${offsetX.value + translateX}px, 
+                        ${offsetY.value + translateY}px)
+                        scale(
+                        ${flipx * zoom.value}, 
+                        ${flipy * zoom.value})`;
 
                     return {
-                        transform: `translate(${offsetX.value + initialTranslateX}px, ${offsetY.value + initialTranslateY}px) scale(${zoom.value})`,
+                        transform: transform,
                         transformOrigin: '0 0', // Set origin to top-left for easier calculations
                         cursor: isPanning.value ? 'grabbing' : 'grab',
                         maxWidth: 'none', // Allow image to exceed container width when zoomed
@@ -358,6 +377,9 @@
 
                     offsetX.value = 0;
                     offsetY.value = 0;
+
+                    minZoom = zoom.value; // Set minZoom to current zoom level
+                    maxZoom = minZoom * 20
                 };
 
                 // Called when the image successfully loads
@@ -521,11 +543,6 @@
                         } else {
                              emit('log-message', `${props.imageId}: Click ignored (outside image bounds)`);
                         }
-                     } else {
-                         // If it was a pan, isPanning should be false now (set by window mouseup)
-                         // but the movement exceeded the threshold, so don't treat as a click.
-                         // Or if isPanning is somehow still true, definitely don't click.
-                         // console.log("Click ignored - likely a pan action.");
                      }
                 };
 
@@ -535,6 +552,14 @@
                     emit('log-message', `${props.imageId}: All landmarks removed`);
                 };
 
+                // Flip Landmarks 
+                const flipLandmarks = (flipX, flipY) => {
+                    clickedPoints.forEach(point => {
+                        if (flipX) point.x = naturalWidth.value - point.x;
+                        if (flipY) point.y = naturalHeight.value - point.y;
+                    });
+                };
+
                 const undoSelection = () => {
                     if (clickedPoints.length > 0) {
                         removed_point = clickedPoints.pop(); // Remove the last point
@@ -542,6 +567,18 @@
                     } else {
                         emit('log-message', `${props.imageId}: No landmarks to remove`);
                     }
+                };
+
+                const toggleMirrorX = () => {
+                    mirrorX.value = !mirrorX.value;
+                    flipLandmarks(true, false);
+                    emit('flip-landmarks', true, false);
+                };
+
+                const toggleMirrorY = () => {
+                    mirrorY.value = !mirrorY.value;
+                    flipLandmarks(false, true);
+                    emit('flip-landmarks', false, true);
                 };
 
                 // Watch for src changes to reset the view
@@ -556,6 +593,7 @@
                     clearSelection,
                     resetView,
                     undoSelection,
+                    flipLandmarks,
                 });
                 
                 return {
@@ -568,11 +606,14 @@
                     imageStyle,
                     clickedPoints,
                     visiblePoints,
+                    enableFlip,
                     onImageLoad,
                     onImageError,
                     handleWheel,
                     handleMouseDown, // Keep this on the element to initiate drag
                     handleClick, // Keep click handler on the element
+                    toggleMirrorX,
+                    toggleMirrorY
                 };
             }
         };
@@ -589,6 +630,8 @@
                 const fixedViewer = ref(null); // Ref for the fixed image viewer
                 const movingViewer = ref(null); // Ref for the moving image viewer
                 let selectedLandmarks = []; // Store selected landmarks
+                let movingImageXflip = false;       // Keep track of the rotations applied to the moving image
+                let movingImageYflip = false;
 
                 // --- Data ---
                 // Use placeholder images - replace with your actual image URLs
@@ -611,6 +654,19 @@
                     nextTick(() => {
                         if (consoleOutput.value) {
                             consoleOutput.value.scrollTop = consoleOutput.value.scrollHeight;
+                        }
+                    });
+                };
+
+                const flipLandmarks = (flipX, flipY) => {
+                    // Keep track of this event
+                    if (flipX) movingImageXflip = !movingImageXflip;
+                    if (flipY) movingImageYflip = !movingImageYflip;
+                    // Flip the landmarks in the selectedLandmarks array
+                    selectedLandmarks.forEach(landmark => {
+                        if (landmark.imageId === 'moving_image') {
+                            if (flipX) landmark.x = movingViewer.value.naturalWidth - landmark.x;
+                            if (flipY) landmark.y = movingViewer.value.naturalHeight - landmark.y;
                         }
                     });
                 };
@@ -642,6 +698,16 @@
                     const fixedLandmarks = selectedLandmarks.filter(landmark => landmark.imageId === 'fixed_image');
                     const movingLandmarks = selectedLandmarks.filter(landmark => landmark.imageId === 'moving_image');
 
+                    // Check if the two have the same length and have at least three points
+                    if (fixedLandmarks.length !== movingLandmarks.length) {
+                        logMessage('Error: Select the landmarks in pairs!');
+                        return;
+                    }
+                    if (fixedLandmarks.length < 3) {
+                        logMessage('Error: At least three landmarks are required!');
+                        return;
+                    }
+
                     // Send the landmarks to backend with a POST request
                     fetch('http://localhost:5000/save_landmarks', {
                         method: 'POST',
@@ -650,7 +716,9 @@
                         },
                         body: JSON.stringify({
                             fixed_landmarks: fixedLandmarks,
-                            moving_landmarks: movingLandmarks
+                            moving_landmarks: movingLandmarks,
+                            moving_image_xflip: movingImageXflip,
+                            moving_image_yflip: movingImageYflip
                         })
                     })
                     .then(response => {
@@ -675,6 +743,7 @@
                     logMessage('Console cleared.');
                 };
 
+
                 // Log initial message
                 onMounted(() => {
                     logMessage('Welcome to the Landmark Selection Tool!');
@@ -694,11 +763,12 @@
                     fixedViewer,
                     movingViewer,
                     logMessage,
+                    flipLandmarks,
                     handleImageClick,
                     clearConsole,
                     clearAll,
                     undo,
-                    sendLandmarks,
+                    sendLandmarks
                 };
             }
         });
@@ -706,16 +776,5 @@
         app.mount('#app');
 
     </script>
-
-    
-    <script>
-        // Interface with Python backend
-        function updateImage(viewerId, base64Image) {
-            if (window.vueApp) {
-                window.vueApp.updateImage(viewerId, base64Image);
-            }
-        }
-    </script>
-
 </body>
 </html>

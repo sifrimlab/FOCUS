@@ -82,11 +82,13 @@ class LandmarkSelectionGUI:
 
             fixed_landmarks = data.get('fixed_landmarks')
             moving_landmarks = data.get('moving_landmarks')
+            moving_image_xflip = data.get('moving_image_xflip', False)
+            moving_image_yflip = data.get('moving_image_yflip', False)
 
             fixed_landmarks_np = np.array([(point['x'], point['y']) for point in fixed_landmarks], dtype=np.int32)
             moving_landmarks_np = np.array([(point['x'], point['y']) for point in moving_landmarks], dtype=np.int32)
 
-            self.save_landmarks_callback(fixed_landmarks_np, moving_landmarks_np)
+            self.save_landmarks_callback(fixed_landmarks_np, moving_landmarks_np, moving_image_xflip, moving_image_yflip)
             Thread(target=self.disable_gui, daemon=True).start()
             return jsonify({"status": "success", "message": "Landmarks saved successfully."})
         

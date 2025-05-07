@@ -111,7 +111,7 @@ class ElastixEngine:
             transformation['AutomaticTransformInitializationMethod'] = ['GeometricalCenter']
             transformation['AutomaticScalesEstimation'] = ['true']
             transformation['NumberOfSpatialSamples'] = ['30000']
-            transformation['MaximumNumberOfIterations'] = ['1000']
+            transformation['MaximumNumberOfIterations'] = ['500']
 
 
             if transformation_type == TransformationType.RIGID:
@@ -262,7 +262,7 @@ class ElastixEngine:
         with open(filename, "w") as file:
             file.write(text)
 
-    def align_images(self, transformations: list[str], fixed_points: np.ndarray, moving_points: np.ndarray) -> np.ndarray:
+    def align_images(self, transformations: list[str], fixed_points: np.ndarray, moving_points: np.ndarray) -> tuple[np.ndarray, float]:
         '''
         Align the moving image to the fixed image, using the given list of transformations in the order they're given.
         The fixed_points and moving_points are used to compute and train the transformation kernels.
@@ -282,6 +282,8 @@ class ElastixEngine:
         ----------
         np.ndarray
             The aligned moving image.
+        float
+            The scaling offset used to align the moving image to the fixed image.
         '''
 
         if type(transformations) != list:
@@ -409,5 +411,5 @@ class ElastixEngine:
         for index, param_map in enumerate(computed_parameters_map):
             sitk.WriteParameterFile(param_map, os.path.join(self.path, f"TransformParameters_{index}.txt"))
 
-        return output_image
+        return (output_image, scaling_offset)
 
