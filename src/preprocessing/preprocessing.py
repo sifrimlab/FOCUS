@@ -2,7 +2,7 @@ import constants as constants
 import preprocessing.microscopy_image as microscopy_image
 import preprocessing.lipidomics as lipidomics
 
-def preprocess_modality(path: str, modality_type: str, preprocessing_settings: dict) -> tuple[float, float]:
+def preprocess_modality(path: str, sample_id: str, modality_name: str, modality_type: str, preprocessing_settings: dict) -> tuple[float, float]:
     '''
     Apply preprocessing steps to a given modality based on its type and settings.
     This method is an entry point for the preprocessing pipeline and will
@@ -12,6 +12,10 @@ def preprocess_modality(path: str, modality_type: str, preprocessing_settings: d
     ----------
         path: str
             The path to the directory where the source data are stored.
+        sample_id: str
+            The ID of the sample being processed.
+        modality_name: str
+            The name of the modality being processed.
         modality_type: str 
             The type of the modality (e.g., 'microscopy_image', 'msi', 'raman').
         preprocessing_settings: dict 
@@ -30,11 +34,13 @@ def preprocess_modality(path: str, modality_type: str, preprocessing_settings: d
         color_enhancement = preprocessing_settings.get(constants.ImagingPreprocessing.COLOR_ENHANCEMENT, False)
 
         physical_pixel_coverage = microscopy_image.preprocess_microscopy_image(
-            path=path,
-            crop=crop,
-            filter_strength=filter_strength,
-            smoothing=smoothing,
-            color_enhancement=color_enhancement
+            path = path,
+            sample_id = sample_id,
+            modality_name = modality_name,
+            crop = crop,
+            filter_strength = filter_strength,
+            smoothing = smoothing,
+            color_enhancement = color_enhancement
         )
     elif modality_type == constants.ModalityType.MSI:
         peak_picking = preprocessing_settings.get(constants.LipidomicsPreprocessing.PEAK_PICKING, True)
@@ -45,6 +51,8 @@ def preprocess_modality(path: str, modality_type: str, preprocessing_settings: d
         
         physical_pixel_coverage = lipidomics.preprocess_lipidomics(
             path = path,
+            sample_id = sample_id,
+            modality_name = modality_name,
             peak_picking = peak_picking,
             prominence = peak_prominence_threshold,
             window_tolerance = peak_window_tolerance_ppm,

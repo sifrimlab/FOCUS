@@ -129,7 +129,7 @@ def read_tiff_file(file: str) -> tuple[np.ndarray, float, float]:
 
     return image, physical_size_x, physical_size_y
 
-def preprocess_microscopy_image(path: str, crop: bool, filter_strength: str, smoothing: bool, color_enhancement: bool, debug_mode: bool = False) -> tuple[float, float]:
+def preprocess_microscopy_image(path: str, sample_id: str, modality_name: str,  crop: bool, filter_strength: str, smoothing: bool, color_enhancement: bool, debug_mode: bool = False) -> tuple[float, float]:
     '''
     Preprocess a microscopy image by applying cropping, filtering, smoothing and color enhancement.
 
@@ -137,6 +137,10 @@ def preprocess_microscopy_image(path: str, crop: bool, filter_strength: str, smo
     ----------
     path : str
         The path to the directory where the source data are stored.
+    sample_id : str
+        The sample ID to use for the output file name.
+    modality_name : str
+        The name of the modality to process
     crop : bool
         Whether to crop the image or not.
     filter_strength : str
@@ -156,37 +160,40 @@ def preprocess_microscopy_image(path: str, crop: bool, filter_strength: str, smo
     '''
 
     # Check the input parameters
-    if type(path) != str or type(crop) != bool or type(filter_strength) != str or type(smoothing) != bool or type(color_enhancement) != bool:
+    if (type(path) != str or type(sample_id) != str or type(modality_name) != str
+        or type(crop) != bool or type(filter_strength) != str or type(smoothing) != bool or type(color_enhancement) != bool):
         raise TypeError("Invalid input parameters. Please check the types.")
     if filter_strength not in constants.ImagingFilterStrength.list():
         raise ValueError(f"Invalid filter strength: {filter_strength}. Please choose from {constants.ImagingFilterStrength.list()}.")
     
+    sample_dir = os.path.join(path, sample_id) 
+    mod_dir = os.path.join(path, sample_id, modality_name)
+
     # Check if the path exists
-    if not os.path.exists(path):
-        raise ValueError(f"The path {path} does not exist.")
+    if not os.path.exists(mod_dir):
+        raise ValueError(f"The path {mod_dir} does not exist.")
     
     # Check if the path is a directory
-    if not os.path.isdir(path):
-        raise ValueError(f"The path {path} is not a directory.")
+    if not os.path.isdir(mod_dir):
+        raise ValueError(f"The path {mod_dir} is not a directory.")
     
     # Get a list of files in the directory
-    files = os.listdir(path)
+    files = os.listdir(mod_dir)
     if len(files) == 0:
-        raise ValueError(f"The directory {path} is empty.")
+        raise ValueError(f"The directory {mod_dir} is empty.")
     
     # Get the first .tiff or .tif file in the directory
     file = None
     for f in files:
         if f.endswith(".tiff") or f.endswith(".tif"):
-            file = os.path.join(path, f)
+            file = os.path.join(mod_dir, f)
             break
     
     if file is None:
-        raise ValueError(f"No .tiff or .tif file found in the directory {path}.")
+        raise ValueError(f"No .tiff or .tif file found in the directory {mod_dir}.")
     
     # Read the tiff/tif file
     image, physical_size_x, physical_size_y = read_tiff_file(file)
-    sample_id = path.split('/')[-2]
 
     # Check if the image has more than 3 color channels
     if len(image.shape) > 3:
@@ -290,12 +297,12 @@ def preprocess_microscopy_image(path: str, crop: bool, filter_strength: str, smo
 
 
     # Create the output folder
-    output_folder = os.path.join(path, 'processed')
+    output_folder = os.path.join(sample_dir, 'preprocessing', modality_name)
     if not os.path.exists(output_folder):
         os.makedirs(output_folder)
     
     # Save the processed image
-    path_to_file = os.path.join(output_folder, f'{sample_id}_processed.tiff')
+    path_to_file = os.path.join(output_folder, f'{sample_id}.tiff')
     skio.imsave(path_to_file, processed_image, metadata = {'PhysicalSizeX': physical_size_x, 'PhysicalSizeY': physical_size_y})
 
     if debug_mode == True:
@@ -308,201 +315,3 @@ def preprocess_microscopy_image(path: str, crop: bool, filter_strength: str, smo
 
     return physical_size_x, physical_size_y
     
-'''
-def read_he(path: str, iterations: int=1, offset: int=50, plot: bool=False):
-    
-    for file in os.listdir(path):
-        if (file.endswith(".czi") or file.endswith(".tiff") or file.endswith(".tif")) and 'crop' not in file:
-            
-            path_to_file = os.path.join(path, file)
-            
-            if path_to_file.endswith(".czi"):
-                with czifile.CziFile(path_to_file) as f:
-                    
-                    a = f.asarray()
-                    a = a.reshape(a.shape[2:])
-                    a = np.flip(np.swapaxes(a, axis1=0, axis2=1), axis=0)
-                    
-                    metadata = f.metadata()
-
-                    # Parse the XML
-                    root = ET.fromstring(metadata)
-
-                    for child in root.iter('Distance'):
-                        if 'Id' in child.keys():
-                            if child.attrib['Id'] == 'X':
-                                for val in child.iter('Value'):
-                                    physical_size_x = val.text
-                            if child.attrib['Id'] == 'Y':
-                                for val in child.iter('Value'):
-                                    physical_size_y = val.text
-
-            else:
-                with tifffile.TiffFile(path_to_file) as tif:
-                    a = tif.asarray()
-                    channel_index = 2       # Placeholder
-                    try:
-                        metadata = tif.shaped_metadata[0]
-                        physical_size_x = metadata['PhysicalSizeX']
-                        physical_size_y = metadata['PhysicalSizeY']
-                    except:
-                        #physical_size_x = str(tif.pages[0].tags['XResolution'].value[0] / tif.pages[0].tags['XResolution'].value[1] ** 2)
-                        #physical_size_y = str(tif.pages[0].tags['YResolution'].value[0] / tif.pages[0].tags['YResolution'].value[1] ** 2)
-                        physical_size_x = 1e-6  # Placeholder: Pixel size is 1 um
-                        physical_size_y = 1e-6
-                        #a = np.swapaxes(a, axis1=0, axis2=1)
-                
-            #_, thresh = cv2.threshold(a[:, :, 0], 0, 255, cv2.THRESH_BINARY_INV+cv2.THRESH_OTSU)
-
-            # Define a sequence of snapshots for plotting purposes
-            plots = []
-
-            # Define the channels
-            channels: list[np.ndarray] = []
-            thresholds: list[np.ndarray] = []
-            
-            # Unpack the channels, if the shape is 2D it's a grayscale
-            if len(a.shape) == 2:
-                channel = a.astype(np.float32)
-                channels.append(channel)
-            else:
-                # Get the channel dimension
-                number_of_channels = a.shape[channel_index]
-
-                for channel_id in range(number_of_channels):
-                    if channel_index == 0:
-                        channel = a[channel_id, :, :].astype(np.float32)
-                    elif channel_index == 1:
-                        channel = a[:, channel_id, :].astype(np.float32)
-                    elif channel_index == 2:
-                        channel = a[:, :, channel_id].astype(np.float32)
-
-                    channels.append(channel)
-
-            # Process each channel
-            for channel_id in range(len(channels)):
-
-                # Normalize them between 0 and 1
-                channels[channel_id] = channels[channel_id] / np.max(channels[channel_id])
-                #plots.append((copy.deepcopy(channels[channel_id]), f'Channel {channel_id}'))
-
-                # Improve the contrast of each channel and gamma correct
-                channels[channel_id] = gamma_correction(channels[channel_id], gamma=0.7)
-                channels[channel_id] = enhance_contrast(channels[channel_id], saturated_pixels=0.35)
-
-                # Rescale the intensity to 0-255
-                channels[channel_id] = skimage.exposure.rescale_intensity(channels[channel_id], out_range=(0, 255)).astype(np.uint8)
-
-                # Apply Gaussian blur
-                channels[channel_id] = cv2.GaussianBlur(channels[channel_id], (9, 9), 5)
-                #plots.append((copy.deepcopy(channels[channel_id]), f'Blurred Channel {channel_id}'))
-
-                # Compute an adaptive threshold
-                thresh = cv2.adaptiveThreshold(channels[channel_id], 255, cv2.ADAPTIVE_THRESH_MEAN_C, cv2.THRESH_BINARY_INV, 15, 5)
-                #plots.append((copy.deepcopy(thresh), f'Threshold Channel {channel_id}'))
-                thresholds.append(thresh)
-
-            # Define an RGB image, use empty channels if the image is less than 3 channels
-            rgb_image = np.zeros((channels[0].shape[0], channels[0].shape[1], 3), dtype=np.uint8)
-            for channel_id in range(len(channels)):
-                if channel_id < 3:
-                    rgb_image[:, :, channel_id] = channels[channel_id]
-                else:
-                    break
-            plots.append((copy.deepcopy(rgb_image), 'RGB Image'))
-
-            # Merge the thresholds into a single mask
-            threshold = np.zeros_like(thresholds[0])
-            for i in range(len(thresholds)):
-                threshold = np.maximum(threshold, thresholds[i])
-            plots.append((copy.deepcopy(threshold), 'Merged Threshold'))
-
-            # Define a kernel for morphological operations
-            kernel = np.ones((5, 5), a.dtype)
-
-            # Perform morphological operations to clean up the mask
-            morph = cv2.erode(threshold, kernel, iterations = iterations)
-            plots.append((copy.deepcopy(morph), 'Morphological Erosion 1'))
-
-            morph = cv2.dilate(morph, kernel, iterations = 2 * iterations)
-            plots.append((copy.deepcopy(morph), 'Morphological Dilation 1'))
-
-            morph = cv2.erode(morph, kernel, iterations=iterations)
-            plots.append((copy.deepcopy(morph), 'Morphological Erosion 2'))
-
-            morph = cv2.GaussianBlur(morph, (21, 21), 5)
-            plots.append((copy.deepcopy(morph), 'Morphological Blurring (21x21)'))
-            
-            contours, _ = cv2.findContours(morph, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_SIMPLE)
-            largest_contour = sorted(contours, key = cv2.contourArea, reverse = True)[0]
-            
-            x, y, w, h = cv2.boundingRect(largest_contour)
-            
-            sample = path_to_file.split('/')[-3]
-            s = path_to_file.split('/')
-            s[-1] = f'{sample}_crop.tiff'
-            path_to_file = '/'.join(s)
-            
-            result = get_image_from_bounding_box(rgb_image, x, y, w, h, offset)
-            skio.imsave(path_to_file, result, metadata = {'PhysicalSizeX': physical_size_x, 'PhysicalSizeY': physical_size_y})
-
-            if plot == True:
-                # Plot the intermediate steps
-                for img, title in plots:
-                    plt.figure()
-                    plt.imshow(img, cmap='gray')
-                    plt.title(title)
-                    plt.axis('off')
-
-                # Plot the original image with the bounding box
-                pic = np.ascontiguousarray(np.copy(rgb_image), dtype=np.uint8)
-                pic = cv2.drawContours(pic, largest_contour, -1, (255, 0, 0), 100)
-                pic = cv2.rectangle(pic, (x, y), (x + w, y + h), (0, 255, 0), 100)
-                plt.figure()
-                plt.imshow(pic)
-                plt.title('Computed bounding box')
-                plt.axis('off')
-
-                # Plot the cropped image
-                plt.figure()
-                plt.imshow(result)
-                plt.title('Cropped image')
-                plt.axis('off')
-            
-            return 1e6 * float(physical_size_x), 1e6 * float(physical_size_y)
-                
-def split_he(path_to_czi: str):
-    if path_to_czi.endswith(".czi"):
-        with czifile.CziFile(path_to_czi) as f:
-            
-            a = f.asarray()
-            for i in range(a.shape[0]):
-                image = a[i].reshape(a.shape[2:])
-                image = np.flip(np.swapaxes(image, axis1=0, axis2=1), axis=0)
-                
-                _, res = cv2.threshold(cv2.cvtColor(image, cv2.COLOR_RGB2GRAY), 0, 255, cv2.THRESH_BINARY+cv2.THRESH_OTSU)
-                contours, _ = cv2.findContours(res, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
-                cnt = sorted(contours, key=cv2.contourArea, reverse=True)[0]
-                
-                x, y, w, h = cv2.boundingRect(cnt)
-                
-                plt.figure()
-                plt.imshow(image[y: y + h, x: x + w, :])
-                
-                metadata = f.metadata()
-
-                # Parse the XML
-                root = ET.fromstring(metadata)
-
-                for child in root.iter('Distance'):
-                    if 'Id' in child.keys():
-                        if child.attrib['Id'] == 'X':
-                            for val in child.iter('Value'):
-                                physical_size_x = val.text
-                        if child.attrib['Id'] == 'Y':
-                            for val in child.iter('Value'):
-                                physical_size_y = val.text
-                
-                skio.imsave(path_to_czi.replace('.czi', f'-{i + 1}.tiff'), image[y: y + h, x: x + w, :], metadata={'PhysicalSizeX': physical_size_x, 'PhysicalSizeY': physical_size_y})
-'''
-

@@ -47,7 +47,9 @@ if __name__ == "__main__":
             print(f"Preprocessing {modality[ModalityParameters.MODALITY_NAME]}")
             
             inferred_physical_size = preprocessing.preprocess_modality(
-                path = os.path.join(sample_folder, modality[ModalityParameters.MODALITY_NAME]),
+                path = data_source_path,
+                sample_id = sample_id,
+                modality_name = modality[ModalityParameters.MODALITY_NAME],
                 modality_type = modality[ModalityParameters.MODALITY_TYPE],
                 preprocessing_settings = modality[ModalityParameters.PREPROCESSING_SETTINGS]
             )

@@ -20,22 +20,25 @@ class Aligner:
 
     Parameters
     ----------
-    path : str
-        The path to the data source directory
+    source_folder : str
+        The source_folder to the data source directory
+    sample_id : str
+        The sample_id of the data source
     load_landmarks : bool, optional
         If True, load the landmarks from the file (default is False)
     load_alignment_transformation : bool, optional
         If True, load the alignment transformation from the file (default is False)
     '''
 
-    def __init__(self, path: str, load_landmarks: bool = False, load_alignment_transformation: bool = False) -> None:
+    def __init__(self, source_folder: str, sample_id: str, load_landmarks: bool = False, load_alignment_transformation: bool = False) -> None:
         
         # TODO: Implement a way to load landmarks and/or transformation from a file
 
-        if type(path) != str or type(load_landmarks) != bool or type(load_alignment_transformation) != bool:
+        if type(source_folder) != str or type(sample_id) != str or type(load_landmarks) != bool or type(load_alignment_transformation) != bool:
             raise TypeError("Invalid input type. Please check the input types.")
 
-        self._path = path
+        self._source_folder = source_folder
+        self._sample_id = sample_id
 
         if load_landmarks == False:
             self._fixed_landmarks, self._moving_landmarks = [], []
