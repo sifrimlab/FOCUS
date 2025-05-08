@@ -5,12 +5,13 @@ import matplotlib.pyplot as plt
 from sklearn.decomposition import PCA
 
 from preprocessing.microscopy_image import gamma_correction, enhance_contrast
-from constants import ModalityParameters, ModalityType
+from constants import ModalityParameters, ModalityType, AlignmentSettings, TransformationType
 
 from alignment.elastix_engine import ElastixEngine
 from GUI.landmark_selection import LandmarkSelectionGUI
 
-from skimage.transform import downscale_local_mean      #TODO: Remove this import
+import cv2      #TODO: Remove this import
+from scipy.ndimage import affine_transform
 
 class Aligner:
     '''
@@ -39,6 +40,8 @@ class Aligner:
 
         self._source_folder = source_folder
         self._sample_id = sample_id
+        self._preprocessing_folder = os.path.join(self._source_folder, self._sample_id, "preprocessing")
+        self._alignment_folder = os.path.join(self._source_folder, self._sample_id, "alignment")
 
         if load_landmarks == False:
             self._fixed_landmarks, self._moving_landmarks = [], []
@@ -79,7 +82,7 @@ class Aligner:
         Parameters
         ----------
         path : str
-            The path to the data source directory
+            The path to the preprocessed MSI data
         
         Returns
         ----------
@@ -88,23 +91,20 @@ class Aligner:
         '''
 
         # Check if there are the processed MSI data
-        if not os.path.exists(os.path.join(path, "processed")):
+        if not os.path.exists(os.path.join(path)):
             raise FileNotFoundError(f"The path {path} does not exist or do not contain processed data. Please check the input values.")
         
-        sample_id = path.split('/')[-2]
 
         # Load the required files
-        intensities = np.load(os.path.join(path, "processed", f"{sample_id}_intensities.npy"))
-        coordinates = np.load(os.path.join(path, "processed", f"{sample_id}_coordinates.npy"))
+        intensities: np.ndarray = np.load(os.path.join(path, f"{self._sample_id}_intensities_matrix.npy"))
+        matrix_shape = intensities.shape
+
+        # Reshape the intensities to a 2D array
+        intensities = intensities.reshape(-1, intensities.shape[-1])
 
         # Compute a 3-dimensional PCA to generate an RGB-like image
         pca = PCA(n_components = 3)
         intensities = pca.fit_transform(intensities)
-        intensities = np.array(intensities, dtype = np.float32)
-
-        # Define the output image (consider h, w, c to meet matplotlib requirements)
-        image_shape = (np.max(coordinates[:, 1]) - np.min(coordinates[:, 1]) + 1, np.max(coordinates[:, 0]) - np.min(coordinates[:, 0]) + 1, 3)
-        output = np.zeros(image_shape, dtype = np.float32)
 
         # Normalize the intensities between 0 and 1 for each channel
         intensities[:, 0] = (intensities[:, 0] - np.min(intensities[:, 0])) / (np.max(intensities[:, 0]) - np.min(intensities[:, 0]))
@@ -121,11 +121,12 @@ class Aligner:
         intensities[:, 1] = enhance_contrast(intensities[:, 1])
         intensities[:, 2] = enhance_contrast(intensities[:, 2])
 
-        # Create the image
-        for index, (x, y) in enumerate(coordinates):
-            output[y - 1, x - 1, :] = intensities[index]        #NOTE: The indexes are inverted to meet the matplotlib requirements
+        intensities = intensities.reshape(matrix_shape[0], matrix_shape[1], 3)
 
-        return output
+        # Swap X and Y axes to meet matplotlib requirements
+        intensities = np.swapaxes(intensities, 0, 1)
+
+        return intensities.astype(np.float32)
 
     def _read_microscopy_image(self, path: str) -> np.ndarray[np.float32]:
         '''
@@ -144,15 +145,13 @@ class Aligner:
 
 
         # Check if there are the processed MSI data
-        if not os.path.exists(os.path.join(path, "processed")):
+        if not os.path.exists(os.path.join(path)):
             raise FileNotFoundError(f"The path {path} does not exist or do not contain processed data. Please check the input values.")
         
-        sample_id = path.split('/')[-2]
-
-        output = tifffile.imread(os.path.join(path, "processed", f"{sample_id}_processed.tiff"))
+        output = tifffile.imread(os.path.join(path, f"{self._sample_id}.tiff"))
         return output
         
-    def align_modality_to_anchor(self, target_modality: dict, anchor_modality: dict, target_spacing: tuple[float, float], anchor_spacing: tuple[float, float]) -> None:
+    def align_modality_to_anchor(self, target_modality: dict, anchor_modality: dict) -> None:
         '''
         Align the target modality (moving image) to the anchor modality (fixed image) using Elastix.
         This method must be used after the preprocessing steps because it relies on those artifacts.
@@ -165,30 +164,25 @@ class Aligner:
         anchor_modality : dict
             The anchor modality settings from the configuration file
         target_spacing : tuple[float, float]
-            The target spacing in µm
-        anchor_spacing : tuple[float, float]
-            The anchor spacing in µm
         '''
 
-        if type(target_modality) != dict or type(anchor_modality) != dict or type(target_spacing) != tuple or type(anchor_spacing) != tuple:
+        if type(target_modality) != dict or type(anchor_modality) != dict:
             raise TypeError("Invalid input types. Please check the input types.")
-        if len(target_spacing) != 2 or len(anchor_spacing) != 2:
-            raise ValueError("Invalid input values. Please check the input values.")
         if target_modality[ModalityParameters.MODALITY_NAME] == anchor_modality[ModalityParameters.MODALITY_NAME]:
             raise ValueError("The target and anchor modalities must be different. Please check the input values.")
         
         # Check the type of both modalities, if they are not images, convert them to images
         if target_modality[ModalityParameters.MODALITY_TYPE] == ModalityType.MICROSCOPY_IMAGE:
-            target_image = self._read_microscopy_image(os.path.join(self._path, target_modality[ModalityParameters.MODALITY_NAME]))
+            target_image = self._read_microscopy_image(os.path.join(self._preprocessing_folder, target_modality[ModalityParameters.MODALITY_NAME]))
         elif target_modality[ModalityParameters.MODALITY_TYPE] == ModalityType.MSI:
-            target_image = self._generate_msi_image(os.path.join(self._path, target_modality[ModalityParameters.MODALITY_NAME]))
+            target_image = self._generate_msi_image(os.path.join(self._preprocessing_folder, target_modality[ModalityParameters.MODALITY_NAME]))
         else:
             raise ValueError("Invalid target modality type. Please check the input values.")
         
         if anchor_modality[ModalityParameters.MODALITY_TYPE] == ModalityType.MICROSCOPY_IMAGE:
-            anchor_image = self._read_microscopy_image(os.path.join(self._path, anchor_modality[ModalityParameters.MODALITY_NAME]))
+            anchor_image = self._read_microscopy_image(os.path.join(self._preprocessing_folder, anchor_modality[ModalityParameters.MODALITY_NAME]))
         elif anchor_modality[ModalityParameters.MODALITY_TYPE] == ModalityType.MSI:
-            anchor_image = self._generate_msi_image(os.path.join(self._path, anchor_modality[ModalityParameters.MODALITY_NAME]))
+            anchor_image = self._generate_msi_image(os.path.join(self._preprocessing_folder, anchor_modality[ModalityParameters.MODALITY_NAME]))
         else:
             raise ValueError("Invalid anchor modality type. Please check the input values.")
 
@@ -213,25 +207,34 @@ class Aligner:
 
         # Create the Elastix engine
         engine = ElastixEngine(
-            path = os.path.join(self._path, "alignment", target_modality[ModalityParameters.MODALITY_NAME]),
+            path = os.path.join(self._alignment_folder, target_modality[ModalityParameters.MODALITY_NAME]),
             fixed_image = anchor_image,
-            moving_image = target_image,
-            fixed_spacing = anchor_spacing,
-            moving_spacing = target_spacing
+            moving_image = target_image
         )
 
         # Scaling offset compared to the metadata used
-        aligned_image, scaling_offset = engine.align_images(
-            transformations = ["rigid"],
+        aligned_image, scaling_offset, output_parameters = engine.align_images(
+            transformations = target_modality[ModalityParameters.ALIGNMENT_SETTINGS][AlignmentSettings.TRANSFORMATIONS],
             fixed_points = self._fixed_landmarks,
             moving_points = self._moving_landmarks,
         )
 
+
+
         #TMP: PRodurre immagine per Jelle
+
 
         # Get a boolean mask of the aligned image
         aligned_mask = np.zeros((aligned_image.shape[0:2]), dtype = np.bool_)
         aligned_mask[np.max(aligned_image, axis=2) >= 0] = True
+
+        cpy = np.copy(anchor_image)
+        cpy[aligned_mask == False] = 0
+
+        a = engine.invert_transformation(cpy, output_parameters[0])
+
+        aligned_mask = np.zeros((a.shape[0:2]), dtype = np.bool_)
+        aligned_mask[np.max(a, axis=2) > 0] = True
 
         indexes = np.argwhere(aligned_mask)
         row_start, col_start = indexes.min(axis=0)
@@ -239,22 +242,20 @@ class Aligner:
 
         # Cut the anchor image based on the aligned mask
         cut_anchor_image = np.zeros((row_end - row_start, col_end - col_start, anchor_image.shape[2]), dtype = np.float32)
-        cut_anchor_image = anchor_image[row_start:row_end, col_start:col_end]
+        cut_anchor_image = a[row_start:row_end, col_start:col_end]
 
         # Compute the scaling factor
         scaling_factor = (
-            int((cut_anchor_image.shape[0] / target_image.shape[0]) * 1),
-            int((cut_anchor_image.shape[1] / target_image.shape[1]) * 1),
-            1
+            target_image.shape[1],
+            target_image.shape[0]
         )
 
         # Downscale the cut anchor image to the target image size
-        resulting_image = downscale_local_mean(cut_anchor_image, scaling_factor)
+        resulting_image = cv2.resize(cut_anchor_image, scaling_factor, interpolation = cv2.INTER_CUBIC)
 
         # Save the resulting image
-        output_path = os.path.join(self._path, "alignment", target_modality[ModalityParameters.MODALITY_NAME], "resulting_image.tiff")
+        output_path = os.path.join(self._alignment_folder, target_modality[ModalityParameters.MODALITY_NAME], "resulting_image.tiff")
         if not os.path.exists(os.path.dirname(output_path)):
             os.makedirs(os.path.dirname(output_path))
         tifffile.imwrite(output_path, resulting_image)
-
 

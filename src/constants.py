@@ -37,7 +37,19 @@ class ModalityParameters(_AbstractEnum):
 	MODALITY_NAME = "modality_name"
 	MODALITY_TYPE = "modality_type"
 	PREPROCESSING_SETTINGS = "preprocessing_settings"
+	ALIGNMENT_SETTINGS = "alignment_settings"
+	REGISTRATION_SETTINGS = "registration_settings"
 	PHYSICAL_PIXEL_COVERAGE = "physical_pixel_coverage"
+
+class AlignmentSettings(_AbstractEnum):
+	TRANSFORMATIONS = "transformations"
+
+class RegistrationSettings(_AbstractEnum):
+	TYPE = "type"
+
+class RegistrationType(_AbstractEnum):
+	NONE = "none"
+	RESOLUTION_SCALING = "resolution_scaling"
 
 class ImagingPreprocessing(_AbstractEnum):
 	

@@ -10,7 +10,7 @@ class ElastixEngine:
     Handler for the alignment transformation using the elastix library.
     '''
 
-    def __init__(self, path: str, moving_image: np.ndarray, fixed_image: np.ndarray, moving_spacing: tuple[float, float], fixed_spacing: tuple[float, float]) -> None:
+    def __init__(self, path: str, moving_image: np.ndarray, fixed_image: np.ndarray) -> None:
         '''
         Initialize the ElastixEngine class.
 
@@ -22,16 +22,10 @@ class ElastixEngine:
             The moving image to be aligned
         fixed_image : np.ndarray
             The fixed image to align to
-        moving_spacing : tuple[float, float]
-            The spacing of the moving image in µm
-        fixed_spacing : tuple[float, float]
-            The spacing of the fixed image in µm
         '''
 
-        if type(path) != str or type(moving_image) != np.ndarray or type(fixed_image) != np.ndarray or type(moving_spacing) != tuple or type(fixed_spacing) != tuple:
+        if type(path) != str or type(moving_image) != np.ndarray or type(fixed_image) != np.ndarray:
             raise TypeError("Invalid input types. Please check the input types.")
-        if len(moving_spacing) != 2 or len(fixed_spacing) != 2:
-            raise ValueError("Invalid spacing. They must be a tuple of two floats.")
         
         # Check if the output path exists, if not create the directory
         if not os.path.exists(path):
@@ -47,9 +41,9 @@ class ElastixEngine:
         self.moving_image: sitk.Image = sitk.GetImageFromArray(moving_image, isVector = True)
         self.fixed_image: sitk.Image = sitk.GetImageFromArray(fixed_image, isVector = True)
 
-        # Apply the spacing
-        self.moving_image.SetSpacing(moving_spacing)
-        self.fixed_image.SetSpacing(fixed_spacing)
+        # Assume equal spacing, it will be computed
+        self.moving_image.SetSpacing((1, 1))
+        self.fixed_image.SetSpacing((1, 1))
 
         # The origin will be computed later
         self.moving_image.SetOrigin((0, 0))
@@ -408,8 +402,57 @@ class ElastixEngine:
             output_image[:, :, index] = moving_image_channel
 
         # Save the transformation parameters
+        output_parameters = []
         for index, param_map in enumerate(computed_parameters_map):
             sitk.WriteParameterFile(param_map, os.path.join(self.path, f"TransformParameters_{index}.txt"))
 
-        return (output_image, scaling_offset)
+            if transformations[index] == TransformationType.RIGID:
+                output_parameters.append({
+                    "type": TransformationType.RIGID,
+                    "center_of_rotation": [float(x) for x in param_map["CenterOfRotationPoint"]],
+                    "rotation_angle": float(param_map["TransformParameters"][0]),
+                    "translation": [float(x) for x in param_map["TransformParameters"][1:3]],
+                    "origin_offset": offset,
+                    "scaling_offset": scaling_offset
+                })
 
+        return (output_image, scaling_offset, output_parameters)
+
+    def invert_transformation(self, image: np.ndarray, transformation_parameters: dict) -> np.ndarray:
+        '''
+        Invert the transformation applied to the image.
+
+        Parameters
+        ----------
+        image : np.ndarray
+            The image to invert the transformation for
+        transformation_parameters : dict
+            The transformation parameters to use for the inversion
+        
+        Returns
+        ----------
+        np.ndarray
+            The inverted image.
+        '''
+
+        if type(image) != np.ndarray:
+            raise TypeError("Invalid image type. It must be a numpy array.")
+        
+        # Transform the image to Elastix
+        elastix_image = sitk.GetImageFromArray(image, isVector = True)
+        elastix_image.SetSpacing((1.0, 1.0))
+        elastix_image.SetOrigin(tuple(transformation_parameters["origin_offset"].astype(float)))
+        elastix_image.SetDirection((1, 0, 0, 1))
+
+        # Inverse transformation
+        forward = sitk.Euler2DTransform()
+        forward.SetCenter(transformation_parameters["center_of_rotation"])
+        forward.SetAngle(transformation_parameters["rotation_angle"])
+        forward.SetTranslation(transformation_parameters["translation"])
+
+        inverse = forward.GetInverse()
+
+        result = sitk.Resample(elastix_image, inverse, sitk.sitkLinear, -1.0)
+        result = sitk.GetArrayFromImage(result)
+
+        return result

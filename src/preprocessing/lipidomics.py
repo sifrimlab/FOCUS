@@ -69,20 +69,10 @@ def preprocess_lipidomics(path: str, sample_id: str, modality_name: str, peak_pi
     tree = ET.parse(imzml_file)
     root = tree.getroot()
 
-    physical_size_x, physical_size_y = None, None
     mz_dtype, intensities_dtype = None, None
 
     # Define utility to convert string to dtype
     str_to_dtype = lambda s: np.float32 if s == "32-bit float" else np.float64
-
-    # Load the metadata
-    for scann_settings in root.find(ImzMLFileParser.SCAN_SETTINGS):
-        for cv_param in scann_settings:
-            if cv_param.attrib['name'].startswith('pixel size'):
-                if cv_param.attrib['name'].endswith('x'):
-                    physical_size_x = float(cv_param.attrib['value'])
-                elif cv_param.attrib['name'].endswith('y'):
-                    physical_size_y = float(cv_param.attrib['value'])
 
     for rpg in root.find(ImzMLFileParser.REFERENCEABLE_PARAM_GROUP_LIST):
         if rpg.attrib['id'] == 'mzArray':
@@ -155,8 +145,6 @@ def preprocess_lipidomics(path: str, sample_id: str, modality_name: str, peak_pi
 
     # Save the processing output
     save_numpy_matrix(path = output_folder, sample = sample_id, reference_mz = unified_mz_values, intensities = merged_intensities, coordinates = coordinates)
-
-    return physical_size_x, physical_size_y
 
 def spectra_to_dict(spectra: ET.Element) -> dict:
     '''
@@ -237,9 +225,9 @@ def save_numpy_matrix(path: str, sample: str,  reference_mz: np.ndarray, intensi
         os.makedirs(path)
 
     # Convert the intensities to a matrix using the coordinates
-    intensities_matrix = np.zeros((coordinates[:, 0].max() + 1, coordinates[:, 1].max() + 1, reference_mz.shape[0]), dtype = intensities.dtype)
+    intensities_matrix = np.zeros((coordinates[:, 0].max(), coordinates[:, 1].max(), reference_mz.shape[0]), dtype = intensities.dtype)
     for i in range(coordinates.shape[0]):
-        intensities_matrix[coordinates[i, 0], coordinates[i, 1], :] = intensities[i, :]
+        intensities_matrix[coordinates[i, 0] - 1, coordinates[i, 1] - 1, :] = intensities[i, :]
 
     # Save the reference M/Z values
     np.save(os.path.join(path, f'{sample}_reference_mz.npy'), reference_mz)

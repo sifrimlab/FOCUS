@@ -33,7 +33,7 @@ def preprocess_modality(path: str, sample_id: str, modality_name: str, modality_
         smoothing = preprocessing_settings.get(constants.ImagingPreprocessing.SMOOTHING, False)
         color_enhancement = preprocessing_settings.get(constants.ImagingPreprocessing.COLOR_ENHANCEMENT, False)
 
-        physical_pixel_coverage = microscopy_image.preprocess_microscopy_image(
+        microscopy_image.preprocess_microscopy_image(
             path = path,
             sample_id = sample_id,
             modality_name = modality_name,
@@ -49,7 +49,7 @@ def preprocess_modality(path: str, sample_id: str, modality_name: str, modality_
         dynamic_peak_window = preprocessing_settings.get(constants.LipidomicsPreprocessing.DYNAMIC_PEAK_WINDOW, True)
         dynamic_peak_window_factor = preprocessing_settings.get(constants.LipidomicsPreprocessing.DYNAMIC_PEAK_WINDOW_FACTOR, 1e6)
         
-        physical_pixel_coverage = lipidomics.preprocess_lipidomics(
+        lipidomics.preprocess_lipidomics(
             path = path,
             sample_id = sample_id,
             modality_name = modality_name,
@@ -64,5 +64,3 @@ def preprocess_modality(path: str, sample_id: str, modality_name: str, modality_
         pass
     else:
         raise ValueError(f"Unsupported modality type: {modality_type}")
-    
-    return physical_pixel_coverage

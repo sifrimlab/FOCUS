@@ -58,7 +58,7 @@ def gamma_correction(channel: np.ndarray, gamma: float = 0.45) -> np.ndarray:
     channel = np.power(channel, gamma)
     return channel
 
-def read_tiff_file(file: str) -> tuple[np.ndarray, float, float]:
+def read_tiff_file(file: str) -> np.ndarray:
     '''
     Read a tiff/tif file and return the image with color channel always in the last dimension
     (swap channels if needed) and the physical pixel coverage in µm.
@@ -74,17 +74,13 @@ def read_tiff_file(file: str) -> tuple[np.ndarray, float, float]:
     ----------
     image : np.ndarray
         The image with color channel always in the last dimension.
-    physical_size_x : float
-        The physical pixel coverage in µm.
-    physical_size_y : float
-        The physical pixel coverage in µm.
     '''
 
     # Check if the file exists and is a tiff/tif file
     if not os.path.isfile(file) or not (file.endswith(".tiff") or file.endswith(".tif")):
         raise ValueError(f"The file {file} does not exist or is not a tiff/tif file.")
 
-    image, physical_size_x, physical_size_y = None, None, None
+    image = None
 
     # Read the tiff/tif file
     with tifffile.TiffFile(file) as f:
@@ -99,27 +95,6 @@ def read_tiff_file(file: str) -> tuple[np.ndarray, float, float]:
                 image = image.transpose(1, 2, 0)
             elif channel_index == 1:
                 image = image.transpose(0, 2, 1)
-        
-        # Get the physical pixel coverage
-        physical_size_x, physical_size_y = None, None
-        try:
-            metadata = f.shaped_metadata[0]
-            physical_size_x = metadata['PhysicalSizeX']
-            physical_size_y = metadata['PhysicalSizeY']
-        except:
-            pass
-
-        if physical_size_x is None or physical_size_y is None:
-            try:
-                physical_size_x = str(f.pages[0].tags['XResolution'].value[0] / f.pages[0].tags['XResolution'].value[1] ** 2)
-                physical_size_y = str(f.pages[0].tags['YResolution'].value[0] / f.pages[0].tags['YResolution'].value[1] ** 2)
-
-                # Convert to um
-                physical_size_x = float(physical_size_x) * 1e6
-                physical_size_y = float(physical_size_y) * 1e6
-            except:
-                physical_size_x = 1.0
-                physical_size_y = 1.0
 
     # Convert the image to float32
     image = image.astype(np.float32)
@@ -127,9 +102,9 @@ def read_tiff_file(file: str) -> tuple[np.ndarray, float, float]:
     # Normalize the image to 0-1
     image = image / np.max(image)
 
-    return image, physical_size_x, physical_size_y
+    return image
 
-def preprocess_microscopy_image(path: str, sample_id: str, modality_name: str,  crop: bool, filter_strength: str, smoothing: bool, color_enhancement: bool, debug_mode: bool = False) -> tuple[float, float]:
+def preprocess_microscopy_image(path: str, sample_id: str, modality_name: str,  crop: bool, filter_strength: str, smoothing: bool, color_enhancement: bool, debug_mode: bool = False) -> None:
     '''
     Preprocess a microscopy image by applying cropping, filtering, smoothing and color enhancement.
 
@@ -152,11 +127,6 @@ def preprocess_microscopy_image(path: str, sample_id: str, modality_name: str,  
     debug_mode : bool
         Whether to enable debug mode or not. Default is False.
         If True, the function will plot each step of the preprocessing.
-
-    Returns
-    ----------
-    tuple[float, float]
-        A tuple containing the physical pixel coverage in µm for the x and y dimensions.
     '''
 
     # Check the input parameters
@@ -193,7 +163,7 @@ def preprocess_microscopy_image(path: str, sample_id: str, modality_name: str,  
         raise ValueError(f"No .tiff or .tif file found in the directory {mod_dir}.")
     
     # Read the tiff/tif file
-    image, physical_size_x, physical_size_y = read_tiff_file(file)
+    image = read_tiff_file(file)
 
     # Check if the image has more than 3 color channels
     if len(image.shape) > 3:
@@ -303,7 +273,7 @@ def preprocess_microscopy_image(path: str, sample_id: str, modality_name: str,  
     
     # Save the processed image
     path_to_file = os.path.join(output_folder, f'{sample_id}.tiff')
-    skio.imsave(path_to_file, processed_image, metadata = {'PhysicalSizeX': physical_size_x, 'PhysicalSizeY': physical_size_y})
+    skio.imsave(path_to_file, processed_image)
 
     if debug_mode == True:
         # Plot the intermediate steps
@@ -312,6 +282,4 @@ def preprocess_microscopy_image(path: str, sample_id: str, modality_name: str,  
             plt.imshow(img, cmap='gray')
             plt.title(title)
             plt.axis('off')
-
-    return physical_size_x, physical_size_y
     

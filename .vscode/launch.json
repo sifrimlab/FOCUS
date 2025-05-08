@@ -19,7 +19,7 @@
             "console": "integratedTerminal",
             "args": [
                 "--config",
-                "/home/luna.kuleuven.be/u0172804/FOCUS/configs/config_jelle.json"
+                "/home/luna.kuleuven.be/u0172804/FOCUS/configs/config_nina.json"
             ]
         }
     ]

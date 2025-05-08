@@ -36,16 +36,13 @@ if __name__ == "__main__":
     anchor_modality = config[ConfigParameters.ANCHOR_MODALITY]
     anchor_settings = None
 
-    # Store the spatial resoluotion for each modality to perform alignment
-    spatial_resolution = {}
-
+    print("STEP 1: Preprocessing of the input modalities")
     if config[ConfigParameters.PERFORM_PREPROCESSING] == True:
-        print("STEP 1: Preprocessing of the input modalities")
-
         # Apply preprocessing to the input modalities
         for modality in config[ConfigParameters.MODALITIES]:
             print(f"Preprocessing {modality[ModalityParameters.MODALITY_NAME]}")
             
+            #NOTE: The metadata is not used anymore, it will be computed in the alignment step
             inferred_physical_size = preprocessing.preprocess_modality(
                 path = data_source_path,
                 sample_id = sample_id,
@@ -54,26 +51,14 @@ if __name__ == "__main__":
                 preprocessing_settings = modality[ModalityParameters.PREPROCESSING_SETTINGS]
             )
 
-            # If the config file provides the physical pixel coverage, use it
-            if ModalityParameters.PHYSICAL_PIXEL_COVERAGE in modality[ModalityParameters.PREPROCESSING_SETTINGS]:
-                spatial_resolution[modality[ModalityParameters.MODALITY_NAME]] = tuple(modality[ModalityParameters.PREPROCESSING_SETTINGS][ModalityParameters.PHYSICAL_PIXEL_COVERAGE])
-            else:
-                spatial_resolution[modality[ModalityParameters.MODALITY_NAME]] = inferred_physical_size
-
             # Save the anchor settings for the alignment step
             if anchor_settings is None and modality[ModalityParameters.MODALITY_NAME] == anchor_modality:
                 anchor_settings = modality
     else:
         print("Skipping preprocessing step as per config.")
         
-        # Load the spatial resolution from the config file
+        # Get the anchor settings for the alignment step
         for modality in config[ConfigParameters.MODALITIES]:
-            # If the config file provides the physical pixel coverage, use it
-            if ModalityParameters.PHYSICAL_PIXEL_COVERAGE in modality[ModalityParameters.PREPROCESSING_SETTINGS]:
-                spatial_resolution[modality[ModalityParameters.MODALITY_NAME]] = tuple(modality[ModalityParameters.PREPROCESSING_SETTINGS][ModalityParameters.PHYSICAL_PIXEL_COVERAGE])
-            else:
-                raise ValueError(f"The physical pixel coverage for {modality[ModalityParameters.MODALITY_NAME]} is not defined in the config file, but preprocessing is skipped.")
-            
             if anchor_settings is None and modality[ModalityParameters.MODALITY_NAME] == anchor_modality:
                 anchor_settings = modality
 
@@ -87,14 +72,13 @@ if __name__ == "__main__":
         print(f"Aligning {modality[ModalityParameters.MODALITY_NAME]} to {anchor_modality}")
 
         alignment_engine = Aligner(
-            path = sample_folder,
+            source_folder = data_source_path,
+            sample_id = sample_id,
             load_landmarks = False,
             load_alignment_transformation = False
         )
         
         alignment_engine.align_modality_to_anchor(
             target_modality = modality,
-            anchor_modality = anchor_settings,
-            target_spacing = spatial_resolution[modality[ModalityParameters.MODALITY_NAME]],
-            anchor_spacing = spatial_resolution[anchor_modality]
+            anchor_modality = anchor_settings
         )

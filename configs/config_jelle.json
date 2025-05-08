@@ -2,7 +2,7 @@
     "data_source_path": "/mnt/data/lorenzo/VSC_DATA/Jelle",
     "sample_name": "0001",
     "anchor_modality": "Confocal Image",
-    "perform_preprocessing": true,
+    "perform_preprocessing": false,
     "modalities": [
         {
             "modality_name": "Confocal Image",
@@ -13,7 +13,9 @@
                 "smoothing": true,
                 "color_enhancement": true,
                 "physical_pixel_coverage": [2.0, 2.0]
-            }
+            },
+            "alignment_settings": {},
+            "registration_settings" : {}
         },
         {
             "modality_name": "MALDI",
@@ -25,6 +27,12 @@
                 "dynamic_peak_window": true,
                 "dynamic_peak_window_factor": 1e4,
                 "physical_pixel_coverage": [20.0, 20.0]
+            },
+            "alignment_settings": {
+                "transformations": ["rigid"]
+            },
+            "registration_settings" : {
+                "type": "resolution_scaling"
             }
         }
     ]
