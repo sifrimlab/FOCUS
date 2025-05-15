@@ -23,9 +23,9 @@
             "preprocessing_settings": {
                 "peak_picking": true,
                 "peak_prominence_threshold": 0.01,
-                "peak_window_tolerance_ppm": 20,
+                "peak_window_tolerance_ppm": 15,
                 "dynamic_peak_window": true,
-                "dynamic_peak_window_factor": 1e4,
+                "dynamic_peak_window_factor": 1e6,
                 "physical_pixel_coverage": [20.0, 20.0]
             },
             "alignment_settings": {

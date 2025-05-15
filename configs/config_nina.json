@@ -22,7 +22,7 @@
                 "peak_prominence_threshold": 0.01,
                 "peak_window_tolerance_ppm": 20,
                 "dynamic_peak_window": true,
-                "dynamic_peak_window_factor": 1e5
+                "dynamic_peak_window_factor": 1e6
             },
             "alignment_settings": {
                 "transformations": ["rigid"]

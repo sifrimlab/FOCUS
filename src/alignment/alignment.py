@@ -253,6 +253,11 @@ class Aligner:
         # Downscale the cut anchor image to the target image size
         resulting_image = cv2.resize(cut_anchor_image, scaling_factor, interpolation = cv2.INTER_CUBIC)
 
+        # Normalize the resulting image taking into accont that there are negative values
+        resulting_image = (resulting_image - np.min(resulting_image)) / (np.max(resulting_image) - np.min(resulting_image))
+        resulting_image = np.clip(resulting_image, 0, 1)
+
+
         # Save the resulting image
         output_path = os.path.join(self._alignment_folder, target_modality[ModalityParameters.MODALITY_NAME], "resulting_image.tiff")
         if not os.path.exists(os.path.dirname(output_path)):

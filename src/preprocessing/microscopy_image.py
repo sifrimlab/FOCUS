@@ -252,13 +252,12 @@ def preprocess_microscopy_image(path: str, sample_id: str, modality_name: str,  
         # Find the contours of the mask
         contours, _ = cv2.findContours(threshold, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_SIMPLE)
         largest_contour = sorted(contours, key = cv2.contourArea, reverse = True)[0]
+        x, y, w, h = cv2.boundingRect(largest_contour)
         if debug_mode == True:
             pic = np.ascontiguousarray(np.copy(processed_image), dtype=processed_image.dtype)
             pic = cv2.drawContours(pic, largest_contour, -1, (1.0, 0.0, 0.0), 100)
             pic = cv2.rectangle(pic, (x, y), (x + w, y + h), (0.0, 1.0, 0.0), 100)
             plots.append((copy.deepcopy(pic), 'Computed bounding box'))
-        
-        x, y, w, h = cv2.boundingRect(largest_contour)
 
         # Crop the final image
         processed_image = get_image_from_bounding_box(processed_image, x, y, w, h)
