@@ -3,14 +3,14 @@ import torch, math
 from scipy.signal import find_peaks
 from tqdm import tqdm, trange
 import os
+import matplotlib.pyplot as plt
 import xml.etree.ElementTree as ET
 
 from constants import ImzMLFileParser
 
-def preprocess_lipidomics(path: str, sample_id: str, modality_name: str, peak_picking: bool, prominence: float, window_tolerance: float, dynamic_window: bool, dynamic_window_factor: float) -> tuple[float, float]:
+def preprocess_lipidomics(path: str, sample_id: str, modality_name: str, peak_picking: bool, prominence: float, window_tolerance: float, dynamic_window: bool, dynamic_window_factor: float, reference_mz: np.ndarray | None = None) -> None:
     '''
-    Read the imzML file to obtain the MSI experiment metadata. Returns the physical size
-    of each detected spot in μm.
+    Read the imzML file to obtain the MSI experiment metadata.
 
     Parameters
     ----------
@@ -31,11 +31,9 @@ def preprocess_lipidomics(path: str, sample_id: str, modality_name: str, peak_pi
         If True, dynamic peak windowing will be used, otherwise the fixed baseline will be used.
     dynamic_window_factor : float
         Factor for dynamic peak windowing.
+    reference_mz : np.ndarray | None
+        Reference M/Z values to use for peak picking. If None, a consensus M/Z vector will be computed from the spectra.
 
-    Returns
-    -------
-    tuple[float, float]
-        Physical size of each detected spot in μm. (x, y)
     '''
 
     # Check input parameters types
@@ -43,6 +41,9 @@ def preprocess_lipidomics(path: str, sample_id: str, modality_name: str, peak_pi
         not isinstance(prominence, float) or not isinstance(window_tolerance, int) or \
             not isinstance(dynamic_window, bool) or not isinstance(dynamic_window_factor, float):
         raise TypeError('Invalid input types. Expected str, bool, float, float, bool, float.')
+    
+    if isinstance(reference_mz, np.ndarray) == False and reference_mz is not None:
+        raise TypeError('Invalid input type for reference_mz. Expected np.ndarray or None.')
     
     sample_path = os.path.join(path, sample_id)
     mod_path = os.path.join(sample_path, modality_name)
@@ -75,14 +76,17 @@ def preprocess_lipidomics(path: str, sample_id: str, modality_name: str, peak_pi
     str_to_dtype = lambda s: np.float32 if s == "32-bit float" else np.float64
 
     for rpg in root.find(ImzMLFileParser.REFERENCEABLE_PARAM_GROUP_LIST):
-        if rpg.attrib['id'] == 'mzArray':
+        if rpg.attrib['id'] in ['mzArray']:
             for cv_param in rpg:
                 if "float" in cv_param.attrib['name']:
                     mz_dtype = str_to_dtype(cv_param.attrib['name'])
-        elif rpg.attrib['id'] == 'intensities':
+        elif rpg.attrib['id'] in ['intensities', "intensityArray"]:
             for cv_param in rpg:
                 if "float" in cv_param.attrib['name']:
                     intensities_dtype = str_to_dtype(cv_param.attrib['name'])
+
+    if mz_dtype is None or intensities_dtype is None:
+        raise KeyError("Could not find the data types for mz and intensities in the imzML file. Check the metadata name")
 
     run = root.find(ImzMLFileParser.RUN_KEY)
     spectrum_list = run.find(ImzMLFileParser.SPECTRUM_LIST_KEY)
@@ -112,8 +116,12 @@ def preprocess_lipidomics(path: str, sample_id: str, modality_name: str, peak_pi
 
     # If False, we assume that every datapoint is alreay aligned with the same M/Z values
     if peak_picking == True:
-        # Define an omogenous M/Z array that aggregates datapoints to achieve a common spectrum
-        unified_mz_values = compute_reference_mz([(mzs[i], intensities[i]) for i in range(len(mzs))], prominence = prominence)
+        if reference_mz is None:
+            # Define an omogenous M/Z array that aggregates datapoints to achieve a common spectrum
+            unified_mz_values = compute_reference_mz([(mzs[i], intensities[i]) for i in range(len(mzs))], mass_tollerance = window_tolerance, frequency_threshold = prominence)
+        else:
+            # Use the provided reference M/Z values
+            unified_mz_values = reference_mz
 
         # Define the final data matrix to store the intensities values
         merged_intensities = np.zeros((len(intensities), len(unified_mz_values)), dtype = final_dtype)
@@ -187,13 +195,13 @@ def spectra_to_dict(spectra: ET.Element) -> dict:
             if cv_param.attrib['name'] == "external offset":
                 offset = int(cv_param.attrib['value'])
 
-        if element.find(ImzMLFileParser.REFERENCEABLE_PARAM_GROUP_REF).attrib['ref'] == 'mzArray':
+        if element.find(ImzMLFileParser.REFERENCEABLE_PARAM_GROUP_REF).attrib['ref'] in ['mzArray']:
             mzs = {
                 'length': length,
                 'encoded_length': encoded_length,
                 'offset': offset
             }
-        elif element.find(ImzMLFileParser.REFERENCEABLE_PARAM_GROUP_REF).attrib['ref'] == 'intensities':
+        elif element.find(ImzMLFileParser.REFERENCEABLE_PARAM_GROUP_REF).attrib['ref'] in ['intensities', "intensityArray"]:
             intesities = {
                 'length': length,
                 'encoded_length': encoded_length,
@@ -234,67 +242,6 @@ def save_numpy_matrix(path: str, sample: str,  reference_mz: np.ndarray, intensi
 
     # Save the intensities values
     np.save(os.path.join(path, f'{sample}_intensities_matrix.npy'), intensities_matrix)
-
-def kde_consensus(all_mz: np.ndarray, x_grid: np.ndarray, n_iter: int = 20, subsample_size: int = 50000, bandwidth: float = 0.05) -> np.ndarray:
-    '''
-    Compute the consensus m/z vector using Kernel Density Estimation (KDE). The ensamble method is used to reduce GPU memory usage
-    without introducing statistical bias.
-
-    Parameters
-    ----------
-    all_mz : np.ndarray
-        The m/z values from all spectra.
-    x_grid : np.ndarray
-        The grid of m/z values for density estimation.
-    n_iter : int
-        The number of iterations for the ensemble method.
-    subsample_size : int
-        The size of the subsample for each iteration.
-    bandwidth : float
-        The bandwidth for the KDE.
-    
-    Returns
-    -------
-    np.ndarray
-        The average density across all iterations.
-    '''
-    
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-
-    # Move the input to device
-    all_mz: torch.Tensor = torch.from_numpy(all_mz).float().to(device)
-    x_grid: torch.Tensor = torch.from_numpy(x_grid).float().to(device).reshape(-1, 1)
-
-    total_density: torch.Tensor = torch.zeros(x_grid.shape[0], device=device)
-
-    # Iterate the KDE process
-    for _ in trange(n_iter, desc="KDE Consensus Progress"):
-
-        # Randomly sample m/z values from the input array
-        idx = torch.randperm(len(all_mz), device=device)[:subsample_size]
-        sample = all_mz[idx].reshape(-1, 1)
-
-        # Fit the KDE model (use CUDA with RAPIDS)
-        kde = KernelDensity(kernel='gaussian', bandwidth=bandwidth)
-        kde.fit(sample)
-
-        # Compute the log density for the grid and convert it to linear
-        log_density = kde.score_samples(x_grid)
-        total_density += torch.exp(log_density).squeeze()
-
-        # Free up memory
-        del kde, sample, log_density, idx
-        torch.cuda.empty_cache()
-        torch.cuda.synchronize()
-
-    avg_density = (total_density / n_iter).cpu().numpy()
-
-    # Free up memory
-    del total_density
-    torch.cuda.empty_cache()
-    torch.cuda.synchronize()
-
-    return avg_density
 
 def maldi_windowed_mapping(original_mz: np.ndarray, original_intensity: np.ndarray, reference_mz: np.ndarray, ppm_tolerance: int = 20, dynamic_window: bool = True, dynamic_window_factor: float = 1e6) -> np.ndarray:
     """
@@ -365,35 +312,69 @@ def maldi_windowed_mapping(original_mz: np.ndarray, original_intensity: np.ndarr
 
     return result.cpu().numpy()
 
-def compute_reference_mz(spectra_list, prominence = 0.01):
+def compute_reference_mz(spectra_list: list[np.ndarray], mass_tollerance: int = 10, frequency_threshold: float = 0.01) -> np.ndarray:
     """
-    Computes consensus reference m/z vector using mean spectrum alignment
-    and peak prominence analysis
-    
+    Create consensus reference m/z vector using adaptive mass tolerance
+    Reference: 10.1021/acs.analchem.0c03833
+
     Parameters:
-    spectra_list : list of tuples - [(mz_array, intensity_array)]
-    prominence : minimum peak prominence (relative to max intensity)
-    tolerance : m/z merging tolerance (Da)
-    
+    -----------
+
+    spectra_list : list of np.ndarray
+        List of m/z arrays from different spectra.
+    mass_tollerance : int
+        Mass tolerance in ppm for grouping m/z values.
+    frequency_threshold : float
+        Minimum frequency threshold for m/z values to be included in the consensus.
+
     Returns:
-    reference_mz : np.array - Consensus m/z values
+    -----------
+
+    consensus_mz : np.ndarray
+        Consensus m/z values after grouping and filtering.
     """
 
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-
-    # Create high-resolution grid for density estimation
-    all_mz: np.ndarray = np.concatenate([s[0] for s in spectra_list])
-    x_grid: np.ndarray = np.linspace(all_mz.min(), all_mz.max(), 10000)
+    # Group the m/z values from all spectra and count occurrences
+    all_mz = np.concatenate(spectra_list)
+    all_mz.sort()
     
-    avg_density = kde_consensus(all_mz, x_grid.reshape(-1, 1))
-    avg_density = torch.from_numpy(avg_density).float().to(device)
+    unique_mz, counts = np.unique(all_mz, return_counts=True)
 
-    # Find peaks using optimized vectorized approach
-    peak_indices = _find_peaks_torch(avg_density, prominence_factor=prominence)
-    peak_indices = peak_indices.cpu().numpy()
-    candidate_mzs = x_grid[peak_indices]
+    # Merge m/z values based on adaptive mass tolerance
+    consensus_peaks = []
+    used_indices = set()
+    
+    for i, mz in enumerate(tqdm(unique_mz, desc="Computing reference m/z", unit="mz")):
+        if i in used_indices:
+            continue
+        
+        # Calculate adaptive tolerance for this m/z
+        tolerance = mz * mass_tollerance * 1e-6
+        
+        # Find all peaks within adaptive tolerance
+        tolerance_mask = np.abs(unique_mz - mz) <= tolerance
+        cluster_indices = np.where(tolerance_mask)[0]
+        
+        # Filter out already used indices
+        available_indices = [idx for idx in cluster_indices if idx not in used_indices]
+        
+        # Calculate weighted centroid
+        cluster_mz = unique_mz[available_indices]
+        cluster_counts = counts[available_indices]
+        
+        centroid = np.average(cluster_mz, weights=cluster_counts)
+        total_intensity = np.sum(cluster_counts)
+        
+        consensus_peaks.append([centroid, total_intensity, len(available_indices)])
+        used_indices.update(available_indices)
+    
+    consensus_peaks = torch.from_numpy(np.array(consensus_peaks))
 
-    return candidate_mzs
+    peak_indices = _find_peaks_torch(consensus_peaks[:, 1], prominence_factor = frequency_threshold)
+    consensus_peaks = consensus_peaks[peak_indices]
+    consensus_mz = consensus_peaks[:, 0].cpu().numpy()
+
+    return consensus_mz
 
 def _find_peaks_torch(density: torch.Tensor, prominence_factor: float = 0.01) -> torch.Tensor:
     """
@@ -422,56 +403,3 @@ def _find_peaks_torch(density: torch.Tensor, prominence_factor: float = 0.01) ->
         peak_indices = peak_indices[mask]
     
     return peak_indices
-
-class KernelDensity:
-    def __init__(self, bandwidth=1.0, kernel='gaussian'):
-        self.bandwidth = bandwidth
-        self.kernel = kernel
-        self.train_data = None
-
-    def fit(self, X):
-        """Store training data for KDE."""
-        self.train_data = X
-        self.n_samples, self.n_features = X.shape
-
-    def _gaussian_kernel(self, diffs):
-        """Gaussian kernel on pairwise differences."""
-        # diffs: [n_eval, n_train, n_features]
-        exponent = -0.5 * (diffs / self.bandwidth) ** 2  # shape: [n_eval, n_train, n_features]
-        exponent = exponent.sum(dim=-1)  # shape: [n_eval, n_train]
-
-        norm_const = (1.0 / (math.sqrt(2 * math.pi) * self.bandwidth)) ** self.n_features
-        return norm_const * torch.exp(exponent)
-
-    def score_samples(self, X):
-        """Compute log-density estimates at points X."""
-        if self.train_data is None:
-            raise ValueError("Model must be fit before calling score_samples.")
-
-        device = self.train_data.device
-        X = X.to(device)
-
-        # Compute pairwise differences
-        X_exp = X.unsqueeze(1)  # [n_eval, 1, n_features]
-        train_exp = self.train_data.unsqueeze(0)  # [1, n_train, n_features]
-        diffs = X_exp - train_exp  # [n_eval, n_train, n_features]
-
-        if self.kernel == 'gaussian':
-            kernel_vals = self._gaussian_kernel(diffs)
-        else:
-            raise ValueError(f"Unsupported kernel: {self.kernel}")
-
-        # Average and return log
-        log_density = torch.log(kernel_vals.mean(dim=1) + 1e-12)  # [n_eval]
-        return log_density
-
-    def sample(self, n_samples):
-        """Draw samples from the KDE."""
-        if self.train_data is None:
-            raise ValueError("Model must be fit before sampling.")
-
-        device = self.train_data.device
-        idx = torch.randint(0, self.n_samples, (n_samples,), device=device)
-        base_samples = self.train_data[idx]
-        noise = torch.randn_like(base_samples) * self.bandwidth
-        return base_samples + noise
