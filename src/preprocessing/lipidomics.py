@@ -312,6 +312,42 @@ def maldi_windowed_mapping(original_mz: np.ndarray, original_intensity: np.ndarr
 
     return result.cpu().numpy()
 
+def process_boolean_matrix(mat: torch.Tensor) -> torch.Tensor:
+    """
+    Process a boolean matrix to retain only the row with maximum Trues per column.
+    
+    Args:
+        mat: Boolean tensor of shape (N, M)
+        
+    Returns:
+        Processed boolean tensor of shape (N, M)
+    """
+
+    # Create boolean mask from non-zero values
+    bool_mask = (mat != 0)
+    
+    # Calculate row sums of numeric values
+    row_sums = mat.sum(dim=1)  # Shape: (N,)
+    
+    # Create scoring matrix with -inf for zeros
+    score = torch.where(bool_mask, row_sums.unsqueeze(1), -torch.inf)
+    
+    # Find best rows per column
+    max_indices = score.argmax(dim=0)
+    
+    # Identify active columns
+    has_nonzero = bool_mask.any(dim=0)
+    
+    # Build output mask
+    mask = torch.zeros_like(bool_mask)
+    valid_cols = has_nonzero.nonzero().squeeze(-1)
+    
+    if valid_cols.numel() > 0:
+        mask[max_indices[valid_cols], valid_cols] = True
+        
+    return mask
+
+
 def compute_reference_mz(spectra_list: list[np.ndarray], mass_tollerance: int = 10, frequency_threshold: float = 0.01) -> np.ndarray:
     """
     Create consensus reference m/z vector using adaptive mass tolerance
@@ -334,45 +370,94 @@ def compute_reference_mz(spectra_list: list[np.ndarray], mass_tollerance: int = 
         Consensus m/z values after grouping and filtering.
     """
 
+    MAX_SAMPLES = int(1e4)
+
     # Group the m/z values from all spectra and count occurrences
     all_mz = np.concatenate(spectra_list)
     all_mz.sort()
-    
     unique_mz, counts = np.unique(all_mz, return_counts=True)
+    total_weight = np.sum(counts)
 
-    # Merge m/z values based on adaptive mass tolerance
-    consensus_peaks = []
-    used_indices = set()
-    
-    for i, mz in enumerate(tqdm(unique_mz, desc="Computing reference m/z", unit="mz")):
-        if i in used_indices:
-            continue
-        
-        # Calculate adaptive tolerance for this m/z
-        tolerance = mz * mass_tollerance * 1e-6
-        
-        # Find all peaks within adaptive tolerance
-        tolerance_mask = np.abs(unique_mz - mz) <= tolerance
-        cluster_indices = np.where(tolerance_mask)[0]
-        
-        # Filter out already used indices
-        available_indices = [idx for idx in cluster_indices if idx not in used_indices]
-        
-        # Calculate weighted centroid
-        cluster_mz = unique_mz[available_indices]
-        cluster_counts = counts[available_indices]
-        
-        centroid = np.average(cluster_mz, weights=cluster_counts)
-        total_intensity = np.sum(cluster_counts)
-        
-        consensus_peaks.append([centroid, total_intensity, len(available_indices)])
-        used_indices.update(available_indices)
-    
-    consensus_peaks = torch.from_numpy(np.array(consensus_peaks))
+    # Get the total length of unique m/z values
+    total_length = unique_mz.shape[0]
 
-    peak_indices = _find_peaks_torch(consensus_peaks[:, 1], prominence_factor = frequency_threshold)
-    consensus_peaks = consensus_peaks[peak_indices]
-    consensus_mz = consensus_peaks[:, 0].cpu().numpy()
+    # Store the totals
+    total_unique_mz, total_weights = None, None
+
+    print(f"Total unique m/z values: {total_length}. The process will iterate as long as there are overlapping clusters.\n")
+
+    # Iterate over the unique m/z values and create consensus peaks
+    while total_unique_mz is None or np.array_equal(total_unique_mz, unique_mz) == False:
+
+        # Define the new unique_mz as the result of the previous iteration
+        if total_unique_mz is not None:
+            unique_mz = total_unique_mz
+            counts = total_weights
+            total_length = unique_mz.shape[0]
+
+            # Reset the totals for the next iteration
+            total_unique_mz, total_weights = None, None
+
+        for batch_start in trange(0, total_length, MAX_SAMPLES, desc = "Computing consensus m/z", unit = "batch"):
+
+            # Get the batch slice
+            batch_end: int = min(batch_start + MAX_SAMPLES, total_length)
+
+            unique_mz_batch: np.ndarray = unique_mz[batch_start:batch_end]
+            counts_batch: np.ndarray = counts[batch_start:batch_end]
+
+            # Move the data to GPU for processing
+            unique_mz_batch: torch.Tensor = torch.from_numpy(unique_mz_batch).float().cuda()
+            counts_batch: torch.Tensor = torch.from_numpy(counts_batch).float().cuda()
+
+            # Computing adaptive mass tolerance windows around each m/z to compute the overlapping clusters
+            tolerance_mask = torch.zeros((unique_mz_batch.shape[0], unique_mz_batch.shape[0]), dtype=bool)
+            tolerance_mask = torch.abs(unique_mz_batch[:, None] - unique_mz_batch[None, :]) <= (unique_mz_batch[:, None] * mass_tollerance * 1e-6)
+
+            # Count the number of overlapping clusters
+            cluster_mz = torch.where(tolerance_mask, unique_mz_batch[None, :], torch.nan)
+            cluster_weights = torch.where(tolerance_mask, counts_batch[None, :], 0)
+
+            # Compute a unicity filter mask
+            unicity_mask = process_boolean_matrix(cluster_weights)
+
+            # Apply the unicity mask to the clusters
+            cluster_mz = torch.where(unicity_mask, cluster_mz, torch.nan)
+            cluster_weights = torch.where(unicity_mask, cluster_weights, torch.nan)
+
+            centroid_mz = torch.nanmean(cluster_mz, axis = 1)
+            centroid_weights = torch.nansum(cluster_weights, axis = 1)
+
+            # Filter duplicated m/z values and sum their intensities
+            unique_centroid_mz = torch.unique(centroid_mz)
+            unique_weights = torch.zeros_like(unique_centroid_mz, dtype=counts_batch.dtype)
+            weights_matrix = centroid_weights * (centroid_mz == unique_centroid_mz[:, None])
+            weights_matrix[weights_matrix == 0] = torch.nan
+            unique_weights = torch.nanmean(weights_matrix, axis=1)
+
+            # Get the indices of NaN values
+            nan_indices = torch.isnan(unique_centroid_mz)
+            # Remove NaN values
+            unique_centroid_mz = unique_centroid_mz[~nan_indices]
+            unique_weights = unique_weights[~nan_indices]
+
+            if total_unique_mz is None:
+                total_unique_mz = unique_centroid_mz.cpu().numpy()
+                total_weights = unique_weights.cpu().numpy()
+            else:
+                # Concatenate the results
+                total_unique_mz = np.concatenate((total_unique_mz, unique_centroid_mz.cpu().numpy()))
+                total_weights = np.concatenate((total_weights, unique_weights.cpu().numpy()))
+
+            del unique_mz_batch, counts_batch, tolerance_mask, cluster_mz, cluster_weights, unique_centroid_mz, unique_weights
+            torch.cuda.empty_cache()
+            torch.cuda.synchronize()
+
+    
+    total_weights = torch.from_numpy(total_weights).float().cuda()
+
+    peak_indices = _find_peaks_torch(total_weights, prominence_factor = frequency_threshold)
+    consensus_mz = total_unique_mz[peak_indices.cpu().numpy()]
 
     return consensus_mz
 
