@@ -83,11 +83,11 @@ def read_ibm_file(path: str, sample_id: str, modality_name: str) -> tuple[np.nda
             
 
 if __name__ == "__main__":
-    PATH = "/mnt/data/lorenzo/VSC_DATA/Jelle"
+    PATH = "/mnt/data/lorenzo/VSC_DATA/Nacho"
     SAMPLE_ID_LIST = [
-        "0001"
+        "PWB929C"
     ]
-    MODALITY_NAME = "MALDI"
+    MODALITY_NAME = "msi"
 
     OUTPUT_PATH_LIST = [os.path.join(PATH, sample_id, 'preprocessing', MODALITY_NAME) for sample_id in SAMPLE_ID_LIST]
 
