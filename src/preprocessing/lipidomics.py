@@ -245,7 +245,7 @@ def save_numpy_matrix(path: str, sample: str,  reference_mz: np.ndarray, intensi
 
 def maldi_windowed_mapping(original_mz: np.ndarray, original_intensity: np.ndarray, reference_mz: np.ndarray, ppm_tolerance: int = 20, dynamic_window: bool = True, dynamic_window_factor: float = 1e6) -> np.ndarray:
     """
-    GPU-accelerated MALDI intensity mapping using variable-size windowing (vectorized with CuPy).
+    GPU-accelerated MALDI intensity mapping using variable-size windowing.
 
     Parameters
     ----------
@@ -312,22 +312,30 @@ def maldi_windowed_mapping(original_mz: np.ndarray, original_intensity: np.ndarr
 
     return result.cpu().numpy()
 
-def process_boolean_matrix(mat: torch.Tensor) -> torch.Tensor:
+def compute_tolerance_matrix(input: torch.Tensor) -> torch.Tensor:
     """
-    Process a boolean matrix to retain only the row with maximum Trues per column.
+    Scan the tolerance matrix and select to which row to uniquely assign an M/Z value (column).
+    This method takes a boolean matrix of shape (N, M) that represents the overlapping clusters of M/Z values.
+    It determines to which cluster to assign an M/Z value based on the weight of the clusters.
+    This ensures that each M/Z value that falls within multiple clusters is always assigned to the cluster with the highest density.
     
-    Args:
-        mat: Boolean tensor of shape (N, M)
+    Parameters:
+    -----------
+        input: torch.Tensor
+            A boolean tensor of shape (N, M) where N is the number of rows (clusters) and M is the number of columns (M/Z values).
         
     Returns:
-        Processed boolean tensor of shape (N, M)
+    -----------
+        torch.Tensor
+            A boolean tensor of shape (N, M) where each column has a single True value indicating the selected row for that M/Z value.
+            All other values are False.
     """
 
     # Create boolean mask from non-zero values
-    bool_mask = (mat != 0)
+    bool_mask = (input != 0)
     
     # Calculate row sums of numeric values
-    row_sums = mat.sum(dim=1)  # Shape: (N,)
+    row_sums = input.sum(dim=1)  # Shape: (N,)
     
     # Create scoring matrix with -inf for zeros
     score = torch.where(bool_mask, row_sums.unsqueeze(1), -torch.inf)
@@ -347,8 +355,7 @@ def process_boolean_matrix(mat: torch.Tensor) -> torch.Tensor:
         
     return mask
 
-
-def compute_reference_mz(spectra_list: list[np.ndarray], mass_tollerance: int = 10, frequency_threshold: float = 0.01) -> np.ndarray:
+def compute_reference_mz(spectra_list: list[np.ndarray], mass_tollerance: int = 10, frequency_threshold: float = 0.01, batch_size: int = 50000) -> np.ndarray:
     """
     Create consensus reference m/z vector using adaptive mass tolerance
     Reference: 10.1021/acs.analchem.0c03833
@@ -370,13 +377,11 @@ def compute_reference_mz(spectra_list: list[np.ndarray], mass_tollerance: int = 
         Consensus m/z values after grouping and filtering.
     """
 
-    MAX_SAMPLES = int(1e4)
 
     # Group the m/z values from all spectra and count occurrences
     all_mz = np.concatenate(spectra_list)
     all_mz.sort()
     unique_mz, counts = np.unique(all_mz, return_counts=True)
-    total_weight = np.sum(counts)
 
     # Get the total length of unique m/z values
     total_length = unique_mz.shape[0]
@@ -398,10 +403,10 @@ def compute_reference_mz(spectra_list: list[np.ndarray], mass_tollerance: int = 
             # Reset the totals for the next iteration
             total_unique_mz, total_weights = None, None
 
-        for batch_start in trange(0, total_length, MAX_SAMPLES, desc = "Computing consensus m/z", unit = "batch"):
+        for batch_start in trange(0, total_length, batch_size, desc = "Computing consensus m/z", unit = "batch"):
 
             # Get the batch slice
-            batch_end: int = min(batch_start + MAX_SAMPLES, total_length)
+            batch_end: int = min(batch_start + batch_size, total_length)
 
             unique_mz_batch: np.ndarray = unique_mz[batch_start:batch_end]
             counts_batch: np.ndarray = counts[batch_start:batch_end]
@@ -419,7 +424,7 @@ def compute_reference_mz(spectra_list: list[np.ndarray], mass_tollerance: int = 
             cluster_weights = torch.where(tolerance_mask, counts_batch[None, :], 0)
 
             # Compute a unicity filter mask
-            unicity_mask = process_boolean_matrix(cluster_weights)
+            unicity_mask = compute_tolerance_matrix(cluster_weights)
 
             # Apply the unicity mask to the clusters
             cluster_mz = torch.where(unicity_mask, cluster_mz, torch.nan)
