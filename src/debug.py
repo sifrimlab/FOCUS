@@ -83,12 +83,12 @@ def read_ibm_file(path: str, sample_id: str, modality_name: str) -> tuple[np.nda
             
 
 if __name__ == "__main__":
-    ''' PATH = "/mnt/data/lorenzo/VSC_DATA/Nacho"
+    PATH = "/mnt/data/lorenzo/VSC_DATA/Jelle"
     SAMPLE_ID_LIST = [
-        "PWB929C"
+        "LG001-RAW",
+        "LG002-RAW",
     ]
     MODALITY_NAME = "msi"
-
     OUTPUT_PATH_LIST = [os.path.join(PATH, sample_id, 'preprocessing', MODALITY_NAME) for sample_id in SAMPLE_ID_LIST]
 
     global_mzs, global_intensities = [], []
@@ -98,11 +98,15 @@ if __name__ == "__main__":
         global_mzs.append(mzs)
         global_intensities.append(intensities)
 
-    # Flatten the lists
-    global_mzs = [item for sublist in global_mzs for item in sublist]
-    global_intensities = [item for sublist in global_intensities for item in sublist]
+    # Define an omogenous M/Z array that aggregates datapoints to achieve a common spectrum
+    reference_mz = []
+    for sample_index in range(len(SAMPLE_ID_LIST)):
+        reference_mz.append(lipidomics.compute_reference_mz(global_mzs[sample_index], mass_tollerance=10, frequency_threshold=0.01))
+        print(f"Found {len(reference_mz[-1])} unique M/Z values from sample {SAMPLE_ID_LIST[sample_index]}: [{min(reference_mz[-1])}, {max(reference_mz[-1])}]")
 
-    unified  = lipidomics.compute_reference_mz(global_mzs, mass_tollerance=10, frequency_threshold=0.01)
+    # Now process again the unified M/Z to reach a global consensus across all samples
+    global_reference_mz = lipidomics.compute_reference_mz(reference_mz, mass_tollerance=10, frequency_threshold=0.0)    # No frequency threshold because the frequncies will be more or less homogeneous
+    print(f"Found {len(global_reference_mz)} global unique M/Z values: [{min(global_reference_mz)}, {max(global_reference_mz)}]")
 
     lipidomics.preprocess_lipidomics(
         path = PATH,
@@ -113,19 +117,5 @@ if __name__ == "__main__":
         window_tolerance=10,
         dynamic_window=True,
         dynamic_window_factor = 1e6,
-        reference_mz = unified,
-    )'''
-
-    PATH = "/mnt/data/lorenzo/VSC_DATA/Nina"
-    SAMPLE_ID = "00103993-1"
-    MODALITY_NAME = "raman"
-
-    INPUT_PATH = os.path.join(PATH, SAMPLE_ID, MODALITY_NAME)
-    OUTPUT_PATH =  os.path.join(PATH, SAMPLE_ID, 'preprocessing', MODALITY_NAME)
-    FILENAME = f"{SAMPLE_ID}.lif"
-
-    # Load LIF file to obtain the tiles for each image and the relevant metadata
-    raman_data = raman.RamanImage(filename = os.path.join(INPUT_PATH, FILENAME))
-
-    # Process Raman tiles
-    raman_data.process_raw_tiles(parallel=True)
+        reference_mz = global_reference_mz,
+    )

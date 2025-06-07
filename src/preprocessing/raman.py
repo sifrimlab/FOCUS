@@ -491,7 +491,7 @@ class RamanImage:
 			rp.preprocessing.despike.WhitakerHayes(),
 			rp.preprocessing.denoise.SavGol(window_length=9, polyorder=3),
 			rp.preprocessing.baseline.IASLS(),
-			rp.preprocessing.normalise.MinMax(pixelwise = True)
+			#rp.preprocessing.normalise.MinMax(pixelwise = True)
 		])
 
 		# Create a coordinate grid to keep track of the valid pixels

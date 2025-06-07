@@ -247,11 +247,11 @@ def maldi_windowed_mapping(original_mz: np.ndarray, original_intensity: np.ndarr
 	Parameters
 	----------
 	original_mz : np.ndarray
-		Original m/z values.
+		Original m/z values with shape (N, ).
 	original_intensity : np.ndarray
-		Corresponding intensity values.
+		Corresponding intensity values with shape (N, ).
 	reference_mz : np.ndarray
-		Target reference m/z values.
+		Target reference m/z values with shape (M, ).
 	ppm_tolerance : float
 		Tolerance window in parts per million (ppm).
 	dynamic_window : bool
@@ -460,11 +460,21 @@ def compute_reference_mz(spectra_list: list[np.ndarray], mass_tollerance: int = 
 			torch.cuda.empty_cache()
 			torch.cuda.synchronize()
 
+	# Apply a frequency threshold to filter out low-frequency m/z values
+	if frequency_threshold > 0:
+		peak_indices: torch.Tensor = _find_peaks_torch(total_weights, prominence_factor = frequency_threshold)
+		consensus_mz: torch.Tensor = total_unique_mz[peak_indices]
+	else:
+		consensus_mz: torch.Tensor = total_unique_mz
 
-	peak_indices: torch.Tensor = _find_peaks_torch(total_weights, prominence_factor = frequency_threshold)
-	consensus_mz: torch.Tensor = total_unique_mz[peak_indices]
+	consensus_mz_cpu = consensus_mz.cpu().numpy()
 
-	return consensus_mz.cpu().numpy()
+	# Free GPU memory
+	del unique_mz, counts, total_unique_mz, total_weights, consensus_mz
+	torch.cuda.empty_cache()
+	torch.cuda.synchronize()
+
+	return consensus_mz_cpu
 
 def _find_peaks_torch(density: torch.Tensor, prominence_factor: float = 0.01) -> torch.Tensor:
 	"""
