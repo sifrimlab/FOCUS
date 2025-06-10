@@ -115,7 +115,7 @@ def preprocess_lipidomics(path: str, sample_id: str, modality_name: str, peak_pi
 	if peak_picking == True:
 		if reference_mz is None:
 			# Define an omogenous M/Z array that aggregates datapoints to achieve a common spectrum
-			unified_mz_values = compute_reference_mz([(mzs[i], intensities[i]) for i in range(len(mzs))], mass_tollerance = window_tolerance, frequency_threshold = prominence)
+			unified_mz_values = compute_reference_mz(mzs, mass_tollerance = window_tolerance, frequency_threshold = prominence)
 		else:
 			# Use the provided reference M/Z values
 			unified_mz_values = reference_mz
