@@ -1,4 +1,4 @@
-# FOCUS: Multimodal preprocessing and registration pipeline for biomedical data
+# FOCUS: Fusion of Omics for Cohesive Unified Standardization
 
 This data processing pipeline has been designed to accomodate multiple projects in a versatile way
 and it's focused on being modality and task agnostic.
