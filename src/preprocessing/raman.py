@@ -1,8 +1,9 @@
-import cv2, tqdm
+import tqdm
 import numpy as np
 from readlif.reader import LifFile, LifImage
 import xml.etree.ElementTree as ET
 import ramanspy as rp
+from basicpy import BaSiC
 
 from multiprocessing import Pool
 
@@ -172,76 +173,93 @@ class RamanImage:
 		self.filename = filename
 
 		# Define the intermediate data structure
-		self._raw_tiles: dict[str, np.ndarray[np.float32]] = {}
-		self._metadata: dict[str, list[RamanMetadata]] = {}
-		self._wavenumbers: dict[str, np.ndarray[np.float32]] = {}
-		self._processed_tiles: dict[str, np.ndarray[np.float32]] = {}
-		self._mosaics: dict[str, np.ndarray[np.float32]] = {}
-
+		self._raw_tiles: np.ndarray[np.float32] = None
+		self._basic_corrected_tiles: np.ndarray[np.float32] = None
+		self._raman_corrected_tiles: np.ndarray[np.float32] = None
+		self._mosaic: np.ndarray[np.float32] = None
+		self._metadata: RamanMetadata = []
+		self._wavenumbers: np.ndarray[np.float32] = None
+		self._tiles_coordinates: np.ndarray[np.float32] = None
+		self._spectra_slices: list[tuple[int, int]] = []
 
 		# Load the file based on its extension
 		if filename.endswith('.lif'):
 			self._load_lif(filename = self.filename)
-
-	@property
-	def scan_names(self) -> list[str]:
-		'''
-		Get the names of the scans in the Raman Spectroscopy Imageing file.
-
-		Returns
-		-------
-		list[str]
-			A list of scan names.
-		'''
-		return list(self._metadata.keys())
 	
 	@property
-	def raw_tiles(self) -> dict[str, np.ndarray[np.float32]]:
+	def raw(self) -> np.ndarray[np.float32]:
 		'''
 		Get the raw tiles from the Raman Spectroscopy Imageing file.
 
 		Returns
 		-------
-		dict[str, np.ndarray[np.float32]]
-			A dictionary where keys are scan names and values are numpy arrays of raw tiles.
+		np.ndarray[np.float32]
+			Numpy array with shape (T, C, Y, X) where T is the number of tiles, C is the number of channels (1 for Raman), Y is the scan height, and X is the scan width.
 		'''
+
 		return self._raw_tiles
 	
 	@property
-	def metadata(self) -> dict[str, RamanMetadata]:
+	def corrected(self) -> np.ndarray[np.float32]:
+		'''
+		Get the corrected tiles (BaSiC + Background removal + Ramanspy pipeline)
+
+		Returns
+		-------
+		np.ndarray[np.float32]
+			Numpy array with shape (T, C, Y, X) where T is the number of tiles, C is the number of channels (1 for Raman), Y is the scan height, and X is the scan width.
+		'''
+		
+		return self._raman_corrected_tiles
+	
+	@property
+	def mosaic(self) -> np.ndarray[np.float32]:
+		'''
+		Get the final stitched mosaic of corrected tiles
+
+		Returns
+		-------
+		np.ndarray[np.float32]
+			Numpy array with shape (C, Y, X) C is the number of channels (1 for Raman), Y is the scan height, and X is the scan width.
+		'''
+		
+		return self._mosaic
+	
+	@property
+	def metadata(self) -> RamanMetadata:
 		'''
 		Get the metadata from the Raman Spectroscopy Imageing file.
 
 		Returns
 		-------
-		dict[str, RamanMetadata]
-			A dictionary where keys are scan names and values are RamanMetadata objects.
+		list[RamanMetadata]
+			List of metadata objects.
 		'''
 		return self._metadata
 	
 	@property
-	def wavenumbers(self) -> dict[str, np.ndarray[np.float32]]:
+	def wavenumbers(self) -> np.ndarray[np.float32]:
 		'''
 		Get the wavenumbers from the Raman Spectroscopy Imageing file.
 
 		Returns
 		-------
-		dict[str, np.ndarray[np.float32]]
-			A dictionary where keys are scan names and values are numpy arrays of wavenumbers.
+		np.ndarray[np.float32]
+			Numpy arrays of wavenumbers with shape (W, ).
 		'''
 		return self._wavenumbers
 	
 	@property
-	def processed_tiles(self) -> dict[str, np.ndarray[np.float32]]:
+	def tiles_coordinates(self) -> np.ndarray[np.float32]:
 		'''
-		Get the processed tiles from the Raman Spectroscopy Imageing file.
+		Get the (X, Y) coordinates of each tile in the Raman Spectroscopy Imageing file.
 
 		Returns
 		-------
-		dict[str, np.ndarray[np.float32]]
-			A dictionary where keys are scan names and values are numpy arrays of processed tiles.
+		np.ndarray[np.float32]
+			Numpy arrays of coordinates with shape (T, 2) where T is the number of tiles and each row contains the (X, Y) coordinates of the tile.
 		'''
-		return self._processed_tiles
+		return self._tiles_coordinates
 
 	def _load_lif(self, filename: str) -> None:
 		'''
@@ -254,10 +272,19 @@ class RamanImage:
 		'''
 		
 		lif_file = LifFile(filename)
-		self._metadata: dict[str, RamanMetadata] = self._parse_lif_metadata(lif_file)
+		metadata_dict: dict[str, RamanMetadata] = self._parse_lif_metadata(lif_file)
+
+		# Define a reference metadata used for the global object
+		reference_metadata = RamanMetadata()
+		reference_metadata.name = "reference"
+		reference_metadata.index = 0
+
+		# Define a temporary raw tiles and wavenumbers dictionaries
+		raw_tiles: dict[str, np.ndarray[np.float32]] = {}
+		wavenumbers: dict[str, np.ndarray[np.float32]] = {}
 
 		# Iterate over the images following the order written in metadata
-		for name, metadata in self._metadata.items():
+		for name, metadata in metadata_dict.items():
 
 			# Extract only tiled images, ignore automatic stitching
 			if metadata.tile_number is None or metadata.tile_number < 2:
@@ -269,7 +296,7 @@ class RamanImage:
 				raise ValueError(f"Image with index {metadata.index} not found in the LIF file.")
 
 			# Initialize a list to hold the tiles
-			self._raw_tiles[name] = np.zeros((metadata.tile_number, metadata.scan_width, metadata.scan_height, metadata.lambda_steps), dtype=np.float32)
+			raw_tiles[name] = np.zeros((metadata.tile_number, metadata.lambda_steps, metadata.scan_width, metadata.scan_height), dtype=np.float32)
 
 			# Read the tiles
 			for tile_idx in range(metadata.tile_number):
@@ -277,21 +304,44 @@ class RamanImage:
 				for spectral_idx in range(metadata.lambda_steps):
 					# Read the image data for each lambda step
 					plane = image.get_plane(display_dims=(1, 2), c = 0, requested_dims = {9: spectral_idx, 10: tile_idx})
+					raw_tiles[name][tile_idx, spectral_idx, :, :] = plane
 
-					# Convert the plane to a numpy array and normalize it between 0 and 1
-					plane = np.array(plane, dtype=np.float32)
-					plane = cv2.normalize(plane, None, 0, 1, cv2.NORM_MINMAX)
-					self._raw_tiles[name][tile_idx, :, :, spectral_idx] = plane
-
-
+			# Record this spectra slice for later processing
+			if len(self._spectra_slices) == 0:
+				self._spectra_slices.append((0, metadata.lambda_steps - 1))
+			else:
+				self._spectra_slices.append((self._spectra_slices[-1][1] + 1, self._spectra_slices[-1][1] + metadata.lambda_steps - 1))
 
 			# Compute the wavenumbers based on the 
-			self._wavenumbers[name] = self.compute_wavenumbers(
+			wavenumbers[name] = self.compute_wavenumbers(
 				metadata.lambda_begin, 
 				metadata.lambda_end, 
 				metadata.lambda_steps, 
 				metadata.lambda_stokes
 			)
+
+		# Once all the tiles are loaded, merge them into a single high-dimensional array
+		stacked_tiles = np.concatenate([raw_tiles[name] for name in raw_tiles], axis = 1)
+		stacked_wavenumbers = np.concatenate([wavenumbers[name] for name in wavenumbers], axis = -1)
+		coordinates = metadata_dict[list(metadata_dict.keys())[0]].tiles_coordinates
+
+		# Normalize the tiles to [0, 1] if they are not already normalized
+		if np.min(stacked_tiles) < 0 or np.max(stacked_tiles) > 1:
+			stacked_tiles -= np.min(stacked_tiles)
+			stacked_tiles /= np.max(stacked_tiles)
+
+		# Update the metadata
+		reference_metadata.scan_height = stacked_tiles.shape[-2]
+		reference_metadata.scan_width = stacked_tiles.shape[-1]
+		reference_metadata.tile_number = stacked_tiles.shape[0]
+		reference_metadata.lambda_steps = stacked_tiles.shape[1]
+		reference_metadata.tiles_coordinates = coordinates
+
+		# Overwrite the raw tiles and wavenumbers with the stacked ones
+		self._raw_tiles = stacked_tiles
+		self._wavenumbers = stacked_wavenumbers
+		self._metadata = reference_metadata
+		self._tiles_coordinates = coordinates
 	
 	def _parse_lif_metadata(self, lif: LifFile) -> dict[str, RamanMetadata]:
 	
@@ -461,7 +511,7 @@ class RamanImage:
 		
 		return np.isnan(tile).any() or np.isinf(tile).any()
 
-	def zero_variance_spectra(self, spectra_array: np.ndarray[np.float32]) -> np.ndarray[np.bool]:
+	def zero_variance_spectra(self, spectra_array: np.ndarray[np.float32]) -> np.ndarray[np.bool_]:
 		'''
 		Compute the variance across the spectra to identify zero-variance datapoints.
 		These datapoints would produce numerical errors in downstream processing so they should be
@@ -482,25 +532,28 @@ class RamanImage:
 		forward_differences = np.diff(spectra_array, axis = -1)
 		mad = np.median([np.abs(forward_differences - np.median(forward_differences, axis = -1, keepdims=True))], axis = -1)
 		
-		return np.array(mad == 0, dtype=np.bool).squeeze()
+		return np.array(mad == 0, dtype=np.bool_).squeeze()
 
-	def _process_tile_parallel(self, tile: np.ndarray[np.float32], wavenumbers: np.ndarray[np.float32], tile_index: int, image_index: int) -> tuple[np.ndarray, int, int]:
+	def _process_tile_parallel(self, tile: np.ndarray[np.float32], wavenumbers: np.ndarray[np.float32], tile_index: int, slice_index: int, global_norm: bool) -> tuple[np.ndarray, int, int]:
 
 
 		pipeline = rp.preprocessing.Pipeline([
 			rp.preprocessing.despike.WhitakerHayes(),
 			rp.preprocessing.denoise.SavGol(window_length=9, polyorder=3),
 			rp.preprocessing.baseline.IASLS(),
-			#rp.preprocessing.normalise.MinMax(pixelwise = True)
 		])
 
+		if global_norm == False:
+			pipeline.append(rp.preprocessing.normalise.MinMax())
+
 		# Create a coordinate grid to keep track of the valid pixels
-		X, Y, Z = tile.shape
+		C, X, Y = tile.shape
 		y_indices, x_indices = np.meshgrid(np.arange(X), np.arange(Y))
 		coordinates = np.stack((x_indices, y_indices), axis=-1)
 
 		# Reshape the tile and the coordinates to 2D
-		reshaped_tile = tile.reshape(-1, tile.shape[-1])
+		reshaped_tile = tile.reshape(tile.shape[0], -1)			# Reshape to (C, Y*X)
+		reshaped_tile = reshaped_tile.transpose((1, 0))			# Transpose to (Y*X, C)
 		reshaped_coordinates = coordinates.reshape(-1, 2)
 
 		# Compute the zero-variance spectra mask
@@ -513,55 +566,108 @@ class RamanImage:
 
 		# Apply the pipeline to the reshaped tile
 		processed_tile = pipeline.apply(spectral_image)
-
-		# Normalize the processed tile
-		processed_tile = rp.preprocessing.normalise.MinMax().apply(processed_tile)
-
-
 		processed_tile = processed_tile.spectral_data
 
 		# Reshape the processed tile back to its original shape
-		restored_tile = np.zeros((X, Y, Z), dtype=np.float32)
+		restored_tile = np.zeros((C, X, Y), dtype=np.float32)
 
 		for i in range(processed_tile.shape[0]):
 			x = int(reshaped_coordinates[i, 0])
 			y = int(reshaped_coordinates[i, 1])
-			restored_tile[x, y, :] = processed_tile[i, :]
+			restored_tile[:, x, y] = processed_tile[i, :]
 
-		return restored_tile, tile_index, image_index
+		return restored_tile, tile_index, slice_index
 
-	def process_raw_tiles(self, parallel: bool = True) -> None:
+	def process_raw_tiles(self, wavenumbers: np.ndarray[np.float32] | None = None, parallel: bool = True, global_norm: bool = False) -> None:
 		'''
 		Process the raw tiles using the ramanspy library.
 		This method can process the tiles in parallel (active by default) or sequentially.
 		
 		Parameters
 		----------
+		wavenumbers : np.ndarray[np.float32] | None, optional
+			The wavenumbers to use for the processing. If None, the wavenumbers from the metadata will be used.
+			Default is None.
+
 		parallel : bool, optional
-			If True, process the tiles in parallel using multiprocessing. Default is True.
+			If True, the tiles will be processed in parallel using multiprocessing. If False, the tiles will be processed sequentially.
+			Default is True.
+
+		global_norm : bool, optional
+			If True, the tiles will be normalized to [0, 1] using a global normalization. If False, the tiles will not be normalized.
+			Default is False.
 		'''
 
-		if not self._raw_tiles:
+		if self._basic_corrected_tiles is None:
 			raise ValueError("No raw tiles to process. Please load the data first.")
 		
-		if parallel:
-			total_tiles = sum(self._raw_tiles[name].shape[0] for name in self._raw_tiles)
+		if wavenumbers is None:
+			wavenumbers = self.wavenumbers
+
+		self._raman_corrected_tiles = np.zeros_like(self._basic_corrected_tiles, dtype=np.float32)
+		
+		if parallel == True:
+
+			# Process non-contiguous spectra slices independently
+			units = []
+
+			for slice_idx, (start_channel, end_channel) in enumerate(self._spectra_slices):
+				for tile_idx in range(self._basic_corrected_tiles[:, start_channel:end_channel + 1, :, :].shape[0]):
+					units.append(
+						(
+							self._basic_corrected_tiles[tile_idx, start_channel:end_channel + 1, :, :], 
+							wavenumbers[start_channel:end_channel + 1], 
+							tile_idx,
+							slice_idx,
+							global_norm
+						)
+					)
 
 			# Use multiprocessing to process the tiles in parallel
-			with Pool(processes = total_tiles) as pool:
-				results = pool.starmap(
+			with Pool(processes = len(units)) as pool:
+				slice_result = pool.starmap(
 					self._process_tile_parallel, 
-					[(tile, self._wavenumbers[name], tile_index, name) for name, raw_tiles in self._raw_tiles.items() for tile_index, tile in enumerate(raw_tiles)]
+					units
 				)
 			
 			# Store the processed tiles in the dictionary
-			for processed_tile, tile_index, image_name in results:
-				if image_name not in self._processed_tiles:
-					self._processed_tiles[image_name] = np.zeros_like(self._raw_tiles[image_name], dtype=np.float32)
-				self._processed_tiles[image_name][tile_index] = processed_tile
+			for processed_tile, tile_index, slice_index in slice_result:
+				start_channel, end_channel = self._spectra_slices[slice_index]
+				self._raman_corrected_tiles[tile_index, start_channel:end_channel + 1] = processed_tile
 		else:
-			for name, raw_tiles in tqdm.tqdm(self._raw_tiles.items(), desc="Processing Tiles"):
-				self._processed_tiles[name] = np.zeros_like(raw_tiles, dtype=np.float32)
-				for tile_index, tile in enumerate(raw_tiles):
-					processed_tile, _, _ = self._process_tile_parallel(tile, self._wavenumbers[name], tile_index, self._metadata[name].index)
-					self._processed_tiles[name][tile_index] = processed_tile
+			for tile_idx in tqdm.tqdm(range(self._basic_corrected_tiles.shape[0]), desc="Processing Tiles"):
+				for slice_index, (start_channel, end_channel) in enumerate(self._spectra_slices):
+					wavenumbers_slice = wavenumbers[start_channel:end_channel + 1]
+					tile_slice = self._basic_corrected_tiles[tile_idx, start_channel:end_channel + 1, :, :]
+
+					# Process the tile
+					processed_tile, _ = self._process_tile_parallel(tile_slice, wavenumbers_slice, tile_idx, slice_index, global_norm)
+					self._raman_corrected_tiles[tile_idx, start_channel:end_channel + 1] = processed_tile
+
+		if global_norm == True:
+			# Normalize the tiles to [0, 1] with a global normalization
+			self._raman_corrected_tiles -= np.min(self._raman_corrected_tiles)
+			self._raman_corrected_tiles /= np.max(self._raman_corrected_tiles)
+
+	def basic_correct(self) -> None:
+		'''
+		Apply the BaSiC correction to the raw tiles.
+		This method uses the BaSiC algorithm to correct the raw tiles for background and noise.
+		'''
+
+		if self._raw_tiles is None:
+			raise ValueError("No raw tiles to correct. Please load the data first.")
+
+		for channel_idx in tqdm.tqdm(range(self._raw_tiles.shape[1]), desc="Applying BaSiC Correction"):
+			# Extract the channel data
+			channel_data = self._raw_tiles[:, channel_idx, :, :]
+
+			# Apply BaSiC correction
+			basic = BaSiC()
+			basic.fit(channel_data)
+
+			# Store the corrected channel
+			if self._basic_corrected_tiles is None:
+				self._basic_corrected_tiles = np.zeros_like(self._raw_tiles, dtype=np.float32)
+			
+			self._basic_corrected_tiles[:, channel_idx, :, :] = basic.transform(channel_data)

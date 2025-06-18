@@ -83,7 +83,7 @@ def read_ibm_file(path: str, sample_id: str, modality_name: str) -> tuple[np.nda
             
 
 if __name__ == "__main__":
-    PATH = "/mnt/data/lorenzo/VSC_DATA/Jelle"
+    '''PATH = "/mnt/data/lorenzo/VSC_DATA/Jelle"
     SAMPLE_ID_LIST = [
         "LG001-RAW",
         "LG002-RAW",
@@ -118,4 +118,18 @@ if __name__ == "__main__":
         dynamic_window=True,
         dynamic_window_factor = 1e6,
         reference_mz = global_reference_mz,
-    )
+    )'''
+
+    PATH = "/mnt/data/lorenzo/VSC_DATA/Nina"
+    SAMPLE_ID = "00103993-1"
+    MODALITY_NAME = "raman"
+
+    INPUT_PATH = os.path.join(PATH, SAMPLE_ID, MODALITY_NAME)
+    OUTPUT_PATH =  os.path.join(PATH, SAMPLE_ID, 'preprocessing', MODALITY_NAME)
+    FILENAME = f"{SAMPLE_ID}.lif"
+
+    # Load LIF file to obtain the tiles for each image and the relevant metadata
+    raman_data = raman.RamanImage(filename = os.path.join(INPUT_PATH, FILENAME))
+
+    raman_data._basic_corrected_tiles = raman_data.raw
+    raman_data.process_raw_tiles()
