@@ -99,7 +99,7 @@ class ElastixEngine:
         if transformation_type != TransformationType.TRANSLATION:
             transformation: sitk.ParameterMap = sitk.GetDefaultParameterMap(transformation_type)
             transformation['DefaultPixelValue'] = ['-1.0']
-            transformation['ResampleInterpolator'] = ['FinalLinearInterpolator']
+            transformation['ResampleInterpolator'] = ['FinalNearestNeighborInterpolator']
             transformation['Registration'] = ['MultiMetricMultiResolutionRegistration']
             transformation['AutomaticTransformInitialization'] = ['true']
             transformation['AutomaticTransformInitializationMethod'] = ['GeometricalCenter']
@@ -174,9 +174,7 @@ class ElastixEngine:
         offset[:, 1] = fixed_points_physical[:, 1] - moving_points_physical[:, 1]
         offset = np.mean(offset, axis=0)
 
-        # Get the absolute value of the offset, rounded to integer
-        #offset = np.round(np.abs(offset)).astype(int)
-        offset = np.round(offset).astype(int)
+        # Get the absolute value of the offset
         return offset
     
     def _compute_scaling_offset(self, fixed_landmarks: np.ndarray, moving_landmarks: np.ndarray) -> tuple[float, float]:

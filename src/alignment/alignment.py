@@ -5,7 +5,7 @@ import matplotlib.pyplot as plt
 from sklearn.decomposition import PCA
 
 from preprocessing.microscopy_image import gamma_correction, enhance_contrast
-from constants import ModalityParameters, ModalityType, AlignmentSettings, TransformationType
+from constants import ModalityParameters, ModalityType, AlignmentSettings, TransformationType, RegistrationSettings, RegistrationType
 
 from alignment.elastix_engine import ElastixEngine
 from GUI.landmark_selection import LandmarkSelectionGUI
@@ -221,46 +221,51 @@ class Aligner:
 
 
 
-        #TMP: PRodurre immagine per Jelle
+        #TODO: Remove this part and move it to registration component
+        if target_modality[ModalityParameters.REGISTRATION_SETTINGS][RegistrationSettings.TYPE] == RegistrationType.RESOLUTION_SCALING_TO_TARGET:
+            # Get a boolean mask of the aligned image
+            aligned_mask = np.zeros((aligned_image.shape[0:2]), dtype = np.bool_)
+            aligned_mask[np.max(aligned_image, axis=2) >= 0] = True
+
+            cpy = np.copy(anchor_image)
+            cpy[aligned_mask == False] = 0
+
+            a = engine.invert_transformation(cpy, output_parameters[0])
+
+            aligned_mask = np.zeros((a.shape[0:2]), dtype = np.bool_)
+            aligned_mask[np.max(a, axis=2) > 0] = True
+
+            indexes = np.argwhere(aligned_mask)
+            row_start, col_start = indexes.min(axis=0)
+            row_end, col_end = indexes.max(axis=0) + 1
+
+            # Cut the anchor image based on the aligned mask
+            cut_anchor_image = np.zeros((row_end - row_start, col_end - col_start, anchor_image.shape[2]), dtype = np.float32)
+            cut_anchor_image = a[row_start:row_end, col_start:col_end]
+
+            # Compute the scaling factor
+            scaling_factor = (
+                target_image.shape[1],
+                target_image.shape[0]
+            )
+
+            # Downscale the cut anchor image to the target image size
+            resulting_image = cv2.resize(cut_anchor_image, scaling_factor, interpolation = cv2.INTER_CUBIC)
+
+            # Normalize the resulting image taking into accont that there are negative values
+            resulting_image = (resulting_image - np.min(resulting_image)) / (np.max(resulting_image) - np.min(resulting_image))
+            resulting_image = np.clip(resulting_image, 0, 1)
 
 
-        # Get a boolean mask of the aligned image
-        aligned_mask = np.zeros((aligned_image.shape[0:2]), dtype = np.bool_)
-        aligned_mask[np.max(aligned_image, axis=2) >= 0] = True
-
-        cpy = np.copy(anchor_image)
-        cpy[aligned_mask == False] = 0
-
-        a = engine.invert_transformation(cpy, output_parameters[0])
-
-        aligned_mask = np.zeros((a.shape[0:2]), dtype = np.bool_)
-        aligned_mask[np.max(a, axis=2) > 0] = True
-
-        indexes = np.argwhere(aligned_mask)
-        row_start, col_start = indexes.min(axis=0)
-        row_end, col_end = indexes.max(axis=0) + 1
-
-        # Cut the anchor image based on the aligned mask
-        cut_anchor_image = np.zeros((row_end - row_start, col_end - col_start, anchor_image.shape[2]), dtype = np.float32)
-        cut_anchor_image = a[row_start:row_end, col_start:col_end]
-
-        # Compute the scaling factor
-        scaling_factor = (
-            target_image.shape[1],
-            target_image.shape[0]
-        )
-
-        # Downscale the cut anchor image to the target image size
-        resulting_image = cv2.resize(cut_anchor_image, scaling_factor, interpolation = cv2.INTER_CUBIC)
-
-        # Normalize the resulting image taking into accont that there are negative values
-        resulting_image = (resulting_image - np.min(resulting_image)) / (np.max(resulting_image) - np.min(resulting_image))
-        resulting_image = np.clip(resulting_image, 0, 1)
-
-
-        # Save the resulting image
-        output_path = os.path.join(self._alignment_folder, target_modality[ModalityParameters.MODALITY_NAME], "resulting_image.tiff")
-        if not os.path.exists(os.path.dirname(output_path)):
-            os.makedirs(os.path.dirname(output_path))
-        tifffile.imwrite(output_path, resulting_image)
+            # Save the resulting image
+            output_path = os.path.join(self._alignment_folder, anchor_modality[ModalityParameters.MODALITY_NAME], "resulting_image.tiff")
+            if not os.path.exists(os.path.dirname(output_path)):
+                os.makedirs(os.path.dirname(output_path))
+            tifffile.imwrite(output_path, resulting_image)
+        elif target_modality[ModalityParameters.REGISTRATION_SETTINGS][RegistrationSettings.TYPE] == RegistrationType.RESOLUTION_SCALING_TO_ANCHOR:
+            # Save the aligned image as a tiff file
+            output_path = os.path.join(self._alignment_folder, target_modality[ModalityParameters.MODALITY_NAME], "resulting_image.tiff")
+            if not os.path.exists(os.path.dirname(output_path)):
+                os.makedirs(os.path.dirname(output_path))
+            tifffile.imwrite(output_path, aligned_image)
 

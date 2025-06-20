@@ -4,6 +4,7 @@ from readlif.reader import LifFile, LifImage
 import xml.etree.ElementTree as ET
 import ramanspy as rp
 from basicpy import BaSiC
+from scipy.ndimage import distance_transform_edt
 
 from multiprocessing import Pool
 
@@ -160,6 +161,8 @@ class RamanImage:
 			Path to the LIF file.
 		'''
 
+		self._pixel_size = 1.13525390625  		#TODO: Replace with the actual one from metadata
+
 		if type(filename) is not str:
 			raise TypeError("Filename must be a string representing the path to the LIF file.")
 		
@@ -176,6 +179,7 @@ class RamanImage:
 		self._raw_tiles: np.ndarray[np.float32] = None
 		self._basic_corrected_tiles: np.ndarray[np.float32] = None
 		self._raman_corrected_tiles: np.ndarray[np.float32] = None
+		self._quick_mosaic: np.ndarray[np.float32] = None
 		self._mosaic: np.ndarray[np.float32] = None
 		self._metadata: RamanMetadata = []
 		self._wavenumbers: np.ndarray[np.float32] = None
@@ -341,7 +345,7 @@ class RamanImage:
 		self._raw_tiles = stacked_tiles
 		self._wavenumbers = stacked_wavenumbers
 		self._metadata = reference_metadata
-		self._tiles_coordinates = coordinates
+		self._tiles_coordinates = coordinates * 1e6
 	
 	def _parse_lif_metadata(self, lif: LifFile) -> dict[str, RamanMetadata]:
 	
@@ -645,6 +649,11 @@ class RamanImage:
 					self._raman_corrected_tiles[tile_idx, start_channel:end_channel + 1] = processed_tile
 
 		if global_norm == True:
+			# Get the global minimum and maximum values across all tiles
+			min_value = np.min(self._raman_corrected_tiles)
+			max_value = np.max(self._raman_corrected_tiles)
+
+
 			# Normalize the tiles to [0, 1] with a global normalization
 			self._raman_corrected_tiles -= np.min(self._raman_corrected_tiles)
 			self._raman_corrected_tiles /= np.max(self._raman_corrected_tiles)
@@ -671,3 +680,133 @@ class RamanImage:
 				self._basic_corrected_tiles = np.zeros_like(self._raw_tiles, dtype=np.float32)
 			
 			self._basic_corrected_tiles[:, channel_idx, :, :] = basic.transform(channel_data)
+
+		# Apply global normalization to the corrected tiles
+		self._basic_corrected_tiles -= np.min(self._basic_corrected_tiles)
+		self._basic_corrected_tiles /= np.max(self._basic_corrected_tiles)
+
+	def quick_stitch(self) -> None:
+		"""
+		Stitch the BaSiC corrected tiles into a mosaic for background removal.
+		This mosaic is not intended to be used for any other purpose, as it incorporates misaligment artifacts.
+		"""
+
+		tiles = self._basic_corrected_tiles
+		coordinates = self._tiles_coordinates
+
+		# Convert coordinates to pixel positions (x, y)
+		coords_px = (coordinates / self._pixel_size).astype(int)
+		
+		# Calculate mosaic dimensions (width, height)
+		min_x, min_y = np.min(coords_px, axis=0)
+		max_x = np.max(coords_px[:, 0] + tiles.shape[3])
+		max_y = np.max(coords_px[:, 1] + tiles.shape[2])
+		
+		mosaic_width = max_x - min_x
+		mosaic_height = max_y - min_y
+		mosaic_shape = (tiles.shape[1], mosaic_height, mosaic_width)
+		
+		# Create accumulation arrays
+		mosaic = np.zeros(mosaic_shape, dtype=np.float32)
+		weights = np.zeros(mosaic_shape, dtype=np.float32)
+
+		# Create blending weights using distance transform
+		def create_blend_weights(tile_height, tile_width):
+			weights = np.ones((tile_height, tile_width), dtype=np.float32)
+			weights = distance_transform_edt(weights)
+			weights /= np.max(weights)
+			return weights
+
+		tile_weights = create_blend_weights(tiles.shape[2], tiles.shape[3])
+		
+		# Place each tile in the mosaic
+		for t in range(tiles.shape[0]):
+			x, y = coords_px[t] - [min_x, min_y]
+			tile_height, tile_width = tiles.shape[2], tiles.shape[3]
+			
+			# Calculate valid regions
+			y_start = max(0, y)
+			y_end = min(mosaic_height, y + tile_height)
+			x_start = max(0, x)
+			x_end = min(mosaic_width, x + tile_width)
+			
+			tile_y_start = max(0, -y)
+			tile_y_end = tile_height - max(0, y + tile_height - mosaic_height)
+			tile_x_start = max(0, -x)
+			tile_x_end = tile_width - max(0, x + tile_width - mosaic_width)
+
+			# Add weighted tile contribution
+			for c in range(tiles.shape[1]):
+				mosaic[c, y_start:y_end, x_start:x_end] += (
+					tiles[t, c, tile_y_start:tile_y_end, tile_x_start:tile_x_end] *
+					tile_weights[tile_y_start:tile_y_end, tile_x_start:tile_x_end]
+				)
+				weights[c, y_start:y_end, x_start:x_end] += tile_weights[tile_y_start:tile_y_end, tile_x_start:tile_x_end]
+
+		# Normalize mosaic by accumulated weights
+		mosaic = np.divide(mosaic, weights, where=weights > 0)
+
+		# Normalize the mosaic to [0, 1]
+		mosaic -= np.min(mosaic)
+		mosaic /= np.max(mosaic)
+
+		self._quick_mosaic = mosaic.astype(np.float32)
+
+	def _extract_tiles_from_mosaic(self, mosaic, coordinates, pixel_size, tile_size) -> np.ndarray[np.float32]:
+		"""
+		Extracts tiles from mosaic (invert the quick_stitch method).
+
+		Parameters
+		----------
+		mosaic : np.ndarray[np.float32]
+			The stitched mosaic from which to extract tiles.
+		coordinates : np.ndarray[np.float32]
+			The (X, Y) coordinates of each tile in the mosaic.
+		pixel_size : float
+			The size of a pixel in the original image.
+		tile_size : tuple[int, int]
+			The size of each tile in pixels (height, width).
+		"""
+		# Convert coordinates to pixel positions
+		coords_px = (coordinates / pixel_size).astype(int)
+		
+		# REPLICATE MOSAIC CREATION LOGIC
+		min_x = np.min(coords_px[:, 0])
+		min_y = np.min(coords_px[:, 1])
+		coords_px[:, 0] -= min_x  # X coordinate shift
+		coords_px[:, 1] -= min_y  # Y coordinate shift
+		
+		# Get tile dimensions
+		tile_h, tile_w = tile_size
+		T = len(coords_px)
+		C, H, W = mosaic.shape
+		
+		# Initialize output array
+		tiles = np.zeros((T, C, tile_h, tile_w), dtype=mosaic.dtype)
+		
+		for t in range(T):
+			x, y = coords_px[t]
+			
+			# Calculate valid regions
+			x_start = max(0, x)
+			x_end = min(W, x + tile_w)
+			y_start = max(0, y)
+			y_end = min(H, y + tile_h)
+			
+			# Calculate tile regions
+			tx_start = x_start - x
+			tx_end = tx_start + (x_end - x_start)
+			ty_start = y_start - y
+			ty_end = ty_start + (y_end - y_start)
+			
+			if (x_end > x_start) and (y_end > y_start):
+				tiles[t, :, ty_start:ty_end, tx_start:tx_end] = mosaic[
+					:, y_start:y_end, x_start:x_end
+				]
+
+		# Normalize the tiles to [0, 1]
+		tiles -= np.min(tiles)
+		tiles /= np.max(tiles)
+		
+		return tiles
+	

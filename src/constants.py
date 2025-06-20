@@ -49,7 +49,9 @@ class RegistrationSettings(_AbstractEnum):
 
 class RegistrationType(_AbstractEnum):
 	NONE = "none"
-	RESOLUTION_SCALING = "resolution_scaling"
+	RESOLUTION_SCALING_TO_TARGET = "resolution_scaling_to_target"
+	RESOLUTION_SCALING_TO_ANCHOR = "resolution_scaling_to_anchor"
+	
 
 class ImagingPreprocessing(_AbstractEnum):
 	
