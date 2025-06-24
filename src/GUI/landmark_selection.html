@@ -147,6 +147,7 @@
             cursor: grab; /* Indicate draggable */
             user-select: none; /* Prevent text selection during drag */
             box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1); /* Subtle shadow */
+            image-rendering: pixelated; /* nearest-neighbor (no interpolazione) */
         }
          .image-viewer:active {
              cursor: grabbing;
@@ -166,11 +167,11 @@
             width: 10px; /* Fixed size */
             height: 10px; /* Fixed size */
             background-color: rgba(255, 0, 0, 0.8); /* Red, slightly transparent */
-            border-radius: 50%;
-            border: 1px solid rgba(255, 255, 255, 0.7); /* White border */
+            border-radius: 30%;
+            border: 2px solid rgba(255, 255, 255, 0.7); /* White border */
             pointer-events: none; /* Don't interfere with image events */
             /* Centering the dot on the coordinate */
-            transform: translate(-50%, -50%);
+            transform: translate(0%, 0%);
             box-shadow: 0 0 3px rgba(0,0,0,0.5);
         }
 
@@ -534,12 +535,12 @@
                         if (originalX >= 0 && originalX <= naturalWidth.value &&
                             originalY >= 0 && originalY <= naturalHeight.value) {
 
-                            const newPoint = { x: Math.round(originalX), y: Math.round(originalY), color: getDeterministicColor(clickedPoints.length) };
+                            const newPoint = { x: Math.floor(originalX), y: Math.floor(originalY), color: getDeterministicColor(clickedPoints.length) };
                             clickedPoints.push(newPoint);
 
                         
                             // Emit the coordinates to the parent
-                            emit('image-click', { imageId: props.imageId, x: Math.round(originalX), y: Math.round(originalY) });
+                            emit('image-click', { imageId: props.imageId, x: Math.floor(originalX), y: Math.floor(originalY) });
                         } else {
                              emit('log-message', `${props.imageId}: Click ignored (outside image bounds)`);
                         }
