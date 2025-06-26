@@ -1,4 +1,4 @@
-import os, time
+import os, time, math
 import numpy as np
 from PIL import Image
 from typing import Callable
@@ -22,9 +22,11 @@ class LandmarkSelectionGUI:
         The moving image to be aligned to the fixed image.
     save_landmarks_callback : Callable
         A callback function to save the selected landmarks.
+    image_size_cap : int | None, optional
+        The maximum size of the images to be displayed in the GUI. If None, no cap is applied. Default is None.
     '''
 
-    def __init__(self, fixed_image: np.ndarray, moving_image: np.ndarray, save_landmarks_callback: Callable):
+    def __init__(self, fixed_image: np.ndarray, moving_image: np.ndarray, save_landmarks_callback: Callable, image_size_cap: int | None = None):
 
         if not isinstance(fixed_image, np.ndarray) or not isinstance(moving_image, np.ndarray):
             raise TypeError("The images must be numpy arrays.")
@@ -39,9 +41,13 @@ class LandmarkSelectionGUI:
         if not (0 <= moving_image.min() <= 1 and 0 <= moving_image.max() <= 1):
             raise ValueError("The moving image must be normalized between 0 and 1.")
         
+        self._image_size_cap = image_size_cap
+        self._original_size_fixed = fixed_image.shape[:2]
+        self._original_size_moving = moving_image.shape[:2]
+        
         self.save_landmarks_callback = save_landmarks_callback
-        self.fixed_image = self._convert_image_PIL(fixed_image)
-        self.moving_image = self._convert_image_PIL(moving_image)
+        self.fixed_image, self._applied_scaling_factor_fixed = self._convert_image_PIL(fixed_image)
+        self.moving_image, self._applied_scaling_factor_moving = self._convert_image_PIL(moving_image)
 
         self.app = Flask(__name__)
         self._server = None
@@ -88,6 +94,10 @@ class LandmarkSelectionGUI:
             fixed_landmarks_np = np.array([(point['x'], point['y']) for point in fixed_landmarks], dtype=np.int32)
             moving_landmarks_np = np.array([(point['x'], point['y']) for point in moving_landmarks], dtype=np.int32)
 
+            # Convert the landmarks to the original scale
+            fixed_landmarks_np = self._map_landmark_to_original_scale(fixed_landmarks_np, self._applied_scaling_factor_fixed, self._original_size_fixed)
+            moving_landmarks_np = self._map_landmark_to_original_scale(moving_landmarks_np, self._applied_scaling_factor_moving, self._original_size_moving)
+
             self.save_landmarks_callback(fixed_landmarks_np, moving_landmarks_np, moving_image_xflip, moving_image_yflip)
             Thread(target=self.disable_gui, daemon=True).start()
             return jsonify({"status": "success", "message": "Landmarks saved successfully."})
@@ -101,7 +111,6 @@ class LandmarkSelectionGUI:
         if self._server:
             self._server.shutdown()
             self._server = None
-
 
     def _convert_image_PIL(self, image: np.ndarray) -> Image.Image:
         '''
@@ -120,56 +129,84 @@ class LandmarkSelectionGUI:
         if not isinstance(image, np.ndarray):
             raise TypeError("The input must be a numpy array.")
         
+        # Check if it's necessary to resize the image
+        if self._image_size_cap is not None:
+            if image.ndim == 3:
+                W, H, C = image.shape
+            else:
+                W, H = image.shape
+                C = 1
+
+            scaling_factor = max(1, math.ceil(max(W, H) / self._image_size_cap))
+
+            N_W = W // scaling_factor
+            N_H = H // scaling_factor
+
+            # Downscale the image by computing local averages
+            trimmed_height = N_H * scaling_factor
+            trimmed_width = N_W * scaling_factor
+            trimmed_data = image[:trimmed_width, :trimmed_height, :] if image.ndim == 3 else image[:trimmed_width, :trimmed_height]
+
+            # Vectorized mean pooling
+            if image.ndim == 2:
+                reshaped = trimmed_data.reshape(N_W, scaling_factor, N_H, scaling_factor)
+                downscaled_image = np.percentile(reshaped, 95, axis=(1, 3))
+                downscaled_image = ((downscaled_image - downscaled_image.min()) / (downscaled_image.max() - downscaled_image.min()))
+            else:
+                reshaped = trimmed_data.reshape(N_W, scaling_factor, N_H, scaling_factor, C)
+                downscaled_image = np.percentile(reshaped, 95, axis=(1, 3))
+
+                for channel in range(C):
+                    downscaled_image[:, :, channel] = ((downscaled_image[:, :, channel] - downscaled_image[:, :, channel].min()) / (downscaled_image[:, :, channel].max() - downscaled_image[:, :, channel].min()))
+
+            self._applied_scaling_factor = scaling_factor
+        else:
+            downscaled_image = image
+            scaling_factor = 1.0
+        
         # Evaluate the image type
-        if image.dtype != np.uint8:
-            image = (image * 255).astype(np.uint8)
+        if downscaled_image.dtype != np.uint8:
+            downscaled_image = (downscaled_image * 255).astype(np.uint8)
 
         # Convert the image to a PIL image
-        if len(image.shape) == 2:  # Grayscale
-            pil_image = Image.fromarray(image, mode='L')
+        if len(downscaled_image.shape) == 2:  # Grayscale
+            pil_image = Image.fromarray(downscaled_image, mode='L')
         else:  # RGB (assuming 3-channel array)
-            pil_image = Image.fromarray(image, mode='RGB')
+            pil_image = Image.fromarray(downscaled_image, mode='RGB')
 
-        return pil_image
-        
-    def get_html(self) -> str:
+        return pil_image, scaling_factor
+
+
+    def _map_landmark_to_original_scale(self, landmarks: np.ndarray[np.int32], scaling_factor: int, original_shape: np.ndarray[np.int32]) -> np.ndarray[np.int32]:
         '''
-        Get the HTML content for the GUI.
-
-        Returns
-        ----------
-        str
-            The HTML content for the GUI.
-        '''
-        
-        # Get the absolute path of the HTML file
-        html_path = os.path.join(os.path.dirname(__file__), "landmark_selection.html")
-
-        # Read the HTML file
-        with open(html_path, 'r') as file:
-            html_content = file.read()
-        
-        return html_path
-
-    def get_image(self, image_id: str):
-        '''
-        Get the image from the GUI.
+        Given the landmarks in the downscaled image, map them back to the original image scale.
 
         Parameters
         ----------
-        image_id : str
-            The ID of the image to get.
-        
+        landmarks : np.ndarray[np.int32]
+            The landmarks in the downscaled image.
+        scaling_factor : int
+            The scaling factor used to downscale the image.
+        original_shape : np.ndarray[np.int32]
+            The original shape of the image before downscaling.
+
         Returns
         ----------
-        str
-            The base64 string representation of the image.
+        np.ndarray[np.int32]
+            The landmarks mapped to the original image scale.
         '''
-        if image_id == "fixed":
-            return self._convert_image_base64(self.fixed_image)
-        elif image_id == "moving":
-            return self._convert_image_base64(self.moving_image)
-        else:
-            # Placeholder for error
-            return "Invalid image ID"
-
+        
+        # Top-left corner of the source cluster
+        x_orig_start = landmarks[:, 0] * scaling_factor
+        y_orig_start = landmarks[:, 1] * scaling_factor
+        
+        # Bottom-right corner (adjusted for edge clusters)
+        x_orig_end = min((landmarks[:, 0] + 1) * scaling_factor, original_shape[0])
+        y_orig_end = min((landmarks[:, 1] + 1) * scaling_factor, original_shape[0])
+        
+        # Center of the cluster
+        centers = np.zeros_like(landmarks, dtype=np.int32)
+        centers[:, 0] = (x_orig_start + x_orig_end) // 2
+        centers[:, 1] = (y_orig_start + y_orig_end) // 2
+        
+        return centers

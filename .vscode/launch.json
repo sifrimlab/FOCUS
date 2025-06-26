@@ -5,14 +5,14 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "Test",
+            "name": "Debug",
             "type": "debugpy",
             "request": "launch",
             "program": "src/debug.py",
             "console": "integratedTerminal"
         },
         {
-            "name": "Pipeline",
+            "name": "FOCUS",
             "type": "debugpy",
             "request": "launch",
             "program": "src/main.py",

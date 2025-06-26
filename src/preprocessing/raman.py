@@ -1,12 +1,11 @@
-import tqdm
+import tqdm, tifffile, os, subprocess
 import numpy as np
 from readlif.reader import LifFile, LifImage
 import xml.etree.ElementTree as ET
 import ramanspy as rp
-from basicpy import BaSiC
+from basicpy.basicpy import BaSiC
 from scipy.ndimage import distance_transform_edt
-
-from multiprocessing import Pool
+from joblib import Parallel, delayed
 
 class RamanMetadata:
 	'''
@@ -286,6 +285,7 @@ class RamanImage:
 		# Define a temporary raw tiles and wavenumbers dictionaries
 		raw_tiles: dict[str, np.ndarray[np.float32]] = {}
 		wavenumbers: dict[str, np.ndarray[np.float32]] = {}
+		coordinates: dict[str, np.ndarray[np.float32]] = {}
 
 		# Iterate over the images following the order written in metadata
 		for name, metadata in metadata_dict.items():
@@ -324,16 +324,26 @@ class RamanImage:
 				metadata.lambda_stokes
 			)
 
+			# Store the coordinates of the tiles
+			if metadata.tiles_coordinates is not None:
+				coordinates[name] = metadata.tiles_coordinates
+			else:
+				raise ValueError(f"Tiles coordinates not found for image '{name}' in the LIF file. Please ensure the metadata is complete.")
+
 		# Once all the tiles are loaded, merge them into a single high-dimensional array
 		stacked_tiles = np.concatenate([raw_tiles[name] for name in raw_tiles], axis = 1)
 		stacked_wavenumbers = np.concatenate([wavenumbers[name] for name in wavenumbers], axis = -1)
-		coordinates = metadata_dict[list(metadata_dict.keys())[0]].tiles_coordinates
+		coordinates = np.stack([coordinates[name] for name in coordinates], axis = 1)
+		coordinates = coordinates.mean(axis = 1)
 
-		# Normalize the tiles to [0, 1] if they are not already normalized
-		if np.min(stacked_tiles) < 0 or np.max(stacked_tiles) > 1:
-			stacked_tiles -= np.min(stacked_tiles)
-			stacked_tiles /= np.max(stacked_tiles)
-
+		# Rescale the whole 4D object to float32 (Assume it was originally in uint8)
+		if stacked_tiles.max() > 1.0 and stacked_tiles.max() <= 255.0:
+			stacked_tiles = stacked_tiles.astype(np.float32) / 255.0
+		elif stacked_tiles.max() > 1.0 and stacked_tiles.max() <= 65535.0:
+			stacked_tiles = stacked_tiles.astype(np.float32) / 65535.0
+		else:
+			raise ValueError("Expected input data to be either in the range [0, 255] or [0, 65535]. Please check the input data format.")
+		
 		# Update the metadata
 		reference_metadata.scan_height = stacked_tiles.shape[-2]
 		reference_metadata.scan_width = stacked_tiles.shape[-1]
@@ -434,8 +444,8 @@ class RamanImage:
 							lambda_excitation = lambda_definition.find('LambdaExcitation')
 							
 							if lambda_excitation is not None:
-								metadata.lambda_begin = float(lambda_excitation.get('LambdaExcitationBeginDouble', None))
-								metadata.lambda_end = float(lambda_excitation.get('LambdaExcitationEndDouble', None))
+								metadata.lambda_begin = float(lambda_excitation.get('LambdaExcitationBeginDouble', lambda_excitation.get('LambdaExcitationBegin', None)))
+								metadata.lambda_end = float(lambda_excitation.get('LambdaExcitationEndDouble', lambda_excitation.get('LambdaExcitationEnd', None)))
 								found_lambda = True
 
 					# Extract Lambda Stokes (Pump Wavelength)
@@ -538,17 +548,15 @@ class RamanImage:
 		
 		return np.array(mad == 0, dtype=np.bool_).squeeze()
 
-	def _process_tile_parallel(self, tile: np.ndarray[np.float32], wavenumbers: np.ndarray[np.float32], tile_index: int, slice_index: int, global_norm: bool) -> tuple[np.ndarray, int, int]:
+	def _process_tile_parallel(self, tile: np.ndarray[np.float32], wavenumbers: np.ndarray[np.float32], tile_index: int, slice_index: int) -> tuple[np.ndarray, int, int]:
 
-
+		# Define the processing pipeline applied to each pixel (first two steps are per tile)
 		pipeline = rp.preprocessing.Pipeline([
 			rp.preprocessing.despike.WhitakerHayes(),
-			rp.preprocessing.denoise.SavGol(window_length=9, polyorder=3),
+			rp.preprocessing.denoise.SavGol(window_length=7, polyorder=3),
 			rp.preprocessing.baseline.IASLS(),
+			rp.preprocessing.normalise.MinMax()
 		])
-
-		if global_norm == False:
-			pipeline.append(rp.preprocessing.normalise.MinMax())
 
 		# Create a coordinate grid to keep track of the valid pixels
 		C, X, Y = tile.shape
@@ -582,7 +590,7 @@ class RamanImage:
 
 		return restored_tile, tile_index, slice_index
 
-	def process_raw_tiles(self, wavenumbers: np.ndarray[np.float32] | None = None, parallel: bool = True, global_norm: bool = False) -> None:
+	def process_raw_tiles(self, wavenumbers: np.ndarray[np.float32] | None = None, parallel: bool = True) -> None:
 		'''
 		Process the raw tiles using the ramanspy library.
 		This method can process the tiles in parallel (active by default) or sequentially.
@@ -596,10 +604,6 @@ class RamanImage:
 		parallel : bool, optional
 			If True, the tiles will be processed in parallel using multiprocessing. If False, the tiles will be processed sequentially.
 			Default is True.
-
-		global_norm : bool, optional
-			If True, the tiles will be normalized to [0, 1] using a global normalization. If False, the tiles will not be normalized.
-			Default is False.
 		'''
 
 		if self._basic_corrected_tiles is None:
@@ -622,22 +626,24 @@ class RamanImage:
 							self._basic_corrected_tiles[tile_idx, start_channel:end_channel + 1, :, :], 
 							wavenumbers[start_channel:end_channel + 1], 
 							tile_idx,
-							slice_idx,
-							global_norm
+							slice_idx
 						)
 					)
 
-			# Use multiprocessing to process the tiles in parallel
-			with Pool(processes = len(units)) as pool:
-				slice_result = pool.starmap(
-					self._process_tile_parallel, 
-					units
-				)
-			
+			print(f"Processing {len(units)} tiles in parallel, it might take some minutes...")
+
+			# Process tiles in parallel using joblib
+			slice_result = Parallel(n_jobs=-1)(
+				delayed(self._process_tile_parallel)(*unit_args)
+				for unit_args in units
+			)
+
 			# Store the processed tiles in the dictionary
 			for processed_tile, tile_index, slice_index in slice_result:
 				start_channel, end_channel = self._spectra_slices[slice_index]
 				self._raman_corrected_tiles[tile_index, start_channel:end_channel + 1] = processed_tile
+
+			print(f"Processed {len(slice_result)} tiles.")
 		else:
 			for tile_idx in tqdm.tqdm(range(self._basic_corrected_tiles.shape[0]), desc="Processing Tiles"):
 				for slice_index, (start_channel, end_channel) in enumerate(self._spectra_slices):
@@ -645,18 +651,8 @@ class RamanImage:
 					tile_slice = self._basic_corrected_tiles[tile_idx, start_channel:end_channel + 1, :, :]
 
 					# Process the tile
-					processed_tile, _ = self._process_tile_parallel(tile_slice, wavenumbers_slice, tile_idx, slice_index, global_norm)
+					processed_tile, _ = self._process_tile_parallel(tile_slice, wavenumbers_slice, tile_idx, slice_index)
 					self._raman_corrected_tiles[tile_idx, start_channel:end_channel + 1] = processed_tile
-
-		if global_norm == True:
-			# Get the global minimum and maximum values across all tiles
-			min_value = np.min(self._raman_corrected_tiles)
-			max_value = np.max(self._raman_corrected_tiles)
-
-
-			# Normalize the tiles to [0, 1] with a global normalization
-			self._raman_corrected_tiles -= np.min(self._raman_corrected_tiles)
-			self._raman_corrected_tiles /= np.max(self._raman_corrected_tiles)
 
 	def basic_correct(self) -> None:
 		'''
@@ -810,3 +806,106 @@ class RamanImage:
 		
 		return tiles
 	
+	def _prepare_for_ashlar(self, tiles: np.ndarray[np.float32], coordinates: np.ndarray[np.float32], output_path: str, filename: str) -> None:
+
+		# Replace NaN values with 0
+		tiles = np.nan_to_num(tiles, nan=0.0)
+
+		# Convert to Uint8
+		tiles = (tiles * 255).astype(np.uint8)
+
+		# Reshape to (T, Z, C, Y, X)
+		tiles = tiles[:, np.newaxis, :, :, :]
+		
+		# Convert the coordinates in um and flip the y-axis (from Leica to OME TIFF format)
+		coordinates = coordinates
+		coordinates[:, 1] = np.max(coordinates[:, 1]) - (coordinates[:, 1] - np.min(coordinates[:, 1]))
+
+		# Generate the OME TIFF metadata
+		T, Z, C, Y, X = tiles.shape
+
+		# Save the tile as OME TIFF
+		output_filename = os.path.join(output_path, f'{filename}.ome.tiff')
+
+		with tifffile.TiffWriter(output_filename, ome=True, bigtiff=True) as tif:
+			for t in range(T):
+				# Create the metadata
+				metadata = {
+					'Pixels': {
+						'PhysicalSizeX': self._pixel_size,
+						'PhysicalSizeY': self._pixel_size,
+						'PhysicalSizeXUnit': 'µm',
+						'PhysicalSizeYUnit': 'µm',
+						'SizeT': 1,
+						'SizeC': C,
+						'SizeY': Y,
+						'SizeX': X,
+						'SizeZ': 1,
+						'Type': 'uint8',  # or 'float', 'uint16', depending on dtype
+					},
+					'Channel': [{'Name': f'Channel_{i}'} for i in range(C)],
+					'Plane': [
+						{
+							'TheT': 0,
+							'TheC': c,
+							'TheZ': 0,  # Assuming no Z dimension for Raman tiles
+							'PositionX': float(coordinates[t, 0]),
+							'PositionY': float(coordinates[t, 1]),
+							'PositionXUnit': 'µm',
+							'PositionYUnit': 'µm'
+						}
+						for c in range(C)
+					]
+				}
+
+				# Write the tile to the TIFF file
+				tif.write(
+					tiles[t, 0, :, :, :], 
+					metadata=metadata,
+					tile = (Y, X),
+					compression='zlib',
+				)
+
+	def ashlar_stitch(self, output_path: str, filename: str) -> None:
+		"""
+		Stitch the corrected tiles into a mosaic.
+		This mosaic is intended to be used for further processing, as it does not incorporate misaligment artifacts.
+
+		Prior to this method, the BaSiC correction and the raman denoising should be applied.
+
+		Parameters
+		----------
+		output_path : str
+			The path where the stitched mosaic will be saved as an OME TIFF file.
+		filename : str
+			The name of the output OME TIFF file (without extension).
+		"""
+
+		if self.corrected is None:
+			raise ValueError("Make sure to run basic_correct() and process_raw_tiles() before calling this method.")
+		
+		print("Generating stitched mosaic image...")
+
+		# Prepare the tiles to be stitched with ASHLAR
+		self._prepare_for_ashlar(tiles = self.corrected, coordinates = self.tiles_coordinates, output_path = output_path, filename = 'tiles')
+
+		# Execute ASHLAR to stitch the tiles
+		result = subprocess.run([
+			"ashlar",
+			"--output", os.path.join(output_path, f"{filename}.ome.tiff"),
+			os.path.join(output_path, f"tiles.ome.tiff"),
+		], capture_output=False, check=False)
+
+		if result.returncode != 0:
+			raise RuntimeError(f"ASHLAR stitching failed with error: {result.stderr.decode('utf-8')}")
+		
+		# Remove the temporary tiles file
+		try:
+			os.remove(os.path.join(output_path, f"tiles.ome.tiff"))
+		except OSError as e:
+			print(f"Warning: Could not remove temporary tiles file: {e}")
+
+		# Load the stitched mosaic back into the object
+		self._mosaic = tifffile.imread(os.path.join(output_path, f"{filename}.ome.tiff"))
+
+		print("Mosaic stitching completed successfully.")

@@ -188,15 +188,17 @@ class Aligner:
 
         # Verify the presence of landmarks. If missing, request the user to pick them from the GUI
         if len(self._fixed_landmarks) == 0 or len(self._moving_landmarks) == 0:
-            print("Landmarks not found. Please select them through the GUI.")
+            print("Landmarks not found. Loading the GUI to allow hand-picking...")
 
             # Create the GUI and wait for the user to select them
             landmarks_gui = LandmarkSelectionGUI(
                fixed_image = anchor_image,
                 moving_image = target_image,
                 save_landmarks_callback = self._get_landmarks_from_gui,
+                image_size_cap = 20000
             )
 
+            print("Please select the landmarks opening this link in your browser: http://localhost:5000/")
             landmarks_gui.enable_gui()
 
         # Check if the moving image has to be flipped

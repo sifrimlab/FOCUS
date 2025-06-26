@@ -272,7 +272,7 @@ def preprocess_microscopy_image(path: str, sample_id: str, modality_name: str,  
     
     # Save the processed image
     path_to_file = os.path.join(output_folder, f'{sample_id}.tiff')
-    skio.imsave(path_to_file, processed_image)
+    tifffile.imwrite(path_to_file, processed_image, compression='zlib')
 
     if debug_mode == True:
         # Plot the intermediate steps

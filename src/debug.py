@@ -2,7 +2,7 @@ import numpy as np
 import os, tqdm
 import matplotlib.pyplot as plt
 import preprocessing.lipidomics as lipidomics
-#import preprocessing.raman as raman
+import preprocessing.raman as raman
 import xml.etree.ElementTree as ET
 from constants import ImzMLFileParser
 
@@ -81,115 +81,15 @@ def read_ibm_file(path: str, sample_id: str, modality_name: str) -> tuple[np.nda
 
     return mzs, intensities
 
-import cv2
+import numpy as np
+import torch
+import basicpy  # Original JAX implementation
+import time
+from skimage.metrics import peak_signal_noise_ratio, structural_similarity
+import matplotlib.pyplot as plt
 
-# 4 corners of the MSI image with padding in the small Xenium image coordinates
-SMALL_XENIUM_TO_MSI = np.array([
-    (557, 834),
-    (557, 12747),
-    (27204, 834),
-    (27204, 12747),
-])
-
-XENIUM_TO_SMALL_XENIUM = np.array([
-    (0, 0),
-    (0, 54833),
-    (112568, 0),
-    (112568, 54833),
-])
-
-ORIGINAL_MSI_SIZE = (751, 345)
-ORIGINAL_XENIUM_SIZE = (112568, 54833)
-SMALL_XENIUM_SIZE = (28142, 13708)
-
-
-def homograpic_transform(source_point, source_shape, dest_shape, dest_corners_in_source) -> tuple[float, float]:
-    """
-    Converte le coordinate di un punto dall'immagine sorgente all'immagine destinazione.
-    
-    Parametri:
-    source_point: tuple (x, y) - Coordinate del punto nell'immagine sorgente
-    source_shape: tuple (H, W) - Dimensioni dell'immagine sorgente
-    dest_shape: tuple (H, W) - Dimensioni dell'immagine destinazione
-    dest_corners_in_source: list di 4 tuple (x, y) - Coordinate dei 4 angoli dell'immagine 
-                            destinazione espresse in coordinate dell'immagine sorgente.
-                            Devono essere in ordine: alto-sinistra, alto-destra, basso-sinistra, basso-destra
-    
-    Ritorna:
-    tuple (x, y) - Coordinate del punto nell'immagine destinazione
-    """
-    # Definisci i punti di destinazione nel sistema di coordinate dell'immagine destinazione
-    dest_h, dest_w = dest_shape
-    dest_corners = np.array([
-        [0, 0],             # Alto-sinistra
-        [dest_w, 0],        # Alto-destra
-        [0, dest_h],        # Basso-sinistra
-        [dest_w, dest_h]    # Basso-destra
-    ], dtype=np.float32)
-    
-    # Converti i punti di origine in un array numpy
-    src_corners = np.array(dest_corners_in_source, dtype=np.float32)
-    
-    # Calcola la matrice di omografia
-    H, _ = cv2.findHomography(src_corners, dest_corners)
-    
-    # Trasforma le coordinate del punto
-    point = np.array([[source_point[0], source_point[1]]], dtype=np.float32)
-    transformed_point = cv2.perspectiveTransform(point.reshape(-1, 1, 2), H)
-    
-    # Restituisci le coordinate trasformate come una tupla (x, y)
-    return (transformed_point[0, 0, 0], transformed_point[0, 0, 1])
-
-def map_xenium_to_msi(xenium_coord: tuple[int, int], xenium_size: np.ndarray[np.int32], small_xenium_size: np.ndarray[np.int32], msi_size: np.ndarray[np.int32], xenium_to_small_xenium: np.ndarray[np.int32], small_xenium_to_msi: np.ndarray[np.int32], flip_y: bool = True):
-    """
-    Map a Xenium coordinate from the original image to the corresponding MSI coordinate.
-
-    Parameters:
-    -----------
-    xenium_coord : tuple[int, int]
-        Coordinate in the Xenium image.
-    original_xenium_size : tuple[int, int]
-        Size of the original Xenium image (width, height).
-    small_xenium_size : tuple[int, int]
-        Size of the small Xenium image (width, height).
-    original_msi_size : tuple[int, int]
-        Size of the original MSI image (width, height).
-    origin_offset : tuple[int, int] 
-        Offset to adjust the origin of the Xenium coordinate.
-    flip_y : bool, optional
-        Whether to flip the y-coordinate (default is True).
-
-    Returns:
-    --------
-    tuple[float, float] or (None, None)
-        Mapped MSI coordinate (x', y') as float, or (None, None)
-        if the coordinate is out of bounds.
-    """
-
-    # Map from small Xenium to original Xenium
-    xenium_coord_small = homograpic_transform(xenium_coord, xenium_size, small_xenium_size, xenium_to_small_xenium)
-
-    print("Xenium Coordinate in Small Xenium Space: ", xenium_coord_small)
-    
-    # Map from original Xenium to MSI
-    msi_coord = homograpic_transform(xenium_coord_small, small_xenium_size, msi_size, small_xenium_to_msi)
-
-    print("Mapped MSI Coordinate: ", msi_coord)
-
-    # Adjust for small numerical errors - round to 3 decimal places
-    msi_coord = (round(msi_coord[0], 3), round(msi_coord[1], 3))
-
-    # Flip the y-coordinate if specified
-    if flip_y:
-        msi_coord = (msi_coord[0], msi_size[1] - msi_coord[1])
-    
-    return msi_coord
-
-
-            
-
-if __name__ == "__main__":
-    '''PATH = "/mnt/data/lorenzo/VSC_DATA/Jelle"
+'''if __name__ == "__main__":
+    PATH = "/mnt/data/lorenzo/VSC_DATA/Jelle"
     SAMPLE_ID_LIST = [
         "LG001-RAW",
         "LG002-RAW",
@@ -224,10 +124,10 @@ if __name__ == "__main__":
         dynamic_window=True,
         dynamic_window_factor = 1e6,
         reference_mz = global_reference_mz,
-    )'''
+    )
 
-    '''PATH = "/mnt/data/lorenzo/VSC_DATA/Nina"
-    SAMPLE_ID = "00103993-1"
+    PATH = "/mnt/data/lorenzo/VSC_DATA/Nina"
+    SAMPLE_ID = "20250606-G"
     MODALITY_NAME = "raman"
 
     INPUT_PATH = os.path.join(PATH, SAMPLE_ID, MODALITY_NAME)
@@ -239,5 +139,3 @@ if __name__ == "__main__":
 
     raman_data._basic_corrected_tiles = raman_data.raw
     raman_data.process_raw_tiles()'''
-
-    print(map_xenium_to_msi((112568 / 2, 54832 / 2), ORIGINAL_XENIUM_SIZE, SMALL_XENIUM_SIZE, ORIGINAL_MSI_SIZE, XENIUM_TO_SMALL_XENIUM, SMALL_XENIUM_TO_MSI, flip_y=True))

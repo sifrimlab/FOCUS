@@ -2,7 +2,7 @@
     "data_source_path": "/mnt/data/lorenzo/VSC_DATA/Jelle",
     "sample_name": "MSI_XENIUM",
     "anchor_modality": "xenium",
-    "perform_preprocessing": true,
+    "perform_preprocessing": false,
     "modalities": [
         {
             "modality_name": "xenium",
@@ -26,7 +26,7 @@
                 "color_enhancement": false
             },
             "alignment_settings": {
-                "transformations": ["rigid"]
+                "transformations": ["affine"]
             },
             "registration_settings" : {
                 "type": "resolution_scaling_to_anchor"
