@@ -314,7 +314,7 @@ class RamanImage:
 			if len(self._spectra_slices) == 0:
 				self._spectra_slices.append((0, metadata.lambda_steps - 1))
 			else:
-				self._spectra_slices.append((self._spectra_slices[-1][1] + 1, self._spectra_slices[-1][1] + metadata.lambda_steps - 1))
+				self._spectra_slices.append((self._spectra_slices[-1][1] + 1, self._spectra_slices[-1][1] + metadata.lambda_steps))
 
 			# Compute the wavenumbers based on the 
 			wavenumbers[name] = self.compute_wavenumbers(
@@ -333,8 +333,7 @@ class RamanImage:
 		# Once all the tiles are loaded, merge them into a single high-dimensional array
 		stacked_tiles = np.concatenate([raw_tiles[name] for name in raw_tiles], axis = 1)
 		stacked_wavenumbers = np.concatenate([wavenumbers[name] for name in wavenumbers], axis = -1)
-		coordinates = np.stack([coordinates[name] for name in coordinates], axis = 1)
-		coordinates = coordinates.mean(axis = 1)
+		coordinates = np.concatenate([coordinates[name] for name in coordinates])
 
 		# Rescale the whole 4D object to float32 (Assume it was originally in uint8)
 		if stacked_tiles.max() > 1.0 and stacked_tiles.max() <= 255.0:
@@ -475,6 +474,10 @@ class RamanImage:
 			if metadata.tile_number is not None and metadata.tile_number > 1:
 				tiles = element.findall('./Data/Image/Attachment[@Name="TileScanInfo"]/Tile')
 				metadata.tiles_coordinates = np.ndarray((metadata.tile_number, 2), dtype=np.float32)
+
+				if len(tiles) != metadata.tile_number:
+					print(f"RuntimeWarning: For element {element_name}, expected {metadata.tile_number} tiles, but found {len(tiles)} tiles in the metadata. This element is ignored (likely a broken scan)")
+					continue
 
 				for tile_index, tile in enumerate(tiles):
 					metadata.tiles_coordinates[tile_index] = ((float(tile.get('PosX')), float(tile.get('PosY'))))
@@ -687,8 +690,9 @@ class RamanImage:
 		This mosaic is not intended to be used for any other purpose, as it incorporates misaligment artifacts.
 		"""
 
+		# Use only an approximation of the coordinates for the mosaic
+		coordinates = self._tiles_coordinates[self._spectra_slices[0][0]:self._spectra_slices[-1][1]]
 		tiles = self._basic_corrected_tiles
-		coordinates = self._tiles_coordinates
 
 		# Convert coordinates to pixel positions (x, y)
 		coords_px = (coordinates / self._pixel_size).astype(int)
@@ -818,11 +822,13 @@ class RamanImage:
 		tiles = tiles[:, np.newaxis, :, :, :]
 		
 		# Convert the coordinates in um and flip the y-axis (from Leica to OME TIFF format)
-		coordinates = coordinates
 		coordinates[:, 1] = np.max(coordinates[:, 1]) - (coordinates[:, 1] - np.min(coordinates[:, 1]))
 
 		# Generate the OME TIFF metadata
 		T, Z, C, Y, X = tiles.shape
+
+		# Helper function to find the slice index for a given channel
+		find_slice_idx = lambda c: next((i for i, (start, end) in enumerate(self._spectra_slices) if start <= c <= end), None)
 
 		# Save the tile as OME TIFF
 		output_filename = os.path.join(output_path, f'{filename}.ome.tiff')
@@ -849,8 +855,8 @@ class RamanImage:
 							'TheT': 0,
 							'TheC': c,
 							'TheZ': 0,  # Assuming no Z dimension for Raman tiles
-							'PositionX': float(coordinates[t, 0]),
-							'PositionY': float(coordinates[t, 1]),
+							'PositionX': float(coordinates[t + (find_slice_idx(c) * T), 0]),
+							'PositionY': float(coordinates[t + (find_slice_idx(c) * T), 1]),
 							'PositionXUnit': 'µm',
 							'PositionYUnit': 'µm'
 						}
@@ -909,3 +915,6 @@ class RamanImage:
 		self._mosaic = tifffile.imread(os.path.join(output_path, f"{filename}.ome.tiff"))
 
 		print("Mosaic stitching completed successfully.")
+
+	def _force_mosaic_load(self, output_path: str, filename: str):
+		self._mosaic = tifffile.imread(os.path.join(output_path, f"{filename}.ome.tiff"))

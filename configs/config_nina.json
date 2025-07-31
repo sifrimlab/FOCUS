@@ -1,6 +1,6 @@
 {
     "data_source_path": "/mnt/data/lorenzo/VSC_DATA/Nina",
-    "sample_name": "00103993-1",
+    "sample_name": "00103993-2",
     "anchor_modality": "h&e",
     "perform_preprocessing": true,
     "modalities": [
@@ -20,7 +20,7 @@
             "preprocessing_settings": {
                 "peak_picking": true,
                 "peak_prominence_threshold": 0.01,
-                "peak_window_tolerance_ppm": 20,
+                "peak_window_tolerance_ppm": 10,
                 "dynamic_peak_window": true,
                 "dynamic_peak_window_factor": 1e6
             },

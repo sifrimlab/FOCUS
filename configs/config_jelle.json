@@ -2,7 +2,7 @@
     "data_source_path": "/mnt/data/lorenzo/VSC_DATA/Jelle",
     "sample_name": "MSI_XENIUM",
     "anchor_modality": "xenium",
-    "perform_preprocessing": false,
+    "perform_preprocessing": true,
     "modalities": [
         {
             "modality_name": "xenium",
