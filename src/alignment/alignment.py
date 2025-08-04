@@ -195,7 +195,7 @@ class Aligner:
                fixed_image = anchor_image,
                 moving_image = target_image,
                 save_landmarks_callback = self._get_landmarks_from_gui,
-                image_size_cap = 20000
+                image_size_cap = None # TODO: Correct the bugs to use this feature
             )
 
             print("Please select the landmarks opening this link in your browser: http://localhost:5000/")

@@ -95,8 +95,8 @@ class LandmarkSelectionGUI:
             moving_landmarks_np = np.array([(point['x'], point['y']) for point in moving_landmarks], dtype=np.int32)
 
             # Convert the landmarks to the original scale
-            fixed_landmarks_np = self._map_landmark_to_original_scale(fixed_landmarks_np, self._applied_scaling_factor_fixed, self._original_size_fixed)
-            moving_landmarks_np = self._map_landmark_to_original_scale(moving_landmarks_np, self._applied_scaling_factor_moving, self._original_size_moving)
+            #fixed_landmarks_np = self._map_landmark_to_original_scale(fixed_landmarks_np, self._applied_scaling_factor_fixed, self._original_size_fixed)
+            #moving_landmarks_np = self._map_landmark_to_original_scale(moving_landmarks_np, self._applied_scaling_factor_moving, self._original_size_moving)
 
             self.save_landmarks_callback(fixed_landmarks_np, moving_landmarks_np, moving_image_xflip, moving_image_yflip)
             Thread(target=self.disable_gui, daemon=True).start()
