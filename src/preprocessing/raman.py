@@ -3,7 +3,7 @@ import numpy as np
 from readlif.reader import LifFile, LifImage
 import xml.etree.ElementTree as ET
 import ramanspy as rp
-from basicpy.basicpy import BaSiC
+#from basicpy.basicpy import BaSiC
 from scipy.ndimage import distance_transform_edt
 from joblib import Parallel, delayed
 
@@ -23,6 +23,7 @@ class RamanMetadata:
 		self._lambda_stokes: float = None
 		self._tile_number: int = None
 		self._tiles_coordinates: np.ndarray[np.float32] = None
+		self._pixel_size: np.ndarray[np.float32] = None
 
 	@property
 	def name(self) -> str:
@@ -147,6 +148,18 @@ class RamanMetadata:
 		if value.ndim != 2 or value.shape[1] != 2:
 			raise ValueError("Tiles coordinates must be a 2D array with shape (N, 2).")
 		self._tiles_coordinates = value.astype(np.float32)
+
+	@property
+	def pixel_size(self) -> np.ndarray[np.float32]:
+		return self._pixel_size
+	@pixel_size.setter
+	def pixel_size(self, value: np.ndarray[np.float32]):
+		if not isinstance(value, np.ndarray):
+			raise TypeError("Pixel size must be a numpy array.")
+		if value.ndim != 1 or value.shape[0] != 2:
+			raise ValueError("Pixel size must be a 1D array with shape (2,).")
+		self._pixel_size = value.astype(np.float32)
+
 	
 class RamanImage:
 	def __init__(self, filename: str):
@@ -159,8 +172,6 @@ class RamanImage:
 		filename : str
 			Path to the LIF file.
 		'''
-
-		self._pixel_size = 1.13525390625  		#TODO: Replace with the actual one from metadata
 
 		if type(filename) is not str:
 			raise TypeError("Filename must be a string representing the path to the LIF file.")
@@ -286,6 +297,7 @@ class RamanImage:
 		raw_tiles: dict[str, np.ndarray[np.float32]] = {}
 		wavenumbers: dict[str, np.ndarray[np.float32]] = {}
 		coordinates: dict[str, np.ndarray[np.float32]] = {}
+		pixel_size: dict[str, np.ndarray[np.float32]] = {}
 
 		# Iterate over the images following the order written in metadata
 		for name, metadata in metadata_dict.items():
@@ -329,11 +341,19 @@ class RamanImage:
 				coordinates[name] = metadata.tiles_coordinates
 			else:
 				raise ValueError(f"Tiles coordinates not found for image '{name}' in the LIF file. Please ensure the metadata is complete.")
+			
+			# Store the pixel size
+			if metadata.pixel_size is not None and np.all(metadata.pixel_size > 0):
+				pixel_size[name] = metadata.pixel_size
+			else:
+				raise ValueError(f"Pixel size not found or invalid for image '{name}' in the LIF file. Please ensure the metadata is complete.")
 
 		# Once all the tiles are loaded, merge them into a single high-dimensional array
 		stacked_tiles = np.concatenate([raw_tiles[name] for name in raw_tiles], axis = 1)
 		stacked_wavenumbers = np.concatenate([wavenumbers[name] for name in wavenumbers], axis = -1)
 		coordinates = np.concatenate([coordinates[name] for name in coordinates])
+		pixel_size = np.stack([pixel_size[name] for name in pixel_size], axis = 1)
+		pixel_size = pixel_size.mean(axis = 1)
 
 		# Rescale the whole 4D object to float32 (Assume it was originally in uint8)
 		if stacked_tiles.max() > 1.0 and stacked_tiles.max() <= 255.0:
@@ -349,12 +369,13 @@ class RamanImage:
 		reference_metadata.tile_number = stacked_tiles.shape[0]
 		reference_metadata.lambda_steps = stacked_tiles.shape[1]
 		reference_metadata.tiles_coordinates = coordinates
+		reference_metadata.pixel_size = pixel_size
 
 		# Overwrite the raw tiles and wavenumbers with the stacked ones
 		self._raw_tiles = stacked_tiles
 		self._wavenumbers = stacked_wavenumbers
 		self._metadata = reference_metadata
-		self._tiles_coordinates = coordinates * 1e6
+		self._tiles_coordinates = coordinates
 	
 	def _parse_lif_metadata(self, lif: LifFile) -> dict[str, RamanMetadata]:
 	
@@ -404,6 +425,8 @@ class RamanImage:
 			metadata = RamanMetadata()
 			metadata.name = element_name
 			metadata.index = i
+			metadata.pixel_size = np.array([0, 0], dtype=np.float32)
+			dimension_scaling_factor = [None, None]
 
 			# Get the dimensions
 			if data_image_tag is not None:
@@ -414,12 +437,32 @@ class RamanImage:
 						for dim_desc in dimensions.findall('DimensionDescription'):
 							id = int(dim_desc.get('DimID', None))
 							size = int(dim_desc.get('NumberOfElements', None))
+							length = float(dim_desc.get('Length', None))
+							unit = dim_desc.get('Unit', None)
 
 							# Interpret the dimension ID for standard Leica LIF files
 							if id == 1:
 								metadata.scan_height = size
+
+								if unit == 'm':
+									dimension_scaling_factor[0] = 1e6
+								elif unit == 'um':
+									dimension_scaling_factor[0] = 1e0
+								else:
+									raise ValueError(f"Unexpected unit '{unit}' for pixel size in image '{element_name}'. Expected 'm' or 'um'.")
+								
+								metadata.pixel_size[0] = (length * dimension_scaling_factor[0]) / size
 							elif id == 2:
 								metadata.scan_width = size
+
+								if unit == 'm':
+									dimension_scaling_factor[1] = 1e6
+								elif unit == 'um':
+									dimension_scaling_factor[1] = 1e0
+								else:
+									raise ValueError(f"Unexpected unit '{unit}' for pixel size in image '{element_name}'. Expected 'm' or 'um'.")
+								
+								metadata.pixel_size[1] = (length * dimension_scaling_factor[1]) / size
 							elif id == 9:
 								metadata.lambda_steps = size
 							elif id == 10:
@@ -480,7 +523,7 @@ class RamanImage:
 					continue
 
 				for tile_index, tile in enumerate(tiles):
-					metadata.tiles_coordinates[tile_index] = ((float(tile.get('PosX')), float(tile.get('PosY'))))
+					metadata.tiles_coordinates[tile_index] = ((float(tile.get('PosX')) * dimension_scaling_factor[0], float(tile.get('PosY')) * dimension_scaling_factor[1]))
 
 			# Append the metadata to the list
 			result[metadata.name] = metadata
@@ -695,7 +738,7 @@ class RamanImage:
 		tiles = self._basic_corrected_tiles
 
 		# Convert coordinates to pixel positions (x, y)
-		coords_px = (coordinates / self._pixel_size).astype(int)
+		coords_px = (coordinates / self.metadata.pixel_size[0]).astype(int)			#NOTE: Assuming square pixels
 		
 		# Calculate mosaic dimensions (width, height)
 		min_x, min_y = np.min(coords_px, axis=0)
@@ -838,8 +881,8 @@ class RamanImage:
 				# Create the metadata
 				metadata = {
 					'Pixels': {
-						'PhysicalSizeX': self._pixel_size,
-						'PhysicalSizeY': self._pixel_size,
+						'PhysicalSizeX': self.metadata.pixel_size[0],
+						'PhysicalSizeY': self.metadata.pixel_size[1],
 						'PhysicalSizeXUnit': 'µm',
 						'PhysicalSizeYUnit': 'µm',
 						'SizeT': 1,
