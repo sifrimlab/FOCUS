@@ -1,9 +1,8 @@
-import tqdm, tifffile, os, subprocess
+import tqdm, tifffile, os, subprocess, warnings, os
 import numpy as np
 from readlif.reader import LifFile, LifImage
 import xml.etree.ElementTree as ET
 import ramanspy as rp
-#from basicpy.basicpy import BaSiC
 from scipy.ndimage import distance_transform_edt
 from joblib import Parallel, delayed
 
@@ -351,8 +350,8 @@ class RamanImage:
 		# Once all the tiles are loaded, merge them into a single high-dimensional array
 		stacked_tiles = np.concatenate([raw_tiles[name] for name in raw_tiles], axis = 1)
 		stacked_wavenumbers = np.concatenate([wavenumbers[name] for name in wavenumbers], axis = -1)
-		coordinates = np.concatenate([coordinates[name] for name in coordinates])
-		pixel_size = np.stack([pixel_size[name] for name in pixel_size], axis = 1)
+		coordinates = np.stack([coordinates[name] for name in coordinates], axis = 1)
+		pixel_size = np.stack([pixel_size[name] for name in pixel_size], axis = 0)
 		pixel_size = pixel_size.mean(axis = 1)
 
 		# Rescale the whole 4D object to float32 (Assume it was originally in uint8)
@@ -368,7 +367,7 @@ class RamanImage:
 		reference_metadata.scan_width = stacked_tiles.shape[-1]
 		reference_metadata.tile_number = stacked_tiles.shape[0]
 		reference_metadata.lambda_steps = stacked_tiles.shape[1]
-		reference_metadata.tiles_coordinates = coordinates
+		reference_metadata.tiles_coordinates = coordinates[0]
 		reference_metadata.pixel_size = pixel_size
 
 		# Overwrite the raw tiles and wavenumbers with the stacked ones
@@ -596,45 +595,47 @@ class RamanImage:
 
 	def _process_tile_parallel(self, tile: np.ndarray[np.float32], wavenumbers: np.ndarray[np.float32], tile_index: int, slice_index: int) -> tuple[np.ndarray, int, int]:
 
-		# Define the processing pipeline applied to each pixel (first two steps are per tile)
-		pipeline = rp.preprocessing.Pipeline([
-			rp.preprocessing.despike.WhitakerHayes(),
-			rp.preprocessing.denoise.SavGol(window_length=7, polyorder=3),
-			rp.preprocessing.baseline.IASLS(),
-			rp.preprocessing.normalise.MinMax()
-		])
+		with warnings.catch_warnings():
+			warnings.simplefilter("ignore", RuntimeWarning)
+			# Define the processing pipeline applied to each pixel (first two steps are per tile)
+			pipeline = rp.preprocessing.Pipeline([
+				rp.preprocessing.despike.WhitakerHayes(),
+				rp.preprocessing.denoise.SavGol(window_length=7, polyorder=3),
+				rp.preprocessing.baseline.IASLS(),
+				rp.preprocessing.normalise.MinMax()
+			])
 
-		# Create a coordinate grid to keep track of the valid pixels
-		C, X, Y = tile.shape
-		y_indices, x_indices = np.meshgrid(np.arange(X), np.arange(Y))
-		coordinates = np.stack((x_indices, y_indices), axis=-1)
+			# Create a coordinate grid to keep track of the valid pixels
+			C, X, Y = tile.shape
+			y_indices, x_indices = np.meshgrid(np.arange(X), np.arange(Y))
+			coordinates = np.stack((x_indices, y_indices), axis=-1)
 
-		# Reshape the tile and the coordinates to 2D
-		reshaped_tile = tile.reshape(tile.shape[0], -1)			# Reshape to (C, Y*X)
-		reshaped_tile = reshaped_tile.transpose((1, 0))			# Transpose to (Y*X, C)
-		reshaped_coordinates = coordinates.reshape(-1, 2)
+			# Reshape the tile and the coordinates to 2D
+			reshaped_tile = tile.reshape(tile.shape[0], -1)			# Reshape to (C, Y*X)
+			reshaped_tile = reshaped_tile.transpose((1, 0))			# Transpose to (Y*X, C)
+			reshaped_coordinates = coordinates.reshape(-1, 2)
 
-		# Compute the zero-variance spectra mask
-		zero_variance_mask = self.zero_variance_spectra(reshaped_tile)
-		reshaped_tile = reshaped_tile[~zero_variance_mask]
-		reshaped_coordinates = reshaped_coordinates[~zero_variance_mask]
+			# Compute the zero-variance spectra mask
+			zero_variance_mask = self.zero_variance_spectra(reshaped_tile)
+			reshaped_tile = reshaped_tile[~zero_variance_mask]
+			reshaped_coordinates = reshaped_coordinates[~zero_variance_mask]
 
-		# Create a SpectralImage object
-		spectral_image = rp.SpectralImage(reshaped_tile, wavenumbers)
+			# Create a SpectralImage object
+			spectral_image = rp.SpectralImage(reshaped_tile, wavenumbers)
 
-		# Apply the pipeline to the reshaped tile
-		processed_tile = pipeline.apply(spectral_image)
-		processed_tile = processed_tile.spectral_data
+			# Apply the pipeline to the reshaped tile
+			processed_tile = pipeline.apply(spectral_image)
+			processed_tile = processed_tile.spectral_data
 
-		# Reshape the processed tile back to its original shape
-		restored_tile = np.zeros((C, X, Y), dtype=np.float32)
+			# Reshape the processed tile back to its original shape
+			restored_tile = np.zeros((C, X, Y), dtype=np.float32)
 
-		for i in range(processed_tile.shape[0]):
-			x = int(reshaped_coordinates[i, 0])
-			y = int(reshaped_coordinates[i, 1])
-			restored_tile[:, x, y] = processed_tile[i, :]
+			for i in range(processed_tile.shape[0]):
+				x = int(reshaped_coordinates[i, 0])
+				y = int(reshaped_coordinates[i, 1])
+				restored_tile[:, x, y] = processed_tile[i, :]
 
-		return restored_tile, tile_index, slice_index
+			return restored_tile, tile_index, slice_index
 
 	def process_raw_tiles(self, wavenumbers: np.ndarray[np.float32] | None = None, parallel: bool = True) -> None:
 		'''
@@ -678,13 +679,17 @@ class RamanImage:
 
 			print(f"Processing {len(units)} tiles in parallel, it might take some minutes...")
 
-			# Process tiles in parallel using joblib
-			slice_result = Parallel(n_jobs=-1)(
-				delayed(self._process_tile_parallel)(*unit_args)
-				for unit_args in units
+			slice_result = list(
+				tqdm.tqdm(
+					Parallel(n_jobs=-1, return_as="generator")(
+						delayed(self._process_tile_parallel)(*unit_args) for unit_args in units
+					),
+					total=len(units),
+					desc="Processing tiles",
+				)
 			)
 
-			# Store the processed tiles in the dictionary
+			# Store processed tiles as before
 			for processed_tile, tile_index, slice_index in slice_result:
 				start_channel, end_channel = self._spectra_slices[slice_index]
 				self._raman_corrected_tiles[tile_index, start_channel:end_channel + 1] = processed_tile
@@ -700,7 +705,7 @@ class RamanImage:
 					processed_tile, _ = self._process_tile_parallel(tile_slice, wavenumbers_slice, tile_idx, slice_index)
 					self._raman_corrected_tiles[tile_idx, start_channel:end_channel + 1] = processed_tile
 
-	def basic_correct(self) -> None:
+	def basic_correct(self, tmp_directory: str | None = None) -> None:
 		'''
 		Apply the BaSiC correction to the raw tiles.
 		This method uses the BaSiC algorithm to correct the raw tiles for background and noise.
@@ -708,20 +713,31 @@ class RamanImage:
 
 		if self._raw_tiles is None:
 			raise ValueError("No raw tiles to correct. Please load the data first.")
+		
+		if tmp_directory is None:
+			tmp_directory = "./"
 
 		for channel_idx in tqdm.tqdm(range(self._raw_tiles.shape[1]), desc="Applying BaSiC Correction"):
 			# Extract the channel data
 			channel_data = self._raw_tiles[:, channel_idx, :, :]
 
-			# Apply BaSiC correction
-			basic = BaSiC()
-			basic.fit(channel_data)
+			# Save the channel data as numpy matrix
+			np.save(os.path.join(tmp_directory, "basic_input.npy"), channel_data)
+
+			subprocess.run([
+				"docker", "run", "--rm", "-v",
+				f"{tmp_directory}:/data",
+				"basicpy"
+			])
+
+			# Load the corrected channel data
+			corrected_channel_data = np.load(os.path.join(tmp_directory, "basic_output.npy"))
 
 			# Store the corrected channel
 			if self._basic_corrected_tiles is None:
 				self._basic_corrected_tiles = np.zeros_like(self._raw_tiles, dtype=np.float32)
 			
-			self._basic_corrected_tiles[:, channel_idx, :, :] = basic.transform(channel_data)
+			self._basic_corrected_tiles[:, channel_idx, :, :] = corrected_channel_data
 
 		# Apply global normalization to the corrected tiles
 		self._basic_corrected_tiles -= np.min(self._basic_corrected_tiles)
@@ -734,7 +750,7 @@ class RamanImage:
 		"""
 
 		# Use only an approximation of the coordinates for the mosaic
-		coordinates = self._tiles_coordinates[self._spectra_slices[0][0]:self._spectra_slices[-1][1]]
+		coordinates = self._tiles_coordinates[:, 0, :]
 		tiles = self._basic_corrected_tiles
 
 		# Convert coordinates to pixel positions (x, y)
@@ -865,7 +881,8 @@ class RamanImage:
 		tiles = tiles[:, np.newaxis, :, :, :]
 		
 		# Convert the coordinates in um and flip the y-axis (from Leica to OME TIFF format)
-		coordinates[:, 1] = np.max(coordinates[:, 1]) - (coordinates[:, 1] - np.min(coordinates[:, 1]))
+		for s, _ in enumerate(self._spectra_slices):
+			coordinates[:, s, 1] = np.max(coordinates[:, s, 1]) - (coordinates[:, s, 1] - np.min(coordinates[:, s, 1]))
 
 		# Generate the OME TIFF metadata
 		T, Z, C, Y, X = tiles.shape
@@ -898,8 +915,8 @@ class RamanImage:
 							'TheT': 0,
 							'TheC': c,
 							'TheZ': 0,  # Assuming no Z dimension for Raman tiles
-							'PositionX': float(coordinates[t + (find_slice_idx(c) * T), 0]),
-							'PositionY': float(coordinates[t + (find_slice_idx(c) * T), 1]),
+							'PositionX': float(coordinates[t, find_slice_idx(c), 0]),
+							'PositionY': float(coordinates[t, find_slice_idx(c), 1]),
 							'PositionXUnit': 'µm',
 							'PositionYUnit': 'µm'
 						}
