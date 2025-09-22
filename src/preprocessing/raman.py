@@ -204,6 +204,9 @@ class RamanImage:
 		# Load the file based on its extension
 		if filename.endswith('.lif'):
 			self._load_lif(filename = self.filename)
+
+		# Save the directory for temporary files
+		self._working_directory = os.path.dirname(os.path.abspath(filename))
 	
 	@property
 	def raw(self) -> np.ndarray[np.float32]:
@@ -711,7 +714,7 @@ class RamanImage:
 					processed_tile, _ = self._process_tile_parallel(tile_slice, wavenumbers_slice, tile_idx, slice_index)
 					self._raman_corrected_tiles[tile_idx, start_channel:end_channel + 1] = processed_tile
 
-	def basic_correct(self, tmp_directory: str | None = None) -> None:
+	def basic_correct(self) -> None:
 		'''
 		Apply the BaSiC correction to the raw tiles.
 		This method uses the BaSiC algorithm to correct the raw tiles for background and noise.
@@ -719,36 +722,49 @@ class RamanImage:
 
 		if self._raw_tiles is None:
 			raise ValueError("No raw tiles to correct. Please load the data first.")
-		
-		if tmp_directory is None:
-			tmp_directory = "./"
 
+		# Get the tools absolute path
 		tools_basedir = os.path.abspath(__file__).replace("src/preprocessing/raman.py", "tools")
+
+		# Check if the BaSiCpy container is available
+		if self.container_engine == ContainerEngine.DOCKER:
+			subprocess.run(["docker", "build", "-f", os.path.join(tools_basedir, "BaSiCpy", "Dockerfile"), "-t", "basicpy:latest", os.path.join(tools_basedir, "BaSiCpy")], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+		elif self.container_engine == ContainerEngine.PODMAN:
+			subprocess.run(["podman", "build", "-f", os.path.join(tools_basedir, "BaSiCpy", "Dockerfile"), "-t", "basicpy:latest", os.path.join(tools_basedir, "BaSiCpy")], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+		elif self.container_engine == ContainerEngine.SINGULARITY:
+			if not os.path.exists(os.path.join(tools_basedir, "BaSiCpy", "basicpy.sif")):
+				raise FileNotFoundError(f"BaSiCpy Singularity image not found at {os.path.join(tools_basedir, 'BaSiCpy', 'basicpy.sif')}")
 
 		for channel_idx in tqdm.tqdm(range(self._raw_tiles.shape[1]), desc="Applying BaSiC Correction"):
 			# Extract the channel data
 			channel_data = self._raw_tiles[:, channel_idx, :, :]
 
 			# Save the channel data as numpy matrix
-			np.save(os.path.join(tmp_directory, "basic_input.npy"), channel_data)
+			np.save(os.path.join(self._working_directory, "basic_input.npy"), channel_data)
 
 			if self.container_engine == ContainerEngine.DOCKER:
 				subprocess.run([
 					"docker", "run", "--rm", "-v",
-					f"{tmp_directory}:/data",
+					f"{self._working_directory}:/data",
+					"basicpy"
+				])
+			elif self.container_engine == ContainerEngine.PODMAN:
+				subprocess.run([
+					"podman", "run", "--rm", "-v",
+					f"{self._working_directory}:/data",
 					"basicpy"
 				])
 			elif self.container_engine == ContainerEngine.SINGULARITY:
 				subprocess.run([
 					"singularity", "exec", "--bind",
-					f"{tmp_directory}:/data",
+					f"{self._working_directory}:/data",
 					os.path.join(tools_basedir, "BaSiCpy", "basicpy.sif"), "basicpy"
 				])
 			else:
 				raise RuntimeError(f"Unsupported container engine: {self.container_engine}. Supported engines are: {ContainerEngine.list()}")
 
 			# Load the corrected channel data
-			corrected_channel_data = np.load(os.path.join(tmp_directory, "basic_output.npy"))
+			corrected_channel_data = np.load(os.path.join(self._working_directory, "basic_output.npy"))
 
 			# Store the corrected channel
 			if self._basic_corrected_tiles is None:
@@ -886,7 +902,7 @@ class RamanImage:
 		
 		return tiles
 	
-	def _prepare_for_ashlar(self, tiles: np.ndarray[np.float32], coordinates: np.ndarray[np.float32], output_path: str, filename: str) -> None:
+	def _prepare_for_ashlar(self, tiles: np.ndarray[np.float32], coordinates: np.ndarray[np.float32], output_path: str) -> None:
 
 		# Replace NaN values with 0
 		tiles = np.nan_to_num(tiles, nan=0.0)
@@ -908,7 +924,7 @@ class RamanImage:
 		find_slice_idx = lambda c: next((i for i, (start, end) in enumerate(self._spectra_slices) if start <= c <= end), None)
 
 		# Save the tile as OME TIFF
-		output_filename = os.path.join(output_path, f'{filename}.ome.tiff')
+		output_filename = os.path.join(output_path, f'ashlar_input.ome.tiff')
 
 		with tifffile.TiffWriter(output_filename, ome=True, bigtiff=True) as tif:
 			for t in range(T):
@@ -967,26 +983,44 @@ class RamanImage:
 		if self.corrected is None:
 			raise ValueError("Make sure to run basic_correct() and process_raw_tiles() before calling this method.")
 		
+		# Get the tools absolute path
+		tools_basedir = os.path.abspath(__file__).replace("src/preprocessing/raman.py", "tools")
+
+		# Check if the ASHLAR container is available
+		if self.container_engine == ContainerEngine.DOCKER:
+			subprocess.run(["docker", "build", "-f", os.path.join(tools_basedir, "ASHLAR", "Dockerfile"), "-t", "ashlar:latest", os.path.join(tools_basedir, "ASHLAR")], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+		elif self.container_engine == ContainerEngine.PODMAN:
+			subprocess.run(["podman", "build", "-f", os.path.join(tools_basedir, "ASHLAR", "Dockerfile"), "-t", "ashlar:latest", os.path.join(tools_basedir, "ASHLAR")], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+		elif self.container_engine == ContainerEngine.SINGULARITY:
+			if not os.path.exists(os.path.join(tools_basedir, "ASHLAR", "ashlar.sif")):
+				raise FileNotFoundError(f"ASHLAR Singularity image not found at {os.path.join(tools_basedir, 'ASHLAR', 'ashlar.sif')}")
+		
 		print("Generating stitched mosaic image...")
 
 		# Prepare the tiles to be stitched with ASHLAR
-		self._prepare_for_ashlar(tiles = self.corrected, coordinates = self.tiles_coordinates, output_path = output_path, filename = 'tiles')
+		self._prepare_for_ashlar(tiles = self.corrected, coordinates = self.tiles_coordinates, output_path = output_path)
 
 		# Execute ASHLAR to stitch the tiles
-		result = subprocess.run([
-			"ashlar",
-			"--output", os.path.join(output_path, f"{filename}.ome.tiff"),
-			os.path.join(output_path, f"tiles.ome.tiff"),
-		], capture_output=False, check=False)
-
-		if result.returncode != 0:
-			raise RuntimeError(f"ASHLAR stitching failed with error: {result.stderr.decode('utf-8')}")
-		
-		# Remove the temporary tiles file
-		try:
-			os.remove(os.path.join(output_path, f"tiles.ome.tiff"))
-		except OSError as e:
-			print(f"Warning: Could not remove temporary tiles file: {e}")
+		if self.container_engine == ContainerEngine.DOCKER:
+			subprocess.run([
+				"docker", "run", "--rm", "-v",
+				f"{self._working_directory}:/data",
+				"ashlar:latest"
+			])
+		elif self.container_engine == ContainerEngine.PODMAN:
+			subprocess.run([
+				"podman", "run", "--rm", "-v",
+				f"{self._working_directory}:/data",
+				"ashlar:latest"
+			])
+		elif self.container_engine == ContainerEngine.SINGULARITY:
+			subprocess.run([
+				"singularity", "exec", "--bind",
+				f"{self._working_directory}:/data",
+				os.path.join(tools_basedir, "ASHLAR", "ashlar.sif"), "ashlar"
+			])
+		else:
+			raise RuntimeError(f"Unsupported container engine: {self.container_engine}. Supported engines are: {ContainerEngine.list()}")
 
 		# Load the stitched mosaic back into the object
 		self._mosaic = tifffile.imread(os.path.join(output_path, f"{filename}.ome.tiff"))

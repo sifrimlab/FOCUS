@@ -90,3 +90,4 @@ class TransformationType(_AbstractEnum):
 class ContainerEngine(_AbstractEnum):
 	DOCKER = "docker"
 	SINGULARITY = "singularity"
+	PODMAN = "podman"
