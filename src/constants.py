@@ -86,3 +86,7 @@ class TransformationType(_AbstractEnum):
 	RIGID = "rigid"
 	AFFINE = "affine"
 	BSPLINE = "bspline"
+
+class ContainerEngine(_AbstractEnum):
+	DOCKER = "docker"
+	SINGULARITY = "singularity"

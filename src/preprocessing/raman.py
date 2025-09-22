@@ -6,6 +6,8 @@ import ramanspy as rp
 from scipy.ndimage import distance_transform_edt
 from joblib import Parallel, delayed
 
+from constants import ContainerEngine
+
 class RamanMetadata:
 	'''
 	Store the metadata from a Raman Spectroscopy Imageing file regardless of the file format.
@@ -161,7 +163,7 @@ class RamanMetadata:
 
 	
 class RamanImage:
-	def __init__(self, filename: str):
+	def __init__(self, filename: str, container_engine: ContainerEngine = ContainerEngine.DOCKER):
 		'''
 		Wrapper to handle Raman Spectral Images. For now, it only supports Leica LIF files.
 		Under the hood this class uses ramanspy and custom made methods to handle the data.
@@ -175,6 +177,9 @@ class RamanImage:
 		if type(filename) is not str:
 			raise TypeError("Filename must be a string representing the path to the LIF file.")
 		
+		if container_engine not in ContainerEngine.list():
+			raise ValueError(f"Container engine must be one of {ContainerEngine.list()}.")
+		
 		# Check if the file exists and it's accessible
 		try:
 			with open(filename, 'rb') as f:
@@ -183,6 +188,7 @@ class RamanImage:
 			raise IOError(f"Could not open the file {filename}. Please check the file path and permissions.") from e
 
 		self.filename = filename
+		self.container_engine = container_engine
 
 		# Define the intermediate data structure
 		self._raw_tiles: np.ndarray[np.float32] = None
@@ -717,6 +723,8 @@ class RamanImage:
 		if tmp_directory is None:
 			tmp_directory = "./"
 
+		tools_basedir = os.path.abspath(__file__).replace("src/preprocessing/raman.py", "tools")
+
 		for channel_idx in tqdm.tqdm(range(self._raw_tiles.shape[1]), desc="Applying BaSiC Correction"):
 			# Extract the channel data
 			channel_data = self._raw_tiles[:, channel_idx, :, :]
@@ -724,11 +732,20 @@ class RamanImage:
 			# Save the channel data as numpy matrix
 			np.save(os.path.join(tmp_directory, "basic_input.npy"), channel_data)
 
-			subprocess.run([
-				"docker", "run", "--rm", "-v",
-				f"{tmp_directory}:/data",
-				"basicpy"
-			])
+			if self.container_engine == ContainerEngine.DOCKER:
+				subprocess.run([
+					"docker", "run", "--rm", "-v",
+					f"{tmp_directory}:/data",
+					"basicpy"
+				])
+			elif self.container_engine == ContainerEngine.SINGULARITY:
+				subprocess.run([
+					"singularity", "exec", "--bind",
+					f"{tmp_directory}:/data",
+					os.path.join(tools_basedir, "BaSiCpy", "basicpy.sif"), "basicpy"
+				])
+			else:
+				raise RuntimeError(f"Unsupported container engine: {self.container_engine}. Supported engines are: {ContainerEngine.list()}")
 
 			# Load the corrected channel data
 			corrected_channel_data = np.load(os.path.join(tmp_directory, "basic_output.npy"))
