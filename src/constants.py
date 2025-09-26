@@ -67,6 +67,7 @@ class LipidomicsPreprocessing(_AbstractEnum):
 	PEAK_WINDOW_TOLERANCE_PPM = "peak_window_tolerance_ppm"
 	DYNAMIC_PEAK_WINDOW = "dynamic_peak_window"
 	DYNAMIC_PEAK_WINDOW_FACTOR = "dynamic_peak_window_factor"
+	INTENSITY_NORMALIZATION_TYPE = "intensity_normalization"
 
 class ModalityType(_AbstractEnum):
 	
@@ -91,3 +92,8 @@ class ContainerEngine(_AbstractEnum):
 	DOCKER = "docker"
 	SINGULARITY = "singularity"
 	PODMAN = "podman"
+
+class MsiIntensityNormalization(_AbstractEnum):
+	
+	TIC = "tic"
+	NONE = "none"

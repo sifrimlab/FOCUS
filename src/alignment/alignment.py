@@ -102,6 +102,10 @@ class Aligner:
         # Reshape the intensities to a 2D array
         intensities = intensities.reshape(-1, intensities.shape[-1])
 
+        # Create a mask to remove empty pixels
+        empty_mask = np.all(intensities == 0, axis = 1)
+        intensities = intensities[~empty_mask]
+
         # Compute a 3-dimensional PCA to generate an RGB-like image
         pca = PCA(n_components = 3)
         intensities = pca.fit_transform(intensities)
@@ -121,12 +125,15 @@ class Aligner:
         intensities[:, 1] = enhance_contrast(intensities[:, 1])
         intensities[:, 2] = enhance_contrast(intensities[:, 2])
 
-        intensities = intensities.reshape(matrix_shape[0], matrix_shape[1], 3)
+        # Reconstruct the original intensities array
+        reconstructed_intensities = np.zeros((matrix_shape[0] * matrix_shape[1], 3))
+        reconstructed_intensities[~empty_mask] = intensities
+        reconstructed_intensities = reconstructed_intensities.reshape(matrix_shape[0], matrix_shape[1], 3)
 
         # Swap X and Y axes to meet matplotlib requirements
-        intensities = np.swapaxes(intensities, 0, 1)
+        reconstructed_intensities = np.swapaxes(reconstructed_intensities, 0, 1)
 
-        return intensities.astype(np.float32)
+        return reconstructed_intensities.astype(np.float32)
 
     def _read_microscopy_image(self, path: str) -> np.ndarray[np.float32]:
         '''

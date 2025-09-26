@@ -1,11 +1,22 @@
 import numpy as np
 import torch, os
-from tqdm import tqdm, trange
+from tqdm import tqdm
 import xml.etree.ElementTree as ET
 
-from constants import ImzMLFileParser
+from constants import ImzMLFileParser, MsiIntensityNormalization
 
-def preprocess_lipidomics(path: str, sample_id: str, modality_name: str, peak_picking: bool, prominence: float, window_tolerance: float, dynamic_window: bool, dynamic_window_factor: float, reference_mz: np.ndarray | None = None) -> None:
+def preprocess_lipidomics(
+		path: str, 
+		sample_id: str, 
+		modality_name: str, 
+		peak_picking: bool, 
+		prominence: float, 
+		window_tolerance: float,
+		dynamic_window: bool, 
+		dynamic_window_factor: float,
+		reference_mz: np.ndarray | None = None,
+		intensity_normalization: MsiIntensityNormalization = MsiIntensityNormalization.TIC
+	) -> None:
 	'''
 	Read the imzML file to obtain the MSI experiment metadata.
 
@@ -30,7 +41,8 @@ def preprocess_lipidomics(path: str, sample_id: str, modality_name: str, peak_pi
 		Factor for dynamic peak windowing.
 	reference_mz : np.ndarray | None
 		Reference M/Z values to use for peak picking. If None, a consensus M/Z vector will be computed from the spectra.
-
+	intensity_normalization : MsiIntensityNormalization
+		Type of intensity normalization to apply.
 	'''
 
 	# Check input parameters types
@@ -38,6 +50,9 @@ def preprocess_lipidomics(path: str, sample_id: str, modality_name: str, peak_pi
 		not isinstance(prominence, float) or not isinstance(window_tolerance, int) or \
 			not isinstance(dynamic_window, bool) or not isinstance(dynamic_window_factor, float):
 		raise TypeError('Invalid input types. Expected str, bool, float, float, bool, float.')
+	
+	if intensity_normalization not in MsiIntensityNormalization.list():
+		raise ValueError(f'Invalid intensity_normalization value. Expected one of {MsiIntensityNormalization.list()}')
 	
 	if isinstance(reference_mz, np.ndarray) == False and reference_mz is not None:
 		raise TypeError('Invalid input type for reference_mz. Expected np.ndarray or None.')
@@ -123,7 +138,7 @@ def preprocess_lipidomics(path: str, sample_id: str, modality_name: str, peak_pi
 		# Define the final data matrix to store the intensities values
 		merged_intensities = np.zeros((len(intensities), len(unified_mz_values)), dtype = final_dtype)
 
-		for index in tqdm(range(0, len(mzs)), desc="Interpolating intensities"):
+		for index in tqdm(range(0, len(mzs)), desc="Aligning intensities to reference M/Z", unit="spectrum"):
 			# Interpolate the intensities values to the unified M/Z values
 			merged_intensities[index, :] = maldi_windowed_mapping(mzs[index], intensities[index], unified_mz_values, window_tolerance, dynamic_window, dynamic_window_factor)
 	else:
@@ -147,6 +162,13 @@ def preprocess_lipidomics(path: str, sample_id: str, modality_name: str, peak_pi
 	output_folder = os.path.join(sample_path, 'preprocessing', modality_name)
 	if not os.path.exists(output_folder):
 		os.makedirs(output_folder)
+
+	# Apply intensity normalization if specified
+	if intensity_normalization == MsiIntensityNormalization.TIC:
+		tic = merged_intensities.sum(axis=1, keepdims=True)
+		tic[tic == 0] = 1
+		merged_intensities = merged_intensities / tic
+		print("Applied Total Ion Current (TIC) normalization.")
 
 	# Save the processing output
 	save_numpy_matrix(path = output_folder, sample = sample_id, reference_mz = unified_mz_values, intensities = merged_intensities, coordinates = coordinates)
@@ -394,7 +416,7 @@ def compute_reference_mz(spectra_list: list[np.ndarray], mass_tollerance: int = 
 	# Store the totals
 	total_unique_mz, total_weights = None, None
 
-	print(f"Total unique m/z values: {total_length}. The process will iterate as long as there are overlapping clusters.\n")
+	print(f"Total unique M/Z values: {total_length}. Aligning with mass tolerance of {mass_tollerance} ppm and frequency threshold of {100 - (frequency_threshold*100)} percentile.")
 
 	# Iterate over the unique m/z values and create consensus peaks
 	while total_unique_mz is None or torch.equal(total_unique_mz, unique_mz) == False:
@@ -408,7 +430,7 @@ def compute_reference_mz(spectra_list: list[np.ndarray], mass_tollerance: int = 
 			# Reset the totals for the next iteration
 			total_unique_mz, total_weights = None, None
 
-		for batch_start in trange(0, total_length, batch_size, desc = "Computing consensus m/z", unit = "batch"):
+		for batch_start in range(0, total_length, batch_size):
 
 			# Get the batch slice
 			batch_end: int = min(batch_start + batch_size, total_length)
@@ -473,6 +495,8 @@ def compute_reference_mz(spectra_list: list[np.ndarray], mass_tollerance: int = 
 	del unique_mz, counts, total_unique_mz, total_weights, consensus_mz
 	torch.cuda.empty_cache()
 	torch.cuda.synchronize()
+
+	print(f"After alignment {consensus_mz_cpu.shape[0]} M/Z values remain.")
 
 	return consensus_mz_cpu
 

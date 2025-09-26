@@ -5,6 +5,7 @@ import xml.etree.ElementTree as ET
 import ramanspy as rp
 from scipy.ndimage import distance_transform_edt
 from joblib import Parallel, delayed
+from sklearn.decomposition import PCA
 
 from constants import ContainerEngine
 
@@ -163,7 +164,7 @@ class RamanMetadata:
 
 	
 class RamanImage:
-	def __init__(self, filename: str, container_engine: ContainerEngine = ContainerEngine.DOCKER):
+	def __init__(self, filename: str, sample_id: str, output_directory: str, container_engine: ContainerEngine = ContainerEngine.DOCKER):
 		'''
 		Wrapper to handle Raman Spectral Images. For now, it only supports Leica LIF files.
 		Under the hood this class uses ramanspy and custom made methods to handle the data.
@@ -172,13 +173,22 @@ class RamanImage:
 		----------
 		filename : str
 			Path to the LIF file.
+		sample_id : str
+			Sample ID used to identify this sample and name the output.
+		output_directory : str
+			Directory where the output files will be saved.
+		container_engine : ContainerEngine, optional
+			Container engine used to run BaSiC and ASHLAR. Default is ContainerEngine.DOCKER.
 		'''
 
-		if type(filename) is not str:
-			raise TypeError("Filename must be a string representing the path to the LIF file.")
+		if type(filename) is not str or type(output_directory) is not str:
+			raise TypeError("Filename and output_directory must be strings")
+		if type(sample_id) is not str:
+			raise TypeError("Sample ID must be a string")
 		
 		if container_engine not in ContainerEngine.list():
 			raise ValueError(f"Container engine must be one of {ContainerEngine.list()}.")
+		
 		
 		# Check if the file exists and it's accessible
 		try:
@@ -188,13 +198,15 @@ class RamanImage:
 			raise IOError(f"Could not open the file {filename}. Please check the file path and permissions.") from e
 
 		self.filename = filename
+		self._working_directory = output_directory
+		self.sample_id = sample_id
 		self.container_engine = container_engine
 
 		# Define the intermediate data structure
 		self._raw_tiles: np.ndarray[np.float32] = None
 		self._basic_corrected_tiles: np.ndarray[np.float32] = None
 		self._raman_corrected_tiles: np.ndarray[np.float32] = None
-		self._quick_mosaic: np.ndarray[np.float32] = None
+		self._quick_mosaic: np.ndarray[np.uint8] = None
 		self._mosaic: np.ndarray[np.float32] = None
 		self._metadata: RamanMetadata = []
 		self._wavenumbers: np.ndarray[np.float32] = None
@@ -204,9 +216,6 @@ class RamanImage:
 		# Load the file based on its extension
 		if filename.endswith('.lif'):
 			self._load_lif(filename = self.filename)
-
-		# Save the directory for temporary files
-		self._working_directory = os.path.dirname(os.path.abspath(filename))
 	
 	@property
 	def raw(self) -> np.ndarray[np.float32]:
@@ -633,6 +642,10 @@ class RamanImage:
 			spectral_image = rp.SpectralImage(reshaped_tile, wavenumbers)
 
 			# Apply the pipeline to the reshaped tile
+			if reshaped_tile.shape[0] == 0:
+				# No valid spectra to process
+				return np.zeros_like(tile), tile_index, slice_index
+
 			processed_tile = pipeline.apply(spectral_image)
 			processed_tile = processed_tile.spectral_data
 
@@ -646,7 +659,7 @@ class RamanImage:
 
 			return restored_tile, tile_index, slice_index
 
-	def process_raw_tiles(self, wavenumbers: np.ndarray[np.float32] | None = None, parallel: bool = True) -> None:
+	def process_raw_tiles(self, wavenumbers: np.ndarray[np.float32] | None = None, parallel: bool = True, force_recomputing: bool = False) -> None:
 		'''
 		Process the raw tiles using the ramanspy library.
 		This method can process the tiles in parallel (active by default) or sequentially.
@@ -660,131 +673,247 @@ class RamanImage:
 		parallel : bool, optional
 			If True, the tiles will be processed in parallel using multiprocessing. If False, the tiles will be processed sequentially.
 			Default is True.
+		force_recomputing : bool, optional
+			If True, the processing will be forced even if the processed tiles already exist
 		'''
 
-		if self._basic_corrected_tiles is None:
-			raise ValueError("No raw tiles to process. Please load the data first.")
+		if type(parallel) is not bool or type(force_recomputing) is not bool:
+			raise TypeError("parallel and force_recomputing must be booleans.")
 		
-		if wavenumbers is None:
-			wavenumbers = self.wavenumbers
+		if force_recomputing == True or os.path.exists(os.path.join(self._working_directory, "raman_corrected_tiles.npy")) == False:
+			if self._basic_corrected_tiles is None:
+				raise ValueError("No raw tiles to process. Please load the data first.")
+			
+			if wavenumbers is None:
+				wavenumbers = self.wavenumbers
 
-		self._raman_corrected_tiles = np.zeros_like(self._basic_corrected_tiles, dtype=np.float32)
-		
-		if parallel == True:
+			self._raman_corrected_tiles = np.zeros_like(self._basic_corrected_tiles, dtype=np.float32)
+			
+			if parallel == True:
 
-			# Process non-contiguous spectra slices independently
-			units = []
+				# Process non-contiguous spectra slices independently
+				units = []
 
-			for slice_idx, (start_channel, end_channel) in enumerate(self._spectra_slices):
-				for tile_idx in range(self._basic_corrected_tiles[:, start_channel:end_channel + 1, :, :].shape[0]):
-					units.append(
-						(
-							self._basic_corrected_tiles[tile_idx, start_channel:end_channel + 1, :, :], 
-							wavenumbers[start_channel:end_channel + 1], 
-							tile_idx,
-							slice_idx
+				for slice_idx, (start_channel, end_channel) in enumerate(self._spectra_slices):
+					for tile_idx in range(self._basic_corrected_tiles[:, start_channel:end_channel + 1, :, :].shape[0]):
+						units.append(
+							(
+								self._basic_corrected_tiles[tile_idx, start_channel:end_channel + 1, :, :], 
+								wavenumbers[start_channel:end_channel + 1], 
+								tile_idx,
+								slice_idx
+							)
 						)
+
+				print(f"Processing {len(units)} tiles in parallel, it might take some minutes...")
+
+				slice_result = list(
+					tqdm.tqdm(
+						Parallel(n_jobs=-1, return_as="generator")(
+							delayed(self._process_tile_parallel)(*unit_args) for unit_args in units
+						),
+						total=len(units),
+						desc="Processing tiles",
 					)
-
-			print(f"Processing {len(units)} tiles in parallel, it might take some minutes...")
-
-			slice_result = list(
-				tqdm.tqdm(
-					Parallel(n_jobs=-1, return_as="generator")(
-						delayed(self._process_tile_parallel)(*unit_args) for unit_args in units
-					),
-					total=len(units),
-					desc="Processing tiles",
 				)
-			)
 
-			# Store processed tiles as before
-			for processed_tile, tile_index, slice_index in slice_result:
-				start_channel, end_channel = self._spectra_slices[slice_index]
-				self._raman_corrected_tiles[tile_index, start_channel:end_channel + 1] = processed_tile
+				# Store processed tiles as before
+				for processed_tile, tile_index, slice_index in slice_result:
+					start_channel, end_channel = self._spectra_slices[slice_index]
+					self._raman_corrected_tiles[tile_index, start_channel:end_channel + 1] = processed_tile
 
-			print(f"Processed {len(slice_result)} tiles.")
+				print(f"Processed {len(slice_result)} tiles.")
+			else:
+				for tile_idx in tqdm.tqdm(range(self._basic_corrected_tiles.shape[0]), desc="Processing Tiles"):
+					for slice_index, (start_channel, end_channel) in enumerate(self._spectra_slices):
+						wavenumbers_slice = wavenumbers[start_channel:end_channel + 1]
+						tile_slice = self._basic_corrected_tiles[tile_idx, start_channel:end_channel + 1, :, :]
+
+						# Process the tile
+						processed_tile, _ = self._process_tile_parallel(tile_slice, wavenumbers_slice, tile_idx, slice_index)
+						self._raman_corrected_tiles[tile_idx, start_channel:end_channel + 1] = processed_tile
+
+			# Save the processed tiles
+			np.save(os.path.join(self._working_directory, "raman_corrected_tiles.npy"), self._raman_corrected_tiles)
 		else:
-			for tile_idx in tqdm.tqdm(range(self._basic_corrected_tiles.shape[0]), desc="Processing Tiles"):
-				for slice_index, (start_channel, end_channel) in enumerate(self._spectra_slices):
-					wavenumbers_slice = wavenumbers[start_channel:end_channel + 1]
-					tile_slice = self._basic_corrected_tiles[tile_idx, start_channel:end_channel + 1, :, :]
+			# Load the processed tiles
+			self._raman_corrected_tiles = np.load(os.path.join(self._working_directory, "raman_corrected_tiles.npy"))
+			print("Loaded processed tiles from disk. (Using cached results)")
 
-					# Process the tile
-					processed_tile, _ = self._process_tile_parallel(tile_slice, wavenumbers_slice, tile_idx, slice_index)
-					self._raman_corrected_tiles[tile_idx, start_channel:end_channel + 1] = processed_tile
-
-	def basic_correct(self) -> None:
+	def basic_correct(self, force_recomputing: bool = False) -> None:
 		'''
 		Apply the BaSiC correction to the raw tiles.
 		This method uses the BaSiC algorithm to correct the raw tiles for background and noise.
 		'''
 
-		if self._raw_tiles is None:
-			raise ValueError("No raw tiles to correct. Please load the data first.")
+		if type(force_recomputing) is not bool:
+			raise TypeError("force_recomputing must be a boolean.")
+		
+		# Recompute the BaSiC only if needed
+		if force_recomputing == True or os.path.exists(os.path.join(self._working_directory, "basic_corrected_tiles.npy")) == False:
+			if self._raw_tiles is None:
+				raise ValueError("No raw tiles to correct. Please load the data first.")
 
-		# Get the tools absolute path
-		tools_basedir = os.path.abspath(__file__).replace("src/preprocessing/raman.py", "tools")
+			# Get the tools absolute path
+			tools_basedir = os.path.abspath(__file__).replace("src/preprocessing/raman.py", "tools")
 
-		# Check if the BaSiCpy container is available
-		if self.container_engine == ContainerEngine.DOCKER:
-			subprocess.run(["docker", "build", "-f", os.path.join(tools_basedir, "BaSiCpy", "Dockerfile"), "-t", "basicpy:latest", os.path.join(tools_basedir, "BaSiCpy")], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-		elif self.container_engine == ContainerEngine.PODMAN:
-			subprocess.run(["podman", "build", "-f", os.path.join(tools_basedir, "BaSiCpy", "Dockerfile"), "-t", "basicpy:latest", os.path.join(tools_basedir, "BaSiCpy")], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-		elif self.container_engine == ContainerEngine.SINGULARITY:
-			if not os.path.exists(os.path.join(tools_basedir, "BaSiCpy", "basicpy.sif")):
-				raise FileNotFoundError(f"BaSiCpy Singularity image not found at {os.path.join(tools_basedir, 'BaSiCpy', 'basicpy.sif')}")
+			# Check if the BaSiCpy container is available
+			if self.container_engine == ContainerEngine.DOCKER:
+				subprocess.run(["docker", "build", "-f", os.path.join(tools_basedir, "BaSiCpy", "Dockerfile"), "-t", "basicpy:latest", os.path.join(tools_basedir, "BaSiCpy")], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+			elif self.container_engine == ContainerEngine.PODMAN:
+				subprocess.run(["podman", "build", "-f", os.path.join(tools_basedir, "BaSiCpy", "Dockerfile"), "-t", "basicpy:latest", os.path.join(tools_basedir, "BaSiCpy")], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+			elif self.container_engine == ContainerEngine.SINGULARITY:
+				if not os.path.exists(os.path.join(tools_basedir, "BaSiCpy", "basicpy.sif")):
+					raise FileNotFoundError(f"BaSiCpy Singularity image not found at {os.path.join(tools_basedir, 'BaSiCpy', 'basicpy.sif')}")
 
-		for channel_idx in tqdm.tqdm(range(self._raw_tiles.shape[1]), desc="Applying BaSiC Correction"):
-			# Extract the channel data
-			channel_data = self._raw_tiles[:, channel_idx, :, :]
+			for channel_idx in tqdm.tqdm(range(self._raw_tiles.shape[1]), desc="Applying BaSiC Correction"):
+				# Extract the channel data
+				channel_data = self._raw_tiles[:, channel_idx, :, :]
 
-			# Save the channel data as numpy matrix
-			np.save(os.path.join(self._working_directory, "basic_input.npy"), channel_data)
+				# Save the channel data as numpy matrix
+				np.save(os.path.join(self._working_directory, "basic_input.npy"), channel_data)
 
+				if self.container_engine == ContainerEngine.DOCKER:
+					subprocess.run([
+						"docker", "run", "--rm", "-v",
+						f"{self._working_directory}:/data/",
+						"basicpy"
+					])
+				elif self.container_engine == ContainerEngine.PODMAN:
+					subprocess.run([
+						"podman", "run", "--rm", "-v",
+						f"{self._working_directory}:/data/",
+						"basicpy"
+					])
+				elif self.container_engine == ContainerEngine.SINGULARITY:
+					subprocess.run([
+						"singularity", "exec", "--bind",
+						f"{self._working_directory}:/data/",
+						os.path.join(tools_basedir, "BaSiCpy", "basicpy.sif"), "basicpy"
+					])
+				else:
+					raise RuntimeError(f"Unsupported container engine: {self.container_engine}. Supported engines are: {ContainerEngine.list()}")
+
+				# Load the corrected channel data
+				corrected_channel_data = np.load(os.path.join(self._working_directory, "basic_output.npy"))
+
+				# Store the corrected channel
+				if self._basic_corrected_tiles is None:
+					self._basic_corrected_tiles = np.zeros_like(self._raw_tiles, dtype=np.float32)
+				
+				self._basic_corrected_tiles[:, channel_idx, :, :] = corrected_channel_data
+
+			# Apply global normalization to the corrected tiles
+			self._basic_corrected_tiles -= np.min(self._basic_corrected_tiles)
+			self._basic_corrected_tiles /= np.max(self._basic_corrected_tiles)
+
+			# Save the BaSiC corrected tiles
+			np.save(os.path.join(self._working_directory, "basic_corrected_tiles.npy"), self._basic_corrected_tiles)
+
+			# Remove intermediate files
+			os.remove(os.path.join(self._working_directory, "basic_output.npy"))
+		else:
+			# Load the BaSiC corrected tiles
+			self._basic_corrected_tiles = np.load(os.path.join(self._working_directory, "basic_corrected_tiles.npy"))
+			print("Loaded BaSiC corrected tiles from disk. (Using cached results)")
+
+	def remove_background(self, force_recomputing: bool = False) -> None:
+		'''
+		Remove the background from BaSiC corrected tiles using Meta SAM2.
+		The tiles are stitched into a mosaic using an approximate method, then the background is removed using Meta SAM2,
+		and finally the tiles are extracted back from the background-removed mosaic.
+
+		Parameters
+		----------
+		force_recomputing : bool, optional
+			If True, the background removal will be forced even if the background-removed tiles already exist
+		'''
+
+		# Check if basic corrected tiles are available
+		if self._basic_corrected_tiles is None:
+			raise RuntimeError("No BaSiC corrected tiles to remove background from. Please run basic_correct() first.")
+		
+		if type(force_recomputing) is not bool:
+			raise TypeError("force_recomputing must be a boolean.")
+		
+		if force_recomputing == True or os.path.exists(os.path.join(self._working_directory, "segmented_tiles.npy")) == False:
+			# Step 1: Quick stitch the tiles into a mosaic
+			self._quick_stitch()
+
+			# Save the quick mosaic as a temporary file
+			np.save(os.path.join(self._working_directory, "grayscale_mosaic.npy"), self._quick_mosaic)
+
+			# Get the tools absolute path
+			tools_basedir = os.path.abspath(__file__).replace("src/preprocessing/raman.py", "tools")
+
+			# Check if the SAM2 container is available
+			if self.container_engine == ContainerEngine.DOCKER:
+				subprocess.run(["docker", "build", "-f", os.path.join(tools_basedir, "SAM2", "Dockerfile"), "-t", "sam2:latest", os.path.join(tools_basedir, "SAM2")], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+			elif self.container_engine == ContainerEngine.PODMAN:
+				subprocess.run(["podman", "build", "-f", os.path.join(tools_basedir, "SAM2", "Dockerfile"), "-t", "sam2:latest", os.path.join(tools_basedir, "SAM2")], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+			elif self.container_engine == ContainerEngine.SINGULARITY:
+				if not os.path.exists(os.path.join(tools_basedir, "SAM2", "sam2.sif")):
+					raise FileNotFoundError(f"SAM2 Singularity image not found at {os.path.join(tools_basedir, 'SAM2', 'sam2.sif')}")
+				
+			# Execute SAM2 to remove the background
 			if self.container_engine == ContainerEngine.DOCKER:
 				subprocess.run([
 					"docker", "run", "--rm", "-v",
-					f"{self._working_directory}:/data",
-					"basicpy"
+					f"{self._working_directory}:/data/",
+					"sam2:latest"
 				])
 			elif self.container_engine == ContainerEngine.PODMAN:
 				subprocess.run([
 					"podman", "run", "--rm", "-v",
-					f"{self._working_directory}:/data",
-					"basicpy"
+					f"{self._working_directory}:/data/",
+					"sam2:latest"
 				])
 			elif self.container_engine == ContainerEngine.SINGULARITY:
 				subprocess.run([
 					"singularity", "exec", "--bind",
-					f"{self._working_directory}:/data",
-					os.path.join(tools_basedir, "BaSiCpy", "basicpy.sif"), "basicpy"
+					f"{self._working_directory}:/data/",
+					os.path.join(tools_basedir, "SAM2", "sam2.sif"), "sam2"
 				])
 			else:
 				raise RuntimeError(f"Unsupported container engine: {self.container_engine}. Supported engines are: {ContainerEngine.list()}")
 
-			# Load the corrected channel data
-			corrected_channel_data = np.load(os.path.join(self._working_directory, "basic_output.npy"))
+			# Load the segmentation mask
+			segmentation_mask = np.load(os.path.join(self._working_directory, "segmentation_mask.npy"))
 
-			# Store the corrected channel
-			if self._basic_corrected_tiles is None:
-				self._basic_corrected_tiles = np.zeros_like(self._raw_tiles, dtype=np.float32)
-			
-			self._basic_corrected_tiles[:, channel_idx, :, :] = corrected_channel_data
+			# Extract tile segments from the global segmentation mask
+			tiles_segmentation_masks = self._extract_tiles_segmentation_from_mosaic(
+				mosaic = segmentation_mask, 
+				coordinates = self._tiles_coordinates[:, 0, :], 
+				pixel_size = self.metadata.pixel_size[0], 
+				tile_size = (self.metadata.scan_height, self.metadata.scan_width)
+			)
 
-		# Apply global normalization to the corrected tiles
-		self._basic_corrected_tiles -= np.min(self._basic_corrected_tiles)
-		self._basic_corrected_tiles /= np.max(self._basic_corrected_tiles)
+			# Apply the segmentation masks to the BaSiC corrected tiles
+			segmented_tiles = self._basic_corrected_tiles * tiles_segmentation_masks[:, np.newaxis, :, :]
 
-	def quick_stitch(self) -> None:
+			# Remove the segmentation mask and the grayscale mosaic temporary files
+			os.remove(os.path.join(self._working_directory, "segmentation_mask.npy"))
+			os.remove(os.path.join(self._working_directory, "grayscale_mosaic.npy"))
+
+			# Save the segmented tiles
+			np.save(os.path.join(self._working_directory, "segmented_tiles.npy"), segmented_tiles)
+			self._basic_corrected_tiles = segmented_tiles
+		else:
+			# Load the segmented, BaSiC corrected tiles
+			self._basic_corrected_tiles = np.load(os.path.join(self._working_directory, "segmented_tiles.npy"))
+			print("Loaded background-removed tiles from disk. (Using cached results)")
+
+	def _quick_stitch(self) -> None:
 		"""
 		Stitch the BaSiC corrected tiles into a mosaic for background removal.
 		This mosaic is not intended to be used for any other purpose, as it incorporates misaligment artifacts.
 		"""
 
+		print("Generating approximate grayscale mosaic")
+
 		# Use only an approximation of the coordinates for the mosaic
 		coordinates = self._tiles_coordinates[:, 0, :]
-		tiles = self._basic_corrected_tiles
+		tiles = self._raw_tiles if self._raman_corrected_tiles is None else self._raman_corrected_tiles
 
 		# Convert coordinates to pixel positions (x, y)
 		coords_px = (coordinates / self.metadata.pixel_size[0]).astype(int)			#NOTE: Assuming square pixels
@@ -839,19 +968,40 @@ class RamanImage:
 		mosaic = np.divide(mosaic, weights, where=weights > 0)
 
 		# Normalize the mosaic to [0, 1]
-		mosaic -= np.min(mosaic)
-		mosaic /= np.max(mosaic)
+		#mosaic -= np.min(mosaic)
+		#mosaic /= np.max(mosaic)
 
-		self._quick_mosaic = mosaic.astype(np.float32)
+		# Compute the principal component of the mosaic to convert it to grayscale
+		pca = PCA(n_components=1)
+		mosaic = mosaic.transpose((1, 2, 0))  # Reshape to (H, W, C)
+		H, W, C = mosaic.shape
+		mosaic_reshaped = mosaic.reshape(-1, C)  # Reshape to
 
-	def _extract_tiles_from_mosaic(self, mosaic, coordinates, pixel_size, tile_size) -> np.ndarray[np.float32]:
+		# Create a mask to remove black pixels from the computation
+		filter_mask = np.all(mosaic_reshaped == 0, axis=1)
+		if np.all(filter_mask):
+			raise RuntimeError("The mosaic is completely black. Please check the input tiles and coordinates.")
+
+		mosaic_pca = pca.fit_transform(mosaic_reshaped[~filter_mask])
+
+		# Normalize the PCA result to [0, 1]
+		mosaic_pca -= np.min(mosaic_pca)
+		mosaic_pca /= np.max(mosaic_pca)
+
+		# Reshape back to (H, W) and convert to uint8
+		mosaic_reshaped = np.zeros((H * W, 1), dtype=mosaic_pca.dtype)
+		mosaic_reshaped[~filter_mask] = mosaic_pca
+		mosaic = mosaic_reshaped.reshape(H, W)  # Reshape back to (H, W)
+		self._quick_mosaic = (mosaic * 255).astype(np.uint8)
+
+	def _extract_tiles_segmentation_from_mosaic(self, mosaic, coordinates, pixel_size, tile_size) -> np.ndarray[np.float32]:
 		"""
-		Extracts tiles from mosaic (invert the quick_stitch method).
+		Extracts tiles segmentation masks from mosaic segmentation mask (invert the quick_stitch method).
 
 		Parameters
 		----------
 		mosaic : np.ndarray[np.float32]
-			The stitched mosaic from which to extract tiles.
+			Global segmentation mask of the mosaic.
 		coordinates : np.ndarray[np.float32]
 			The (X, Y) coordinates of each tile in the mosaic.
 		pixel_size : float
@@ -871,10 +1021,10 @@ class RamanImage:
 		# Get tile dimensions
 		tile_h, tile_w = tile_size
 		T = len(coords_px)
-		C, H, W = mosaic.shape
+		H, W = mosaic.shape
 		
 		# Initialize output array
-		tiles = np.zeros((T, C, tile_h, tile_w), dtype=mosaic.dtype)
+		tiles = np.zeros((T, tile_h, tile_w), dtype=mosaic.dtype)
 		
 		for t in range(T):
 			x, y = coords_px[t]
@@ -892,17 +1042,15 @@ class RamanImage:
 			ty_end = ty_start + (y_end - y_start)
 			
 			if (x_end > x_start) and (y_end > y_start):
-				tiles[t, :, ty_start:ty_end, tx_start:tx_end] = mosaic[
-					:, y_start:y_end, x_start:x_end
-				]
-
-		# Normalize the tiles to [0, 1]
-		tiles -= np.min(tiles)
-		tiles /= np.max(tiles)
+				tiles[t, ty_start:ty_end, tx_start:tx_end] = mosaic[y_start:y_end, x_start:x_end]
 		
 		return tiles
 	
-	def _prepare_for_ashlar(self, tiles: np.ndarray[np.float32], coordinates: np.ndarray[np.float32], output_path: str) -> None:
+	def _prepare_for_ashlar(self, tiles: np.ndarray[np.float32], coordinates: np.ndarray[np.float32]) -> None:
+		
+		# Convert the coordinates in um and flip the y-axis (from Leica to OME TIFF format)
+		for s, _ in enumerate(self._spectra_slices):
+			coordinates[:, s, 1] = np.max(coordinates[:, s, 1]) - (coordinates[:, s, 1] - np.min(coordinates[:, s, 1]))
 
 		# Replace NaN values with 0
 		tiles = np.nan_to_num(tiles, nan=0.0)
@@ -910,62 +1058,61 @@ class RamanImage:
 		# Convert to Uint8
 		tiles = (tiles * 255).astype(np.uint8)
 
-		# Reshape to (T, Z, C, Y, X)
-		tiles = tiles[:, np.newaxis, :, :, :]
-		
-		# Convert the coordinates in um and flip the y-axis (from Leica to OME TIFF format)
-		for s, _ in enumerate(self._spectra_slices):
-			coordinates[:, s, 1] = np.max(coordinates[:, s, 1]) - (coordinates[:, s, 1] - np.min(coordinates[:, s, 1]))
+		for cycle, (start_channel, end_channel) in enumerate(self._spectra_slices):
+			tiles_cycle = tiles[:, start_channel:end_channel + 1, :, :]
+			coordinates_cycle = coordinates[:, cycle, :]
 
-		# Generate the OME TIFF metadata
-		T, Z, C, Y, X = tiles.shape
+			# Save the tile as OME TIFF
+			output_filename = os.path.join(self._working_directory, f'ashlar_input_cycle_{cycle + 1}.ome.tiff')
 
-		# Helper function to find the slice index for a given channel
-		find_slice_idx = lambda c: next((i for i, (start, end) in enumerate(self._spectra_slices) if start <= c <= end), None)
+			# Write the OME TIFF file with tiles
+			with tifffile.TiffWriter(output_filename, ome=True, bigtiff=True) as tif:
 
-		# Save the tile as OME TIFF
-		output_filename = os.path.join(output_path, f'ashlar_input.ome.tiff')
+				# Expand dimensions to match OME TIFF expecta
+				tiles_cycle = tiles_cycle[:, np.newaxis, :, :, :]
 
-		with tifffile.TiffWriter(output_filename, ome=True, bigtiff=True) as tif:
-			for t in range(T):
-				# Create the metadata
-				metadata = {
-					'Pixels': {
-						'PhysicalSizeX': self.metadata.pixel_size[0],
-						'PhysicalSizeY': self.metadata.pixel_size[1],
-						'PhysicalSizeXUnit': 'µm',
-						'PhysicalSizeYUnit': 'µm',
-						'SizeT': 1,
-						'SizeC': C,
-						'SizeY': Y,
-						'SizeX': X,
-						'SizeZ': 1,
-						'Type': 'uint8',  # or 'float', 'uint16', depending on dtype
-					},
-					'Channel': [{'Name': f'Channel_{i}'} for i in range(C)],
-					'Plane': [
-						{
-							'TheT': 0,
-							'TheC': c,
-							'TheZ': 0,  # Assuming no Z dimension for Raman tiles
-							'PositionX': float(coordinates[t, find_slice_idx(c), 0]),
-							'PositionY': float(coordinates[t, find_slice_idx(c), 1]),
-							'PositionXUnit': 'µm',
-							'PositionYUnit': 'µm'
-						}
-						for c in range(C)
-					]
-				}
+				# Generate the OME TIFF metadata
+				T, Z, C, Y, X = tiles_cycle.shape	# T = Tiles, C = Channels, XY = Spatial dimensions
 
-				# Write the tile to the TIFF file
-				tif.write(
-					tiles[t, 0, :, :, :], 
-					metadata=metadata,
-					tile = (Y, X),
-					compression='zlib',
-				)
+				for t in range(T):
+					# Create the metadata
+					metadata = {
+						'Pixels': {
+							'PhysicalSizeX': self.metadata.pixel_size[0],
+							'PhysicalSizeY': self.metadata.pixel_size[1],
+							'PhysicalSizeXUnit': 'µm',
+							'PhysicalSizeYUnit': 'µm',
+							'SizeT': 1,
+							'SizeC': C,
+							'SizeY': Y,
+							'SizeX': X,
+							'SizeZ': 1,
+							'Type': 'uint8',  # or 'float', 'uint16', depending on dtype
+						},
+						'Channel': [{'Name': f'Channel_{i}'} for i in range(C)],
+						'Plane': [
+							{
+								'TheT': 0,
+								'TheC': c,
+								'TheZ': 0,  # Assuming no Z dimension for Raman tiles
+								'PositionX': float(coordinates_cycle[t, 0]),
+								'PositionY': float(coordinates_cycle[t, 1]),
+								'PositionXUnit': 'µm',
+								'PositionYUnit': 'µm'
+							}
+							for c in range(C)
+						]
+					}
 
-	def ashlar_stitch(self, output_path: str, filename: str) -> None:
+					# Write the tile to the TIFF file
+					tif.write(
+						tiles_cycle[t, 0, :, :, :],
+						metadata=metadata,
+						tile = (Y, X),
+						compression='zlib',
+					)
+
+	def ashlar_stitch(self, force_recomputing: bool = False) -> None:
 		"""
 		Stitch the corrected tiles into a mosaic.
 		This mosaic is intended to be used for further processing, as it does not incorporate misaligment artifacts.
@@ -980,52 +1127,67 @@ class RamanImage:
 			The name of the output OME TIFF file (without extension).
 		"""
 
-		if self.corrected is None:
-			raise ValueError("Make sure to run basic_correct() and process_raw_tiles() before calling this method.")
-		
-		# Get the tools absolute path
-		tools_basedir = os.path.abspath(__file__).replace("src/preprocessing/raman.py", "tools")
+		if type(force_recomputing) is not bool:
+			raise TypeError("force_recomputing must be a boolean.")
 
-		# Check if the ASHLAR container is available
-		if self.container_engine == ContainerEngine.DOCKER:
-			subprocess.run(["docker", "build", "-f", os.path.join(tools_basedir, "ASHLAR", "Dockerfile"), "-t", "ashlar:latest", os.path.join(tools_basedir, "ASHLAR")], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-		elif self.container_engine == ContainerEngine.PODMAN:
-			subprocess.run(["podman", "build", "-f", os.path.join(tools_basedir, "ASHLAR", "Dockerfile"), "-t", "ashlar:latest", os.path.join(tools_basedir, "ASHLAR")], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-		elif self.container_engine == ContainerEngine.SINGULARITY:
-			if not os.path.exists(os.path.join(tools_basedir, "ASHLAR", "ashlar.sif")):
-				raise FileNotFoundError(f"ASHLAR Singularity image not found at {os.path.join(tools_basedir, 'ASHLAR', 'ashlar.sif')}")
-		
-		print("Generating stitched mosaic image...")
+		if force_recomputing == True or os.path.exists(os.path.join(self._working_directory, f"{self.sample_id}.ome.tiff")) == False:
+			if self.corrected is None:
+				raise ValueError("Make sure to run process_raw_tiles() before calling this method.")
+			
+			# Get the tools absolute path
+			tools_basedir = os.path.abspath(__file__).replace("src/preprocessing/raman.py", "tools")
 
-		# Prepare the tiles to be stitched with ASHLAR
-		self._prepare_for_ashlar(tiles = self.corrected, coordinates = self.tiles_coordinates, output_path = output_path)
+			# Check if the ASHLAR container is available
+			if self.container_engine == ContainerEngine.DOCKER:
+				subprocess.run(["docker", "build", "-f", os.path.join(tools_basedir, "ASHLAR", "Dockerfile"), "-t", "ashlar:latest", os.path.join(tools_basedir, "ASHLAR")], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+			elif self.container_engine == ContainerEngine.PODMAN:
+				subprocess.run(["podman", "build", "-f", os.path.join(tools_basedir, "ASHLAR", "Dockerfile"), "-t", "ashlar:latest", os.path.join(tools_basedir, "ASHLAR")], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+			elif self.container_engine == ContainerEngine.SINGULARITY:
+				if not os.path.exists(os.path.join(tools_basedir, "ASHLAR", "ashlar.sif")):
+					raise FileNotFoundError(f"ASHLAR Singularity image not found at {os.path.join(tools_basedir, 'ASHLAR', 'ashlar.sif')}")
+			
+			print("Generating input tiles files for ASHLAR...")
 
-		# Execute ASHLAR to stitch the tiles
-		if self.container_engine == ContainerEngine.DOCKER:
-			subprocess.run([
-				"docker", "run", "--rm", "-v",
-				f"{self._working_directory}:/data",
-				"ashlar:latest"
-			])
-		elif self.container_engine == ContainerEngine.PODMAN:
-			subprocess.run([
-				"podman", "run", "--rm", "-v",
-				f"{self._working_directory}:/data",
-				"ashlar:latest"
-			])
-		elif self.container_engine == ContainerEngine.SINGULARITY:
-			subprocess.run([
-				"singularity", "exec", "--bind",
-				f"{self._working_directory}:/data",
-				os.path.join(tools_basedir, "ASHLAR", "ashlar.sif"), "ashlar"
-			])
+			# Prepare the tiles to be stitched with ASHLAR
+			self._prepare_for_ashlar(tiles = self.corrected, coordinates = self.tiles_coordinates)
+			print("Input tiles files for ASHLAR generated.")
+
+			# Execute ASHLAR to stitch the tiles
+			if self.container_engine == ContainerEngine.DOCKER:
+				subprocess.run([
+					"docker", "run", "--rm", "-v",
+					f"{self._working_directory}:/data/",
+					"ashlar:latest"
+				])
+			elif self.container_engine == ContainerEngine.PODMAN:
+				subprocess.run([
+					"podman", "run", "--rm", "-v",
+					f"{self._working_directory}:/data/",
+					"ashlar:latest"
+				])
+			elif self.container_engine == ContainerEngine.SINGULARITY:
+				subprocess.run([
+					"singularity", "exec", "--bind",
+					f"{self._working_directory}:/data/",
+					os.path.join(tools_basedir, "ASHLAR", "ashlar.sif"), "ashlar"
+				])
+			else:
+				raise RuntimeError(f"Unsupported container engine: {self.container_engine}. Supported engines are: {ContainerEngine.list()}")
+
+			# Rename the output file to the desired filename
+			os.rename(
+				os.path.join(self._working_directory, "ashlar_output.ome.tiff"),
+				os.path.join(self._working_directory, f"{self.sample_id}.ome.tiff")
+			)
+
+			# Load the stitched mosaic back into the object
+			self._mosaic = tifffile.imread(os.path.join(self._working_directory, f"{self.sample_id}.ome.tiff"))
+
+			print("Mosaic stitching completed successfully.")
 		else:
-			raise RuntimeError(f"Unsupported container engine: {self.container_engine}. Supported engines are: {ContainerEngine.list()}")
-
-		# Load the stitched mosaic back into the object
-		self._mosaic = tifffile.imread(os.path.join(output_path, f"{filename}.ome.tiff"))
-
-		print("Mosaic stitching completed successfully.")
+			# Load the stitched mosaic back into the object
+			self._mosaic = tifffile.imread(os.path.join(self._working_directory, f"{self.sample_id}.ome.tiff"))
+			print("Loaded ASHLAR stitched mosaic from disk. (Using cached results)")
 
 	def _force_mosaic_load(self, output_path: str, filename: str):
 		self._mosaic = tifffile.imread(os.path.join(output_path, f"{filename}.ome.tiff"))
