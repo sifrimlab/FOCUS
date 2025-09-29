@@ -94,6 +94,9 @@ class ContainerEngine(_AbstractEnum):
 	PODMAN = "podman"
 
 class MsiIntensityNormalization(_AbstractEnum):
-	
 	TIC = "tic"
 	NONE = "none"
+
+class DecompositionMethod(_AbstractEnum):
+	PCA = "pca"
+	NMF = "nmf"

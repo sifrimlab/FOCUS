@@ -3,6 +3,8 @@ import numpy as np
 import matplotlib.pyplot as plt
 import skimage.io as skio
 import skimage.exposure
+from ome_types.model import OME, Image, Pixels, Channel, TiffData, Plane, Color
+
 import constants as constants
 
 
@@ -103,6 +105,81 @@ def read_tiff_file(file: str) -> np.ndarray:
     image = image / np.max(image)
 
     return image
+
+def save_tiff_pyramid(img: np.ndarray, output_file: str, levels: int = 4):
+    """
+    Saves an RGB image as a fully compliant OME-TIFF containing multiple 
+    independent images, one for each resolution level.
+
+    This final version resolves all validation errors and warnings by:
+    1. Creating four independent <Image> blocks.
+    2. Using the correct OME 'float' type.
+    3. Explicitly setting 'samples_per_pixel=1' for each channel.
+    """
+    assert img.ndim == 3 and img.shape[2] == 3, "Expecting RGB image [H,W,3]"
+    assert img.dtype == np.float32, "Expecting float32 array"
+
+    H_base, W_base, _ = img.shape
+
+    # 1. Generate the four downscaled RGB images
+    pyramid_data = []
+    for i in range(levels):
+        scale = 0.5 ** i
+        h_scaled = max(1, int(H_base * scale))
+        w_scaled = max(1, int(W_base * scale))
+        resized = cv2.resize(img, (w_scaled, h_scaled), interpolation=cv2.INTER_AREA)
+        pyramid_data.append(resized)
+
+    # 2. Build the OME-XML with four separate and fully compliant <Image> blocks
+    ome = OME()
+    ifd_counter = 0
+    for i, level_img in enumerate(pyramid_data):
+        H, W, _ = level_img.shape
+
+        image_block = Image(
+            id=f"Image:{i}",
+            name=f"ResolutionLevel_{i}",
+            pixels=Pixels(
+                id=f"Pixels:{i}",
+                dimension_order="XYCZT",
+                type="float",
+                size_x=W,
+                size_y=H,
+                size_z=1,
+                size_c=3,
+                size_t=1,
+                interleaved=False,
+                channels=[
+                    # --- FIX: Explicitly set samples_per_pixel=1 ---
+                    Channel(id=f"Channel:{i}:0", name="R", color=Color("red"), samples_per_pixel=1),
+                    Channel(id=f"Channel:{i}:1", name="G", color=Color("green"), samples_per_pixel=1),
+                    Channel(id=f"Channel:{i}:2", name="B", color=Color("blue"), samples_per_pixel=1),
+                ],
+                planes=[Plane(the_c=c, the_z=0, the_t=0) for c in range(3)],
+                tiff_data_blocks=[TiffData(ifd=ifd_counter, plane_count=3)],
+            )
+        )
+        ome.images.append(image_block)
+        ifd_counter += 3
+
+    xml_metadata = ome.to_xml()
+
+    # 3. Write all image planes sequentially to a single TIFF file
+    with tifffile.TiffWriter(output_file, bigtiff=True) as tif:
+        first_plane = True
+        for level_img in pyramid_data:
+            for c in range(3):
+                plane_data = level_img[:, :, c]
+                description = xml_metadata if first_plane else None
+                tif.write(
+                    plane_data,
+                    description=description,
+                    photometric='minisblack',
+                    compression=('deflate', 9)
+                )
+                first_plane = False
+                
+    return output_file
 
 def preprocess_microscopy_image(path: str, sample_id: str, modality_name: str,  crop: bool, filter_strength: str, smoothing: bool, color_enhancement: bool, debug_mode: bool = False) -> None:
     '''
@@ -272,7 +349,7 @@ def preprocess_microscopy_image(path: str, sample_id: str, modality_name: str,  
     
     # Save the processed image
     path_to_file = os.path.join(output_folder, f'{sample_id}.tiff')
-    tifffile.imwrite(path_to_file, processed_image, compression='zlib')
+    save_tiff_pyramid(processed_image, path_to_file, levels = 4)
 
     if debug_mode == True:
         # Plot the intermediate steps

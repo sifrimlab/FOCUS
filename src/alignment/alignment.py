@@ -2,10 +2,10 @@ import os, tifffile
 import numpy as np
 import matplotlib.pyplot as plt
 
-from sklearn.decomposition import PCA
+from sklearn.decomposition import PCA, NMF
 
 from preprocessing.microscopy_image import gamma_correction, enhance_contrast
-from constants import ModalityParameters, ModalityType, AlignmentSettings, TransformationType, RegistrationSettings, RegistrationType
+from constants import ModalityParameters, ModalityType, AlignmentSettings, TransformationType, RegistrationSettings, RegistrationType, DecompositionMethod
 
 from alignment.elastix_engine import ElastixEngine
 from GUI.landmark_selection import LandmarkSelectionGUI
@@ -75,7 +75,7 @@ class Aligner:
         self._moving_image_xflip = moving_image_xflip
         self._moving_image_yflip = moving_image_yflip
 
-    def _generate_msi_image(self, path: str) -> np.ndarray[np.float32]:
+    def _generate_msi_image(self, path: str, decomposition_method: DecompositionMethod = DecompositionMethod.PCA) -> np.ndarray[np.float32]:
         '''
         Generate an RGB image from the processed MSI data
         
@@ -83,6 +83,8 @@ class Aligner:
         ----------
         path : str
             The path to the preprocessed MSI data
+        decomposition_method : DecompositionMethod
+            The decomposition method to use to generate the RGB image (default is PCA)
         
         Returns
         ----------
@@ -106,24 +108,20 @@ class Aligner:
         empty_mask = np.all(intensities == 0, axis = 1)
         intensities = intensities[~empty_mask]
 
-        # Compute a 3-dimensional PCA to generate an RGB-like image
-        pca = PCA(n_components = 3)
-        intensities = pca.fit_transform(intensities)
+        # Compute a 3-dimensional embedding to generate an RGB-like image
+        if decomposition_method == DecompositionMethod.PCA:
+            engine = PCA(n_components = 3, svd_solver = 'randomized', random_state = 0)
+        elif decomposition_method == DecompositionMethod.NMF:
+            engine = NMF(n_components = 3, init = 'random', random_state = 0, max_iter = 1000)
+        else:
+            raise ValueError("Invalid decomposition method. Please check the input values.")
+        
+        intensities = engine.fit_transform(intensities)
 
-        # Normalize the intensities between 0 and 1 for each channel
+        # Normalize the intensities between 0 and 1 for each channel - Visualization purpose only
         intensities[:, 0] = (intensities[:, 0] - np.min(intensities[:, 0])) / (np.max(intensities[:, 0]) - np.min(intensities[:, 0]))
         intensities[:, 1] = (intensities[:, 1] - np.min(intensities[:, 1])) / (np.max(intensities[:, 1]) - np.min(intensities[:, 1]))
         intensities[:, 2] = (intensities[:, 2] - np.min(intensities[:, 2])) / (np.max(intensities[:, 2]) - np.min(intensities[:, 2]))
-
-        # Apply gamma correction to each channel
-        intensities[:, 0] = gamma_correction(intensities[:, 0], gamma = 0.8)
-        intensities[:, 1] = gamma_correction(intensities[:, 1], gamma = 0.8)
-        intensities[:, 2] = gamma_correction(intensities[:, 2], gamma = 0.8)
-
-        # Apply contrast enhancement to each channel
-        intensities[:, 0] = enhance_contrast(intensities[:, 0])
-        intensities[:, 1] = enhance_contrast(intensities[:, 1])
-        intensities[:, 2] = enhance_contrast(intensities[:, 2])
 
         # Reconstruct the original intensities array
         reconstructed_intensities = np.zeros((matrix_shape[0] * matrix_shape[1], 3))

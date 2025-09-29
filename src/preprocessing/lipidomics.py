@@ -15,7 +15,8 @@ def preprocess_lipidomics(
 		dynamic_window: bool, 
 		dynamic_window_factor: float,
 		reference_mz: np.ndarray | None = None,
-		intensity_normalization: MsiIntensityNormalization = MsiIntensityNormalization.TIC
+		intensity_normalization: MsiIntensityNormalization = MsiIntensityNormalization.TIC,
+		force_recomputation: bool = False
 	) -> None:
 	'''
 	Read the imzML file to obtain the MSI experiment metadata.
@@ -43,6 +44,8 @@ def preprocess_lipidomics(
 		Reference M/Z values to use for peak picking. If None, a consensus M/Z vector will be computed from the spectra.
 	intensity_normalization : MsiIntensityNormalization
 		Type of intensity normalization to apply.
+	force_recomputation : bool
+		If True, forces recomputation even if preprocessed files already exist.
 	'''
 
 	# Check input parameters types
@@ -54,12 +57,21 @@ def preprocess_lipidomics(
 	if intensity_normalization not in MsiIntensityNormalization.list():
 		raise ValueError(f'Invalid intensity_normalization value. Expected one of {MsiIntensityNormalization.list()}')
 	
+	if type(force_recomputation) != bool:
+		raise TypeError('Invalid input type for force_recomputation. Expected bool.')
+	
 	if isinstance(reference_mz, np.ndarray) == False and reference_mz is not None:
 		raise TypeError('Invalid input type for reference_mz. Expected np.ndarray or None.')
 	
 	sample_path = os.path.join(path, sample_id)
 	mod_path = os.path.join(sample_path, modality_name)
 	
+	# Check if the preprocessed files already exist
+	output_folder = os.path.join(sample_path, 'preprocessing', modality_name)
+	if force_recomputation == False and os.path.exists(os.path.join(output_folder, f'{sample_id}_reference_mz.npy')) and os.path.exists(os.path.join(output_folder, f'{sample_id}_intensities_matrix.npy')):
+		print(f"Preprocessed files for sample {sample_id} already exist. Skipping preprocessing.")
+		return
+
 	# Check if the path exists
 	if not os.path.exists(mod_path):
 		raise FileNotFoundError(f"Path {mod_path} does not exist.")
@@ -159,7 +171,6 @@ def preprocess_lipidomics(
 	coordinates = np.array(coordinates, dtype = np.int32)
 
 	# Create the output folder
-	output_folder = os.path.join(sample_path, 'preprocessing', modality_name)
 	if not os.path.exists(output_folder):
 		os.makedirs(output_folder)
 
