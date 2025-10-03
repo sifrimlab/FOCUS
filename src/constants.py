@@ -9,7 +9,7 @@ class _AbstractEnum():
 
 class ImzMLFileParser(_AbstractEnum):
 
-	SCAN_SETTINGS = "{http://psi.hupo.org/ms/mzml}scanSettingsList"
+	SCAN_SETTINGS_LIST = "{http://psi.hupo.org/ms/mzml}scanSettingsList"
 	REFERENCEABLE_PARAM_GROUP_LIST = "{http://psi.hupo.org/ms/mzml}referenceableParamGroupList"
 	REFERENCEABLE_PARAM_GROUP_REF = "{http://psi.hupo.org/ms/mzml}referenceableParamGroupRef"
 	RUN_KEY = "{http://psi.hupo.org/ms/mzml}run"
@@ -23,7 +23,22 @@ class ImzMLFileParser(_AbstractEnum):
 	BINARY_DATA_ARRAY = "{http://psi.hupo.org/ms/mzml}binaryDataArray"
 
 	CV_PARAM = "{http://psi.hupo.org/ms/mzml}cvParam"
+	USER_PARAM = "{http://psi.hupo.org/ms/mzml}userParam"
 	
+class MsiMetadata(_AbstractEnum):
+	INTENSITIES_DTYPE = "intensities_dtype"
+	MZ_DTYPE = "mz_dtype"
+	RASTER_SIZE = "raster_size"
+
+	PIXEL_COORDINATES = "pixel_coordinates"
+	PHYSICAL_COORDINATES = "physical_coordinates"
+	MZ_BINARY_METADATA = "mz_binary_metadata"
+	INTENSITIES_BINARY_METADATA = "intensities_binary_metadata"
+
+class MsiIonMode(_AbstractEnum):
+	POSITIVE = "pos"
+	NEGATIVE = "neg"
+
 class ConfigParameters(_AbstractEnum):
 	
 	DATA_SOURCE_PATH = "data_source_path"
