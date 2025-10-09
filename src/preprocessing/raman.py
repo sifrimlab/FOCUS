@@ -967,10 +967,6 @@ class RamanImage:
 		# Normalize mosaic by accumulated weights
 		mosaic = np.divide(mosaic, weights, where=weights > 0)
 
-		# Normalize the mosaic to [0, 1]
-		#mosaic -= np.min(mosaic)
-		#mosaic /= np.max(mosaic)
-
 		# Compute the principal component of the mosaic to convert it to grayscale
 		pca = PCA(n_components=1)
 		mosaic = mosaic.transpose((1, 2, 0))  # Reshape to (H, W, C)

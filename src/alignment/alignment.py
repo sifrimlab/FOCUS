@@ -4,7 +4,7 @@ import matplotlib.pyplot as plt
 
 from sklearn.decomposition import PCA, NMF
 
-from preprocessing.microscopy_image import gamma_correction, enhance_contrast
+from utils import gamma_correction, enhance_contrast
 from constants import ModalityParameters, ModalityType, AlignmentSettings, TransformationType, RegistrationSettings, RegistrationType, DecompositionMethod
 
 from alignment.elastix_engine import ElastixEngine

@@ -24,6 +24,10 @@ class ImzMLFileParser(_AbstractEnum):
 
 	CV_PARAM = "{http://psi.hupo.org/ms/mzml}cvParam"
 	USER_PARAM = "{http://psi.hupo.org/ms/mzml}userParam"
+
+class SegmentationBackgroundColor(_AbstractEnum):
+	WHITE = "white"
+	BLACK = "black"
 	
 class MsiMetadata(_AbstractEnum):
 	INTENSITIES_DTYPE = "intensities_dtype"

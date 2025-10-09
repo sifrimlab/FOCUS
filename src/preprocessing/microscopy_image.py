@@ -1,361 +1,277 @@
-import copy, os, tifffile, cv2
+import copy, os, tifffile, cv2, subprocess
 import numpy as np
 import matplotlib.pyplot as plt
 import skimage.io as skio
 import skimage.exposure
 from ome_types.model import OME, Image, Pixels, Channel, TiffData, Plane, Color
 
-import constants as constants
+import utils as utils
+from constants import ContainerEngine, SegmentationBackgroundColor
 
+class MicroscopyImage():
+	def __init__(self, source_path: str, sample_id: str, modality_name: str, container_engine: ContainerEngine) -> None:
+		'''
+		Process a microscopy image to uniform the format, enhance the colors prepare it for registration.
+		'''
 
-def get_image_from_bounding_box(image: np.ndarray, x: int, y: int, w: int, h: int, offset: int = 10) -> np.ndarray:
-    """
-    Get a cropped image from the bounding box.
-    """
-    return image[np.max([y - offset, 0]): np.min([y + h + offset, image.shape[0]]), np.max([x - offset, 0]): np.min([x + w + offset, image.shape[1]]), :]
+		# Check if the input path exists and we can read
+		if not os.path.exists(source_path):
+			raise ValueError(f"The path {source_path} does not exist.")
+		if not os.access(source_path, os.R_OK):
+			raise ValueError(f"The path {source_path} is not readable.")
+		
+		# Check that the container engine is supported
+		if container_engine not in ContainerEngine.list():
+			raise ValueError(f"Unsupported container engine: {container_engine}. Supported engines are: {ContainerEngine.list()}")
 
-def enhance_contrast(channel: np.ndarray, saturated_pixels: float = 0.35) -> np.ndarray:
-    '''
-    Enhance the contrast of a single channel image by stretching the histogram.
-    Add a small amount of saturated pixels to improve the contrast.
+		self.source_path = source_path
+		self.sample_id = sample_id
+		self.modality_name = modality_name
+		self.container_engine = container_engine
 
-    Parameters
-    ----------
-    channel : np.ndarray[np.uint8]
-        The channel to enhance.
-    saturated_pixels : float
-        The amount of saturated pixels to add. Default is 0.35%.
-    '''
+		# Find the first .tiff or .tif file in the directory
+		self.filename = None
+		for f in os.listdir(os.path.join(source_path, sample_id, modality_name)):
+			if f.endswith(".tiff") or f.endswith(".tif"):
+				self.filename = os.path.join(source_path, sample_id, modality_name, f)
+				break
 
-    # Convert to float32
-    channel = channel.astype(np.float32)
+		# Check if we found a valid filename
+		if self.filename is None:
+			raise ValueError(f"No valid TIFF file found in {os.path.join(source_path, sample_id, modality_name)}")
+		
+		# Define the standard output folder
+		self.output_folder = os.path.join(source_path, sample_id, 'preprocessing', modality_name)
+		if not os.path.exists(self.output_folder):
+			os.makedirs(self.output_folder) 
 
-    mask = channel > 0
-    result = np.zeros_like(channel, dtype=np.float32)
+	def _load_tiff(self, file: str) -> np.ndarray:
+		'''
+		Read a tiff/tif file and return the image with color channel always in the last dimension
+		(swap channels if needed).
+		The image is converted to float32 and normalized to 0-1.
 
-    if np.any(mask):
-        # Compute the pixels to saturate
-        p_low, p_high = np.percentile(channel[mask], (saturated_pixels, 100 - saturated_pixels))
+		Parameters
+		----------
+		file : str
+			The path to the tiff/tif file.
+		
+		Returns
+		----------
+		image : np.ndarray
+			The image with color channel always in the last dimension.
+		'''
 
-        # Stretch the histogram
-        rescaled_channel = np.clip(channel[mask], p_low, p_high)
+		# Check if the file exists and is a tiff/tif file
+		if not os.path.isfile(file) or not (file.endswith(".tiff") or file.endswith(".tif")):
+			raise ValueError(f"The file {file} does not exist or is not a tiff/tif file.")
 
-        result[mask] = (rescaled_channel - p_low) / (p_high - p_low)
+		image = None
 
-    return result
+		# Read the tiff/tif file
+		with tifffile.TiffFile(file) as f:
+			# Get the image data
+			image = f.asarray()
 
-def gamma_correction(channel: np.ndarray, gamma: float = 0.45) -> np.ndarray:
-    '''
-    Apply gamma correction to a single channel image.
+			# Determine the channel index by looking for the smallest dimension and place it last
+			# Skip if it's a grayscale image
+			if len(image.shape) > 2:
+				channel_index = np.argmin(image.shape)
+				if channel_index == 0:
+					image = image.transpose(1, 2, 0)
+				elif channel_index == 1:
+					image = image.transpose(0, 2, 1)
 
-    Parameters
-    ----------
-    image : np.ndarray[np.uint8]
-        The image to correct.
-    gamma : float
-        The gamma value to use. Default is 0.45.
-    '''
+		# Convert the image to float32
+		image = image.astype(np.float32)
 
-    channel = channel.astype(np.float32)
-    channel = np.power(channel, gamma)
-    return channel
+		# Normalize the image to 0-1
+		image = image / np.max(image)
 
-def read_tiff_file(file: str) -> np.ndarray:
-    '''
-    Read a tiff/tif file and return the image with color channel always in the last dimension
-    (swap channels if needed) and the physical pixel coverage in µm.
-    If no metadata is found to determine the physical pixel coverage, it will return 1.0µm for both dimensions.
-    The image is converted to float32 and normalized to 0-1.
+		return image
+	
+	def _remove_background(self, input_image: np.ndarray, background_color: SegmentationBackgroundColor = SegmentationBackgroundColor.WHITE) -> np.ndarray:
+		'''
+		Remove the background from the image using Meta SAM2.
 
-    Parameters
-    ----------
-    file : str
-        The path to the tiff/tif file.
-    
-    Returns
-    ----------
-    image : np.ndarray
-        The image with color channel always in the last dimension.
-    '''
+		Parameters
+		----------
+		input_image : np.ndarray
+			The input RGB image from which to remove the background.
+		background_color : SegmentationBackgroundColor
+			The color used to fill the background after removal. This is usefull to match the requirements of futher processing steps.
 
-    # Check if the file exists and is a tiff/tif file
-    if not os.path.isfile(file) or not (file.endswith(".tiff") or file.endswith(".tif")):
-        raise ValueError(f"The file {file} does not exist or is not a tiff/tif file.")
+		Returns
+		----------
+		image : np.ndarray
+			The image with the background removed.
+		'''
 
-    image = None
+		# Save a grayscale version of the image to use for segmentation
+		grayscale_image = skimage.color.rgb2gray(input_image)
+		grayscale_image = (grayscale_image * 255).astype(np.uint8)
+		np.save(os.path.join(self.output_folder, "grayscale_mosaic.npy"), grayscale_image)
 
-    # Read the tiff/tif file
-    with tifffile.TiffFile(file) as f:
-        # Get the image data
-        image = f.asarray()
+		# Get the tools absolute path
+		tools_basedir = os.path.abspath(__file__).replace("src/preprocessing/microscopy_image.py", "tools")
 
-        # Determine the channel index by looking for the smallest dimension and place it last
-        # Skip if it's a grayscale image
-        if len(image.shape) > 2:
-            channel_index = np.argmin(image.shape)
-            if channel_index == 0:
-                image = image.transpose(1, 2, 0)
-            elif channel_index == 1:
-                image = image.transpose(0, 2, 1)
+		# Check if the SAM2 container is available
+		if self.container_engine == ContainerEngine.DOCKER:
+			subprocess.run(["docker", "build", "-f", os.path.join(tools_basedir, "SAM2", "Dockerfile"), "-t", "sam2:latest", os.path.join(tools_basedir, "SAM2")], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+		elif self.container_engine == ContainerEngine.PODMAN:
+			subprocess.run(["podman", "build", "-f", os.path.join(tools_basedir, "SAM2", "Dockerfile"), "-t", "sam2:latest", os.path.join(tools_basedir, "SAM2")], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+		elif self.container_engine == ContainerEngine.SINGULARITY:
+			if not os.path.exists(os.path.join(tools_basedir, "SAM2", "sam2.sif")):
+				raise FileNotFoundError(f"SAM2 Singularity image not found at {os.path.join(tools_basedir, 'SAM2', 'sam2.sif')}")
+			
+		# Execute SAM2 to remove the background
+		if self.container_engine == ContainerEngine.DOCKER:
+			subprocess.run([
+				"docker", "run", "--rm", "-v",
+				f"{self.output_folder}:/data/",
+				"sam2:latest"
+			])
+		elif self.container_engine == ContainerEngine.PODMAN:
+			subprocess.run([
+				"podman", "run", "--rm", "-v",
+				f"{self.output_folder}:/data/",
+				"sam2:latest"
+			])
+		elif self.container_engine == ContainerEngine.SINGULARITY:
+			subprocess.run([
+				"singularity", "exec", "--bind",
+				f"{self.output_folder}:/data/",
+				os.path.join(tools_basedir, "SAM2", "sam2.sif"), "sam2"
+			])
+		else:
+			raise RuntimeError(f"Unsupported container engine: {self.container_engine}. Supported engines are: {ContainerEngine.list()}")
 
-    # Convert the image to float32
-    image = image.astype(np.float32)
+		# Load the segmentation mask
+		segmentation_mask = np.load(os.path.join(self.output_folder, "segmentation_mask.npy"))
 
-    # Normalize the image to 0-1
-    image = image / np.max(image)
+		# Apply the segmentation mask to the input image
+		segmented_image = np.zeros_like(input_image)
 
-    return image
+		if background_color == SegmentationBackgroundColor.WHITE:
+			segmented_image = input_image * segmentation_mask[:, :, np.newaxis] + (1 - segmentation_mask[:, :, np.newaxis])
+		else:
+			segmented_image = input_image * segmentation_mask[:, :, np.newaxis]
 
-def save_tiff_pyramid(img: np.ndarray, output_file: str, levels: int = 4):
-    """
-    Saves an RGB image as a fully compliant OME-TIFF containing multiple 
-    independent images, one for each resolution level.
+		return segmented_image
 
-    This final version resolves all validation errors and warnings by:
-    1. Creating four independent <Image> blocks.
-    2. Using the correct OME 'float' type.
-    3. Explicitly setting 'samples_per_pixel=1' for each channel.
-    """
-    assert img.ndim == 3 and img.shape[2] == 3, "Expecting RGB image [H,W,3]"
-    assert img.dtype == np.float32, "Expecting float32 array"
+	def _save_image_pyramid(self, img: np.ndarray, output_file: str, levels: int = 4):
+		"""
+		Saves an RGB image as a fully compliant OME-TIFF containing multiple 
+		independent images, one for each resolution level.
 
-    H_base, W_base, _ = img.shape
+		Parameters
+		----------
+		img : np.ndarray
+			The input RGB image as a NumPy array of shape (H, W, 3) and dtype float32.
+		output_file : str
+			The path to the output OME-TIFF file.
+		levels : int
+			The number of resolution levels to generate (default is 4).
+		"""
 
-    # 1. Generate the four downscaled RGB images
-    pyramid_data = []
-    for i in range(levels):
-        scale = 0.5 ** i
-        h_scaled = max(1, int(H_base * scale))
-        w_scaled = max(1, int(W_base * scale))
-        resized = cv2.resize(img, (w_scaled, h_scaled), interpolation=cv2.INTER_AREA)
-        pyramid_data.append(resized)
+		assert img.ndim == 3 and img.shape[2] == 3, "Expecting RGB image [H,W,3]"
+		assert img.dtype == np.float32, "Expecting float32 array"
 
-    # 2. Build the OME-XML with four separate and fully compliant <Image> blocks
-    ome = OME()
-    ifd_counter = 0
-    for i, level_img in enumerate(pyramid_data):
-        H, W, _ = level_img.shape
+		H_base, W_base, _ = img.shape
 
-        image_block = Image(
-            id=f"Image:{i}",
-            name=f"ResolutionLevel_{i}",
-            pixels=Pixels(
-                id=f"Pixels:{i}",
-                dimension_order="XYCZT",
-                type="float",
-                size_x=W,
-                size_y=H,
-                size_z=1,
-                size_c=3,
-                size_t=1,
-                interleaved=False,
-                channels=[
-                    # --- FIX: Explicitly set samples_per_pixel=1 ---
-                    Channel(id=f"Channel:{i}:0", name="R", color=Color("red"), samples_per_pixel=1),
-                    Channel(id=f"Channel:{i}:1", name="G", color=Color("green"), samples_per_pixel=1),
-                    Channel(id=f"Channel:{i}:2", name="B", color=Color("blue"), samples_per_pixel=1),
-                ],
-                planes=[Plane(the_c=c, the_z=0, the_t=0) for c in range(3)],
-                tiff_data_blocks=[TiffData(ifd=ifd_counter, plane_count=3)],
-            )
-        )
-        ome.images.append(image_block)
-        ifd_counter += 3
+		# 1. Generate the four downscaled RGB images
+		pyramid_data = []
+		for i in range(levels):
+			scale = 0.5 ** i
+			h_scaled = max(1, int(H_base * scale))
+			w_scaled = max(1, int(W_base * scale))
+			resized = cv2.resize(img, (w_scaled, h_scaled), interpolation=cv2.INTER_AREA)
+			pyramid_data.append(resized)
 
-    xml_metadata = ome.to_xml()
+		# 2. Build the OME-XML with four separate and fully compliant <Image> blocks
+		ome = OME()
+		ifd_counter = 0
+		for i, level_img in enumerate(pyramid_data):
+			H, W, _ = level_img.shape
 
-    # 3. Write all image planes sequentially to a single TIFF file
-    with tifffile.TiffWriter(output_file, bigtiff=True) as tif:
-        first_plane = True
-        for level_img in pyramid_data:
-            for c in range(3):
-                plane_data = level_img[:, :, c]
-                description = xml_metadata if first_plane else None
-                tif.write(
-                    plane_data,
-                    description=description,
-                    photometric='minisblack',
-                    compression=('deflate', 9)
-                )
-                first_plane = False
-                
-    return output_file
+			image_block = Image(
+				id=f"Image:{i}",
+				name=f"ResolutionLevel_{i}",
+				pixels=Pixels(
+					id=f"Pixels:{i}",
+					dimension_order="XYCZT",
+					type="float",
+					size_x=W,
+					size_y=H,
+					size_z=1,
+					size_c=3,
+					size_t=1,
+					interleaved=False,
+					channels=[
+						# --- FIX: Explicitly set samples_per_pixel=1 ---
+						Channel(id=f"Channel:{i}:0", name="R", color=Color("red"), samples_per_pixel=1),
+						Channel(id=f"Channel:{i}:1", name="G", color=Color("green"), samples_per_pixel=1),
+						Channel(id=f"Channel:{i}:2", name="B", color=Color("blue"), samples_per_pixel=1),
+					],
+					planes=[Plane(the_c=c, the_z=0, the_t=0) for c in range(3)],
+					tiff_data_blocks=[TiffData(ifd=ifd_counter, plane_count=3)],
+				)
+			)
+			ome.images.append(image_block)
+			ifd_counter += 3
 
-def preprocess_microscopy_image(path: str, sample_id: str, modality_name: str,  crop: bool, filter_strength: str, smoothing: bool, color_enhancement: bool, debug_mode: bool = False) -> None:
-    '''
-    Preprocess a microscopy image by applying cropping, filtering, smoothing and color enhancement.
+		xml_metadata = ome.to_xml()
 
-    Parameters
-    ----------
-    path : str
-        The path to the directory where the source data are stored.
-    sample_id : str
-        The sample ID to use for the output file name.
-    modality_name : str
-        The name of the modality to process
-    crop : bool
-        Whether to crop the image or not.
-    filter_strength : str
-        The strength of the filter to apply. Can be 'soft', 'medium' or 'strong'.
-    smoothing : bool
-        Whether to apply smoothing or not.
-    color_enhancement : bool
-        Whether to apply color enhancement or not.
-    debug_mode : bool
-        Whether to enable debug mode or not. Default is False.
-        If True, the function will plot each step of the preprocessing.
-    '''
+		# 3. Write all image planes sequentially to a single TIFF file
+		with tifffile.TiffWriter(output_file, bigtiff=True) as tif:
+			for c, level_img in enumerate(pyramid_data):
+				plane_data = level_img
+				description = xml_metadata if c == 0 else None
+				tif.write(
+					plane_data,
+					description=description,
+					photometric='rgb',
+					metadata={'axes': 'YXC'},
+					compression=('deflate', 9)
+				)
+					
+		return output_file
 
-    # Check the input parameters
-    if (type(path) != str or type(sample_id) != str or type(modality_name) != str
-        or type(crop) != bool or type(filter_strength) != str or type(smoothing) != bool or type(color_enhancement) != bool):
-        raise TypeError("Invalid input parameters. Please check the types.")
-    if filter_strength not in constants.ImagingFilterStrength.list():
-        raise ValueError(f"Invalid filter strength: {filter_strength}. Please choose from {constants.ImagingFilterStrength.list()}.")
-    
-    sample_dir = os.path.join(path, sample_id) 
-    mod_dir = os.path.join(path, sample_id, modality_name)
+	def process_image(self, remove_background: bool = True, color_enhancement: bool = True, background_color: SegmentationBackgroundColor = SegmentationBackgroundColor.WHITE) -> None:
+		'''
+		Preprocess a microscopy image by removing the background and enhancing the colors.
+		The result is saved as a multi-resolution OME-TIFF file.
 
-    # Check if the path exists
-    if not os.path.exists(mod_dir):
-        raise ValueError(f"The path {mod_dir} does not exist.")
-    
-    # Check if the path is a directory
-    if not os.path.isdir(mod_dir):
-        raise ValueError(f"The path {mod_dir} is not a directory.")
-    
-    # Get a list of files in the directory
-    files = os.listdir(mod_dir)
-    if len(files) == 0:
-        raise ValueError(f"The directory {mod_dir} is empty.")
-    
-    # Get the first .tiff or .tif file in the directory
-    file = None
-    for f in files:
-        if f.endswith(".tiff") or f.endswith(".tif"):
-            file = os.path.join(mod_dir, f)
-            break
-    
-    if file is None:
-        raise ValueError(f"No .tiff or .tif file found in the directory {mod_dir}.")
-    
-    # Read the tiff/tif file
-    image = read_tiff_file(file)
+		Parameters
+		----------
+		remove_background : bool
+			Whether to remove the background using Meta SAM2 (default is True).
+		color_enhancement : bool
+			Whether to enhance the colors using gamma correction and contrast enhancement (default is True).
+		background_color : SegmentationBackgroundColor
+			The color used to fill the background after removal. This is usefull to match the requirements of futher processing steps.
+		'''
 
-    # Check if the image has more than 3 color channels
-    if len(image.shape) > 3:
-        raise ValueError(f"The image {file} has more than 3 color channels. Please check the file. Microscopy images can be at most 3 channels.")
+		# Check the inputs
+		if type(remove_background) is not bool:
+			raise ValueError(f"Invalid value for remove_background: {remove_background}. Expected a boolean.")
+		if type(color_enhancement) is not bool:
+			raise ValueError(f"Invalid value for color_enhancement: {color_enhancement}. Expected a boolean.")
+		if background_color not in SegmentationBackgroundColor.list():
+			raise ValueError(f"Invalid value for background_color: {background_color}. Expected one of {SegmentationBackgroundColor.list()}.")
+		
+		# Load the input file
+		image = self._load_tiff(self.filename)
 
-    channels: list[np.ndarray] = []
-    thresholds: list[np.ndarray] = []
-    plots: list[tuple[np.ndarray, str]] = []
-    processed_image: np.ndarray = np.zeros((image.shape[0], image.shape[1], 3), dtype = np.float32)
+		# Enhance colors if needed
+		if color_enhancement:
+			image = utils.gamma_correction(image)
+			image = utils.enhance_contrast(image)
 
-    # Unpack the channels, if the shape is 2D it's a grayscale
-    if len(image.shape) == 2:
-        channels.append(image)
-    else:
-        for channel_id in range(image.shape[2]):
-            channel = image[:, :, channel_id]
-            channels.append(channel)
+		# Remove the background if needed
+		if remove_background:
+			image = self._remove_background(image, background_color)
 
-    # Process each channel
-    for channel_id in range(len(channels)):
-
-        # Improve the color of the image by applying a gamma correction and contrast enhancement
-        if color_enhancement == True:
-            channels[channel_id] = gamma_correction(channels[channel_id], gamma=0.7)
-            channels[channel_id] = enhance_contrast(channels[channel_id], saturated_pixels=0.35)
-
-        # Save the output of the color enhancement
-        processed_image[:, :, channel_id] = channels[channel_id]
-
-        # Apply Gaussian blur
-        if smoothing == True:
-            channels[channel_id] = cv2.GaussianBlur(channels[channel_id], (9, 9), 5)
-
-        # Compute an adaptive threshold for cropping
-        if crop == True:
-            # Rescale the intensity to 0-255 and convert to uint8
-            standard = skimage.exposure.rescale_intensity(channels[channel_id], out_range=(0, 255)).astype(np.uint8)
-
-            thresh = cv2.adaptiveThreshold(standard, 255, cv2.ADAPTIVE_THRESH_MEAN_C, cv2.THRESH_BINARY_INV, 15, 5)
-            thresholds.append(thresh)
-
-    # DEBUG: Plot the enahanced channels
-    if debug_mode == True:
-        plots.append((copy.deepcopy(processed_image), 'Enhanced Image'))
-
-    # Proceed with cropping if requested
-    if crop == True:
-
-        # Merge all the thresholds into a single mask
-        threshold = np.zeros_like(thresholds[0])
-        for i in range(len(thresholds)):
-            threshold = np.maximum(threshold, thresholds[i])
-        plots.append((copy.deepcopy(threshold), 'Merged Threshold'))
-
-        # Define a kernel for morphological operations
-        if filter_strength == constants.ImagingFilterStrength.SOFT:
-            kernel = np.ones((5, 5), threshold.dtype)
-            iterations = 1
-            final_smoothing = False
-            smoothing_filter = None
-        elif filter_strength == constants.ImagingFilterStrength.MEDIUM:
-            kernel = np.ones((5, 5), threshold.dtype)
-            iterations = 2
-            final_smoothing = True
-            smoothing_filter = (15, 15)
-        elif filter_strength == constants.ImagingFilterStrength.AGGRESSIVE:
-            kernel = np.ones((7, 7), threshold.dtype)
-            iterations = 3
-            final_smoothing = True
-            smoothing_filter = (21, 21)
-
-        # Perform morphological operations to clean up the mask
-        for i in range(iterations):
-            threshold = cv2.erode(threshold, kernel, iterations = 1)
-            threshold = cv2.dilate(threshold, kernel, iterations = 2)
-            threshold = cv2.erode(threshold, kernel, iterations = 1)
-            if debug_mode == True:
-                plots.append((copy.deepcopy(threshold), f'Morphological Erosion/Dilation/Erosion {i + 1}'))
-
-        # Apply Gaussian blur to the mask
-        if final_smoothing == True:
-            threshold = cv2.GaussianBlur(threshold, smoothing_filter, int(smoothing_filter[0] / 5))
-            if debug_mode == True:
-                plots.append((copy.deepcopy(threshold), 'Final Gaussian Blurring'))
-
-        # Find the contours of the mask
-        contours, _ = cv2.findContours(threshold, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_SIMPLE)
-        largest_contour = sorted(contours, key = cv2.contourArea, reverse = True)[0]
-        x, y, w, h = cv2.boundingRect(largest_contour)
-        if debug_mode == True:
-            pic = np.ascontiguousarray(np.copy(processed_image), dtype=processed_image.dtype)
-            pic = cv2.drawContours(pic, largest_contour, -1, (1.0, 0.0, 0.0), 100)
-            pic = cv2.rectangle(pic, (x, y), (x + w, y + h), (0.0, 1.0, 0.0), 100)
-            plots.append((copy.deepcopy(pic), 'Computed bounding box'))
-
-        # Crop the final image
-        processed_image = get_image_from_bounding_box(processed_image, x, y, w, h)
-        if debug_mode == True:
-            plots.append((copy.deepcopy(processed_image), 'Cropped Image'))
-
-
-    # Create the output folder
-    output_folder = os.path.join(sample_dir, 'preprocessing', modality_name)
-    if not os.path.exists(output_folder):
-        os.makedirs(output_folder)
-    
-    # Save the processed image
-    path_to_file = os.path.join(output_folder, f'{sample_id}.tiff')
-    save_tiff_pyramid(processed_image, path_to_file, levels = 4)
-
-    if debug_mode == True:
-        # Plot the intermediate steps
-        for img, title in plots:
-            plt.figure()
-            plt.imshow(img, cmap='gray')
-            plt.title(title)
-            plt.axis('off')
-    
+		# Save the processed image as a multi-resolution OME-TIFF
+		self._save_image_pyramid(image, os.path.join(self.output_folder, f"{self.sample_id}_{self.modality_name}_processed.ome.tiff"), levels=4)
+	

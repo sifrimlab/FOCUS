@@ -1,3 +1,4 @@
+import numpy as np
 import constants as constants
 
 def parse_config(config: dict) -> None:
@@ -39,3 +40,49 @@ def parse_config(config: dict) -> None:
             break
     if anchor_modality is None:
         raise ValueError(f"The anchor modality {config[constants.ConfigParameters.ANCHOR_MODALITY]} is not defined in the config file.")
+    
+def enhance_contrast(channel: np.ndarray, saturated_pixels: float = 0.35) -> np.ndarray:
+    '''
+    Enhance the contrast of a single channel image by stretching the histogram.
+    Add a small amount of saturated pixels to improve the contrast.
+
+    Parameters
+    ----------
+    channel : np.ndarray[np.uint8]
+        The channel to enhance.
+    saturated_pixels : float
+        The amount of saturated pixels to add. Default is 0.35%.
+    '''
+
+    # Convert to float32
+    channel = channel.astype(np.float32)
+
+    mask = channel > 0
+    result = np.zeros_like(channel, dtype=np.float32)
+
+    if np.any(mask):
+        # Compute the pixels to saturate
+        p_low, p_high = np.percentile(channel[mask], (saturated_pixels, 100 - saturated_pixels))
+
+        # Stretch the histogram
+        rescaled_channel = np.clip(channel[mask], p_low, p_high)
+
+        result[mask] = (rescaled_channel - p_low) / (p_high - p_low)
+
+    return result
+
+def gamma_correction(channel: np.ndarray, gamma: float = 0.45) -> np.ndarray:
+    '''
+    Apply gamma correction to a single channel image.
+
+    Parameters
+    ----------
+    image : np.ndarray[np.uint8]
+        The image to correct.
+    gamma : float
+        The gamma value to use. Default is 0.45.
+    '''
+
+    channel = channel.astype(np.float32)
+    channel = np.power(channel, gamma)
+    return channel
