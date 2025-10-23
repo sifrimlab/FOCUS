@@ -199,3 +199,5 @@ cython_debug/
 #.idea/
 .Rproj.user
 tools/BaSiCpy/basicpy.sif
+
+notebooks/gigapath

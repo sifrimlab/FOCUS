@@ -1,137 +1,60 @@
+# %%
+import sys, os, tifffile, tqdm
 import numpy as np
-import os, tqdm
 import matplotlib.pyplot as plt
-import preprocessing.lipidomics as lipidomics
-import preprocessing.raman as raman
-import xml.etree.ElementTree as ET
-from constants import ImzMLFileParser
 
-def read_ibm_file(path: str, sample_id: str, modality_name: str) -> tuple[np.ndarray, np.ndarray]:
+# Include src directory in the path dynamically
+notebook_dir = os.path.abspath("")
+src_path = os.path.join(notebook_dir, "../src")
+sys.path.append(src_path)
 
-	sample_path = os.path.join(path, sample_id)
-	mod_path = os.path.join(sample_path, modality_name)
+import preprocessing.microscopy_image as mi
+from constants import ContainerEngine
 
-	# Check if the path exists
-	if not os.path.exists(mod_path):
-		raise FileNotFoundError(f"Path {mod_path} does not exist.")
+# %%
+PATH = "/mnt/data/lorenzo/FOCUS/ARNEO/"
+MODALITY_NAME = "HE"
 
-	# List the files in the given directory and extract the absolute path for the first imzML file
-	files = os.listdir(mod_path)
-	imzml_files = [f for f in files if f.endswith('.imzML')]
-	if len(imzml_files) == 0:
-		raise FileNotFoundError(f"No imzML files found in {mod_path}.")
-	imzml_file = os.path.join(mod_path, imzml_files[0])
+SAMPLE_ID_LIST = [
+    "BPH1",
+    "BPH2",
+    "BPH3",
+    "BPH4",
+    "CRPC1",
+    "CRPC2",
+    "CRPC3",
+    "CRPC4",
+    "CRPC5",
+]
 
-	# Obtain the IBD file using the same filename and swapping the extension
-	ibd_file = imzml_file.replace('.imzML', '.ibd')
-	if not os.path.exists(ibd_file):
-		raise FileNotFoundError(f"IBD file {ibd_file} not found in {mod_path}.")
+# %%
+patch_extractor = mi.PatchEmbeddingExtractor(hf_token = "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")
 
-	print(f"Reading imzML file: {imzml_file}, associated with IBD file {ibd_file}")
+# %%
+samples = []
 
-	# Parse the imzML file
-	tree = ET.parse(imzml_file)
-	root = tree.getroot()
+# Create the samples
+for sample_id in SAMPLE_ID_LIST:
+	sample = mi.MicroscopyImage(
+		source_path=PATH,
+		sample_id=sample_id,
+		modality_name=MODALITY_NAME,
+		patch_extractor=patch_extractor
+	)
+	samples.append(sample)
 
-	mz_dtype, intensities_dtype = None, None
+# %%
+for sample in tqdm.tqdm(samples, desc="Processing microscopy images"):
+    sample.process_image(min_tissue_area=5000)
 
-	# Define utility to convert string to dtype
-	str_to_dtype = lambda s: np.float32 if s == "32-bit float" else np.float64
+# %%
+for sample in samples:
+    with tifffile.TiffFile(os.path.join(sample.output_folder, f"{sample.sample_id}_{sample.modality_name}_processed.ome.tiff")) as tif:
+        image = tif.asarray()
 
-	for rpg in root.find(ImzMLFileParser.REFERENCEABLE_PARAM_GROUP_LIST):
-		if rpg.attrib['id'] in ['mzArray']:
-			for cv_param in rpg:
-				if "float" in cv_param.attrib['name']:
-					mz_dtype = str_to_dtype(cv_param.attrib['name'])
-		elif rpg.attrib['id'] in ['intensities', "intensityArray"]:
-			for cv_param in rpg:
-				if "float" in cv_param.attrib['name']:
-					intensities_dtype = str_to_dtype(cv_param.attrib['name'])
+    plt.figure(figsize=(10, 10))
+    plt.imshow(image)
+    plt.axis('off')
+    plt.show()
 
-	if mz_dtype is None:
-		mz_dtype = np.float64 if intensities_dtype == None else intensities_dtype
-	if intensities_dtype is None:
-		intensities_dtype = mz_dtype
 
-	run = root.find(ImzMLFileParser.RUN_KEY)
-	spectrum_list = run.find(ImzMLFileParser.SPECTRUM_LIST_KEY)
-	spectra = spectrum_list.findall(ImzMLFileParser.SPECTRUM_KEY)
-
-	# Decode the binary data from the imzML file
-	parsed_spectra = [lipidomics.spectra_to_dict(spectrum) for spectrum in spectra]
-
-	# Select the final data type based on the largest one
-	final_dtype = np.promote_types(mz_dtype, intensities_dtype)
-
-	# Read the binary IBD data file to obtain the actual M/Zs and intensities data
-	read_mzs = lambda metadata: np.fromfile(ibd_file, dtype = mz_dtype, count = metadata['length'], offset = metadata['offset'])
-	read_intensities = lambda metadata: np.fromfile(ibd_file, dtype = intensities_dtype, count = metadata['length'], offset = metadata['offset'])
-
-	# Read the data from the IBD file
-	mzs = [read_mzs(metadata["mzs"]) for metadata in parsed_spectra]
-	intensities = [read_intensities(metadata["intensities"]) for metadata in parsed_spectra]
-
-	# Obtain the lower and upper bounds for the mzs values
-	low_mz, high_mz = float('inf'), float('-inf')
-	for mz in mzs:
-		if np.min(mz) < low_mz:
-			low_mz = np.min(mz)
-		if np.max(mz) > high_mz:
-			high_mz = np.max(mz)
-
-	return mzs, intensities
-
-if __name__ == "__main__":
-	'''PATH = "/mnt/data/lorenzo/VSC_DATA/Jelle"
-	SAMPLE_ID_LIST = [
-		"LG001-RAW",
-		"LG002-RAW",
-	]
-	MODALITY_NAME = "msi"
-	OUTPUT_PATH_LIST = [os.path.join(PATH, sample_id, 'preprocessing', MODALITY_NAME) for sample_id in SAMPLE_ID_LIST]
-
-	global_mzs, global_intensities = [], []
-
-	for sample_id in SAMPLE_ID_LIST:
-		mzs, intensities = read_ibm_file(PATH, sample_id, MODALITY_NAME)
-		global_mzs.append(mzs)
-		global_intensities.append(intensities)
-
-	# Define an omogenous M/Z array that aggregates datapoints to achieve a common spectrum
-	reference_mz = []
-	for sample_index in range(len(SAMPLE_ID_LIST)):
-		reference_mz.append(lipidomics.compute_reference_mz(global_mzs[sample_index], mass_tollerance=10, frequency_threshold=0.01))
-		print(f"Found {len(reference_mz[-1])} unique M/Z values from sample {SAMPLE_ID_LIST[sample_index]}: [{min(reference_mz[-1])}, {max(reference_mz[-1])}]")
-
-	# Now process again the unified M/Z to reach a global consensus across all samples
-	global_reference_mz = lipidomics.compute_reference_mz(reference_mz, mass_tollerance=10, frequency_threshold=0.0)    # No frequency threshold because the frequncies will be more or less homogeneous
-	print(f"Found {len(global_reference_mz)} global unique M/Z values: [{min(global_reference_mz)}, {max(global_reference_mz)}]")
-
-	lipidomics.preprocess_lipidomics(
-		path = PATH,
-		sample_id= SAMPLE_ID_LIST[0],
-		modality_name = MODALITY_NAME,
-		peak_picking= True,
-		prominence=0.01,
-		window_tolerance=10,
-		dynamic_window=True,
-		dynamic_window_factor = 1e6,
-		reference_mz = global_reference_mz,
-	)'''
-
-	PATH = "/mnt/data/lorenzo/VSC_DATA/Nina"
-	SAMPLE_ID = "20250606-INT"
-	MODALITY_NAME = "raman"
-
-	INPUT_PATH = os.path.join(PATH, SAMPLE_ID, MODALITY_NAME)
-	OUTPUT_PATH =  os.path.join(PATH, SAMPLE_ID, 'preprocessing', MODALITY_NAME)
-	FILENAME = f"{SAMPLE_ID}.lif"
-
-	# Load LIF file to obtain the tiles for each image and the relevant metadata
-	raman_data = raman.RamanImage(filename = os.path.join(INPUT_PATH, FILENAME))
-
-	raman_data._raman_corrected_tiles = raman_data.raw
-	raman_data.ashlar_stitch(output_path="./", filename="ashlar_stitch")
-
-	raman_data._basic_corrected_tiles = raman_data.raw
-	raman_data.process_raw_tiles()
