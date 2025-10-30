@@ -29,27 +29,31 @@ class PatchEmbeddingExtractor:
 		self.slide_encoder.eval()
 		self.slide_encoder.to(self.device)
 
-	def extract_patches(self, img: np.ndarray, patch_size: int = 224) -> tuple[np.ndarray, np.ndarray]:
+	def extract_patches(self, img: np.ndarray, patch_size: int = 224, patch_centers: np.ndarray = None) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
 		"""
-		Extract non-overlapping patches from an image. Returns the patches and the top-left coordinates
-		of each patch in the original image.
-
+		Extract patches from an image. If patch_centers is None, extracts non-overlapping patches.
+		If patch_centers is provided, extracts patches centered at those coordinates.
+		
 		Parameters
 		----------
 		img : np.ndarray
 			The input image as a NumPy array of shape (H, W, C).
 		patch_size : int
 			The size of the patches to extract (default is 224).
+		patch_centers : np.ndarray, optional
+			A NumPy array of shape (N, 2) containing the (x, y) coordinates of the patch centers.
+			If None, non-overlapping patches are extracted across the entire image.
 		
 		Returns
-		----------
+		-------
 		patches : np.ndarray
 			A NumPy array of shape (N, patch_size, patch_size, C) containing the extracted patches.
-		coordinates : np.ndarray
-			A NumPy array of shape (N, 2) containing the (x, y) coordinates of the top-left corner of each patch
-			in the original image.
+		top_left_coordinates : np.ndarray
+			A NumPy array of shape (N, 2) containing the (x, y) coordinates of the top-left corner of each patch.
+		center_coordinates : np.ndarray
+			A NumPy array of shape (N, 2) containing the (x, y) coordinates of the center of each patch.
 		"""
-
+		
 		# Handle different formats
 		if img.ndim == 2:
 			img = img[..., None]
@@ -59,29 +63,76 @@ class PatchEmbeddingExtractor:
 		if c == 4:
 			img = img[..., :3]
 		
-		# Calculate number of patches
-		n_patches_y = h // patch_size
-		n_patches_x = w // patch_size
+		half_patch = patch_size // 2
 		
-		# Crop image to fit exact number of patches
-		h_crop = n_patches_y * patch_size
-		w_crop = n_patches_x * patch_size
-		img = img[:h_crop, :w_crop, :]
+		if patch_centers is not None:
+			# Extract patches centered at provided coordinates
+			patch_centers = np.asarray(patch_centers, dtype=np.float32)
+			n_patches = patch_centers.shape[0]
+			
+			patches = []
+			top_left_coords = []
+			center_coords = []
+			
+			for i in range(n_patches):
+				cx, cy = patch_centers[i]
+				
+				# Compute top-left corner
+				x0 = int(cx - half_patch)
+				y0 = int(cy - half_patch)
+				
+				# Clamp to image boundaries
+				x0 = max(0, min(x0, w - patch_size))
+				y0 = max(0, min(y0, h - patch_size))
+				
+				# Extract patch
+				patch = img[y0:y0+patch_size, x0:x0+patch_size, :]
+				
+				# Handle edge cases where patch might be smaller than patch_size
+				if patch.shape[0] < patch_size or patch.shape[1] < patch_size:
+					padded = np.zeros((patch_size, patch_size, 3), dtype=img.dtype)
+					padded[:patch.shape[0], :patch.shape[1], :] = patch
+					patch = padded
+				
+				patches.append(patch)
+				top_left_coords.append([x0, y0])
+				
+				# Compute actual center (might differ slightly from requested if clamped)
+				actual_center_x = x0 + half_patch
+				actual_center_y = y0 + half_patch
+				center_coords.append([actual_center_x, actual_center_y])
+			
+			patches = np.array(patches, dtype=np.float32)
+			top_left_coordinates = np.array(top_left_coords, dtype=np.float32)
+			center_coordinates = np.array(center_coords, dtype=np.float32)
+			
+		else:
+			# Extract non-overlapping patches
+			n_patches_y = h // patch_size
+			n_patches_x = w // patch_size
+			
+			# Crop image to fit exact number of patches
+			h_crop = n_patches_y * patch_size
+			w_crop = n_patches_x * patch_size
+			img = img[:h_crop, :w_crop, :]
+			
+			# Reshape into patches using stride tricks
+			patches = img.reshape(n_patches_y, patch_size, n_patches_x, patch_size, 3)
+			patches = patches.transpose(0, 2, 1, 3, 4)  # (n_y, n_x, h, w, c)
+			patches = patches.reshape(-1, patch_size, patch_size, 3).astype(np.float32)
+			
+			# Generate top-left coordinates
+			y_coords = np.arange(n_patches_y) * patch_size
+			x_coords = np.arange(n_patches_x) * patch_size
+			xx, yy = np.meshgrid(x_coords, y_coords)
+			top_left_coordinates = np.stack([xx.ravel(), yy.ravel()], axis=1).astype(np.float32)
+			
+			# Compute center coordinates
+			center_coordinates = top_left_coordinates + half_patch
 		
-		# Reshape into patches using stride tricks (very fast!)
-		patches = img.reshape(n_patches_y, patch_size, n_patches_x, patch_size, 3)
-		patches = patches.transpose(0, 2, 1, 3, 4)  # (n_y, n_x, h, w, c)
-		patches = patches.reshape(-1, patch_size, patch_size, 3).astype(np.float32)
-		
-		# Generate coordinates
-		y_coords = np.arange(n_patches_y) * patch_size
-		x_coords = np.arange(n_patches_x) * patch_size
-		xx, yy = np.meshgrid(x_coords, y_coords)
-		coordinates = np.stack([xx.ravel(), yy.ravel()], axis=1).astype(np.float32)
-		
-		return patches, coordinates
+		return patches, top_left_coordinates, center_coordinates
 
-	def filter_empty_patches(self, patches: np.ndarray, coordinates: np.ndarray, background_color: SegmentationBackgroundColor) -> tuple[np.ndarray, np.ndarray]:
+	def filter_empty_patches(self, patches: np.ndarray, topleft_coordinates: np.ndarray, center_coordinates: np.ndarray, background_color: SegmentationBackgroundColor) -> tuple[np.ndarray, np.ndarray]:
 		"""
 		Filter out patches that are empty (background). A patch is considered empty if the 99% of its pixels are
 		the background color.
@@ -90,8 +141,11 @@ class PatchEmbeddingExtractor:
 		----------
 		patches : np.ndarray
 			A NumPy array of shape (N, patch_size, patch_size, C) containing the extracted patches.
-		coordinates : np.ndarray
+		topleft_coordinates : np.ndarray
 			A NumPy array of shape (N, 2) containing the (x, y) coordinates of the top-left corner of each patch
+			in the original image.
+		center_coordinates : np.ndarray
+			A NumPy array of shape (N, 2) containing the (x, y) coordinates of the center of each patch
 			in the original image.
 		background_color : SegmentationBackgroundColor
 			The background color to use for filtering.
@@ -122,11 +176,12 @@ class PatchEmbeddingExtractor:
 		# Filter patches and coordinates
 		valid_indices = np.where(bg_pixel_counts < threshold)[0]
 		filtered_patches = patches[valid_indices]
-		filtered_coordinates = coordinates[valid_indices]
+		filtered_topleft_coordinates = topleft_coordinates[valid_indices]
+		filtered_center_coordinates = center_coordinates[valid_indices]
 
-		return filtered_patches, filtered_coordinates
+		return filtered_patches, filtered_topleft_coordinates, filtered_center_coordinates
 
-	def extract_patch_embeddings(self, patches: np.ndarray, coordinates: np.ndarray) -> np.ndarray:
+	def extract_patch_embeddings(self, patches: np.ndarray, topleft_coordinates: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
 		"""
 		Extract embeddings from the image patches using a pre-trained model.
 
@@ -134,19 +189,21 @@ class PatchEmbeddingExtractor:
 		----------
 		patches : np.ndarray
 			A NumPy array of shape (N, patch_size, patch_size, C) containing the extracted patches.
-		coordinates : np.ndarray
+		topleft_coordinates : np.ndarray
 			A NumPy array of shape (N, 2) containing the (x, y) coordinates of the top-left corner of each patch
 			in the original image.
 
 		Returns
 		----------
-		embeddings : np.ndarray
+		slide_embeddings : np.ndarray
 			A NumPy array of shape (N, embedding_size) containing the extracted embeddings.
+		patch_embeddings : np.ndarray
+			A NumPy array of shape (N, embedding_size) containing the patch embeddings before slide refinement.
 		"""
 
 		# Convert patches and coordinates to torch tensors
 		patches_tensor = torch.from_numpy(patches).permute(0, 3, 1, 2).to(self.device)  # shape (N, C, H, W)
-		coordinates_tensor = torch.from_numpy(coordinates).to(self.device)  # shape (N, 2)
+		topleft_coordinates_tensor = torch.from_numpy(topleft_coordinates).to(self.device)  # shape (N, 2)
 
 		# Create a Dataset and a DataLoader
 		dataset = torch.utils.data.TensorDataset(patches_tensor)
@@ -166,12 +223,12 @@ class PatchEmbeddingExtractor:
 		slide_embeddings: list = []
 		with torch.inference_mode():
 			with torch.amp.autocast(device_type="cuda"):
-				slide_emb = self.slide_encoder(embeddings.unsqueeze(0), coordinates_tensor.unsqueeze(0), context_enriched_patch_tokens = True)  # Shape [1, 1536]
+				slide_emb = self.slide_encoder(embeddings.unsqueeze(0), topleft_coordinates_tensor.unsqueeze(0), context_enriched_patch_tokens = True)  # Shape [1, 1536]
 				slide_embeddings.append(slide_emb[0].squeeze(0).cpu().numpy())
 
 		slide_embeddings = np.concatenate(slide_embeddings, axis=0)
 
-		return slide_embeddings
+		return slide_embeddings, embeddings.cpu().numpy()
 
 
 class MicroscopyImage():
@@ -390,7 +447,10 @@ class MicroscopyImage():
 		background_color: SegmentationBackgroundColor = SegmentationBackgroundColor.WHITE,
 		patch_size: int = 224,
 		pyramid_levels: int = 3,
-		min_tissue_area: int = 5000
+		min_tissue_area: int = 5000,
+		force_recompute: bool = False,
+		slide_embedding: bool = True,
+		patch_centers: np.ndarray = None,
 		) -> None:
 		'''
 		Preprocess a microscopy image by removing the background and enhancing the colors.
@@ -408,6 +468,19 @@ class MicroscopyImage():
 			The size of the patches to use for background removal (default is 224).
 		pyramid_levels : int
 			The number of pyramid levels to save in the output OME-TIFF (default is 3).
+		min_tissue_area : int
+			The minimum size (in pixels) for tissue areas to keep when removing background (default is 5000).
+		force_recompute : bool
+			Whether to force recomputation of the preprocessing even if the output files already exist (default is False).
+		slide_embedding : bool
+			Whether to compute slide-level embeddings in addition to patch-level embeddings (default is True).
+		patch_centers : np.ndarray, optional
+			A NumPy array of shape (N, 2) containing the (x, y) coordinates of the patch centers to extract.
+			If None, non-overlapping patches are extracted across the entire image.
+
+		Returns
+		-------
+		None
 		'''
 
 		# Check the inputs
@@ -420,6 +493,13 @@ class MicroscopyImage():
 			raise ValueError(f"Invalid value for patch_size: {patch_size}. Expected a positive integer.")
 		if type(pyramid_levels) is not int or pyramid_levels <= 0:
 			raise ValueError(f"Invalid value for pyramid_levels: {pyramid_levels}. Expected a positive integer.")
+		
+		# Check if the results already exist
+		output_ome_tiff = os.path.join(self.output_folder, f"{self.sample_id}_{self.modality_name}_processed.ome.tiff")
+		output_h5ad = os.path.join(self.output_folder, f"{self.sample_id}_{self.modality_name}.h5ad")
+		if force_recompute == False and os.path.exists(output_ome_tiff) and os.path.exists(output_h5ad):
+			print(f"Preprocessed files already exist for sample {self.sample_id}, modality {self.modality_name}. Skipping processing.")
+			return
 		
 		# Load the input file
 		image = self._load_tiff(self.filename)
@@ -437,15 +517,16 @@ class MicroscopyImage():
 			image = self._remove_background(image, background_color=background_color, min_tissue_area=min_tissue_area)
 
 		# Extract patch embeddings
-		patches, coordinates = self.patch_extractor.extract_patches(image, patch_size)
-		patches, coordinates = self.patch_extractor.filter_empty_patches(patches, coordinates, background_color)
-		embeddings = self.patch_extractor.extract_patch_embeddings(patches, coordinates)
+		patches, topleft_coordinates, center_coordinates = self.patch_extractor.extract_patches(image, patch_size, patch_centers)
+		patches, topleft_coordinates, center_coordinates = self.patch_extractor.filter_empty_patches(patches, topleft_coordinates, center_coordinates, background_color)
+		slide_embeddings, patch_embeddings = self.patch_extractor.extract_patch_embeddings(patches, topleft_coordinates)
 
 		# Save the processed image as a multi-resolution OME-TIFF
 		self._save_image_pyramid(image, os.path.join(self.output_folder, f"{self.sample_id}_{self.modality_name}_processed.ome.tiff"), levels=pyramid_levels)
 
 		# Save the AnnData file with patch embeddings
-		adata = anndata.AnnData(embeddings)
-		adata.obsm['spatial'] = coordinates
+		adata = anndata.AnnData(slide_embeddings) if slide_embedding else anndata.AnnData(patch_embeddings)
+		adata.obsm['spatial'] = topleft_coordinates if patch_centers is None else center_coordinates
+		adata.obs['sample_id'] = self.sample_id
 		adata.write_h5ad(os.path.join(self.output_folder, f"{self.sample_id}_{self.modality_name}.h5ad"))
 	
