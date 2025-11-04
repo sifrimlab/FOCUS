@@ -1,4 +1,4 @@
-import os, tifffile, cv2, timm, torch, huggingface_hub, tqdm, anndata
+import os, tifffile, cv2, timm, torch, huggingface_hub, tqdm, anndata, czifile
 import numpy as np
 import scipy.ndimage as ndi
 import skimage.filters as filters
@@ -258,7 +258,9 @@ class MicroscopyImage():
 			if f.endswith(".tiff") or f.endswith(".tif"):
 				self.filename = os.path.join(source_path, sample_id, modality_name, f)
 				break
-
+			elif f.endswith(".czi"):
+				self.filename = os.path.join(source_path, sample_id, modality_name, f)
+				break
 		# Check if we found a valid filename
 		if self.filename is None:
 			raise ValueError(f"No valid TIFF file found in {os.path.join(source_path, sample_id, modality_name)}")
@@ -317,6 +319,60 @@ class MicroscopyImage():
 
 		return image
 	
+	def _load_czi(self, file: str) -> np.ndarray:
+		'''
+		Read a CZI file and return the image with color channel always in the last dimension
+		(swap channels if needed).
+		The image is converted to float32 and normalized to 0-1.
+
+		Parameters
+		----------
+		file : str
+			The path to the CZI file.
+		
+		Returns
+		----------
+		image : np.ndarray
+			The image with color channel always in the last dimension.
+		'''
+
+		# Check if the file exists and is a CZI file
+		if not os.path.isfile(file) or not file.endswith(".czi"):
+			raise ValueError(f"The file {file} does not exist or is not a CZI file.")
+		
+		image = None
+
+		# Read the CZI file
+		with czifile.CziFile(file) as czi:
+			image = czi.asarray()
+
+			# Drop the first two singleton dimensions if present
+			if image.shape[0] == 1:
+				image = image[0]
+			if image.shape[0] == 1:
+				image = image[0]
+
+			# Determine the channel index by looking for the smallest dimension and place it last
+			# Skip if it's a grayscale image
+			if len(image.shape) > 2:
+				channel_index = np.argmin(image.shape)
+				if channel_index == 0:
+					image = image.transpose(1, 2, 0)
+				elif channel_index == 1:
+					image = image.transpose(0, 2, 1)
+
+		# Convert the image to float32
+		image = image.astype(np.float32)
+
+		# Normalize the image to 0-1
+		image = image / np.max(image)
+
+		# Ensure that the image has at most 3 channels
+		if image.shape[-1] > 3:
+			image = image[:, :, :3]
+
+		return image
+
 	def _save_image_pyramid(self, img: np.ndarray, output_file: str, levels: int = 4):
 		"""
 		Saves an RGB image as a fully compliant OME-TIFF containing multiple 
@@ -449,7 +505,7 @@ class MicroscopyImage():
 		pyramid_levels: int = 3,
 		min_tissue_area: int = 5000,
 		force_recompute: bool = False,
-		slide_embedding: bool = True,
+		slide_embedding: bool = False,
 		patch_centers: np.ndarray = None,
 		) -> None:
 		'''
@@ -502,7 +558,10 @@ class MicroscopyImage():
 			return
 		
 		# Load the input file
-		image = self._load_tiff(self.filename)
+		if self.filename.endswith(".czi"):
+			image = self._load_czi(self.filename)
+		else:
+			image = self._load_tiff(self.filename)
 
 		# Enhance colors if needed
 		if color_enhancement:
