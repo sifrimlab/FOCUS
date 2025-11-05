@@ -4,9 +4,8 @@ import scipy.ndimage as ndi
 import skimage.filters as filters
 import skimage.morphology as morphology
 from skimage import color
+import matplotlib.pyplot as plt
 from ome_types.model import OME, Image, Pixels, Channel, TiffData, Plane, Color
-
-from .gigapath.slide_encoder import create_model
 
 import utils as utils
 from constants import ContainerEngine, SegmentationBackgroundColor
@@ -23,11 +22,6 @@ class PatchEmbeddingExtractor:
 		self.patch_encoder = timm.create_model("hf_hub:prov-gigapath/prov-gigapath", pretrained=True)
 		self.patch_encoder.eval()
 		self.patch_encoder.to(self.device)
-
-		# Create the slide encoder model
-		self.slide_encoder = create_model("hf_hub:prov-gigapath/prov-gigapath", "gigapath_slide_enc12l768d", 1536)
-		self.slide_encoder.eval()
-		self.slide_encoder.to(self.device)
 
 	def extract_patches(self, img: np.ndarray, patch_size: int = 224, patch_centers: np.ndarray = None) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
 		"""
@@ -181,7 +175,7 @@ class PatchEmbeddingExtractor:
 
 		return filtered_patches, filtered_topleft_coordinates, filtered_center_coordinates
 
-	def extract_patch_embeddings(self, patches: np.ndarray, topleft_coordinates: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+	def extract_patch_embeddings(self, patches: np.ndarray) -> np.ndarray:
 		"""
 		Extract embeddings from the image patches using a pre-trained model.
 
@@ -195,15 +189,12 @@ class PatchEmbeddingExtractor:
 
 		Returns
 		----------
-		slide_embeddings : np.ndarray
-			A NumPy array of shape (N, embedding_size) containing the extracted embeddings.
 		patch_embeddings : np.ndarray
 			A NumPy array of shape (N, embedding_size) containing the patch embeddings before slide refinement.
 		"""
 
 		# Convert patches and coordinates to torch tensors
 		patches_tensor = torch.from_numpy(patches).permute(0, 3, 1, 2).to(self.device)  # shape (N, C, H, W)
-		topleft_coordinates_tensor = torch.from_numpy(topleft_coordinates).to(self.device)  # shape (N, 2)
 
 		# Create a Dataset and a DataLoader
 		dataset = torch.utils.data.TensorDataset(patches_tensor)
@@ -219,16 +210,7 @@ class PatchEmbeddingExtractor:
 
 		embeddings: torch.Tensor = torch.cat(embeddings, dim=0)  				# Shape [N, 1536]
 
-		# Refine the embeddings using the slide encoder
-		slide_embeddings: list = []
-		with torch.inference_mode():
-			with torch.amp.autocast(device_type="cuda"):
-				slide_emb = self.slide_encoder(embeddings.unsqueeze(0), topleft_coordinates_tensor.unsqueeze(0), context_enriched_patch_tokens = True)  # Shape [1, 1536]
-				slide_embeddings.append(slide_emb[0].squeeze(0).cpu().numpy())
-
-		slide_embeddings = np.concatenate(slide_embeddings, axis=0)
-
-		return slide_embeddings, embeddings.cpu().numpy()
+		return embeddings.cpu().numpy()
 
 
 class MicroscopyImage():
@@ -346,11 +328,12 @@ class MicroscopyImage():
 		with czifile.CziFile(file) as czi:
 			image = czi.asarray()
 
-			# Drop the first two singleton dimensions if present
-			if image.shape[0] == 1:
-				image = image[0]
-			if image.shape[0] == 1:
-				image = image[0]
+			# Always consider only the first image if multiple are present
+			if image.ndim > 3:
+				if image.shape[0] > 1:
+					print("WARNING: CZI file has more than 3 dimensions. Considering only the first image.")
+				while image.ndim > 3:
+					image = image[0]
 
 			# Determine the channel index by looking for the smallest dimension and place it last
 			# Skip if it's a grayscale image
@@ -578,13 +561,13 @@ class MicroscopyImage():
 		# Extract patch embeddings
 		patches, topleft_coordinates, center_coordinates = self.patch_extractor.extract_patches(image, patch_size, patch_centers)
 		patches, topleft_coordinates, center_coordinates = self.patch_extractor.filter_empty_patches(patches, topleft_coordinates, center_coordinates, background_color)
-		slide_embeddings, patch_embeddings = self.patch_extractor.extract_patch_embeddings(patches, topleft_coordinates)
+		patch_embeddings = self.patch_extractor.extract_patch_embeddings(patches)
 
 		# Save the processed image as a multi-resolution OME-TIFF
 		self._save_image_pyramid(image, os.path.join(self.output_folder, f"{self.sample_id}_{self.modality_name}_processed.ome.tiff"), levels=pyramid_levels)
 
 		# Save the AnnData file with patch embeddings
-		adata = anndata.AnnData(slide_embeddings) if slide_embedding else anndata.AnnData(patch_embeddings)
+		adata = anndata.AnnData(patch_embeddings)
 		adata.obsm['spatial'] = topleft_coordinates if patch_centers is None else center_coordinates
 		adata.obs['sample_id'] = self.sample_id
 		adata.write_h5ad(os.path.join(self.output_folder, f"{self.sample_id}_{self.modality_name}.h5ad"))
