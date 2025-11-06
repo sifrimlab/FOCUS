@@ -200,17 +200,17 @@ class PatchEmbeddingExtractor:
 		dataset = torch.utils.data.TensorDataset(patches_tensor)
 		dataloader = torch.utils.data.DataLoader(dataset, batch_size=32, shuffle=False)
 
-		embeddings = []
+		embeddings: list[np.ndarray] = []
 
 		# Extract embeddings for the current level
 		with torch.inference_mode():
-			for batch in tqdm.tqdm(dataloader, desc=f"Extracting patch embeddings", unit="batch"):
-				input_tensor = batch[0].to(self.device)                      	# Shape [B, 3, 224, 224]
-				embeddings.append(self.patch_encoder(input_tensor))        		# Shape [B, 1536]
+			for batch in dataloader:
+				input_tensor = batch[0].to(self.device)                      			# Shape [B, 3, 224, 224]
+				embeddings.append(self.patch_encoder(input_tensor).cpu().numpy())       # Shape [B, 1536]
 
-		embeddings: torch.Tensor = torch.cat(embeddings, dim=0)  				# Shape [N, 1536]
+		embeddings: np.ndarray = np.concatenate(embeddings, axis=0)  					# Shape [N, 1536]
 
-		return embeddings.cpu().numpy()
+		return embeddings
 
 
 class MicroscopyImage():
@@ -484,12 +484,9 @@ class MicroscopyImage():
 		color_enhancement: bool = True,
 		remove_background: bool = True,
 		background_color: SegmentationBackgroundColor = SegmentationBackgroundColor.WHITE,
-		patch_size: int = 224,
 		pyramid_levels: int = 3,
 		min_tissue_area: int = 5000,
-		force_recompute: bool = False,
-		slide_embedding: bool = False,
-		patch_centers: np.ndarray = None,
+		force_recompute: bool = False
 		) -> None:
 		'''
 		Preprocess a microscopy image by removing the background and enhancing the colors.
@@ -503,16 +500,13 @@ class MicroscopyImage():
 			Whether to enhance the colors using gamma correction and contrast enhancement (default is True).
 		background_color : SegmentationBackgroundColor
 			The color used to fill the background after removal. This is usefull to match the requirements of futher processing steps.
-		patch_size : int
-			The size of the patches to use for background removal (default is 224).
 		pyramid_levels : int
 			The number of pyramid levels to save in the output OME-TIFF (default is 3).
 		min_tissue_area : int
 			The minimum size (in pixels) for tissue areas to keep when removing background (default is 5000).
 		force_recompute : bool
 			Whether to force recomputation of the preprocessing even if the output files already exist (default is False).
-		slide_embedding : bool
-			Whether to compute slide-level embeddings in addition to patch-level embeddings (default is True).
+
 		patch_centers : np.ndarray, optional
 			A NumPy array of shape (N, 2) containing the (x, y) coordinates of the patch centers to extract.
 			If None, non-overlapping patches are extracted across the entire image.
@@ -528,8 +522,6 @@ class MicroscopyImage():
 		if background_color not in SegmentationBackgroundColor.list():
 			raise ValueError(f"Invalid value for background_color: {background_color}. Expected one of {SegmentationBackgroundColor.list()}.")
 		
-		if type(patch_size) is not int or patch_size <= 0:
-			raise ValueError(f"Invalid value for patch_size: {patch_size}. Expected a positive integer.")
 		if type(pyramid_levels) is not int or pyramid_levels <= 0:
 			raise ValueError(f"Invalid value for pyramid_levels: {pyramid_levels}. Expected a positive integer.")
 		
@@ -558,17 +550,65 @@ class MicroscopyImage():
 		if remove_background:
 			image = self._remove_background(image, background_color=background_color, min_tissue_area=min_tissue_area)
 
+		# Save the processed image as a multi-resolution OME-TIFF
+		self._save_image_pyramid(image, os.path.join(self.output_folder, f"{self.sample_id}_{self.modality_name}_processed.ome.tiff"), levels=pyramid_levels)
+
+
+	def compute_embeddings(self, 
+		background_color: SegmentationBackgroundColor = SegmentationBackgroundColor.WHITE,
+		patch_size: int = 224,
+		patch_centers: np.ndarray = None,
+		force_recompute: bool = False
+	) -> anndata.AnnData:
+		'''
+		Use the patch extractor to compute patch embeddings for the image.
+		
+		Parameters
+		----------
+		background_color : SegmentationBackgroundColor
+			The color used to fill the background after removal. This is usefull to match the requirements of futher processing steps.
+		patch_size : int
+			The size of the patches to use for background removal (default is 224).
+		patch_centers : np.ndarray, optional
+			A NumPy array of shape (N, 2) containing the (x, y) coordinates of the patch centers to extract.
+			If None, non-overlapping patches are extracted across the entire image foreground.
+		force_recompute : bool
+			Whether to force recomputation of the embeddings even if the output files already exist (default is False).
+
+		Returns
+		-------
+		adata : anndata.AnnData
+			An AnnData object containing the patch embeddings and coordinates.
+		'''
+
+		# Check if the processed image exists
+		if not os.path.exists(os.path.join(self.output_folder, f"{self.sample_id}_{self.modality_name}_processed.ome.tiff")):
+			raise ValueError(f"The processed image does not exist for sample {self.sample_id}, modality {self.modality_name}. Please run process_image() first.")
+		
+		# Check if the embeddings already exist
+		if force_recompute == False and os.path.exists(os.path.join(self.output_folder, f"{self.sample_id}_{self.modality_name}.h5ad")):
+			print(f"Embeddings already exist for sample {self.sample_id}, modality {self.modality_name}. Skipping computation.")
+			adata = anndata.read_h5ad(os.path.join(self.output_folder, f"{self.sample_id}_{self.modality_name}.h5ad"))
+			return adata
+		
+		# Load the processed image
+		with tifffile.TiffFile(os.path.join(self.output_folder, f"{self.sample_id}_{self.modality_name}_processed.ome.tiff")) as f:
+			image = f.asarray()
+			# Get the first image (highest resolution)
+			if image.ndim > 3:
+				image = image[0]
+
 		# Extract patch embeddings
 		patches, topleft_coordinates, center_coordinates = self.patch_extractor.extract_patches(image, patch_size, patch_centers)
 		patches, topleft_coordinates, center_coordinates = self.patch_extractor.filter_empty_patches(patches, topleft_coordinates, center_coordinates, background_color)
 		patch_embeddings = self.patch_extractor.extract_patch_embeddings(patches)
 
-		# Save the processed image as a multi-resolution OME-TIFF
-		self._save_image_pyramid(image, os.path.join(self.output_folder, f"{self.sample_id}_{self.modality_name}_processed.ome.tiff"), levels=pyramid_levels)
-
 		# Save the AnnData file with patch embeddings
 		adata = anndata.AnnData(patch_embeddings)
-		adata.obsm['spatial'] = topleft_coordinates if patch_centers is None else center_coordinates
+		adata.obs_names = [f"{self.sample_id}_{idx}" for idx in range(adata.n_obs)]
+		adata.obsm['spatial'] = center_coordinates
+		adata.obsm['topleft_coordinates'] = topleft_coordinates
+		adata.uns['patch_size'] = patch_size
 		adata.obs['sample_id'] = self.sample_id
 		adata.write_h5ad(os.path.join(self.output_folder, f"{self.sample_id}_{self.modality_name}.h5ad"))
-	
+		return adata

@@ -583,16 +583,19 @@ class MsiDataset:
 					f"X_{intensity_normalization}": merged_normalized
 				},
 				obs = pd.DataFrame({
-					'batch_id': [sample_id] * merged_interpolated.shape[0]
+					'sample_id': [sample_id] * merged_interpolated.shape[0]
 				}, index = [str(i) for i in range(merged_interpolated.shape[0])]),
 				obsm={
-					'physical_coordinates': physical_coords,
+					'spatial': physical_coords,
 					'raster_coordinates': raster_coords
 				},
 				var = pd.DataFrame({
 					"mz": merged_reference_mz,
 					"mz_mode": reference_mode
-				}, index = [str(i) for i in range(merged_interpolated.shape[1])])
+				}, index = [str(i) for i in range(merged_interpolated.shape[1])]),
+				uns = {
+					"raster_size": sample._metadata[reference_mode][MsiMetadata.RASTER_SIZE].tolist()
+                }
 			)
 
 			# Save the AnnData object to the output path
