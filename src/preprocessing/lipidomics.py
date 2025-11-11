@@ -457,7 +457,12 @@ class MsiDataset:
 		self.interpolated: dict[str, dict[MsiIonMode, np.ndarray]] = {}
 		self.normalized: dict[str, dict[MsiIonMode, np.ndarray]] = {}
 
-	def process_dataset(self, mass_tolerance: int = 10, frequency_threshold: float = 0.01, batch_size: int = 10000, intensity_normalization: MsiIntensityNormalization = MsiIntensityNormalization.TIC) -> None:
+	def process_dataset(self,
+			mass_tolerance: int = 10,
+			frequency_threshold: float = 0.01,
+			batch_size: int = 10000,
+			intensity_normalization: MsiIntensityNormalization = MsiIntensityNormalization.TIC,
+			force_recompute: bool = False) -> None:
 		'''
 		Process the dataset by aligning the M/Z values across all samples and interpolating the intensities.
 
@@ -471,11 +476,19 @@ class MsiDataset:
 			Batch size for processing M/Z values.
 		intensity_normalization : MsiIntensityNormalization
 			Type of intensity normalization to apply.
+		force_recompute : bool
+			If True, forces recomputation of the reference M/Z vectors and interpolation even if they were already computed.
+			If False, the computation is skipped if the merged dataset already exists.
 		'''
 
 		# Check if the required normalization method is implemented
 		if intensity_normalization not in MsiIntensityNormalization.list():
 			raise ValueError(f'Invalid intensity normalization method. Expected one of {MsiIntensityNormalization.list()}.')
+		
+		# If the merged dataset already exists and force_recompute is False, skip the computation
+		if not force_recompute and os.path.exists(os.path.join(self.samples[0].output_path, f"{self.samples[0].sample_id}_{self.samples[0].modality_name}_processed.h5ad")):
+			print("Merged dataset already exists. Skipping computation.")
+			return
 
 		reference_mz_samples: dict[MsiIonMode, list[np.float32]] = {MsiIonMode.POSITIVE: [], MsiIonMode.NEGATIVE: []}
 
@@ -541,6 +554,7 @@ class MsiDataset:
 		for sample in self.samples:
 			reference_mode = MsiIonMode.POSITIVE if MsiIonMode.POSITIVE in sample.ion_modes else MsiIonMode.NEGATIVE
 			sample_id = sample.sample_id
+			raster_size = sample._metadata[reference_mode][MsiMetadata.RASTER_SIZE].tolist()
 			physical_coords = sample._metadata[reference_mode][MsiMetadata.PHYSICAL_COORDINATES]				# Shape (N, 2)
 			raster_coords = sample._metadata[reference_mode][MsiMetadata.PIXEL_COORDINATES]						# Shape (N, 2, 2)
 			rows = self.interpolated[sample_id][reference_mode].shape[0]										# Shape (N, )
@@ -594,7 +608,7 @@ class MsiDataset:
 					"mz_mode": reference_mode
 				}, index = [str(i) for i in range(merged_interpolated.shape[1])]),
 				uns = {
-					"raster_size": sample._metadata[reference_mode][MsiMetadata.RASTER_SIZE].tolist()
+					"raster_size": raster_size,
                 }
 			)
 
