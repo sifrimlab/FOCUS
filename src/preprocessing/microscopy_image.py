@@ -359,7 +359,7 @@ class MicroscopyImage():
 	def _save_image_pyramid(self, img: np.ndarray, output_file: str, levels: int = 4):
 		"""
 		Saves an RGB image as a fully compliant OME-TIFF containing multiple 
-		independent images, one for each resolution level.
+		independent images, one for each resolution level, interleaved RGB pixels.
 
 		Parameters
 		----------
@@ -376,7 +376,7 @@ class MicroscopyImage():
 
 		H_base, W_base, _ = img.shape
 
-		# 1. Generate the four downscaled RGB images
+		# 1. Generate the downscaled RGB images for the pyramid
 		pyramid_data = []
 		for i in range(levels):
 			scale = 0.5 ** i
@@ -385,7 +385,7 @@ class MicroscopyImage():
 			resized = cv2.resize(img, (w_scaled, h_scaled), interpolation=cv2.INTER_AREA)
 			pyramid_data.append(resized)
 
-		# 2. Build the OME-XML with four separate and fully compliant <Image> blocks
+		# 2. Build the OME-XML with separate <Image> entries, each with interleaved RGB pixels
 		ome = OME()
 		ifd_counter = 0
 		for i, level_img in enumerate(pyramid_data):
@@ -401,37 +401,40 @@ class MicroscopyImage():
 					size_x=W,
 					size_y=H,
 					size_z=1,
-					size_c=3,
+					size_c=1,  # Single channel since RGB pixels are interleaved
 					size_t=1,
-					interleaved=False,
+					interleaved=True,  # Interleaved RGB
 					channels=[
-						# --- FIX: Explicitly set samples_per_pixel=1 ---
-						Channel(id=f"Channel:{i}:0", name="R", color=Color("red"), samples_per_pixel=1),
-						Channel(id=f"Channel:{i}:1", name="G", color=Color("green"), samples_per_pixel=1),
-						Channel(id=f"Channel:{i}:2", name="B", color=Color("blue"), samples_per_pixel=1),
+						Channel(id=f"Channel:{i}:0", name="RGB", samples_per_pixel=3),
 					],
-					planes=[Plane(the_c=c, the_z=0, the_t=0) for c in range(3)],
-					tiff_data_blocks=[TiffData(ifd=ifd_counter, plane_count=3)],
+					planes=[
+						Plane(the_c=0, the_z=0, the_t=0)
+					],
+					tiff_data_blocks=[
+						TiffData(ifd=ifd_counter, plane_count=1)
+					],
 				)
 			)
 			ome.images.append(image_block)
-			ifd_counter += 3
+			ifd_counter += 1
 
 		xml_metadata = ome.to_xml()
 
 		# 3. Write all image planes sequentially to a single TIFF file
+		import tifffile
+
 		with tifffile.TiffWriter(output_file, bigtiff=True) as tif:
 			for c, level_img in enumerate(pyramid_data):
-				plane_data = level_img
+				# level_img shape is (H, W, 3), interleaved RGB float32 pixels
 				description = xml_metadata if c == 0 else None
 				tif.write(
-					plane_data,
+					level_img,
 					description=description,
 					photometric='rgb',
-					metadata={'axes': 'YXC'},
+					metadata={'axes': 'YXC'},  # Y: rows, X: columns, C: channels interleaved
 					compression="zlib"
 				)
-					
+
 		return output_file
 
 	def _remove_background(self, image: np.ndarray, background_color: SegmentationBackgroundColor = SegmentationBackgroundColor.WHITE, min_tissue_area: int = 0) -> np.ndarray:

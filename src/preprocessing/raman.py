@@ -942,38 +942,39 @@ class RamanImage:
 			# Quick stitch the tiles into a mosaic
 			self._quick_stitch()
 			
-			# Compute Otsu's threshold
-			otsu_thresh, _ = cv2.threshold(self._quick_mosaic, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+			# Clip intensities at 95th percentile to reduce oversaturation impact
+			clip_value = np.percentile(self._quick_mosaic, 95)
+			clipped_img = np.clip(self._quick_mosaic, None, clip_value).astype(np.uint8)  # clip and convert to uint8 if needed
 
-			# Reduce threshold by 20%
-			adjusted_thresh = int(otsu_thresh * 0.8)
+			# Compute Otsu threshold on clipped image
+			otsu_thresh, _ = cv2.threshold(clipped_img, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
 
-			# Apply threshold with the adjusted lower value
+			# Adjust threshold (e.g., reduce by 30%)
+			adjusted_thresh = int(otsu_thresh * 0.7)
+
+			# Threshold original image with adjusted threshold (no scaling needed)
 			_, thresh = cv2.threshold(self._quick_mosaic, adjusted_thresh, 255, cv2.THRESH_BINARY)
 
-			# Remove small bright objects and fill holes inside tissue regions
+			# Remove small objects and fill holes
 			mask_clean = morphology.remove_small_objects(thresh.astype(bool), min_size=500)
 			segmentation_mask = binary_fill_holes(mask_clean)
 
-			# Convert segmentation_mask to uint8 for contour finding
+			# Convert mask for contour finding
 			seg_mask_uint8 = segmentation_mask.astype(np.uint8) * 255
 
-			# Find contours (OpenCV version compatibility: newer versions return (contours, hierarchy))
+			# Find contours
 			contours, _ = cv2.findContours(seg_mask_uint8, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
 			if contours:
-				# Compute area of each contour and find the largest one
+				# Largest contour by area
 				largest_contour = max(contours, key=cv2.contourArea)
 				
-				# Create an empty mask
+				# Create empty mask and fill largest contour
 				tissue_mask = np.zeros_like(seg_mask_uint8)
-				
-				# Fill largest contour
 				cv2.drawContours(tissue_mask, [largest_contour], contourIdx=-1, color=255, thickness=cv2.FILLED)
 				
-				# Convert back to boolean mask
+				# Convert to boolean mask
 				segmentation_mask = tissue_mask.astype(bool)
-				
 			else:
 				print("Warning: No contours found; cannot refine background mask.")
 
@@ -1003,7 +1004,9 @@ class RamanImage:
 		"""
 
 		# Use only an approximation of the coordinates for the mosaic
-		tiles = self._raw_tiles if self._raman_corrected_tiles is None else self._raman_corrected_tiles
+		if self._basic_corrected_tiles is None:
+			raise RuntimeError("No BaSiC corrected tiles to stitch. Please run basic_correct() first.")
+		tiles = self._basic_corrected_tiles
 
 		# Convert coordinates to pixel positions (x, y)
 		coords_px = np.zeros_like(self._tiles_coordinates, dtype=int)

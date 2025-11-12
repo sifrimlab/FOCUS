@@ -309,6 +309,55 @@ class MsiSample:
 		pixel_coords[:,1,:] = np.stack([x2, y2], axis=1)   # bottom-right
 
 		return pixel_coords
+	
+	def _filter_unpaired_spots(self) -> None:
+		'''
+		Analyze the metadata of both ion modes and remove unpaired spots (experimental artifacts).
+		'''
+
+		if not self.double_ion_mode:
+			return
+		
+		# Extract the pixel coordinates for both ion modes
+		pos_pixel_coords = self._metadata[MsiIonMode.POSITIVE][MsiMetadata.PIXEL_COORDINATES]
+		neg_pixel_coords = self._metadata[MsiIonMode.NEGATIVE][MsiMetadata.PIXEL_COORDINATES]
+
+		# Convert to structured array to compare rows
+		dtype = [('x', pos_pixel_coords.dtype), ('y', pos_pixel_coords.dtype)]
+		pos_pixel_coords_struct = pos_pixel_coords.view(dtype)
+		neg_pixel_coords_struct = neg_pixel_coords.view(dtype)
+
+		# Create mask of elements in the largest array not in the other one
+		if pos_pixel_coords.shape[0] >= neg_pixel_coords.shape[0]:
+			large_coords, small_coords = pos_pixel_coords_struct, neg_pixel_coords_struct
+			large_mode, small_mode = MsiIonMode.POSITIVE, MsiIonMode.NEGATIVE
+		else:
+			large_coords, small_coords = neg_pixel_coords_struct, pos_pixel_coords_struct
+			large_mode, small_mode = MsiIonMode.NEGATIVE, MsiIonMode.POSITIVE
+
+		missing_mask = ~np.isin(large_coords, small_coords)
+		missing_indices = np.nonzero(missing_mask)[0]
+
+		filtered_large_coords = np.delete(large_coords, missing_indices, axis=0)
+
+		# Update the metadata to remove the unpaired spots
+		self._metadata[large_mode][MsiMetadata.PIXEL_COORDINATES] = filtered_large_coords.view(np.int32).reshape(-1, 2)
+		self._metadata[large_mode][MsiMetadata.PHYSICAL_COORDINATES] = np.delete(
+			self._metadata[large_mode][MsiMetadata.PHYSICAL_COORDINATES],
+			missing_indices,
+			axis=0
+		)
+		self._metadata[large_mode][MsiMetadata.MZ_BINARY_METADATA] = np.delete(
+			self._metadata[large_mode][MsiMetadata.MZ_BINARY_METADATA],
+			missing_indices,
+			axis=0
+		)
+		self._metadata[large_mode][MsiMetadata.INTENSITIES_BINARY_METADATA] = np.delete(
+			self._metadata[large_mode][MsiMetadata.INTENSITIES_BINARY_METADATA],
+			missing_indices,
+			axis=0
+		)
+
 
 	def _initialize_sample(self) -> None:
 		'''
@@ -335,13 +384,13 @@ class MsiSample:
 
 		# If there are both ion modes, correct the physical coordinates offset between the two
 		if self.double_ion_mode:
+
+			# Filter out unpaired points (experimental artifacts)
+			self._filter_unpaired_spots()
+
 			# Compute the offset between the two physical coordinates sets
 			pos_coords = self._metadata[MsiIonMode.POSITIVE][MsiMetadata.PHYSICAL_COORDINATES]
 			neg_coords = self._metadata[MsiIonMode.NEGATIVE][MsiMetadata.PHYSICAL_COORDINATES]
-
-			A = np.hstack([pos_coords, np.ones((pos_coords.shape[0], 1))])
-			model_x = LinearRegression().fit(A, neg_coords[:,0])
-			model_y = LinearRegression().fit(A, neg_coords[:,1])
 
 			# Use an affine transformation to account for the translation
 			def affine_transform(points):
@@ -349,7 +398,13 @@ class MsiSample:
 				x_new = model_x.predict(aug)
 				y_new = model_y.predict(aug)
 				return np.stack([x_new, y_new], axis=1)
-			
+
+			# If the two sets have different lenghts, 
+
+			A = np.hstack([pos_coords, np.ones((pos_coords.shape[0], 1))])
+			model_x = LinearRegression().fit(A, neg_coords[:,0])
+			model_y = LinearRegression().fit(A, neg_coords[:,1])
+
 			# Apply the transformation to the positive ion mode physical coordinates
 			pos_coords_transformed = affine_transform(pos_coords)
 
