@@ -93,6 +93,10 @@ class DirectMappingAlignmentGUI:
             raster_size_list = [int(size) for size in self._raster_size]
             return jsonify({"status": "success", "raster_size": raster_size_list})
         
+        @self.app.route('/is_dataset_completed', methods=['GET'])
+        def is_dataset_completed():
+            return jsonify({"status": "success", "completed": self._dataset_completed_event.is_set()})
+        
     def align_sample(self, sample_id: str, reference_image: np.ndarray, target_coordinates: np.ndarray, raster_size: np.ndarray) -> np.ndarray:
         '''
         Align the target coordinates to the reference image for a given sample.

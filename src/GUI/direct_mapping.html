@@ -111,11 +111,17 @@
 <body class="bg-gray-900 text-white">
 
     <div id="app">
-        <!-- LOADING SCREEN -->
-        <div v-if="loading" class="flex flex-col items-center justify-center h-full w-full bg-gray-900">
-            <div class="loader"></div>
-            <span class="text-xl mt-4 text-gray-300">Waiting for data...</span>
-            <span v-if="pollingMessage" class="text-sm mt-2 text-gray-500">{{ pollingMessage }}</span>
+        <!-- LOADING / COMPLETION SCREEN -->
+        <div v-if="loading || datasetCompleted" class="flex flex-col items-center justify-center h-full w-full bg-gray-900">
+            <template v-if="datasetCompleted">
+                <h1 class="text-4xl font-bold text-green-400 mb-4">Task Complete!</h1>
+                <span class="text-xl mt-4 text-gray-300 text-center px-4">All samples aligned for this dataset. You can close the page.</span>
+            </template>
+            <template v-else>
+                <div class="loader"></div>
+                <span class="text-xl mt-4 text-gray-300">Waiting for data...</span>
+                <span v-if="pollingMessage" class="text-sm mt-2 text-gray-500">{{ pollingMessage }}</span>
+            </template>
         </div>
 
         <!-- MAIN APPLICATION -->
@@ -225,6 +231,8 @@
                 const pollingMessage = ref('');
                 const errorMessage = ref(null);
                 
+                const datasetCompleted = ref(false); // NEW: Check for task completion
+                
                 const referenceImage = ref(null); 
                 const referenceImageSize = ref({ width: 0, height: 0 });
                 const targetCoordinates = ref([]); 
@@ -272,6 +280,20 @@
                     pollingMessage.value = '';
 
                     try {
+                        // 1. Check dataset completion status first
+                        const completionRes = await fetch('/is_dataset_completed');
+                        if (!completionRes.ok) {
+                            throw new Error(`Completion check failed: ${completionRes.statusText}`);
+                        }
+                        const completionData = await completionRes.json();
+
+                        if (completionData.completed === true) {
+                            datasetCompleted.value = true;
+                            loading.value = false;
+                            return; // Stop here and show the completion message
+                        }
+                        
+                        // 2. If not completed, proceed with fetching data
                         const [imgRes, coordsRes, rasterRes] = await Promise.all([
                             fetch('/get_reference_image'),
                             fetch('/get_target_coordinates'),
@@ -728,16 +750,17 @@
                     loading,
                     pollingMessage,
                     errorMessage,
+                    datasetCompleted, // Exporting new state
                     referenceImage,
                     referenceImageSize,
                     canvasEl,
                     isFlippedH,
                     isFlippedV,
                     rotationAngle,
-                    isEditingRotation, // New
-                    rotationInput,     // New
-                    isEditingZoom,     // New
-                    zoomInput,         // New
+                    isEditingRotation,
+                    rotationInput,
+                    isEditingZoom,
+                    zoomInput,
                     dialEl,
                     zoomDialEl,
                     canvasTransform, 
@@ -747,10 +770,10 @@
                     handleWheel,
                     startRotate,
                     startZoom,
-                    startEditRotation, // New
-                    finishEditRotation, // New
-                    startEditZoom,     // New
-                    finishEditZoom,     // New
+                    startEditRotation,
+                    finishEditRotation,
+                    startEditZoom,
+                    finishEditZoom,
                     resetView,
                     flipHorizontal,
                     flipVertical,

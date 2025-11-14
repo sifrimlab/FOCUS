@@ -23,13 +23,25 @@ class DirectMappingAligner:
         If True, forces the recomputation of the alignment even if the alignment file already exists (default is False)
     '''
 
-    def __init__(self, path: str, reference_modality: dict, target_modality: dict, force_recompute: bool = False) -> None:
+    def __init__(self,
+            path: str,
+            reference_modality: dict,
+            target_modality: dict,
+            reference_modality_name: str,
+            target_modality_name: str,
+            force_recompute: bool = False
+        ) -> None:
         if type(path) != str or type(reference_modality) != dict or type(target_modality) != dict or type(force_recompute) != bool:
+            raise TypeError("Invalid input types. Please check the input types.")
+    
+        if type(reference_modality_name) != str or type(target_modality_name) != str:   
             raise TypeError("Invalid input types. Please check the input types.")
 
         self._path = path
         self._reference_modality = reference_modality
         self._target_modality = target_modality
+        self._reference_modality_name = reference_modality_name
+        self._target_modality_name = target_modality_name
         self._force_recompute = force_recompute
 
         # Only align samples that are present in both modalities
@@ -80,6 +92,21 @@ class DirectMappingAligner:
         # Convert the image to Uint8 if necessary
         if image_data.dtype != np.uint8:
             image_data = (image_data * 255).astype(np.uint8)
+
+        # If the image data is hyperdimensional, convert to RGB by applying NMF with three factors
+        if image_data.ndim == 3 and image_data.shape[-1] > 3:
+            from sklearn.decomposition import NMF
+
+            n_channels = image_data.shape[-1]
+            reshaped_image = image_data.reshape(-1, n_channels)  # Shape (num_pixels, n_channels)
+
+            nmf_model = NMF(n_components=3, init='random', random_state=0)
+            W = nmf_model.fit_transform(reshaped_image)  # Shape (num_pixels, 3)
+            H = nmf_model.components_  # Shape (3, n_channels)
+
+            rgb_image = W.reshape(lowest_shape[1], lowest_shape[2], 3)
+            rgb_image = (rgb_image / np.max(rgb_image) * 255).astype(np.uint8)
+            image_data = rgb_image
 
         return image_data, lowest_shape, original_shape
     
@@ -144,16 +171,20 @@ class DirectMappingAligner:
         # Set the dataset completed event to disable the GUI
         self._dataset_completed_event.set()
 
-    def align_dataset(self) -> dict[str, np.ndarray]:
+    def align_dataset(self) -> dict[str, str]:
         '''
         Align the target modality to the reference modality for all common samples.
+        This method enables the Alignment GUI and starts the alignment process in a separate thread.
+        Once the alignment is completed, it saves the aligned coordinates back to the AnnData files
+        and generates a merged aligned dataset.
 
         Returns
         -------
-        dict[str, np.ndarray]
-            A dictionary with keys as sample identifiers and values as aligned coordinates as numpy arrays of shape (N, 2).
+        aligned_samples : dict[str, str]
+            A dictionary where keys are sample IDs (including "merged") and values are the paths to the aligned AnnData files.
         '''
 
+        aligned_samples: dict[str, str] = {}
 
         # Start the alignment process in a separate thread
         alignment_thread = threading.Thread(target=self._align_dataset_thread, daemon=True)
@@ -162,4 +193,28 @@ class DirectMappingAligner:
         # Enable the GUI (this will block until the GUI is closed)
         self._gui_interface.enable_gui()
 
-        return self._aligned_coordinates
+        # For each aligned sample, load the AnnData file and store the aligned coordinates
+        adata_list: list[anndata.AnnData] = []
+        for sample_id, aligned_coords in self._aligned_coordinates.items():
+            processed_target_file = self._target_modality[sample_id]
+
+            alignment_folder = os.path.join(self._path, sample_id, "alignment")
+            os.makedirs(alignment_folder, exist_ok=True)
+            aligned_target_file = os.path.join(alignment_folder, f"{sample_id}_processed_aligned.h5ad")
+
+            adata = anndata.read_h5ad(processed_target_file)
+            adata.obsm[f'{self._reference_modality}_spatial'] = aligned_coords
+            
+            adata.write_h5ad(aligned_target_file)
+            adata_list.append(adata)
+            aligned_samples[sample_id] = aligned_target_file
+
+        # Generate the merged aligned dataset
+        merged_aligned_adata = anndata.concat(adata_list, axis=0)
+        alignment_folder = os.path.join(self._path, "merged", "alignment")
+        os.makedirs(alignment_folder, exist_ok=True)
+        merged_aligned_file = os.path.join(alignment_folder, f"{self._target_modality_name}_merged_processed_aligned.h5ad")
+        merged_aligned_adata.write_h5ad(merged_aligned_file)
+        aligned_samples["merged"] = merged_aligned_file
+
+        return aligned_samples

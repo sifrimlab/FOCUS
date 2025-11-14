@@ -54,6 +54,8 @@ if __name__ == "__main__":
         reference_modality=processed_microscopy,
         target_modality=processed_msi,
         force_recompute=False,
+        target_modality_name='MSI',
+        reference_modality_name='HE',
     )
 
     aligned_samples = aligner.align_dataset()
