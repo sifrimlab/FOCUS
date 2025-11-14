@@ -6,6 +6,14 @@ class _AbstractEnum():
 	def list(cls):
 		varList = [attr for attr in vars(cls) if not callable(getattr(cls, attr)) and not attr.startswith("__")]
 		return [vars(cls)[elem] for elem in varList]
+	
+class FocusOutputDirectories(_AbstractEnum):
+	PREPROCESSING = "preprocessing"
+	ALIGNMENT = "alignment"
+	REGISTRATION = "registration"
+	PLOTS = "plots"
+	RESOURCES = "resources"
+	MERGED = "merged"
 
 class ImzMLFileParser(_AbstractEnum):
 
@@ -60,8 +68,6 @@ class ModalityParameters(_AbstractEnum):
 	REGISTRATION_SETTINGS = "registration_settings"
 	PHYSICAL_PIXEL_COVERAGE = "physical_pixel_coverage"
 
-class AlignmentSettings(_AbstractEnum):
-	TRANSFORMATIONS = "transformations"
 
 class RegistrationSettings(_AbstractEnum):
 	TYPE = "type"
@@ -72,33 +78,45 @@ class RegistrationType(_AbstractEnum):
 	RESOLUTION_SCALING_TO_ANCHOR = "resolution_scaling_to_anchor"
 	
 
-class ImagingPreprocessing(_AbstractEnum):
+class MicroscopyImageProcessingParams(_AbstractEnum):
 	
-	CROP = "crop"
-	FILTER_STRENGTH = "filter_strength"
-	SMOOTHING = "smoothing"
 	COLOR_ENHANCEMENT = "color_enhancement"
+	REMOVE_BACKGROUND = "remove_background"
+	CROP_TO_TISSUE = "crop_to_tissue"
+	BACKGROUND_COLOR = "background_color"
+	PYRAMID_LEVELS = "pyramid_levels"
+	MIN_OBJECT_COVERAGE = "min_object_coverage"
+	FORCE_RECOMPUTING = "force_recomputing"
 
-class LipidomicsPreprocessing(_AbstractEnum):
+class MsiPreprocessingParams(_AbstractEnum):
+
+	LIPID_ANNOTATION_DB = "lipid_annotation_db"
 	
-	PEAK_PICKING = "peak_picking"
-	PEAK_PROMINENCE_THRESHOLD = "peak_prominence_threshold"
-	PEAK_WINDOW_TOLERANCE_PPM = "peak_window_tolerance_ppm"
-	DYNAMIC_PEAK_WINDOW = "dynamic_peak_window"
-	DYNAMIC_PEAK_WINDOW_FACTOR = "dynamic_peak_window_factor"
-	INTENSITY_NORMALIZATION_TYPE = "intensity_normalization"
+	MASS_TOLERANCE = "mass_tolerance"
+	FREQUENCY_THRESHOLD = "frequency_threshold"
+	INTENSITY_NORMALIZATION = "intensity_normalization"
+	BATCH_SIZE = "batch_size"
+	FORCE_RECOMPUTING = "force_recomputing"
+
+class RamanPreprocessingParams(_AbstractEnum):
+	FORCE_RECOMPUTING = "force_recomputing"
+
+class STPreprocessingParams(_AbstractEnum):
+	MIN_COUNT_PER_SPOT = "min_count_per_spot"
+	MAX_COUNT_PER_SPOT = "max_count_per_spot"
+	MIN_SPOTS_PER_GENE = "min_spots_per_gene"
+	TOTAL_COUNTS_NORMALIZE = "total_counts_normalize"
+	LOG1P_TRANSFORM = "log1p_transform"
+	FORCE_RECOMPUTING = "force_recomputing"
 
 class ModalityType(_AbstractEnum):
 	
 	MICROSCOPY_IMAGE = "microscopy_image"
 	MSI = "msi"
 	RAMAN = "raman"
+	ST = "st"
 
-class ImagingFilterStrength(_AbstractEnum):
-	
-	SOFT = "soft"
-	MEDIUM = "medium"
-	AGGRESSIVE = "aggressive"
+
 
 class TransformationType(_AbstractEnum):
 	
@@ -106,11 +124,6 @@ class TransformationType(_AbstractEnum):
 	RIGID = "rigid"
 	AFFINE = "affine"
 	BSPLINE = "bspline"
-
-class ContainerEngine(_AbstractEnum):
-	DOCKER = "docker"
-	SINGULARITY = "singularity"
-	PODMAN = "podman"
 
 class MsiIntensityNormalization(_AbstractEnum):
 	TIC = "tic"

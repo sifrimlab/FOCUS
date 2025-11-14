@@ -1,6 +1,5 @@
 import numpy as np
-import torch, os
-from tqdm import tqdm
+import torch, os, tqdm
 from sklearn.linear_model import LinearRegression
 import anndata as ad
 import pandas as pd
@@ -358,7 +357,6 @@ class MsiSample:
 			axis=0
 		)
 
-
 	def _initialize_sample(self) -> None:
 		'''
 		Initialize this object by loading the relevant metadata from the ImzML file,
@@ -493,15 +491,20 @@ class MsiSample:
 		return intensity_vectors
 
 class MsiDataset:
-	def __init__(self, samples: list[MsiSample]) -> None:
+	def __init__(self, path: str,  samples: list[MsiSample], lipid_annotation_db: str | None = None) -> None:
 		'''
 		MSI dataset containing multiple samples. This class provide utilities to preprocess the raw experiments
 		and generate an aligned and corrected AnnData object.
 
 		Parameters
 		----------
+		path : str
+			The root path where the samples are stored.
 		samples : list[MsiSample]
 			List of MsiSample objects.
+		lipid_annotation_db : str | None
+			Path to the lipid annotation database. If None, no lipid annotation will be performed.
+			The file can be a CSV or a JSON and it must contain three columns: name, ionized_mass, ion_mode.
 		'''
 
 		if not isinstance(samples, list) or not all(isinstance(sample, MsiSample) for sample in samples):
@@ -512,12 +515,86 @@ class MsiDataset:
 		self.interpolated: dict[str, dict[MsiIonMode, np.ndarray]] = {}
 		self.normalized: dict[str, dict[MsiIonMode, np.ndarray]] = {}
 
+		self.dataset_source_path = path
+
+		# Create the output path for the merged file
+		output_path = os.path.join(self.dataset_source_path, "merged", "preprocessing")
+		if not os.path.exists(output_path):
+			os.makedirs(output_path)
+
+		# If the lipid DB is provided, check if it exists and we can read it
+		if lipid_annotation_db is not None:
+			if not os.path.exists(lipid_annotation_db):
+				raise FileNotFoundError(f"Lipid annotation database {lipid_annotation_db} does not exist.")
+			if not os.access(lipid_annotation_db, os.R_OK):
+				raise PermissionError(f"Lipid annotation database {lipid_annotation_db} is not readable.")
+			
+		# Based on the data type, load the lipid annotation database
+		if lipid_annotation_db is not None:
+			if lipid_annotation_db.endswith('.csv'):
+				self.lipid_annotation_db = pd.read_csv(lipid_annotation_db)
+			elif lipid_annotation_db.endswith('.json'):
+				self.lipid_annotation_db = pd.read_json(lipid_annotation_db)
+			else:
+				raise ValueError("Invalid lipid annotation database format. Supported formats are CSV and JSON.")
+			
+			# Check that the required columns are present
+			required_columns = ['db_name', 'ionized_mass', 'ion_mode']
+			if not all(column in self.lipid_annotation_db.columns for column in required_columns):
+				raise ValueError(f"Lipid annotation database must contain the following columns: {required_columns}")
+		else:
+			self.lipid_annotation_db = None
+
+	def _annotate_reference_mz(self, mz_vector: np.ndarray[np.float32], ion_mode: MsiIonMode, mass_tolerance: int = 10) -> np.ndarray:
+		'''
+		Annotate the reference M/Z vector using the lipid annotation database.
+
+		Parameters
+		----------
+		mz_vector : np.ndarray[np.float32]
+			The reference M/Z vector to annotate.
+		ion_mode : MsiIonMode
+			The ion mode of the M/Z vector.
+		mass_tolerance : int
+			The mass tolerance in ppm for matching the M/Z values.
+
+		Returns
+		-------
+		pd.DataFrame
+			A DataFrame containing the annotations for each M/Z value.
+		'''
+
+		if self.lipid_annotation_db is None:
+			raise ValueError("Lipid annotation database is not provided.")
+
+		annotations = []
+
+		for mz in mz_vector:
+			# Compute the mass tolerance in Da
+			tolerance_da = mz * mass_tolerance / 1e6
+
+			# Filter the lipid DB for matching entries
+			matches = self.lipid_annotation_db[
+				(self.lipid_annotation_db['ionized_mass'] >= mz - tolerance_da) &
+				(self.lipid_annotation_db['ionized_mass'] <= mz + tolerance_da) &
+				(self.lipid_annotation_db['ion_mode'] == ion_mode)
+			]
+
+			if matches.shape[0] > 0:
+				annotation_str = '; '.join(matches['db_name'].tolist())
+			else:
+				annotation_str = 'Unannotated'
+
+			annotations.append(annotation_str)
+
+		return np.array(annotations, dtype=str)
+
 	def process_dataset(self,
 			mass_tolerance: int = 10,
 			frequency_threshold: float = 0.01,
 			batch_size: int = 10000,
 			intensity_normalization: MsiIntensityNormalization = MsiIntensityNormalization.TIC,
-			force_recompute: bool = False) -> None:
+			force_recomputing: bool = False) -> dict[str, str]:
 		'''
 		Process the dataset by aligning the M/Z values across all samples and interpolating the intensities.
 
@@ -531,24 +608,51 @@ class MsiDataset:
 			Batch size for processing M/Z values.
 		intensity_normalization : MsiIntensityNormalization
 			Type of intensity normalization to apply.
-		force_recompute : bool
+		force_recomputing : bool
 			If True, forces recomputation of the reference M/Z vectors and interpolation even if they were already computed.
 			If False, the computation is skipped if the merged dataset already exists.
+
+		Returns
+		-------
+		processed_samples : dict[str, str]
+			A dictionary mapping sample IDs to the paths of their processed files.
 		'''
 
 		# Check if the required normalization method is implemented
 		if intensity_normalization not in MsiIntensityNormalization.list():
 			raise ValueError(f'Invalid intensity normalization method. Expected one of {MsiIntensityNormalization.list()}.')
 		
-		# If the merged dataset already exists and force_recompute is False, skip the computation
-		if not force_recompute and os.path.exists(os.path.join(self.samples[0].output_path, f"{self.samples[0].sample_id}_{self.samples[0].modality_name}_processed.h5ad")):
-			print("Merged dataset already exists. Skipping computation.")
-			return
+		processed_samples = {}
+
+		if not force_recomputing:
+			all_sample_computed = True
+
+			# Check if all the samples have already been processed
+			for sample in self.samples:
+				if not os.path.exists(os.path.join(sample.output_path, f"{sample.sample_id}_processed.h5ad")):
+					all_sample_computed = False
+					break
+				else:
+					processed_samples[sample.sample_id] = os.path.join(sample.output_path, f"{sample.sample_id}_processed.h5ad")
+			
+			# Check if the merged dataset already exists
+			if not os.path.exists(os.path.join(self.dataset_source_path, "merged", "preprocessing", f"{self.samples[0].modality_name}_merged_processed.h5ad")):
+				all_sample_computed = False
+			else:
+				processed_samples["merged"] = os.path.join(self.dataset_source_path, "merged", "preprocessing", f"{self.samples[0].modality_name}_merged_processed.h5ad")
+
+			# If the merged dataset already exists and force_recompute is False, skip the computation
+			if all_sample_computed:
+				print("All samples have already been processed and merged dataset exists. Using cached results.")
+				return processed_samples
+			
+		print("Processing Lipidomic Dataset")
+		processed_samples = {}
 
 		reference_mz_samples: dict[MsiIonMode, list[np.float32]] = {MsiIonMode.POSITIVE: [], MsiIonMode.NEGATIVE: []}
 
 		# For each ion mode in each sample, compute the reference M/Z vector
-		for sample in tqdm(self.samples, desc="Computing reference M/Z vectors", unit="sample"):
+		for sample in tqdm.tqdm(self.samples, desc="1/3 - Computing reference M/Z vectors", unit="sample"):
 			raw_mz = sample.load_mz_vectors()
 			for mode in sample.ion_modes:
 				reference_mz_samples[mode].append(
@@ -572,8 +676,20 @@ class MsiDataset:
 			else:
 				self.reference_mz[mode] = np.array([], dtype=np.float32)
 
+		# For each ion mode, annotate the reference M/Z vector if a lipid annotation database is provided
+		self.lipid_annotations: dict[MsiIonMode, np.ndarray] = {}
+		if self.lipid_annotation_db is not None:
+			for mode in self.reference_mz.keys():
+				self.lipid_annotations[mode] = self._annotate_reference_mz(
+					self.reference_mz[mode],
+					mode,
+					mass_tolerance=mass_tolerance
+				)
+
+		
+
 		# Now that the global reference M/Z vectors are computed, process each sample to interpolate the intensities
-		for sample in tqdm(self.samples, desc="Aligning intensities to reference M/Z", unit="sample"):
+		for sample in tqdm.tqdm(self.samples, desc="2/3 - Aligning intensities to reference M/Z", unit="sample"):
 			self.interpolated[sample.sample_id] = {MsiIonMode.POSITIVE: None, MsiIonMode.NEGATIVE: None}
 			self.normalized[sample.sample_id] = {MsiIonMode.POSITIVE: None, MsiIonMode.NEGATIVE: None}
 
@@ -630,6 +746,13 @@ class MsiDataset:
 			merged_reference_mz = np.concatenate([self.reference_mz[MsiIonMode.POSITIVE], self.reference_mz[MsiIonMode.NEGATIVE]])
 			reference_mode = np.concatenate([[MsiIonMode.POSITIVE] * len(self.reference_mz[MsiIonMode.POSITIVE]), [MsiIonMode.NEGATIVE] * len(self.reference_mz[MsiIonMode.NEGATIVE])])
 
+			# Concatenate the annotations if available
+			if self.lipid_annotation_db is not None:
+				reference_annotations = np.concatenate([
+					self.lipid_annotations[MsiIonMode.POSITIVE] if MsiIonMode.POSITIVE in self.lipid_annotations else np.zeros_like(self.reference_mz[MsiIonMode.POSITIVE], dtype=str),
+					self.lipid_annotations[MsiIonMode.NEGATIVE] if MsiIonMode.NEGATIVE in self.lipid_annotations else np.zeros_like(self.reference_mz[MsiIonMode.NEGATIVE], dtype=str)
+				])
+			
 			# Merge the two ion modes
 			if sample.double_ion_mode:
 				merged_interpolated[:, :self.interpolated[sample_id][MsiIonMode.POSITIVE].shape[1]] = self.interpolated[sample_id][MsiIonMode.POSITIVE]
@@ -660,7 +783,8 @@ class MsiDataset:
 				},
 				var = pd.DataFrame({
 					"mz": merged_reference_mz,
-					"mz_mode": reference_mode
+					"mz_mode": reference_mode,
+					"lipid_annotation": reference_annotations if self.lipid_annotation_db is not None else ['Unannotated'] * merged_reference_mz.shape[0]
 				}, index = [str(i) for i in range(merged_interpolated.shape[1])]),
 				uns = {
 					"raster_size": raster_size,
@@ -668,8 +792,35 @@ class MsiDataset:
 			)
 
 			# Save the AnnData object to the output path
-			output_file = os.path.join(sample.output_path, f"{sample.sample_id}_{sample.modality_name}_processed.h5ad")
+			output_file = os.path.join(sample.output_path, f"{sample.sample_id}_processed.h5ad")
 			self.adata.write_h5ad(output_file)
+			processed_samples[sample.sample_id] = output_file
+
+		# Save the merged dataset
+		adatas: list[ad.AnnData] = []
+		merged_output_dir = os.path.join(self.dataset_source_path, 'merged', "preprocessing")
+
+		for sample_id, output_file in tqdm.tqdm(processed_samples.items(), desc="3/3 - Merging MSI samples into AnnData", unit="sample"):
+			sample_adata = ad.read_h5ad(output_file)
+
+			# Update the obs_names to include the sample ID for uniqueness
+			sample_adata.obs_names = [f"{sample_id}_{obs_name}" for obs_name in sample_adata.obs_names]
+			adatas.append(sample_adata)
+
+		# Concatenate all the AnnData objects, ensuring unique obs_names (indexes)
+		if adatas:
+			msi_adata = ad.concat(adatas)
+
+			# Add the var informations
+			msi_adata.var = adatas[0].var.copy()
+			msi_adata.uns = adatas[0].uns.copy()
+
+		# Save the combined AnnData
+		if not os.path.exists(os.path.dirname(merged_output_dir)):
+			os.makedirs(os.path.dirname(merged_output_dir))
+		msi_adata.write_h5ad(os.path.join(merged_output_dir, f"{self.samples[0].modality_name}_merged_processed.h5ad"))
+		processed_samples["merged"] = os.path.join(merged_output_dir, f"{self.samples[0].modality_name}_merged_processed.h5ad")
+		return processed_samples
 
 	def _compute_reference_mz(self, spectra_list: list[np.ndarray], mass_tolerance: int = 10, frequency_threshold: float = 0.01, batch_size: int = 10000) -> np.ndarray:
 		"""

@@ -1,64 +1,62 @@
-import os, sys, tqdm
-import numpy as np
-import matplotlib.pyplot as plt
-import anndata as ad
-import scanpy as sc
-import tifffile
+import os
+from preprocessing import preprocessing
+from alignment import alignment
 
-from sklearn.decomposition import NMF
+from constants import MsiPreprocessingParams, MicroscopyImageProcessingParams, ModalityType
+from constants import SegmentationBackgroundColor
 
-# Include src directory in the path dynamically
-notebook_dir = os.path.abspath("")
-src_path = os.path.join(notebook_dir, "../src")
-sys.path.append(src_path)
+if __name__ == "__main__":
+    PATH = "/staging/leuven/stg_00077/projects/Lorenzo/FOCUS/p_PDA/d_C1"
+    PLOT_PATH = os.path.join(PATH, "plots", "preprocessing", "MSI")
 
+    # Define the MSI preprocessing settings
+    msi_modality_name = "MSI"
+    msi_preprocessing_settings = {
+        MsiPreprocessingParams.FORCE_RECOMPUTING: False,
+        MsiPreprocessingParams.FREQUENCY_THRESHOLD: 0.01,
+        MsiPreprocessingParams.INTENSITY_NORMALIZATION: preprocessing.MsiIntensityNormalization.TIC,
+        MsiPreprocessingParams.LIPID_ANNOTATION_DB: None,
+        MsiPreprocessingParams.MASS_TOLERANCE: 10,
+        MsiPreprocessingParams.BATCH_SIZE: 10000,
+    }
 
-import preprocessing.microscopy_image as mi
-import preprocessing.raman as raman
-from constants import ContainerEngine
+    # Define the Microscopy preprocessing settings
+    microscopy_modality_name = "HE"
+    microscopy_preprocessing_settings = {
+        MicroscopyImageProcessingParams.FORCE_RECOMPUTING: False,
+        MicroscopyImageProcessingParams.BACKGROUND_COLOR: SegmentationBackgroundColor.WHITE,
+        MicroscopyImageProcessingParams.CROP_TO_TISSUE: True,
+        MicroscopyImageProcessingParams.MIN_OBJECT_COVERAGE: 0.0025,
+        MicroscopyImageProcessingParams.PYRAMID_LEVELS: 4,
+        MicroscopyImageProcessingParams.REMOVE_BACKGROUND: True,
+        MicroscopyImageProcessingParams.COLOR_ENHANCEMENT: False,
+    }
 
-import preprocessing.lipidomics as lipidomics
-from constants import MsiIntensityNormalization, DecompositionMethod, MsiIonMode
-
-'''
-PATH = "/staging/leuven/stg_00077/projects/Lorenzo/FOCUS/p_PDA/d_C1"
-MODALITY_NAME = "Raman"
-
-
-test_sample = raman.RamanImage(
-    source_path=PATH,
-    sample_id="PDAC007T1",
-    modality_name=MODALITY_NAME,
-    max_workers=8,
-    container_engine=ContainerEngine.PODMAN,
-)
-
-test_sample.load_source()
-test_sample.basic_correct()
-#test_sample._quick_stitch()
-test_sample._raman_corrected_tiles = test_sample._basic_corrected_tiles
-test_sample.ashlar_stitch()
-'''
-
-PATH = "/staging/leuven/stg_00077/projects/Lorenzo/FOCUS/p_PDA/d_C1"
-MODALITY_NAME = "MSI"
-SAMPLE_ID_LIST = [
-    "PDAC010N0"
-]
-
-samples: list[lipidomics.MsiSample] = []
-
-# Load each MSI sample and unify POS and NEG ion coordinates
-for SAMPLE_ID in tqdm.tqdm(SAMPLE_ID_LIST, desc="Preparing MSI samples", unit="sample"):
-    msi_sample = lipidomics.MsiSample(
-        source_path = PATH,
-        sample_id=SAMPLE_ID,
-        modality_name=MODALITY_NAME,
-        double_ion_mode=True
+    # Preprocess MSI Dataset
+    processed_msi = preprocessing.preprocess_modality(
+        path=PATH,
+        modality_type=ModalityType.MSI,
+        modality_name=msi_modality_name,
+        preprocessing_settings=msi_preprocessing_settings,
     )
-    samples.append(msi_sample)
 
-# Create an MSI dataset from the samples
-msi_dataset = lipidomics.MsiDataset(samples)
+    # Preprocess Microscopy Dataset
+    processed_microscopy = preprocessing.preprocess_modality(
+        path=PATH,
+        modality_type=ModalityType.MICROSCOPY_IMAGE,
+        modality_name=microscopy_modality_name,
+        preprocessing_settings=microscopy_preprocessing_settings,
+    )
 
-msi_dataset.process_dataset(intensity_normalization=MsiIntensityNormalization.TIC)
+    # Perform Direct Mapping Alignment
+    aligner = alignment.DirectMappingAligner(
+        path=PATH,
+        reference_modality=processed_microscopy,
+        target_modality=processed_msi,
+        force_recompute=False,
+    )
+
+    aligned_samples = aligner.align_dataset()
+
+
+

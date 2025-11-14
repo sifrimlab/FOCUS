@@ -50,11 +50,12 @@ class SpatialTranscriptomic:
         max_count_per_spot: int,
         min_spots_per_gene: float,
         total_counts_normalize: bool = True,
-        log1p_transform: bool = True) -> ad.AnnData:
+        log1p_transform: bool = True) -> str:
         '''
         Preprocess the spatial transcriptomic data using ScanPy.
         
         Parameters:
+        ----------
         min_count_per_spot:
             Minimum total counts per spot to retain the spot.
         max_count_per_spot:
@@ -65,6 +66,11 @@ class SpatialTranscriptomic:
             Whether to perform total counts normalization.
         log1p_transform:
             Whether to perform log1p transformation.
+
+        Returns:
+        -------
+            output_file: str
+                Path to the preprocessed AnnData file.
         '''
 
         if self.data is None:
@@ -96,29 +102,32 @@ class SpatialTranscriptomic:
         self.data.obs_names = [f"{self.sample_id}_{obs_name}" for obs_name in self.data.obs_names]
 
         # Save the preprocessed data
-        output_file = os.path.join(self.output_path, f"{self.sample_id}.h5ad")
+        output_file = os.path.join(self.output_path, f"{self.sample_id}_processed.h5ad")
         self.data.write_h5ad(output_file)
-        return self.data
+        return output_file
 
 class SpatialTranscriptomicDataset():
     '''
     Class for handling multiple spatial transcriptomic samples.
     '''
 
-    def __init__(self, samples: list[SpatialTranscriptomic]) -> None:
+    def __init__(self, path: str, samples: list[SpatialTranscriptomic]) -> None:
+        self.path = path
         self.samples = samples
-        self.combined_data: ad.AnnData = None
 
     def process_dataset(self, 
         min_count_per_spot: int,
         max_count_per_spot: int,
         min_spots_per_gene: float,
         total_counts_normalize: bool = True,
-        log1p_transform: bool = True) -> ad.AnnData:
+        log1p_transform: bool = True,
+        force_recomputing: bool = False
+    ) -> dict[str, str]:
         '''
         Process and combine multiple spatial transcriptomic samples.
         
         Parameters:
+        ----------
         min_count_per_spot:
             Minimum total counts per spot to retain the spot.
         max_count_per_spot:
@@ -129,20 +138,60 @@ class SpatialTranscriptomicDataset():
             Whether to perform total counts normalization.
         log1p_transform:
             Whether to perform log1p transformation.
+        force_recomputing:
+            Whether to force recomputing the preprocessing even if preprocessed data exists.
+
+        Returns:
+        -------
+            processed_samples: dict[str, str]
+                A dictionary with keys as sample identifiers and values as paths to the preprocessed data. It includes the merged data under the key 'merged'.
         '''
 
-        adata_list = []
-        for sample in tqdm.tqdm(self.samples, desc="Processing ST Samples", unit="sample"):
-            preprocessed_data = sample.preprocess_data(
+        # Check the input parameters
+        if not (0.0 <= min_spots_per_gene <= 1.0):
+            raise ValueError("min_spots_per_gene must be between 0 and 1.")
+        if not type(min_count_per_spot) is int or not type(max_count_per_spot) is int:
+            raise ValueError("min_count_per_spot and max_count_per_spot must be integers.")
+        if not type(force_recomputing) is bool:
+            raise ValueError("force_recomputing must be a boolean.")
+        if not type(total_counts_normalize) is bool:
+            raise ValueError("total_counts_normalize must be a boolean.")
+        if not type(log1p_transform) is bool:
+            raise ValueError("log1p_transform must be a boolean.")
+        
+        print("1/2 - Processing Spatial Transcriptomic Samples")
+
+        processed_samples: dict[str, str] = {}
+        adata_list: list[ad.AnnData] = []
+
+        for sample in self.samples:
+            print(f"Preprocessing sample {sample.sample_id}")
+
+            if force_recomputing == False:
+                # Check if preprocessed data already exists
+                preprocessed_file = os.path.join(
+                    sample.output_path,
+                    f"{sample.sample_id}_processed.h5ad"
+                )
+                if os.path.exists(preprocessed_file):
+                    print(f"Sample {sample.sample_id} already preprocessed. Using cached results.")
+                    processed_samples[sample.sample_id] = preprocessed_file
+                    continue
+
+            processed_samples[sample.sample_id] = sample.preprocess_data(
                 min_count_per_spot=min_count_per_spot,
                 max_count_per_spot=max_count_per_spot,
                 min_spots_per_gene=min_spots_per_gene,
                 total_counts_normalize=total_counts_normalize,
                 log1p_transform=log1p_transform
             )
-            adata_list.append(preprocessed_data)
+
+            # Load the preprocessed data for merging
+            adata = sc.read_h5ad(processed_samples[sample.sample_id])
+            adata_list.append(adata)
 
         # Combine the data considering that each sample may have different genes
+        print("2/2 - Generating combined Spatial Transcriptomic dataset")
         self.combined_data = ad.concat(adata_list)
 
         # Save the combined data
@@ -155,4 +204,6 @@ class SpatialTranscriptomicDataset():
 
         combined_output_file = os.path.join(combined_output_path, f"{self.samples[0].modality_name}.h5ad")
         self.combined_data.write_h5ad(combined_output_file)
-        return self.combined_data
+       
+        processed_samples["merged"] = combined_output_file
+        return processed_samples

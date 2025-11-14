@@ -11,8 +11,6 @@ from joblib import Parallel, delayed
 from sklearn.decomposition import PCA
 import concurrent.futures
 
-from constants import ContainerEngine
-
 class RamanMetadata:
 	'''
 	Store the metadata from a Raman Spectroscopy Imageing file regardless of the file format.
@@ -172,8 +170,7 @@ class RamanImage:
 			source_path: str,
 			sample_id: str,
 			modality_name: str,
-			max_workers: int = 8,
-			container_engine: ContainerEngine = ContainerEngine.DOCKER
+			max_workers: int = 8
 		):
 		'''
 		Wrapper to handle Raman Spectral Images. For now, it only supports Leica LIF files.
@@ -187,8 +184,8 @@ class RamanImage:
 			Sample ID.
 		modality_name : str
 			Name of the modality.
-		container_engine : ContainerEngine, optional
-			Container engine used to run BaSiC and ASHLAR. Default is ContainerEngine.DOCKER.
+		max_workers : int
+			Maximum number of workers to use for parallel processing.
 		'''
 
 		# Check that the input path exists and it can be read
@@ -197,14 +194,10 @@ class RamanImage:
 		if not os.access(source_path, os.R_OK):
 			raise PermissionError(f"Input path {source_path} is not readable.")
 		
-		if container_engine not in ContainerEngine.list():
-			raise ValueError(f"Container engine must be one of {ContainerEngine.list()}.")
-		
 		self.source_path = os.path.join(source_path, sample_id, modality_name)
 		self.sample_id = sample_id
 		self.modality_name = modality_name
 		self.output_path = os.path.join(source_path, sample_id, "preprocessing", modality_name)
-		self.container_engine = container_engine
 		self._max_workers = max_workers
 
 		# Define the intermediate data structure
@@ -966,13 +959,21 @@ class RamanImage:
 			contours, _ = cv2.findContours(seg_mask_uint8, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
 			if contours:
-				# Largest contour by area
-				largest_contour = max(contours, key=cv2.contourArea)
-				
-				# Create empty mask and fill largest contour
+				# Total image area (number of pixels)
+				image_area = seg_mask_uint8.shape[0] * seg_mask_uint8.shape[1]
+
+				# Threshold at 5% of the image area
+				area_threshold = 0.05 * image_area
+
+				# Initialize empty mask
 				tissue_mask = np.zeros_like(seg_mask_uint8)
-				cv2.drawContours(tissue_mask, [largest_contour], contourIdx=-1, color=255, thickness=cv2.FILLED)
-				
+
+				# Filter contours by area relative to image size
+				large_contours = [c for c in contours if cv2.contourArea(c) >= area_threshold]
+
+				# Draw all large contours in the mask
+				cv2.drawContours(tissue_mask, large_contours, contourIdx=-1, color=255, thickness=cv2.FILLED)
+
 				# Convert to boolean mask
 				segmentation_mask = tissue_mask.astype(bool)
 			else:
@@ -1327,12 +1328,17 @@ class RamanDataset:
 		A list of RamanImage objects to be included in the dataset.
 	'''
 
-	def __init__(self, samples: list[RamanImage]):
+	def __init__(self, path: str, samples: list[RamanImage]):
+		self.path = path
 		self.samples = samples
 
-	def process_dataset(self, force_recomputing: bool = False) -> str:
+		# Check if the path exists, if not create it
+		if not os.path.exists(self.path):
+			os.makedirs(self.path)
+
+	def process_dataset(self, force_recomputing: bool = False) -> dict[str, str]:
 		'''
-		Process the entire dataset by processing each RamanImage object and combining them into a single AnnData object.
+		Process each sample with the preprocessing steps and return a dictionary of processed sample paths.
 
 		Parameters
 		----------
@@ -1342,8 +1348,8 @@ class RamanDataset:
 
 		Returns
 		-------
-		str
-			The path to the combined AnnData object.
+		processed_samples : dict[str, str]
+			A dictionary mapping sample IDs to the paths of their processed OME TIFF files.
 		'''
 		processed_samples = {}
 		for sample in self.samples:

@@ -1,278 +1,165 @@
-import os, tifffile
+import os, tifffile, threading, anndata, copy
 import numpy as np
-import matplotlib.pyplot as plt
 
-from sklearn.decomposition import PCA, NMF
+from GUI.direct_mapping_alignment import DirectMappingAlignmentGUI
 
-from utils import gamma_correction, enhance_contrast
-from constants import ModalityParameters, ModalityType, AlignmentSettings, TransformationType, RegistrationSettings, RegistrationType, DecompositionMethod
-
-from alignment.elastix_engine import ElastixEngine
-from GUI.landmark_selection import LandmarkSelectionGUI
-
-import cv2      #TODO: Remove this import
-from scipy.ndimage import affine_transform
-
-class Aligner:
+class DirectMappingAligner:
     '''
-    This class is used to align the target modality to the anchor modality using Elastix.
-    The target modality is the moving image and the anchor modality is the fixed image.
-    The output of this class is a Boolean mask that indicates the region of the anchor covered by the target.
+    This class handle the alignment between two modalities using direct coordinate mapping.
+    The reference modality is supposed to be a high resulution image while the target modality is a set of points that
+    are mapped to the reference modality coordinate system.
+    The reference modality is assumed to be a OME TIFF file, while the target modality is provided as AnnData.
+    For each sample, an alignment is performed.
 
     Parameters
     ----------
-    source_folder : str
-        The source_folder to the data source directory
-    sample_id : str
-        The sample_id of the data source
-    load_landmarks : bool, optional
-        If True, load the landmarks from the file (default is False)
-    load_alignment_transformation : bool, optional
-        If True, load the alignment transformation from the file (default is False)
+    path : str
+        The path to the dataset folder
+    reference_modality : dict
+        The reference modality files from the processing module
+    target_modality : dict
+        The target modality files from the processing module
+    force_recompute : bool, optional
+        If True, forces the recomputation of the alignment even if the alignment file already exists (default is False)
     '''
 
-    def __init__(self, source_folder: str, sample_id: str, load_landmarks: bool = False, load_alignment_transformation: bool = False) -> None:
-        
-        # TODO: Implement a way to load landmarks and/or transformation from a file
-
-        if type(source_folder) != str or type(sample_id) != str or type(load_landmarks) != bool or type(load_alignment_transformation) != bool:
-            raise TypeError("Invalid input type. Please check the input types.")
-
-        self._source_folder = source_folder
-        self._sample_id = sample_id
-        self._preprocessing_folder = os.path.join(self._source_folder, self._sample_id, "preprocessing")
-        self._alignment_folder = os.path.join(self._source_folder, self._sample_id, "alignment")
-
-        if load_landmarks == False:
-            self._fixed_landmarks, self._moving_landmarks = [], []
-            self._moving_image_xflip, self._moving_image_yflip = False, False
-        
-        if load_alignment_transformation == False:
-            self._transformation_parameters = None
-
-    def _get_landmarks_from_gui(self, fixed_landmarks: np.ndarray, moving_landmarks: np.ndarray, moving_image_xflip: bool = False, moving_image_yflip: bool = False) -> None:
-        '''
-        Callback function to get the landmarks from the GUI, once the user clicks to confirm.
-        All the checks are performed in the GUI class.
-
-        Parameters
-        ----------
-        fixed_landmarks : np.ndarray
-            The fixed landmarks
-        moving_landmarks : np.ndarray
-            The moving landmarks
-        moving_image_xflip : bool, optional
-            If True, the moving image is flipped in the x direction (default is False)
-        moving_image_yflip : bool, optional
-            If True, the moving image is flipped in the y direction (default is False)
-        '''
-
-        if type(fixed_landmarks) != np.ndarray or type(moving_landmarks) != np.ndarray:
-            raise TypeError("Invalid input type. Please check the input types.")
-        
-        self._fixed_landmarks = fixed_landmarks
-        self._moving_landmarks = moving_landmarks
-        self._moving_image_xflip = moving_image_xflip
-        self._moving_image_yflip = moving_image_yflip
-
-    def _generate_msi_image(self, path: str, decomposition_method: DecompositionMethod = DecompositionMethod.PCA) -> np.ndarray[np.float32]:
-        '''
-        Generate an RGB image from the processed MSI data
-        
-        Parameters
-        ----------
-        path : str
-            The path to the preprocessed MSI data
-        decomposition_method : DecompositionMethod
-            The decomposition method to use to generate the RGB image (default is PCA)
-        
-        Returns
-        ----------
-        np.ndarray[np.float32]
-            The generated RGB image
-        '''
-
-        # Check if there are the processed MSI data
-        if not os.path.exists(os.path.join(path)):
-            raise FileNotFoundError(f"The path {path} does not exist or do not contain processed data. Please check the input values.")
-        
-
-        # Load the required files
-        intensities: np.ndarray = np.load(os.path.join(path, f"{self._sample_id}_intensities_matrix.npy"))
-        matrix_shape = intensities.shape
-
-        # Reshape the intensities to a 2D array
-        intensities = intensities.reshape(-1, intensities.shape[-1])
-
-        # Create a mask to remove empty pixels
-        empty_mask = np.all(intensities == 0, axis = 1)
-        intensities = intensities[~empty_mask]
-
-        # Compute a 3-dimensional embedding to generate an RGB-like image
-        if decomposition_method == DecompositionMethod.PCA:
-            engine = PCA(n_components = 3, svd_solver = 'randomized', random_state = 0)
-        elif decomposition_method == DecompositionMethod.NMF:
-            engine = NMF(n_components = 3, init = 'random', random_state = 0, max_iter = 1000)
-        else:
-            raise ValueError("Invalid decomposition method. Please check the input values.")
-        
-        intensities = engine.fit_transform(intensities)
-
-        # Normalize the intensities between 0 and 1 for each channel - Visualization purpose only
-        intensities[:, 0] = (intensities[:, 0] - np.min(intensities[:, 0])) / (np.max(intensities[:, 0]) - np.min(intensities[:, 0]))
-        intensities[:, 1] = (intensities[:, 1] - np.min(intensities[:, 1])) / (np.max(intensities[:, 1]) - np.min(intensities[:, 1]))
-        intensities[:, 2] = (intensities[:, 2] - np.min(intensities[:, 2])) / (np.max(intensities[:, 2]) - np.min(intensities[:, 2]))
-
-        # Reconstruct the original intensities array
-        reconstructed_intensities = np.zeros((matrix_shape[0] * matrix_shape[1], 3))
-        reconstructed_intensities[~empty_mask] = intensities
-        reconstructed_intensities = reconstructed_intensities.reshape(matrix_shape[0], matrix_shape[1], 3)
-
-        # Swap X and Y axes to meet matplotlib requirements
-        reconstructed_intensities = np.swapaxes(reconstructed_intensities, 0, 1)
-
-        return reconstructed_intensities.astype(np.float32)
-
-    def _read_microscopy_image(self, path: str) -> np.ndarray[np.float32]:
-        '''
-        Read the microscopy image from the processed data
-
-        Parameters
-        ----------
-        path : str
-            The path to the data source directory
-
-        Returns
-        ----------
-        np.ndarray[np.float32]
-            The microscopy image
-        '''
-
-
-        # Check if there are the processed MSI data
-        if not os.path.exists(os.path.join(path)):
-            raise FileNotFoundError(f"The path {path} does not exist or do not contain processed data. Please check the input values.")
-        
-        output = tifffile.imread(os.path.join(path, f"{self._sample_id}.tiff"))
-        return output
-        
-    def align_modality_to_anchor(self, target_modality: dict, anchor_modality: dict) -> None:
-        '''
-        Align the target modality (moving image) to the anchor modality (fixed image) using Elastix.
-        This method must be used after the preprocessing steps because it relies on those artifacts.
-        The output of this method is a Boolean mask that indicates the region of the anchor covered by the target.
-
-        Parameters
-        ----------
-        target_modality : dict
-            The target modality settings from the configuration file
-        anchor_modality : dict
-            The anchor modality settings from the configuration file
-        target_spacing : tuple[float, float]
-        '''
-
-        if type(target_modality) != dict or type(anchor_modality) != dict:
+    def __init__(self, path: str, reference_modality: dict, target_modality: dict, force_recompute: bool = False) -> None:
+        if type(path) != str or type(reference_modality) != dict or type(target_modality) != dict or type(force_recompute) != bool:
             raise TypeError("Invalid input types. Please check the input types.")
-        if target_modality[ModalityParameters.MODALITY_NAME] == anchor_modality[ModalityParameters.MODALITY_NAME]:
-            raise ValueError("The target and anchor modalities must be different. Please check the input values.")
-        
-        # Check the type of both modalities, if they are not images, convert them to images
-        if target_modality[ModalityParameters.MODALITY_TYPE] == ModalityType.MICROSCOPY_IMAGE:
-            target_image = self._read_microscopy_image(os.path.join(self._preprocessing_folder, target_modality[ModalityParameters.MODALITY_NAME]))
-        elif target_modality[ModalityParameters.MODALITY_TYPE] == ModalityType.MSI:
-            target_image = self._generate_msi_image(os.path.join(self._preprocessing_folder, target_modality[ModalityParameters.MODALITY_NAME]))
-        else:
-            raise ValueError("Invalid target modality type. Please check the input values.")
-        
-        if anchor_modality[ModalityParameters.MODALITY_TYPE] == ModalityType.MICROSCOPY_IMAGE:
-            anchor_image = self._read_microscopy_image(os.path.join(self._preprocessing_folder, anchor_modality[ModalityParameters.MODALITY_NAME]))
-        elif anchor_modality[ModalityParameters.MODALITY_TYPE] == ModalityType.MSI:
-            anchor_image = self._generate_msi_image(os.path.join(self._preprocessing_folder, anchor_modality[ModalityParameters.MODALITY_NAME]))
-        else:
-            raise ValueError("Invalid anchor modality type. Please check the input values.")
 
-        # Verify the presence of landmarks. If missing, request the user to pick them from the GUI
-        if len(self._fixed_landmarks) == 0 or len(self._moving_landmarks) == 0:
-            print("Landmarks not found. Loading the GUI to allow hand-picking...")
+        self._path = path
+        self._reference_modality = reference_modality
+        self._target_modality = target_modality
+        self._force_recompute = force_recompute
 
-            # Create the GUI and wait for the user to select them
-            landmarks_gui = LandmarkSelectionGUI(
-               fixed_image = anchor_image,
-                moving_image = target_image,
-                save_landmarks_callback = self._get_landmarks_from_gui,
-                image_size_cap = None # TODO: Correct the bugs to use this feature
+        # Only align samples that are present in both modalities
+        reference_samples = set(self._reference_modality.keys())
+        target_samples = set(self._target_modality.keys())
+        self._common_samples = list(reference_samples.intersection(target_samples))
+
+        # Define an event to signal when all the samples are processed
+        self._dataset_completed_event = threading.Event()
+
+        # Define a dictionary to store the aligned results
+        self._aligned_coordinates: dict[str, np.ndarray] = {}
+
+        # Define the GUI interface
+        self._gui_interface = DirectMappingAlignmentGUI(samples=self._common_samples, dataset_completed_event=self._dataset_completed_event)
+
+    def _load_ome_tiff(self, filename: str) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        '''
+        Load an OME TIFF file and return the image data, the pixel size and the origin.
+
+        Parameters
+        ----------
+        filename : str
+            The path to the OME TIFF file
+
+        Returns
+        -------
+        tuple[np.ndarray, np.ndarray, np.ndarray]
+            A tuple containing:
+            - The image data from the lowest pyramidal resolution
+            - The shape of the lowest resolution level
+            - The shape of the original resolution level
+        '''
+
+        if type(filename) != str:
+            raise TypeError("Invalid input type. Please check the input type.")
+
+        if not os.path.exists(filename):
+            raise FileNotFoundError(f"The specified file does not exist: {filename}")
+
+        # Read the lowest resolution level of the OME TIFF file
+        with tifffile.TiffFile(filename) as tif:
+            lowest_level = tif.series[-1]
+            image_data = lowest_level.asarray()
+            lowest_shape = lowest_level.shape
+            original_shape = tif.series[0].shape
+
+        # Convert the image to Uint8 if necessary
+        if image_data.dtype != np.uint8:
+            image_data = (image_data * 255).astype(np.uint8)
+
+        return image_data, lowest_shape, original_shape
+    
+    def _load_anndata_coordinates(self, filename: str) -> tuple[np.ndarray, np.ndarray]:
+        '''
+        Load the spatial coordinates from an AnnData file.
+
+        Parameters
+        ----------
+        filename : str
+            The path to the AnnData file
+
+        Returns
+        -------
+        coordinates, raster_size: tuple[np.ndarray, np.ndarray]
+            A tuple containing:
+            - The spatial coordinates as a numpy array of shape (N, 2)
+            - The raster size as a numpy array of shape (2,)
+        '''
+
+        if type(filename) != str:
+            raise TypeError("Invalid input type. Please check the input type.")
+
+        if not os.path.exists(filename):
+            raise FileNotFoundError(f"The specified file does not exist: {filename}")
+
+        adata = anndata.read_h5ad(filename)
+        if 'spatial' not in adata.obsm:
+            raise ValueError("The AnnData file does not contain spatial coordinates in obsm['spatial'].")
+
+        coordinates = adata.obsm['spatial']
+        raster_size = adata.uns['raster_size'] if 'raster_size' in adata.uns else np.array([1.0, 1.0], dtype=np.float32)
+        return coordinates, raster_size
+
+    def _align_dataset_thread(self) -> None:
+        # Process each sample
+        for sample_id in self._common_samples:
+
+            reference_file = self._reference_modality[sample_id]
+            target_file = self._target_modality[sample_id]
+
+            # Load reference image
+            reference_image, lowest_shape, original_shape = self._load_ome_tiff(reference_file)
+
+            # Load target coordinates
+            target_coordinates, raster_size = self._load_anndata_coordinates(target_file)
+    
+            # Launch the GUI for alignment
+            aligned_coordinates = self._gui_interface.align_sample(
+                sample_id=sample_id,
+                reference_image=reference_image,
+                target_coordinates=target_coordinates,
+                raster_size=raster_size
             )
 
-            print("Please select the landmarks opening this link in your browser: http://localhost:5000/")
-            landmarks_gui.enable_gui()
+            # The aligned coordinates refers to the lowest resolution level, we need to scale them to the original resolution
+            scale_factors = np.array([original_shape[0] / lowest_shape[0], original_shape[1] / lowest_shape[1]], dtype=np.float32)
+            aligned_coordinates = aligned_coordinates * scale_factors
 
-        # Check if the moving image has to be flipped
-        if self._moving_image_xflip:
-            target_image = np.flip(target_image, axis = 1)
-        if self._moving_image_yflip:
-            target_image = np.flip(target_image, axis = 0)
+            self._aligned_coordinates[sample_id] = copy.deepcopy(aligned_coordinates)
 
-        # Create the Elastix engine
-        engine = ElastixEngine(
-            path = os.path.join(self._alignment_folder, target_modality[ModalityParameters.MODALITY_NAME]),
-            fixed_image = anchor_image,
-            moving_image = target_image
-        )
+        # Set the dataset completed event to disable the GUI
+        self._dataset_completed_event.set()
 
-        # Scaling offset compared to the metadata used
-        aligned_image, scaling_offset, output_parameters = engine.align_images(
-            transformations = target_modality[ModalityParameters.ALIGNMENT_SETTINGS][AlignmentSettings.TRANSFORMATIONS],
-            fixed_points = self._fixed_landmarks,
-            moving_points = self._moving_landmarks,
-        )
+    def align_dataset(self) -> dict[str, np.ndarray]:
+        '''
+        Align the target modality to the reference modality for all common samples.
+
+        Returns
+        -------
+        dict[str, np.ndarray]
+            A dictionary with keys as sample identifiers and values as aligned coordinates as numpy arrays of shape (N, 2).
+        '''
 
 
+        # Start the alignment process in a separate thread
+        alignment_thread = threading.Thread(target=self._align_dataset_thread, daemon=True)
+        alignment_thread.start()
 
-        #TODO: Remove this part and move it to registration component
-        if target_modality[ModalityParameters.REGISTRATION_SETTINGS][RegistrationSettings.TYPE] == RegistrationType.RESOLUTION_SCALING_TO_TARGET:
-            # Get a boolean mask of the aligned image
-            aligned_mask = np.zeros((aligned_image.shape[0:2]), dtype = np.bool_)
-            aligned_mask[np.max(aligned_image, axis=2) >= 0] = True
+        # Enable the GUI (this will block until the GUI is closed)
+        self._gui_interface.enable_gui()
 
-            cpy = np.copy(anchor_image)
-            cpy[aligned_mask == False] = 0
-
-            a = engine.invert_transformation(cpy, output_parameters[0])
-
-            aligned_mask = np.zeros((a.shape[0:2]), dtype = np.bool_)
-            aligned_mask[np.max(a, axis=2) > 0] = True
-
-            indexes = np.argwhere(aligned_mask)
-            row_start, col_start = indexes.min(axis=0)
-            row_end, col_end = indexes.max(axis=0) + 1
-
-            # Cut the anchor image based on the aligned mask
-            cut_anchor_image = np.zeros((row_end - row_start, col_end - col_start, anchor_image.shape[2]), dtype = np.float32)
-            cut_anchor_image = a[row_start:row_end, col_start:col_end]
-
-            # Compute the scaling factor
-            scaling_factor = (
-                target_image.shape[1],
-                target_image.shape[0]
-            )
-
-            # Downscale the cut anchor image to the target image size
-            resulting_image = cv2.resize(cut_anchor_image, scaling_factor, interpolation = cv2.INTER_CUBIC)
-
-            # Normalize the resulting image taking into accont that there are negative values
-            resulting_image = (resulting_image - np.min(resulting_image)) / (np.max(resulting_image) - np.min(resulting_image))
-            resulting_image = np.clip(resulting_image, 0, 1)
-
-
-            # Save the resulting image
-            output_path = os.path.join(self._alignment_folder, anchor_modality[ModalityParameters.MODALITY_NAME], "resulting_image.tiff")
-            if not os.path.exists(os.path.dirname(output_path)):
-                os.makedirs(os.path.dirname(output_path))
-            tifffile.imwrite(output_path, resulting_image)
-        elif target_modality[ModalityParameters.REGISTRATION_SETTINGS][RegistrationSettings.TYPE] == RegistrationType.RESOLUTION_SCALING_TO_ANCHOR:
-            # Save the aligned image as a tiff file
-            output_path = os.path.join(self._alignment_folder, target_modality[ModalityParameters.MODALITY_NAME], "resulting_image.tiff")
-            if not os.path.exists(os.path.dirname(output_path)):
-                os.makedirs(os.path.dirname(output_path))
-            tifffile.imwrite(output_path, aligned_image)
-
+        return self._aligned_coordinates

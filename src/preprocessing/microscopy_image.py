@@ -6,9 +6,10 @@ import skimage.morphology as morphology
 from skimage import color
 import matplotlib.pyplot as plt
 from ome_types.model import OME, Image, Pixels, Channel, TiffData, Plane, Color
+from scipy.ndimage import binary_fill_holes
 
 import utils as utils
-from constants import ContainerEngine, SegmentationBackgroundColor
+from constants import SegmentationBackgroundColor
 
 class PatchEmbeddingExtractor:
 	def __init__(self, hf_token: str = None):
@@ -212,9 +213,8 @@ class PatchEmbeddingExtractor:
 
 		return embeddings
 
-
 class MicroscopyImage():
-	def __init__(self, source_path: str, sample_id: str, modality_name: str, patch_extractor: PatchEmbeddingExtractor) -> None:
+	def __init__(self, source_path: str, sample_id: str, modality_name: str, patch_extractor: PatchEmbeddingExtractor | None = None) -> None:
 		'''
 		Process a microscopy image to uniform the format, enhance the colors prepare it for registration.
 		'''
@@ -225,7 +225,7 @@ class MicroscopyImage():
 		if not os.access(source_path, os.R_OK):
 			raise ValueError(f"The path {source_path} is not readable.")
 
-		if isinstance(patch_extractor, PatchEmbeddingExtractor) == False:
+		if patch_extractor is not None and isinstance(patch_extractor, PatchEmbeddingExtractor) == False:
 			raise ValueError(f"Invalid patch_extractor: {patch_extractor}. Expected an instance of PatchEmbeddingExtractor.")
 
 
@@ -250,7 +250,17 @@ class MicroscopyImage():
 		# Define the standard output folder
 		self.output_folder = os.path.join(source_path, sample_id, 'preprocessing', modality_name)
 		if not os.path.exists(self.output_folder):
-			os.makedirs(self.output_folder) 
+			os.makedirs(self.output_folder)
+
+	@property
+	def patch_extractor(self) -> PatchEmbeddingExtractor | None:
+		return self._patch_extractor
+
+	@patch_extractor.setter
+	def patch_extractor(self, value: PatchEmbeddingExtractor | None) -> None:
+		if value is not None and not isinstance(value, PatchEmbeddingExtractor):
+			raise ValueError(f"Invalid patch_extractor: {value}. Expected an instance of PatchEmbeddingExtractor or None.")
+		self._patch_extractor = value
 
 	def _load_tiff(self, file: str) -> np.ndarray:
 		'''
@@ -437,18 +447,24 @@ class MicroscopyImage():
 
 		return output_file
 
-	def _remove_background(self, image: np.ndarray, background_color: SegmentationBackgroundColor = SegmentationBackgroundColor.WHITE, min_tissue_area: int = 0) -> np.ndarray:
+	def _remove_background(self, image: np.ndarray, background_color: SegmentationBackgroundColor = SegmentationBackgroundColor.WHITE, min_object_coverage: float = 0.01) -> np.ndarray:
 		"""
-		Remove background from an H&E image, preserving all tissue areas
-		and cropping the output to the tissue bounding box.
+		Remove background from an H&E image, preserving all tissue areas that cover an area larger than
+		image_area * min_object_coverage, replacing the background with the specified color.
 		
-		Args:
-			image (np.ndarray): Input image [H, W, C], float32, 0-1.
-			background_color (tuple): Color to use for background replacement (length 3, float between 0–1).
-			min_tissue_area (int): Minimum size (in px) for tissue objects to keep (removes dust/small artefacts).
-			
-		Returns:
-			Cropped np.ndarray with background replaced by background_color.
+		Parameters
+		----------
+		image : np.ndarray
+			The input RGB image as a NumPy array of shape (H, W, 3).
+		background_color : SegmentationBackgroundColor
+			The color used to fill the background after removal.
+		min_object_coverage : float
+			The minimum coverage (relative to the image area) for tissue areas to keep when removing background.
+
+		Returns
+		-------
+		output_image : np.ndarray
+			The image with background removed and filled with the specified color.
 		"""
 		assert image.ndim == 3 and image.shape[2] == 3
 
@@ -458,42 +474,138 @@ class MicroscopyImage():
 			background_color = (0.0, 0.0, 0.0)
 		else:
 			raise ValueError(f"Unsupported background color: {background_color}")
+		
+		# Check image dtype and convert to uint8 if needed
+		original_dtype = image.dtype
+		if image.dtype == np.float32 or image.dtype == np.float64:
+			image_uint8 = (image * 255).astype(np.uint8)
+		elif image.dtype == np.uint8:
+			image_uint8 = image
 
-		# 1. Convert to grayscale or use LAB
-		lab = color.rgb2lab(image)
-		# Tissue (non-glass) is typically darker in L and a/b spread
-		# Simple norm of a* and b* channels captures colorfulness (tissue regions)
-		ab_norm = np.linalg.norm(lab[...,1:], axis=-1)
-		normed = (ab_norm - ab_norm.min()) / (ab_norm.max() - ab_norm.min())
+		# Replace black pixels with white to avoid issues in thresholding
+		black_pixels = np.all(image_uint8 == [0, 0, 0], axis=-1)
+		image_uint8[black_pixels] = [255, 255, 255]
+
+		# Convert RGB image to grayscale
+		image_uint8 = cv2.cvtColor(image_uint8, cv2.COLOR_RGB2GRAY)
+
+		# Invert grayscale image (assuming white background to black)
+		image_uint8 = cv2.bitwise_not(image_uint8)
+
+		# Clip intensities at 99th percentile to reduce oversaturation impact
+		clip_value = np.percentile(image_uint8, 99)
+		clipped_img = np.clip(image_uint8, None, clip_value).astype(np.uint8)
+
+		# Apply Gaussian blur to reduce noise
+		clipped_img = cv2.GaussianBlur(clipped_img, (251, 251), 0)
+
+		# Compute Otsu threshold on clipped image
+		otsu_thresh, _ = cv2.threshold(clipped_img, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+
+		# Threshold original image with adjusted threshold (no scaling needed)
+		_, thresh = cv2.threshold(image_uint8, otsu_thresh, 255, cv2.THRESH_BINARY)
+
+		# Remove small objects and fill holes
+		mask_clean = morphology.remove_small_objects(thresh.astype(bool), min_size=500)
+		segmentation_mask = binary_fill_holes(mask_clean)
+
+		# Convert mask for contour finding
+		seg_mask_uint8 = segmentation_mask.astype(np.uint8) * 25
+
+		# Find contours
+		contours, _ = cv2.findContours(seg_mask_uint8, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+		if contours:
+			# Total image area (number of pixels)
+			image_area = seg_mask_uint8.shape[0] * seg_mask_uint8.shape[1]
+
+			# Threshold at relative to image area
+			area_threshold = min_object_coverage * image_area
+
+			# Initialize empty mask
+			tissue_mask = np.zeros_like(seg_mask_uint8)
+
+			# Filter contours by area relative to image size
+			large_contours = [c for c in contours if cv2.contourArea(c) >= area_threshold]
+
+			# Draw all large contours in the mask
+			cv2.drawContours(tissue_mask, large_contours, contourIdx=-1, color=255, thickness=cv2.FILLED)
+
+			# Convert to boolean mask
+			segmentation_mask = tissue_mask.astype(bool)
+		else:
+			print("Warning: No contours found; cannot refine background mask.")
 		
-		# 2. Threshold to get binary tissue mask
-		threshold = filters.threshold_otsu(normed)
-		mask = normed > threshold  # True where tissue, False where background
-		
-		# 3. Morphological closing (fills holes, connects fragments)
-		mask = morphology.remove_small_objects(mask, min_size=min_tissue_area)
-		mask = morphology.binary_closing(mask, morphology.disk(7))
-		mask = ndi.binary_fill_holes(mask)
-		mask = mask.astype(bool)
-		
-		# 4. Apply the mask
-		output_image = image.copy()
-		for c in range(3):
-			output_image[..., c][~mask] = background_color[c]
-		
+		# Apply the mask to the original image
+		output_image = np.zeros_like(image, dtype=image.dtype)
+		output_image[segmentation_mask] = image[segmentation_mask]
+		output_image[~segmentation_mask] = background_color
+
 		return output_image
 	
+	def _crop_image(self, image: np.ndarray, background_color: SegmentationBackgroundColor = SegmentationBackgroundColor.WHITE) -> np.ndarray:
+		'''
+		Crop the image to the bounding box of the tissue area.
+
+		Parameters
+		----------
+		image : np.ndarray
+			The input RGB image as a NumPy array of shape (H, W, 3).
+		background_color : SegmentationBackgroundColor
+			The color used to identify the background.
+
+		Returns
+		-------
+		cropped_image : np.ndarray
+			The cropped image.
+		'''
+
+		assert image.ndim == 3 and image.shape[2] == 3
+
+		if background_color == SegmentationBackgroundColor.WHITE:
+			bg_color = np.array([1.0, 1.0, 1.0], dtype=np.float32)
+		elif background_color == SegmentationBackgroundColor.BLACK:
+			bg_color = np.array([0.0, 0.0, 0.0], dtype=np.float32)
+		else:
+			raise ValueError(f"Unsupported background color: {background_color}")
+
+		# Create a mask of non-background pixels
+		bg_mask = np.all(np.isclose(image, bg_color, atol=1e-3), axis=-1)  # shape (H, W)
+		non_bg_mask = ~bg_mask
+
+		# Find bounding box of non-background area
+		rows = np.any(non_bg_mask, axis=1)
+		cols = np.any(non_bg_mask, axis=0)
+		if not np.any(rows) or not np.any(cols):
+			raise ValueError("The image appears to be entirely background; cannot crop.")
+
+		ymin, ymax = np.where(rows)[0][[0, -1]]
+		xmin, xmax = np.where(cols)[0][[0, -1]]
+
+		# Add a 250 pixel margin
+		margin = 250
+		ymin = max(0, ymin - margin)
+		ymax = min(image.shape[0] - 1, ymax + margin)
+		xmin = max(0, xmin - margin)
+		xmax = min(image.shape[1] - 1, xmax + margin)
+
+		# Crop the image
+		cropped_image = image[ymin:ymax+1, xmin:xmax+1, :]
+
+		return cropped_image
+
 	def process_image(self, 
 		color_enhancement: bool = True,
 		remove_background: bool = True,
+		crop_to_tissue: bool = True,
 		background_color: SegmentationBackgroundColor = SegmentationBackgroundColor.WHITE,
-		pyramid_levels: int = 3,
-		min_tissue_area: int = 5000,
-		force_recompute: bool = False
-		) -> None:
+		pyramid_levels: int = 4,
+		min_object_coverage: float = 0.01,
+		force_recomputing: bool = False
+		) -> str:
 		'''
-		Preprocess a microscopy image by removing the background and enhancing the colors.
-		The result is saved as a multi-resolution OME-TIFF file.
+		Preprocess a microscopy image to uniform the format, enhance the colors, remove background and crop to tissue area.
+		The result is saved as a multi-resolution OME-TIFF file. The result is saved in the output folder defined during initialization.
 
 		Parameters
 		----------
@@ -501,67 +613,89 @@ class MicroscopyImage():
 			Whether to remove the background using Meta SAM2 (default is True).
 		color_enhancement : bool
 			Whether to enhance the colors using gamma correction and contrast enhancement (default is True).
+		crop_to_tissue : bool
+			Whether to crop the image to the tissue area after background removal (default is True).
 		background_color : SegmentationBackgroundColor
 			The color used to fill the background after removal. This is usefull to match the requirements of futher processing steps.
 		pyramid_levels : int
 			The number of pyramid levels to save in the output OME-TIFF (default is 3).
-		min_tissue_area : int
-			The minimum size (in pixels) for tissue areas to keep when removing background (default is 5000).
-		force_recompute : bool
+		min_tissue_area : float
+			The minimum area (relative to the image size) for tissue areas to keep when removing background (default is 0.05).
+		force_recomputing : bool
 			Whether to force recomputation of the preprocessing even if the output files already exist (default is False).
-
-		patch_centers : np.ndarray, optional
-			A NumPy array of shape (N, 2) containing the (x, y) coordinates of the patch centers to extract.
-			If None, non-overlapping patches are extracted across the entire image.
 
 		Returns
 		-------
-		None
+		output_ome_tiff : str
+			The path to the processed OME-TIFF file.
 		'''
 
 		# Check the inputs
 		if type(color_enhancement) is not bool:
 			raise ValueError(f"Invalid value for color_enhancement: {color_enhancement}. Expected a boolean.")
+		if type(remove_background) is not bool:
+			raise ValueError(f"Invalid value for remove_background: {remove_background}. Expected a boolean.")
+		if type(crop_to_tissue) is not bool:
+			raise ValueError(f"Invalid value for crop_to_tissue: {crop_to_tissue}. Expected a boolean.")
 		if background_color not in SegmentationBackgroundColor.list():
 			raise ValueError(f"Invalid value for background_color: {background_color}. Expected one of {SegmentationBackgroundColor.list()}.")
-		
+		if type(min_object_coverage) is not float or min_object_coverage < 0 or min_object_coverage > 1:
+			raise ValueError(f"Invalid value for min_object_coverage: {min_object_coverage}. Expected a float between 0 and 1.")
+		if type(force_recomputing) is not bool:
+			raise ValueError(f"Invalid value for force_recomputing: {force_recomputing}. Expected a boolean.")
 		if type(pyramid_levels) is not int or pyramid_levels <= 0:
 			raise ValueError(f"Invalid value for pyramid_levels: {pyramid_levels}. Expected a positive integer.")
 		
 		# Check if the results already exist
-		output_ome_tiff = os.path.join(self.output_folder, f"{self.sample_id}_{self.modality_name}_processed.ome.tiff")
-		output_h5ad = os.path.join(self.output_folder, f"{self.sample_id}_{self.modality_name}.h5ad")
-		if force_recompute == False and os.path.exists(output_ome_tiff) and os.path.exists(output_h5ad):
-			print(f"Preprocessed files already exist for sample {self.sample_id}, modality {self.modality_name}. Skipping processing.")
-			return
+		output_ome_tiff = os.path.join(self.output_folder, f"{self.sample_id}_processed.ome.tiff")
+
+		if force_recomputing == False and os.path.exists(output_ome_tiff):
+			print(f"Processed image already exists. Using cached results.")
+			return output_ome_tiff
 		
 		# Load the input file
 		if self.filename.endswith(".czi"):
+			print(f"1/5 - Loading CZI from file {self.filename}")
 			image = self._load_czi(self.filename)
 		else:
+			print(f"1/5 - Loading TIFF from file {self.filename}")
 			image = self._load_tiff(self.filename)
 
 		# Enhance colors if needed
 		if color_enhancement:
+			print(f"2/5 - Enhancing colors")
 			image = utils.gamma_correction(image)
 			image = utils.enhance_contrast(image)
+		else:
+			print(f"2/5 - Color enhancement not required")
 
 		# Force the image to be float32
 		image = image.astype(np.float32)
 
 		# Remove background if needed
 		if remove_background:
-			image = self._remove_background(image, background_color=background_color, min_tissue_area=min_tissue_area)
+			print(f"3/5 - Removing background")
+			image = self._remove_background(image, background_color=background_color, min_object_coverage=min_object_coverage)
+		else:
+			print(f"3/5 - Background removal not required")
+
+		# Crop to tissue area if needed
+		if crop_to_tissue:
+			print(f"4/5 - Cropping to tissue area")
+			image = self._crop_image(image, background_color=background_color)
+		else:
+			print(f"4/5 - Cropping to tissue area not required")
 
 		# Save the processed image as a multi-resolution OME-TIFF
-		self._save_image_pyramid(image, os.path.join(self.output_folder, f"{self.sample_id}_{self.modality_name}_processed.ome.tiff"), levels=pyramid_levels)
-
+		print(f"5/5 - Saving processed image as OME-TIFF with {pyramid_levels} pyramid levels")
+		self._save_image_pyramid(image, output_ome_tiff, levels=pyramid_levels)
+		return output_ome_tiff
 
 	def compute_embeddings(self, 
 		background_color: SegmentationBackgroundColor = SegmentationBackgroundColor.WHITE,
 		patch_size: int = 224,
 		patch_centers: np.ndarray = None,
-		force_recompute: bool = False
+		force_recomputing: bool = False
 	) -> anndata.AnnData:
 		'''
 		Use the patch extractor to compute patch embeddings for the image.
@@ -575,7 +709,7 @@ class MicroscopyImage():
 		patch_centers : np.ndarray, optional
 			A NumPy array of shape (N, 2) containing the (x, y) coordinates of the patch centers to extract.
 			If None, non-overlapping patches are extracted across the entire image foreground.
-		force_recompute : bool
+		force_recomputing : bool
 			Whether to force recomputation of the embeddings even if the output files already exist (default is False).
 
 		Returns
@@ -584,18 +718,23 @@ class MicroscopyImage():
 			An AnnData object containing the patch embeddings and coordinates.
 		'''
 
+		if self.patch_extractor is None:
+			raise ValueError("Patch extractor is not defined for this MicroscopyImage instance.")
+
 		# Check if the processed image exists
-		if not os.path.exists(os.path.join(self.output_folder, f"{self.sample_id}_{self.modality_name}_processed.ome.tiff")):
-			raise ValueError(f"The processed image does not exist for sample {self.sample_id}, modality {self.modality_name}. Please run process_image() first.")
+		if not os.path.exists(os.path.join(self.output_folder, f"{self.sample_id}_processed.ome.tiff")):
+			raise ValueError(f"The processed image does not exist for sample {self.sample_id}. Please run process_image() first.")
+		
+		print(f"2/2 - Computing patch embeddings")
 		
 		# Check if the embeddings already exist
-		if force_recompute == False and os.path.exists(os.path.join(self.output_folder, f"{self.sample_id}_{self.modality_name}.h5ad")):
-			print(f"Embeddings already exist for sample {self.sample_id}, modality {self.modality_name}. Skipping computation.")
-			adata = anndata.read_h5ad(os.path.join(self.output_folder, f"{self.sample_id}_{self.modality_name}.h5ad"))
+		if force_recomputing == False and os.path.exists(os.path.join(self.output_folder, f"{self.sample_id}_patch_embeddings.h5ad")):
+			print(f"2/2 - Patch Embeddings already exist. Using cached results.")
+			adata = anndata.read_h5ad(os.path.join(self.output_folder, f"{self.sample_id}_patch_embeddings.h5ad"))
 			return adata
 		
 		# Load the processed image
-		with tifffile.TiffFile(os.path.join(self.output_folder, f"{self.sample_id}_{self.modality_name}_processed.ome.tiff")) as f:
+		with tifffile.TiffFile(os.path.join(self.output_folder, f"{self.sample_id}_processed.ome.tiff")) as f:
 			image = f.asarray()
 			# Get the first image (highest resolution)
 			if image.ndim > 3:
@@ -613,5 +752,75 @@ class MicroscopyImage():
 		adata.obsm['topleft_coordinates'] = topleft_coordinates
 		adata.uns['patch_size'] = patch_size
 		adata.obs['sample_id'] = self.sample_id
-		adata.write_h5ad(os.path.join(self.output_folder, f"{self.sample_id}_{self.modality_name}.h5ad"))
+		adata.write_h5ad(os.path.join(self.output_folder, f"{self.sample_id}_patch_embeddings.h5ad"))
 		return adata
+	
+class MicroscopyImageDataset:
+	'''
+	Handle a collection of Microscopy Images
+
+	Parameters
+	----------
+	path : str
+		The root path where the samples are stored.
+	samples : list[MicroscopyImage]
+		A list of MicroscopyImage objects to be included in the dataset.
+	'''
+
+	def __init__(self, path: str, samples: list[MicroscopyImage]):
+
+		for sample in samples:
+			if isinstance(sample, MicroscopyImage) == False:
+				raise ValueError(f"Invalid sample: {sample}. Expected an instance of MicroscopyImage.")
+			
+		self.samples = samples
+		self.dataset_source_path = path
+
+	def process_dataset(self, 
+		color_enhancement: bool = True,
+		remove_background: bool = True,
+		crop_to_tissue: bool = True,
+		background_color: SegmentationBackgroundColor = SegmentationBackgroundColor.WHITE,
+		pyramid_levels: int = 4,
+		min_object_coverage: float = 0.05,
+		force_recomputing: bool = False
+	) -> dict[str, str]:
+		'''
+		Preprocess all microscopy images in the dataset.
+
+		Parameters
+		----------
+		remove_background : bool
+			Whether to remove the background using Meta SAM2 (default is True).
+		color_enhancement : bool
+			Whether to enhance the colors using gamma correction and contrast enhancement (default is True).
+		crop_to_tissue : bool
+			Whether to crop the image to the tissue area after background removal (default is True).
+		background_color : SegmentationBackgroundColor
+			The color used to fill the background after removal. This is usefull to match the requirements of futher processing steps.
+		pyramid_levels : int
+			The number of pyramid levels to save in the output OME-TIFF (default is 3).
+		min_tissue_area : float
+			The minimum area (relative to the image size) for tissue areas to keep when removing background (default is 0.05).
+		force_recomputing : bool
+			Whether to force recomputation of the preprocessing even if the output files already exist (default is False).
+		'''
+
+		processed_samples = {}
+		for sample in self.samples:
+			print(f"Processing sample: {sample.sample_id}")
+
+			try:
+				output_file = sample.process_image(
+					color_enhancement=color_enhancement,
+					remove_background=remove_background,
+					crop_to_tissue=crop_to_tissue,
+					background_color=background_color,
+					pyramid_levels=pyramid_levels,
+					min_object_coverage=min_object_coverage,
+					force_recomputing=force_recomputing
+				)
+				processed_samples[sample.sample_id] = output_file
+			except Exception as e:
+				print(f"Error processing sample {sample.sample_id}: {e}")
+		return processed_samples
