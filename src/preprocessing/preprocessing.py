@@ -52,7 +52,7 @@ def preprocess_modality(path: str, modality_name: str, modality_type: str, prepr
             sample_ids.remove(output_dir)
 
     #TODO: Remove, debug only
-    sample_ids = sample_ids[:2]
+    sample_ids = sample_ids[:1]
 
     # Create a dataset using the appropriate modality type
     if modality_type == ModalityType.MICROSCOPY_IMAGE:

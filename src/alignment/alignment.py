@@ -93,20 +93,26 @@ class DirectMappingAligner:
         if image_data.dtype != np.uint8:
             image_data = (image_data * 255).astype(np.uint8)
 
+        # Check if the channel dim is the first or the last (the smallest should be the channel dim)
+        if np.argmin(image_data.shape) == 0:
+            image_data = np.transpose(image_data, (1, 2, 0))  # HWC format
+
         # If the image data is hyperdimensional, convert to RGB by applying NMF with three factors
         if image_data.ndim == 3 and image_data.shape[-1] > 3:
-            from sklearn.decomposition import NMF
+            #from sklearn.decomposition import NMF
 
-            n_channels = image_data.shape[-1]
-            reshaped_image = image_data.reshape(-1, n_channels)  # Shape (num_pixels, n_channels)
+            #n_channels = image_data.shape[-1]
+            #reshaped_image = image_data.reshape(-1, n_channels)  # Shape (num_pixels, n_channels)
 
-            nmf_model = NMF(n_components=3, init='random', random_state=0)
-            W = nmf_model.fit_transform(reshaped_image)  # Shape (num_pixels, 3)
-            H = nmf_model.components_  # Shape (3, n_channels)
+            #nmf_model = NMF(n_components=3, init='random', random_state=0)
+            #W = nmf_model.fit_transform(reshaped_image)  # Shape (num_pixels, 3)
+            #H = nmf_model.components_  # Shape (3, n_channels)
 
-            rgb_image = W.reshape(lowest_shape[1], lowest_shape[2], 3)
-            rgb_image = (rgb_image / np.max(rgb_image) * 255).astype(np.uint8)
-            image_data = rgb_image
+            #rgb_image = W.reshape(lowest_shape[0], lowest_shape[1], 3)
+            #rgb_image = (rgb_image / np.max(rgb_image) * 255).astype(np.uint8)
+            #image_data = rgb_image
+
+            image_data = image_data[..., 32:32+3]
 
         return image_data, lowest_shape, original_shape
     
@@ -203,7 +209,7 @@ class DirectMappingAligner:
             aligned_target_file = os.path.join(alignment_folder, f"{sample_id}_processed_aligned.h5ad")
 
             adata = anndata.read_h5ad(processed_target_file)
-            adata.obsm[f'{self._reference_modality}_spatial'] = aligned_coords
+            adata.obsm[f'{self._reference_modality_name}_spatial'] = aligned_coords
             
             adata.write_h5ad(aligned_target_file)
             adata_list.append(adata)
