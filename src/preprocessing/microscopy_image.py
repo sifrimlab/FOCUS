@@ -11,6 +11,8 @@ from scipy.ndimage import binary_fill_holes
 import utils as utils
 from constants import SegmentationBackgroundColor
 
+from constants import MODALITY_PREPROCESSING, MODALITY_PREPROCESSING_MERGED
+
 class PatchEmbeddingExtractor:
 	def __init__(self, hf_token: str = None):
 
@@ -647,7 +649,7 @@ class MicroscopyImage():
 			raise ValueError(f"Invalid value for pyramid_levels: {pyramid_levels}. Expected a positive integer.")
 		
 		# Check if the results already exist
-		output_ome_tiff = os.path.join(self.output_folder, f"{self.sample_id}_processed.ome.tiff")
+		output_ome_tiff = MODALITY_PREPROCESSING(self.source_path, self.sample_id, self.modality_name, 'ome.tiff')
 
 		if force_recomputing == False and os.path.exists(output_ome_tiff):
 			print(f"Processed image already exists. Using cached results.")
@@ -722,19 +724,19 @@ class MicroscopyImage():
 			raise ValueError("Patch extractor is not defined for this MicroscopyImage instance.")
 
 		# Check if the processed image exists
-		if not os.path.exists(os.path.join(self.output_folder, f"{self.sample_id}_processed.ome.tiff")):
+		if not os.path.exists(MODALITY_PREPROCESSING(self.source_path, self.sample_id, self.modality_name, 'ome.tiff')):
 			raise ValueError(f"The processed image does not exist for sample {self.sample_id}. Please run process_image() first.")
 		
 		print(f"2/2 - Computing patch embeddings")
 		
 		# Check if the embeddings already exist
-		if force_recomputing == False and os.path.exists(os.path.join(self.output_folder, f"{self.sample_id}_patch_embeddings.h5ad")):
+		if force_recomputing == False and os.path.exists(MODALITY_PREPROCESSING(self.source_path, self.sample_id, self.modality_name, 'h5ad')):
 			print(f"2/2 - Patch Embeddings already exist. Using cached results.")
-			adata = anndata.read_h5ad(os.path.join(self.output_folder, f"{self.sample_id}_patch_embeddings.h5ad"))
+			adata = anndata.read_h5ad(MODALITY_PREPROCESSING(self.source_path, self.sample_id, self.modality_name, 'h5ad'))
 			return adata
 		
 		# Load the processed image
-		with tifffile.TiffFile(os.path.join(self.output_folder, f"{self.sample_id}_processed.ome.tiff")) as f:
+		with tifffile.TiffFile(MODALITY_PREPROCESSING(self.source_path, self.sample_id, self.modality_name, 'ome.tiff')) as f:
 			image = f.asarray()
 			# Get the first image (highest resolution)
 			if image.ndim > 3:
@@ -752,7 +754,7 @@ class MicroscopyImage():
 		adata.obsm['topleft_coordinates'] = topleft_coordinates
 		adata.uns['patch_size'] = patch_size
 		adata.obs['sample_id'] = self.sample_id
-		adata.write_h5ad(os.path.join(self.output_folder, f"{self.sample_id}_patch_embeddings.h5ad"))
+		adata.write_h5ad(MODALITY_PREPROCESSING(self.source_path, self.sample_id, self.modality_name, 'h5ad'))
 		return adata
 	
 class MicroscopyImageDataset:

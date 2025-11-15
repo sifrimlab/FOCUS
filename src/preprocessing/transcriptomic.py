@@ -1,8 +1,9 @@
-import os, sys, tqdm
+import os
 import anndata as ad
 import numpy as np
 import scanpy as sc
-import pandas as pd
+
+from constants import MODALITY_PREPROCESSING, MODALITY_PREPROCESSING_MERGED
 
 class SpatialTranscriptomic:
     '''
@@ -102,7 +103,7 @@ class SpatialTranscriptomic:
         self.data.obs_names = [f"{self.sample_id}_{obs_name}" for obs_name in self.data.obs_names]
 
         # Save the preprocessed data
-        output_file = os.path.join(self.output_path, f"{self.sample_id}_processed.h5ad")
+        output_file = MODALITY_PREPROCESSING(self.input_path, self.sample_id, self.modality_name, "h5ad")
         self.data.write_h5ad(output_file)
         return output_file
 
@@ -169,10 +170,8 @@ class SpatialTranscriptomicDataset():
 
             if force_recomputing == False:
                 # Check if preprocessed data already exists
-                preprocessed_file = os.path.join(
-                    sample.output_path,
-                    f"{sample.sample_id}_processed.h5ad"
-                )
+                preprocessed_file = MODALITY_PREPROCESSING(self.path, sample.sample_id, sample.modality_name, "h5ad")
+
                 if os.path.exists(preprocessed_file):
                     print(f"Sample {sample.sample_id} already preprocessed. Using cached results.")
                     processed_samples[sample.sample_id] = preprocessed_file
@@ -195,14 +194,7 @@ class SpatialTranscriptomicDataset():
         self.combined_data = ad.concat(adata_list)
 
         # Save the combined data
-        combined_output_path = os.path.join(
-            self.samples[0].source_path,
-            "merged",
-            "preprocessing"
-        )
-        os.makedirs(os.path.dirname(combined_output_path), exist_ok=True)
-
-        combined_output_file = os.path.join(combined_output_path, f"{self.samples[0].modality_name}.h5ad")
+        combined_output_file = MODALITY_PREPROCESSING_MERGED(self.path, self.samples[0].modality_name, "h5ad")
         self.combined_data.write_h5ad(combined_output_file)
        
         processed_samples["merged"] = combined_output_file

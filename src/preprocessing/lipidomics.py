@@ -6,6 +6,8 @@ import pandas as pd
 import xml.etree.ElementTree as ET
 from constants import ImzMLFileParser, MsiIntensityNormalization, MsiMetadata, MsiIonMode
 
+from constants import MODALITY_PREPROCESSING, MODALITY_PREPROCESSING_MERGED
+
 class MsiSample:
 	def __init__(
 			self,
@@ -55,24 +57,16 @@ class MsiSample:
 			self.input_paths = {ion_mode: os.path.join(source_path, sample_id, modality_name, ion_mode)}
 
 		self.source_path = source_path
-		self.output_path = os.path.join(source_path, sample_id, "preprocessing", modality_name)
 		self.sample_id = sample_id
 		self.double_ion_mode = double_ion_mode
 		self.modality_name = modality_name
 		self.ion_mode = ion_mode
-
-		# Create the output directory if it does not exist
-		if not os.path.exists(self.output_path):
-			os.makedirs(self.output_path)
 
 		# Initialize the other variables
 		self._metadata_files = {}				# For each ion mode, store the absolute path to the imzML file
 		self._binary_files = {}					# For each ion mode, store the absolute path to the IBD file
 		self._metadata = {}						# For each ion mode, store the metadata extracted from the imzML file
 		self._aligned_mz = {}					# For each ion mode, store the aligned M/Z values (obtained from preprocessing)
-
-		# Initialize the sample
-		self._initialize_sample()
 
 	@property
 	def ion_modes(self) -> list[MsiIonMode]:
@@ -357,7 +351,7 @@ class MsiSample:
 			axis=0
 		)
 
-	def _initialize_sample(self) -> None:
+	def initialize_sample(self) -> None:
 		'''
 		Initialize this object by loading the relevant metadata from the ImzML file,
 		correcting the coordinates and load the M/Z values to perform dataset alignment.
@@ -517,11 +511,6 @@ class MsiDataset:
 
 		self.dataset_source_path = path
 
-		# Create the output path for the merged file
-		output_path = os.path.join(self.dataset_source_path, "merged", "preprocessing")
-		if not os.path.exists(output_path):
-			os.makedirs(output_path)
-
 		# If the lipid DB is provided, check if it exists and we can read it
 		if lipid_annotation_db is not None:
 			if not os.path.exists(lipid_annotation_db):
@@ -544,283 +533,6 @@ class MsiDataset:
 				raise ValueError(f"Lipid annotation database must contain the following columns: {required_columns}")
 		else:
 			self.lipid_annotation_db = None
-
-	def _annotate_reference_mz(self, mz_vector: np.ndarray[np.float32], ion_mode: MsiIonMode, mass_tolerance: int = 10) -> np.ndarray:
-		'''
-		Annotate the reference M/Z vector using the lipid annotation database.
-
-		Parameters
-		----------
-		mz_vector : np.ndarray[np.float32]
-			The reference M/Z vector to annotate.
-		ion_mode : MsiIonMode
-			The ion mode of the M/Z vector.
-		mass_tolerance : int
-			The mass tolerance in ppm for matching the M/Z values.
-
-		Returns
-		-------
-		pd.DataFrame
-			A DataFrame containing the annotations for each M/Z value.
-		'''
-
-		if self.lipid_annotation_db is None:
-			raise ValueError("Lipid annotation database is not provided.")
-
-		annotations = []
-
-		for mz in mz_vector:
-			# Compute the mass tolerance in Da
-			tolerance_da = mz * mass_tolerance / 1e6
-
-			# Filter the lipid DB for matching entries
-			matches = self.lipid_annotation_db[
-				(self.lipid_annotation_db['ionized_mass'] >= mz - tolerance_da) &
-				(self.lipid_annotation_db['ionized_mass'] <= mz + tolerance_da) &
-				(self.lipid_annotation_db['ion_mode'] == ion_mode)
-			]
-
-			if matches.shape[0] > 0:
-				annotation_str = '; '.join(matches['db_name'].tolist())
-			else:
-				annotation_str = 'Unannotated'
-
-			annotations.append(annotation_str)
-
-		return np.array(annotations, dtype=str)
-
-	def process_dataset(self,
-			mass_tolerance: int = 10,
-			frequency_threshold: float = 0.01,
-			batch_size: int = 10000,
-			intensity_normalization: MsiIntensityNormalization = MsiIntensityNormalization.TIC,
-			force_recomputing: bool = False) -> dict[str, str]:
-		'''
-		Process the dataset by aligning the M/Z values across all samples and interpolating the intensities.
-
-		Parameters
-		----------
-		mass_tolerance : int
-			Adaptive mass tolerance in ppm for grouping M/Z values.
-		frequency_threshold : float
-			Frequency threshold for filtering M/Z values.
-		batch_size : int
-			Batch size for processing M/Z values.
-		intensity_normalization : MsiIntensityNormalization
-			Type of intensity normalization to apply.
-		force_recomputing : bool
-			If True, forces recomputation of the reference M/Z vectors and interpolation even if they were already computed.
-			If False, the computation is skipped if the merged dataset already exists.
-
-		Returns
-		-------
-		processed_samples : dict[str, str]
-			A dictionary mapping sample IDs to the paths of their processed files.
-		'''
-
-		# Check if the required normalization method is implemented
-		if intensity_normalization not in MsiIntensityNormalization.list():
-			raise ValueError(f'Invalid intensity normalization method. Expected one of {MsiIntensityNormalization.list()}.')
-		
-		processed_samples = {}
-
-		if not force_recomputing:
-			all_sample_computed = True
-
-			# Check if all the samples have already been processed
-			for sample in self.samples:
-				if not os.path.exists(os.path.join(sample.output_path, f"{sample.sample_id}_processed.h5ad")):
-					all_sample_computed = False
-					break
-				else:
-					processed_samples[sample.sample_id] = os.path.join(sample.output_path, f"{sample.sample_id}_processed.h5ad")
-			
-			# Check if the merged dataset already exists
-			if not os.path.exists(os.path.join(self.dataset_source_path, "merged", "preprocessing", f"{self.samples[0].modality_name}_merged_processed.h5ad")):
-				all_sample_computed = False
-			else:
-				processed_samples["merged"] = os.path.join(self.dataset_source_path, "merged", "preprocessing", f"{self.samples[0].modality_name}_merged_processed.h5ad")
-
-			# If the merged dataset already exists and force_recompute is False, skip the computation
-			if all_sample_computed:
-				print("All samples have already been processed and merged dataset exists. Using cached results.")
-				return processed_samples
-			
-		print("Processing Lipidomic Dataset")
-		processed_samples = {}
-
-		reference_mz_samples: dict[MsiIonMode, list[np.float32]] = {MsiIonMode.POSITIVE: [], MsiIonMode.NEGATIVE: []}
-
-		# For each ion mode in each sample, compute the reference M/Z vector
-		for sample in tqdm.tqdm(self.samples, desc="1/3 - Computing reference M/Z vectors", unit="sample"):
-			raw_mz = sample.load_mz_vectors()
-			for mode in sample.ion_modes:
-				reference_mz_samples[mode].append(
-					self._compute_reference_mz(
-						raw_mz[mode],
-						mass_tolerance=mass_tolerance,
-						frequency_threshold=frequency_threshold,
-						batch_size=batch_size
-					)
-				)
-
-		# Compute the global reference M/Z vector for each ion mode. No frequency thresholding is applied here
-		for mode in reference_mz_samples.keys():
-			if len(reference_mz_samples[mode]) > 0:
-				self.reference_mz[mode] = self._compute_reference_mz(
-					reference_mz_samples[mode],
-					mass_tolerance=mass_tolerance,
-					frequency_threshold=0.0,
-					batch_size=batch_size
-				)
-			else:
-				self.reference_mz[mode] = np.array([], dtype=np.float32)
-
-		# For each ion mode, annotate the reference M/Z vector if a lipid annotation database is provided
-		self.lipid_annotations: dict[MsiIonMode, np.ndarray] = {}
-		if self.lipid_annotation_db is not None:
-			for mode in self.reference_mz.keys():
-				self.lipid_annotations[mode] = self._annotate_reference_mz(
-					self.reference_mz[mode],
-					mode,
-					mass_tolerance=mass_tolerance
-				)
-
-		
-
-		# Now that the global reference M/Z vectors are computed, process each sample to interpolate the intensities
-		for sample in tqdm.tqdm(self.samples, desc="2/3 - Aligning intensities to reference M/Z", unit="sample"):
-			self.interpolated[sample.sample_id] = {MsiIonMode.POSITIVE: None, MsiIonMode.NEGATIVE: None}
-			self.normalized[sample.sample_id] = {MsiIonMode.POSITIVE: None, MsiIonMode.NEGATIVE: None}
-
-			# Load the intensities and M/Z values
-			intensities = sample.load_intensities()
-			original_mzs = sample.load_mz_vectors()
-
-			# Process each ion mode separately
-			for mode in sample.ion_modes:
-				# Define the final data matrix to store the intensities values
-				merged_intensities = np.zeros((len(intensities[mode]), len(self.reference_mz[mode])), dtype = sample._metadata[mode][MsiMetadata.INTENSITIES_DTYPE])
-
-				for index in range(0, merged_intensities.shape[0]):
-					# Interpolate the intensities values to the unified M/Z values
-					merged_intensities[index, :] = self._interpolate_intensities(
-						original_mzs[mode][index],
-						intensities[mode][index],
-						self.reference_mz[mode],
-						mass_tolerance=mass_tolerance
-					)
-
-				self.interpolated[sample.sample_id][mode] = merged_intensities
-
-				# Apply intensity normalization
-				if intensity_normalization == MsiIntensityNormalization.TIC:
-					# Total Ion Current normalization
-					tic = merged_intensities.sum(axis=1, keepdims=True)
-					tic[tic == 0] = 1  # Prevent division by zero
-					merged_intensities = merged_intensities / tic
-				
-				self.normalized[sample.sample_id][mode] = merged_intensities
-
-		for sample in self.samples:
-			reference_mode = MsiIonMode.POSITIVE if MsiIonMode.POSITIVE in sample.ion_modes else MsiIonMode.NEGATIVE
-			sample_id = sample.sample_id
-			raster_size = sample._metadata[reference_mode][MsiMetadata.RASTER_SIZE].tolist()
-			physical_coords = sample._metadata[reference_mode][MsiMetadata.PHYSICAL_COORDINATES]				# Shape (N, 2)
-			raster_coords = sample._metadata[reference_mode][MsiMetadata.PIXEL_COORDINATES]						# Shape (N, 2, 2)
-			rows = self.interpolated[sample_id][reference_mode].shape[0]										# Shape (N, )
-			positive_cols = self.interpolated[sample_id][MsiIonMode.POSITIVE].shape[1] if MsiIonMode.POSITIVE in sample.ion_modes else 0	# Shape (M1, )
-			negative_cols = self.interpolated[sample_id][MsiIonMode.NEGATIVE].shape[1] if MsiIonMode.NEGATIVE in sample.ion_modes else 0	# Shape (M2, )
-			rows_dtype = self.interpolated[sample_id][MsiIonMode.POSITIVE].dtype if MsiIonMode.POSITIVE in sample.ion_modes else self.interpolated[sample_id][MsiIonMode.NEGATIVE].dtype
-
-			merged_interpolated = np.zeros((
-				rows,
-				positive_cols + negative_cols
-				), dtype = rows_dtype)
-			
-			merged_normalized = np.zeros((
-				rows,
-				positive_cols + negative_cols
-			), dtype = rows_dtype)
-
-			merged_reference_mz = np.concatenate([self.reference_mz[MsiIonMode.POSITIVE], self.reference_mz[MsiIonMode.NEGATIVE]])
-			reference_mode = np.concatenate([[MsiIonMode.POSITIVE] * len(self.reference_mz[MsiIonMode.POSITIVE]), [MsiIonMode.NEGATIVE] * len(self.reference_mz[MsiIonMode.NEGATIVE])])
-
-			# Concatenate the annotations if available
-			if self.lipid_annotation_db is not None:
-				reference_annotations = np.concatenate([
-					self.lipid_annotations[MsiIonMode.POSITIVE] if MsiIonMode.POSITIVE in self.lipid_annotations else np.zeros_like(self.reference_mz[MsiIonMode.POSITIVE], dtype=str),
-					self.lipid_annotations[MsiIonMode.NEGATIVE] if MsiIonMode.NEGATIVE in self.lipid_annotations else np.zeros_like(self.reference_mz[MsiIonMode.NEGATIVE], dtype=str)
-				])
-			
-			# Merge the two ion modes
-			if sample.double_ion_mode:
-				merged_interpolated[:, :self.interpolated[sample_id][MsiIonMode.POSITIVE].shape[1]] = self.interpolated[sample_id][MsiIonMode.POSITIVE]
-				merged_interpolated[:, self.interpolated[sample_id][MsiIonMode.POSITIVE].shape[1]:] = self.interpolated[sample_id][MsiIonMode.NEGATIVE]
-
-				merged_normalized[:, :self.normalized[sample_id][MsiIonMode.POSITIVE].shape[1]] = self.normalized[sample_id][MsiIonMode.POSITIVE]
-				merged_normalized[:, self.normalized[sample_id][MsiIonMode.POSITIVE].shape[1]:] = self.normalized[sample_id][MsiIonMode.NEGATIVE]
-			else:
-				if sample.ion_mode == MsiIonMode.POSITIVE:
-					merged_interpolated = self.interpolated[sample_id][MsiIonMode.POSITIVE]
-					merged_normalized = self.normalized[sample_id][MsiIonMode.POSITIVE]
-				else:
-					merged_interpolated = self.interpolated[sample_id][MsiIonMode.NEGATIVE]
-					merged_normalized = self.normalized[sample_id][MsiIonMode.NEGATIVE]
-
-			# Create the AnnData object
-			self.adata = ad.AnnData(
-				X = merged_interpolated,
-				layers = {
-					f"X_{intensity_normalization}": merged_normalized
-				},
-				obs = pd.DataFrame({
-					'sample_id': [sample_id] * merged_interpolated.shape[0]
-				}, index = [str(i) for i in range(merged_interpolated.shape[0])]),
-				obsm={
-					'spatial': physical_coords,
-					'raster_coordinates': raster_coords
-				},
-				var = pd.DataFrame({
-					"mz": merged_reference_mz,
-					"mz_mode": reference_mode,
-					"lipid_annotation": reference_annotations if self.lipid_annotation_db is not None else ['Unannotated'] * merged_reference_mz.shape[0]
-				}, index = [str(i) for i in range(merged_interpolated.shape[1])]),
-				uns = {
-					"raster_size": raster_size,
-                }
-			)
-
-			# Save the AnnData object to the output path
-			output_file = os.path.join(sample.output_path, f"{sample.sample_id}_processed.h5ad")
-			self.adata.write_h5ad(output_file)
-			processed_samples[sample.sample_id] = output_file
-
-		# Save the merged dataset
-		adatas: list[ad.AnnData] = []
-		merged_output_dir = os.path.join(self.dataset_source_path, 'merged', "preprocessing")
-
-		for sample_id, output_file in tqdm.tqdm(processed_samples.items(), desc="3/3 - Merging MSI samples into AnnData", unit="sample"):
-			sample_adata = ad.read_h5ad(output_file)
-
-			# Update the obs_names to include the sample ID for uniqueness
-			sample_adata.obs_names = [f"{sample_id}_{obs_name}" for obs_name in sample_adata.obs_names]
-			adatas.append(sample_adata)
-
-		# Concatenate all the AnnData objects, ensuring unique obs_names (indexes)
-		if adatas:
-			msi_adata = ad.concat(adatas)
-
-			# Add the var informations
-			msi_adata.var = adatas[0].var.copy()
-			msi_adata.uns = adatas[0].uns.copy()
-
-		# Save the combined AnnData
-		if not os.path.exists(os.path.dirname(merged_output_dir)):
-			os.makedirs(os.path.dirname(merged_output_dir))
-		msi_adata.write_h5ad(os.path.join(merged_output_dir, f"{self.samples[0].modality_name}_merged_processed.h5ad"))
-		processed_samples["merged"] = os.path.join(merged_output_dir, f"{self.samples[0].modality_name}_merged_processed.h5ad")
-		return processed_samples
 
 	def _compute_reference_mz(self, spectra_list: list[np.ndarray], mass_tolerance: int = 10, frequency_threshold: float = 0.01, batch_size: int = 10000) -> np.ndarray:
 		"""
@@ -1073,3 +785,280 @@ class MsiDataset:
 		result.scatter_add_(0, valid_idx, valid_intensity)
 
 		return result.cpu().numpy()
+
+	def _annotate_reference_mz(self, mz_vector: np.ndarray[np.float32], ion_mode: MsiIonMode, mass_tolerance: int = 10) -> np.ndarray:
+		'''
+		Annotate the reference M/Z vector using the lipid annotation database.
+
+		Parameters
+		----------
+		mz_vector : np.ndarray[np.float32]
+			The reference M/Z vector to annotate.
+		ion_mode : MsiIonMode
+			The ion mode of the M/Z vector.
+		mass_tolerance : int
+			The mass tolerance in ppm for matching the M/Z values.
+
+		Returns
+		-------
+		pd.DataFrame
+			A DataFrame containing the annotations for each M/Z value.
+		'''
+
+		if self.lipid_annotation_db is None:
+			raise ValueError("Lipid annotation database is not provided.")
+
+		annotations = []
+
+		for mz in mz_vector:
+			# Compute the mass tolerance in Da
+			tolerance_da = mz * mass_tolerance / 1e6
+
+			# Filter the lipid DB for matching entries
+			matches = self.lipid_annotation_db[
+				(self.lipid_annotation_db['ionized_mass'] >= mz - tolerance_da) &
+				(self.lipid_annotation_db['ionized_mass'] <= mz + tolerance_da) &
+				(self.lipid_annotation_db['ion_mode'] == ion_mode)
+			]
+
+			if matches.shape[0] > 0:
+				annotation_str = '; '.join(matches['db_name'].tolist())
+			else:
+				annotation_str = 'Unannotated'
+
+			annotations.append(annotation_str)
+
+		return np.array(annotations, dtype=str)
+
+	def process_dataset(self,
+			mass_tolerance: int = 10,
+			frequency_threshold: float = 0.01,
+			batch_size: int = 10000,
+			intensity_normalization: MsiIntensityNormalization = MsiIntensityNormalization.TIC,
+			force_recomputing: bool = False) -> dict[str, str]:
+		'''
+		Process the dataset by aligning the M/Z values across all samples and interpolating the intensities.
+
+		Parameters
+		----------
+		mass_tolerance : int
+			Adaptive mass tolerance in ppm for grouping M/Z values.
+		frequency_threshold : float
+			Frequency threshold for filtering M/Z values.
+		batch_size : int
+			Batch size for processing M/Z values.
+		intensity_normalization : MsiIntensityNormalization
+			Type of intensity normalization to apply.
+		force_recomputing : bool
+			If True, forces recomputation of the reference M/Z vectors and interpolation even if they were already computed.
+			If False, the computation is skipped if the merged dataset already exists.
+
+		Returns
+		-------
+		processed_samples : dict[str, str]
+			A dictionary mapping sample IDs to the paths of their processed files.
+		'''
+
+		# Check if the required normalization method is implemented
+		if intensity_normalization not in MsiIntensityNormalization.list():
+			raise ValueError(f'Invalid intensity normalization method. Expected one of {MsiIntensityNormalization.list()}.')
+		
+		processed_samples = {}
+
+		if not force_recomputing:
+			all_sample_computed = True
+
+			# Check if all the samples have already been processed
+			for sample in self.samples:
+				if not os.path.exists(MODALITY_PREPROCESSING(self.dataset_source_path, sample.sample_id, sample.modality_name, 'h5ad')):
+					all_sample_computed = False
+					break
+				else:
+					processed_samples[sample.sample_id] = MODALITY_PREPROCESSING(self.dataset_source_path, sample.sample_id, sample.modality_name, 'h5ad')
+			
+			# Check if the merged dataset already exists
+			if not os.path.exists(MODALITY_PREPROCESSING_MERGED(self.dataset_source_path, self.samples[0].modality_name, 'h5ad')):
+				all_sample_computed = False
+			else:
+				processed_samples["merged"] = MODALITY_PREPROCESSING_MERGED(self.dataset_source_path, self.samples[0].modality_name, 'h5ad')
+
+			# If the merged dataset already exists and force_recompute is False, skip the computation
+			if all_sample_computed:
+				print("All samples have already been processed and merged dataset exists. Using cached results.")
+				return processed_samples
+			
+		print("Processing Lipidomic Dataset")
+		processed_samples = {}
+
+		for sample in tqdm.tqdm(self.samples, desc="1/4 - Loading MSI data", unit="sample"):
+			sample.initialize_sample()
+
+		reference_mz_samples: dict[MsiIonMode, list[np.float32]] = {MsiIonMode.POSITIVE: [], MsiIonMode.NEGATIVE: []}
+
+		# For each ion mode in each sample, compute the reference M/Z vector
+		for sample in tqdm.tqdm(self.samples, desc="2/4 - Computing reference M/Z vectors", unit="sample"):
+			raw_mz = sample.load_mz_vectors()
+			for mode in sample.ion_modes:
+				reference_mz_samples[mode].append(
+					self._compute_reference_mz(
+						raw_mz[mode],
+						mass_tolerance=mass_tolerance,
+						frequency_threshold=frequency_threshold,
+						batch_size=batch_size
+					)
+				)
+
+		# Compute the global reference M/Z vector for each ion mode. No frequency thresholding is applied here
+		for mode in reference_mz_samples.keys():
+			if len(reference_mz_samples[mode]) > 0:
+				self.reference_mz[mode] = self._compute_reference_mz(
+					reference_mz_samples[mode],
+					mass_tolerance=mass_tolerance,
+					frequency_threshold=0.0,
+					batch_size=batch_size
+				)
+			else:
+				self.reference_mz[mode] = np.array([], dtype=np.float32)
+
+		# For each ion mode, annotate the reference M/Z vector if a lipid annotation database is provided
+		self.lipid_annotations: dict[MsiIonMode, np.ndarray] = {}
+		if self.lipid_annotation_db is not None:
+			for mode in self.reference_mz.keys():
+				self.lipid_annotations[mode] = self._annotate_reference_mz(
+					self.reference_mz[mode],
+					mode,
+					mass_tolerance=mass_tolerance
+				)
+
+		
+
+		# Now that the global reference M/Z vectors are computed, process each sample to interpolate the intensities
+		for sample in tqdm.tqdm(self.samples, desc="3/4 - Aligning intensities to reference M/Z", unit="sample"):
+			self.interpolated[sample.sample_id] = {MsiIonMode.POSITIVE: None, MsiIonMode.NEGATIVE: None}
+			self.normalized[sample.sample_id] = {MsiIonMode.POSITIVE: None, MsiIonMode.NEGATIVE: None}
+
+			# Load the intensities and M/Z values
+			intensities = sample.load_intensities()
+			original_mzs = sample.load_mz_vectors()
+
+			# Process each ion mode separately
+			for mode in sample.ion_modes:
+				# Define the final data matrix to store the intensities values
+				merged_intensities = np.zeros((len(intensities[mode]), len(self.reference_mz[mode])), dtype = sample._metadata[mode][MsiMetadata.INTENSITIES_DTYPE])
+
+				for index in range(0, merged_intensities.shape[0]):
+					# Interpolate the intensities values to the unified M/Z values
+					merged_intensities[index, :] = self._interpolate_intensities(
+						original_mzs[mode][index],
+						intensities[mode][index],
+						self.reference_mz[mode],
+						mass_tolerance=mass_tolerance
+					)
+
+				self.interpolated[sample.sample_id][mode] = merged_intensities
+
+				# Apply intensity normalization
+				if intensity_normalization == MsiIntensityNormalization.TIC:
+					# Total Ion Current normalization
+					tic = merged_intensities.sum(axis=1, keepdims=True)
+					tic[tic == 0] = 1  # Prevent division by zero
+					merged_intensities = merged_intensities / tic
+				
+				self.normalized[sample.sample_id][mode] = merged_intensities
+
+		for sample in self.samples:
+			reference_mode = MsiIonMode.POSITIVE if MsiIonMode.POSITIVE in sample.ion_modes else MsiIonMode.NEGATIVE
+			sample_id = sample.sample_id
+			raster_size = sample._metadata[reference_mode][MsiMetadata.RASTER_SIZE].tolist()
+			physical_coords = sample._metadata[reference_mode][MsiMetadata.PHYSICAL_COORDINATES]				# Shape (N, 2)
+			raster_coords = sample._metadata[reference_mode][MsiMetadata.PIXEL_COORDINATES]						# Shape (N, 2, 2)
+			rows = self.interpolated[sample_id][reference_mode].shape[0]										# Shape (N, )
+			positive_cols = self.interpolated[sample_id][MsiIonMode.POSITIVE].shape[1] if MsiIonMode.POSITIVE in sample.ion_modes else 0	# Shape (M1, )
+			negative_cols = self.interpolated[sample_id][MsiIonMode.NEGATIVE].shape[1] if MsiIonMode.NEGATIVE in sample.ion_modes else 0	# Shape (M2, )
+			rows_dtype = self.interpolated[sample_id][MsiIonMode.POSITIVE].dtype if MsiIonMode.POSITIVE in sample.ion_modes else self.interpolated[sample_id][MsiIonMode.NEGATIVE].dtype
+
+			merged_interpolated = np.zeros((
+				rows,
+				positive_cols + negative_cols
+				), dtype = rows_dtype)
+			
+			merged_normalized = np.zeros((
+				rows,
+				positive_cols + negative_cols
+			), dtype = rows_dtype)
+
+			merged_reference_mz = np.concatenate([self.reference_mz[MsiIonMode.POSITIVE], self.reference_mz[MsiIonMode.NEGATIVE]])
+			reference_mode = np.concatenate([[MsiIonMode.POSITIVE] * len(self.reference_mz[MsiIonMode.POSITIVE]), [MsiIonMode.NEGATIVE] * len(self.reference_mz[MsiIonMode.NEGATIVE])])
+
+			# Concatenate the annotations if available
+			if self.lipid_annotation_db is not None:
+				reference_annotations = np.concatenate([
+					self.lipid_annotations[MsiIonMode.POSITIVE] if MsiIonMode.POSITIVE in self.lipid_annotations else np.zeros_like(self.reference_mz[MsiIonMode.POSITIVE], dtype=str),
+					self.lipid_annotations[MsiIonMode.NEGATIVE] if MsiIonMode.NEGATIVE in self.lipid_annotations else np.zeros_like(self.reference_mz[MsiIonMode.NEGATIVE], dtype=str)
+				])
+			
+			# Merge the two ion modes
+			if sample.double_ion_mode:
+				merged_interpolated[:, :self.interpolated[sample_id][MsiIonMode.POSITIVE].shape[1]] = self.interpolated[sample_id][MsiIonMode.POSITIVE]
+				merged_interpolated[:, self.interpolated[sample_id][MsiIonMode.POSITIVE].shape[1]:] = self.interpolated[sample_id][MsiIonMode.NEGATIVE]
+
+				merged_normalized[:, :self.normalized[sample_id][MsiIonMode.POSITIVE].shape[1]] = self.normalized[sample_id][MsiIonMode.POSITIVE]
+				merged_normalized[:, self.normalized[sample_id][MsiIonMode.POSITIVE].shape[1]:] = self.normalized[sample_id][MsiIonMode.NEGATIVE]
+			else:
+				if sample.ion_mode == MsiIonMode.POSITIVE:
+					merged_interpolated = self.interpolated[sample_id][MsiIonMode.POSITIVE]
+					merged_normalized = self.normalized[sample_id][MsiIonMode.POSITIVE]
+				else:
+					merged_interpolated = self.interpolated[sample_id][MsiIonMode.NEGATIVE]
+					merged_normalized = self.normalized[sample_id][MsiIonMode.NEGATIVE]
+
+			# Create the AnnData object
+			self.adata = ad.AnnData(
+				X = merged_interpolated,
+				layers = {
+					f"X_{intensity_normalization}": merged_normalized
+				},
+				obs = pd.DataFrame({
+					'sample_id': [sample_id] * merged_interpolated.shape[0]
+				}, index = [str(i) for i in range(merged_interpolated.shape[0])]),
+				obsm={
+					'spatial': physical_coords,
+					'raster_coordinates': raster_coords
+				},
+				var = pd.DataFrame({
+					"mz": merged_reference_mz,
+					"mz_mode": reference_mode,
+					"lipid_annotation": reference_annotations if self.lipid_annotation_db is not None else ['Unannotated'] * merged_reference_mz.shape[0]
+				}, index = [str(i) for i in range(merged_interpolated.shape[1])]),
+				uns = {
+					"raster_size": raster_size,
+                }
+			)
+
+			# Save the AnnData object to the output path
+			output_file = MODALITY_PREPROCESSING(self.dataset_source_path, sample.sample_id, sample.modality_name, 'h5ad')
+			self.adata.write_h5ad(output_file)
+			processed_samples[sample.sample_id] = output_file
+
+		# Save the merged dataset
+		adatas: list[ad.AnnData] = []
+
+		for sample_id, output_file in tqdm.tqdm(processed_samples.items(), desc="4/4 - Merging MSI samples into AnnData", unit="sample"):
+			sample_adata = ad.read_h5ad(output_file)
+
+			# Update the obs_names to include the sample ID for uniqueness
+			sample_adata.obs_names = [f"{sample_id}_{obs_name}" for obs_name in sample_adata.obs_names]
+			adatas.append(sample_adata)
+
+		# Concatenate all the AnnData objects, ensuring unique obs_names (indexes)
+		if adatas:
+			msi_adata = ad.concat(adatas)
+
+			# Add the var informations
+			msi_adata.var = adatas[0].var.copy()
+			msi_adata.uns = adatas[0].uns.copy()
+
+		# Save the combined AnnData
+		msi_adata.write_h5ad(MODALITY_PREPROCESSING_MERGED(self.dataset_source_path, self.samples[0].modality_name, 'h5ad'))
+		processed_samples["merged"] = MODALITY_PREPROCESSING_MERGED(self.dataset_source_path, self.samples[0].modality_name, 'h5ad')
+		return processed_samples

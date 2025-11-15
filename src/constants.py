@@ -1,3 +1,55 @@
+import os
+
+MODALITY_PREPROCESSING = lambda base_path, sample_id, modality_name, file_type: os.path.join(
+	base_path, 
+	sample_id,
+	FocusOutputDirectories.PREPROCESSING,
+	modality_name,
+	f"{modality_name}_{sample_id}_processed.{file_type}"
+)
+
+MODALITY_PREPROCESSING_MERGED = lambda base_path, modality_name, file_type: os.path.join(
+	base_path,
+	FocusOutputDirectories.MERGED,
+	FocusOutputDirectories.PREPROCESSING,
+	f"{modality_name}_merged_processed.{file_type}"
+)
+
+MODALITY_ALIGNMENT = lambda base_path, sample_id, modality_name, file_type: os.path.join(
+	base_path,
+	sample_id,
+	FocusOutputDirectories.ALIGNMENT,
+	f"{modality_name}_{sample_id}_processed_aligned.{file_type}"
+)
+
+MODALITY_ALIGNMENT_MERGED = lambda base_path, modality_name, file_type: os.path.join(
+	base_path,
+	FocusOutputDirectories.MERGED,
+	FocusOutputDirectories.ALIGNMENT,
+	f"{modality_name}_merged_processed_aligned.{file_type}"
+)
+
+MODALITY_REGISTRATION = lambda base_path, sample_id, modality_name, file_type: os.path.join(
+	base_path,
+	sample_id,
+	FocusOutputDirectories.REGISTRATION,
+	f"{modality_name}_{sample_id}_processed_aligned_registered.{file_type}"
+)
+
+MODALITY_REGISTRATION_MERGED = lambda base_path, modality_name, file_type: os.path.join(
+	base_path,
+	FocusOutputDirectories.MERGED,
+	FocusOutputDirectories.REGISTRATION,
+	f"{modality_name}_merged_processed_aligned_registered.{file_type}"
+)
+
+MULTIMODAL_DATASET = lambda base_path, file_type: os.path.join(
+	base_path,
+	FocusOutputDirectories.MERGED,
+	f"multimodal_dataset.{file_type}"
+)
+
+
 class _AbstractEnum():
 	def __init__(self) -> None:
 		raise Exception("Enum Classes can't be concrete!")
@@ -110,16 +162,12 @@ class STPreprocessingParams(_AbstractEnum):
 	FORCE_RECOMPUTING = "force_recomputing"
 
 class ModalityType(_AbstractEnum):
-	
 	MICROSCOPY_IMAGE = "microscopy_image"
 	MSI = "msi"
 	RAMAN = "raman"
 	ST = "st"
 
-
-
 class TransformationType(_AbstractEnum):
-	
 	TRANSLATION = "translation"
 	RIGID = "rigid"
 	AFFINE = "affine"

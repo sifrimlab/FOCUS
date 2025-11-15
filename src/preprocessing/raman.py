@@ -11,6 +11,8 @@ from joblib import Parallel, delayed
 from sklearn.decomposition import PCA
 import concurrent.futures
 
+from constants import MODALITY_PREPROCESSING, MODALITY_PREPROCESSING_MERGED
+
 class RamanMetadata:
 	'''
 	Store the metadata from a Raman Spectroscopy Imageing file regardless of the file format.
@@ -194,6 +196,7 @@ class RamanImage:
 		if not os.access(source_path, os.R_OK):
 			raise PermissionError(f"Input path {source_path} is not readable.")
 		
+		self.base_path = source_path
 		self.source_path = os.path.join(source_path, sample_id, modality_name)
 		self.sample_id = sample_id
 		self.modality_name = modality_name
@@ -1256,7 +1259,7 @@ class RamanImage:
 		if type(force_recomputing) is not bool:
 			raise TypeError("force_recomputing must be a boolean.")
 
-		output_file = os.path.join(self.output_path, f"{self.sample_id}.ome.tiff")
+		output_file = MODALITY_PREPROCESSING(self.base_path, self.sample_id, self.modality_name, "ome.tiff")
 
 		if force_recomputing or not os.path.exists(output_file):
 			if self.corrected is None:
@@ -1356,7 +1359,7 @@ class RamanDataset:
 			print(f"Processing sample: {sample.sample_id}")
 
 			try:
-				if force_recomputing == True or not os.path.exists(os.path.join(sample.output_path, f"{sample.sample_id}.ome.tiff")):
+				if force_recomputing == True or not os.path.exists(MODALITY_PREPROCESSING(sample.base_path, sample.sample_id, sample.modality_name, "ome.tiff")):
 					sample.load_source()
 					sample.basic_correct(force_recomputing=force_recomputing)
 					sample.remove_background(force_recomputing=force_recomputing)

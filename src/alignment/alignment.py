@@ -28,10 +28,9 @@ class DirectMappingAligner:
             reference_modality: dict,
             target_modality: dict,
             reference_modality_name: str,
-            target_modality_name: str,
-            force_recompute: bool = False
+            target_modality_name: str
         ) -> None:
-        if type(path) != str or type(reference_modality) != dict or type(target_modality) != dict or type(force_recompute) != bool:
+        if type(path) != str or type(reference_modality) != dict or type(target_modality) != dict:
             raise TypeError("Invalid input types. Please check the input types.")
     
         if type(reference_modality_name) != str or type(target_modality_name) != str:   
@@ -42,7 +41,6 @@ class DirectMappingAligner:
         self._target_modality = target_modality
         self._reference_modality_name = reference_modality_name
         self._target_modality_name = target_modality_name
-        self._force_recompute = force_recompute
 
         # Only align samples that are present in both modalities
         reference_samples = set(self._reference_modality.keys())
@@ -147,9 +145,22 @@ class DirectMappingAligner:
         raster_size = adata.uns['raster_size'] if 'raster_size' in adata.uns else np.array([1.0, 1.0], dtype=np.float32)
         return coordinates, raster_size
 
-    def _align_dataset_thread(self) -> None:
+    def _align_dataset_thread(self, **kwargs) -> None:
+        force_recomputing = kwargs.get("force_recomputing", False)
+
         # Process each sample
         for sample_id in self._common_samples:
+
+            # Check if there are cached results
+            if force_recomputing == False:
+                alignment_folder = os.path.join(self._path, sample_id, "alignment")
+                aligned_target_file = os.path.join(alignment_folder, f"{sample_id}_processed_aligned.h5ad")
+
+                if os.path.exists(aligned_target_file) == True:
+                    # If the file exits, check if there is the registration we are computing
+                    adata = anndata.read_h5ad(aligned_target_file)
+                    if f'{self._reference_modality_name}_spatial' in adata.obsm_keys():
+                        continue
 
             reference_file = self._reference_modality[sample_id]
             target_file = self._target_modality[sample_id]
@@ -177,12 +188,18 @@ class DirectMappingAligner:
         # Set the dataset completed event to disable the GUI
         self._dataset_completed_event.set()
 
-    def align_dataset(self) -> dict[str, str]:
+    def align_dataset(self, force_recomputing: bool = False) -> dict[str, str]:
         '''
         Align the target modality to the reference modality for all common samples.
         This method enables the Alignment GUI and starts the alignment process in a separate thread.
         Once the alignment is completed, it saves the aligned coordinates back to the AnnData files
         and generates a merged aligned dataset.
+
+        Parameters
+        ----------
+        force_recomputing: bool
+            If True, force the re-alignment of all the samples even if there are cached results
+            If False, skip the re-alignment for samples with cached results.
 
         Returns
         -------
@@ -193,26 +210,46 @@ class DirectMappingAligner:
         aligned_samples: dict[str, str] = {}
 
         # Start the alignment process in a separate thread
-        alignment_thread = threading.Thread(target=self._align_dataset_thread, daemon=True)
+        alignment_thread = threading.Thread(
+            name = "Align Dataset Thread",
+            target=self._align_dataset_thread,
+            kwargs={"force_recomputing": force_recomputing},
+            daemon=True
+        )
         alignment_thread.start()
 
         # Enable the GUI (this will block until the GUI is closed)
         self._gui_interface.enable_gui()
 
         # For each aligned sample, load the AnnData file and store the aligned coordinates
-        adata_list: list[anndata.AnnData] = []
         for sample_id, aligned_coords in self._aligned_coordinates.items():
             processed_target_file = self._target_modality[sample_id]
 
             alignment_folder = os.path.join(self._path, sample_id, "alignment")
             os.makedirs(alignment_folder, exist_ok=True)
             aligned_target_file = os.path.join(alignment_folder, f"{sample_id}_processed_aligned.h5ad")
+            
+            # If no aligned file exits load it from the processing step
+            if os.path.exists(aligned_target_file) == False:
+                adata = anndata.read_h5ad(processed_target_file)
+            else:
+                adata = anndata.read_h5ad(aligned_target_file)
 
-            adata = anndata.read_h5ad(processed_target_file)
+            # Save the aligned coordinates
             adata.obsm[f'{self._reference_modality_name}_spatial'] = aligned_coords
             
             adata.write_h5ad(aligned_target_file)
-            adata_list.append(adata)
+
+        # Load all the aligned AnnData involved in the dataset to generate a final aligned dataset
+        adata_list: list[anndata.AnnData] = []
+        for sample_id in self._common_samples:
+            alignment_folder = os.path.join(self._path, sample_id, "alignment")
+            aligned_target_file = os.path.join(alignment_folder, f"{sample_id}_processed_aligned.h5ad")
+            adata_list.append(
+                anndata.read_h5ad(aligned_target_file)
+            )
+
+            # Save this file for the result
             aligned_samples[sample_id] = aligned_target_file
 
         # Generate the merged aligned dataset
