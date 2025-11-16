@@ -51,12 +51,9 @@ def preprocess_modality(path: str, modality_name: str, modality_type: str, prepr
         if output_dir in sample_ids:
             sample_ids.remove(output_dir)
 
-    #TODO: Remove, debug only
-    sample_ids = sample_ids[:1]
-
     # For each sample_id, create the folders required for preprocessing outputs
     for sample_id in sample_ids:
-        os.makedirs(os.path.join(path, sample_id, modality_name, FocusOutputDirectories.PREPROCESSING), exist_ok=True)
+        os.makedirs(os.path.join(path, sample_id, FocusOutputDirectories.PREPROCESSING, modality_name), exist_ok=True)
 
     # Create the directory for the merged dataset if needed
     os.makedirs(os.path.join(path, FocusOutputDirectories.MERGED, FocusOutputDirectories.PREPROCESSING, modality_name), exist_ok=True)
