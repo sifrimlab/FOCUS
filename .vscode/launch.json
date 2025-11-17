@@ -9,7 +9,7 @@
             "type": "debugpy",
             "request": "launch",
             "program": "src/debug.py",
-            "console": "internalConsole"
+            "console": "integratedTerminal"
         },
         {
             "name": "FOCUS",

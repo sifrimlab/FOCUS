@@ -1,5 +1,8 @@
 import os, tifffile, threading, anndata, copy
 import numpy as np
+from sklearn.decomposition import NMF
+
+from constants import MODALITY_PREPROCESSING, MODALITY_ALIGNMENT, MODALITY_ALIGNMENT_MERGED
 
 from GUI.direct_mapping_alignment import DirectMappingAlignmentGUI
 
@@ -82,10 +85,20 @@ class DirectMappingAligner:
 
         # Read the lowest resolution level of the OME TIFF file
         with tifffile.TiffFile(filename) as tif:
-            lowest_level = tif.series[-1]
-            image_data = lowest_level.asarray()
-            lowest_shape = lowest_level.shape
-            original_shape = tif.series[0].shape
+
+            # Pyramidal resolution encoded in levels of the first series
+            if len(tif.series[0].levels) > 1:
+                lowest_level = tif.series[0].levels[-1]
+                image_data = lowest_level.asarray()
+                lowest_shape = lowest_level.shape
+                original_shape = tif.series[0].shape
+
+            # Pyramidal resolution encoded in series TODO: Fix this for microscopy images
+            else:
+                lowest_level = tif.series[-1]
+                image_data = lowest_level.asarray()
+                lowest_shape = lowest_level.shape
+                original_shape = tif.series[0].shape
 
         # Convert the image to Uint8 if necessary
         if image_data.dtype != np.uint8:
@@ -94,23 +107,21 @@ class DirectMappingAligner:
         # Check if the channel dim is the first or the last (the smallest should be the channel dim)
         if np.argmin(image_data.shape) == 0:
             image_data = np.transpose(image_data, (1, 2, 0))  # HWC format
+            lowest_shape = (lowest_shape[1], lowest_shape[2], lowest_shape[0])
+            original_shape = (original_shape[1], original_shape[2], original_shape[0])
 
         # If the image data is hyperdimensional, convert to RGB by applying NMF with three factors
         if image_data.ndim == 3 and image_data.shape[-1] > 3:
-            #from sklearn.decomposition import NMF
+            n_channels = image_data.shape[-1]
+            reshaped_image = image_data.reshape(-1, n_channels)  # Shape (num_pixels, n_channels)
 
-            #n_channels = image_data.shape[-1]
-            #reshaped_image = image_data.reshape(-1, n_channels)  # Shape (num_pixels, n_channels)
+            nmf_model = NMF(n_components=3, init='random', random_state=0)
+            W = nmf_model.fit_transform(reshaped_image)  # Shape (num_pixels, 3)
+            H = nmf_model.components_  # Shape (3, n_channels)
 
-            #nmf_model = NMF(n_components=3, init='random', random_state=0)
-            #W = nmf_model.fit_transform(reshaped_image)  # Shape (num_pixels, 3)
-            #H = nmf_model.components_  # Shape (3, n_channels)
-
-            #rgb_image = W.reshape(lowest_shape[0], lowest_shape[1], 3)
-            #rgb_image = (rgb_image / np.max(rgb_image) * 255).astype(np.uint8)
-            #image_data = rgb_image
-
-            image_data = image_data[..., 32:32+3]
+            rgb_image = W.reshape(lowest_shape[0], lowest_shape[1], 3)
+            rgb_image = (rgb_image / np.max(rgb_image) * 255).astype(np.uint8)
+            image_data = rgb_image
 
         return image_data, lowest_shape, original_shape
     
@@ -153,13 +164,12 @@ class DirectMappingAligner:
 
             # Check if there are cached results
             if force_recomputing == False:
-                alignment_folder = os.path.join(self._path, sample_id, "alignment")
-                aligned_target_file = os.path.join(alignment_folder, f"{sample_id}_processed_aligned.h5ad")
+                aligned_target_file = MODALITY_ALIGNMENT(self._path, sample_id, self._target_modality_name, "h5ad")
 
                 if os.path.exists(aligned_target_file) == True:
                     # If the file exits, check if there is the registration we are computing
                     adata = anndata.read_h5ad(aligned_target_file)
-                    if f'{self._reference_modality_name}_spatial' in adata.obsm_keys():
+                    if f'{self._reference_modality_name}_spatial' in adata.obsm.keys():
                         continue
 
             reference_file = self._reference_modality[sample_id]
@@ -227,7 +237,7 @@ class DirectMappingAligner:
 
             alignment_folder = os.path.join(self._path, sample_id, "alignment")
             os.makedirs(alignment_folder, exist_ok=True)
-            aligned_target_file = os.path.join(alignment_folder, f"{sample_id}_processed_aligned.h5ad")
+            aligned_target_file = MODALITY_ALIGNMENT(self._path, sample_id, self._target_modality_name, "h5ad")
             
             # If no aligned file exits load it from the processing step
             if os.path.exists(aligned_target_file) == False:
@@ -243,8 +253,7 @@ class DirectMappingAligner:
         # Load all the aligned AnnData involved in the dataset to generate a final aligned dataset
         adata_list: list[anndata.AnnData] = []
         for sample_id in self._common_samples:
-            alignment_folder = os.path.join(self._path, sample_id, "alignment")
-            aligned_target_file = os.path.join(alignment_folder, f"{sample_id}_processed_aligned.h5ad")
+            aligned_target_file = MODALITY_ALIGNMENT(self._path, sample_id, self._target_modality_name, "h5ad")
             adata_list.append(
                 anndata.read_h5ad(aligned_target_file)
             )
@@ -256,7 +265,7 @@ class DirectMappingAligner:
         merged_aligned_adata = anndata.concat(adata_list, axis=0)
         alignment_folder = os.path.join(self._path, "merged", "alignment")
         os.makedirs(alignment_folder, exist_ok=True)
-        merged_aligned_file = os.path.join(alignment_folder, f"{self._target_modality_name}_merged_processed_aligned.h5ad")
+        merged_aligned_file = MODALITY_ALIGNMENT_MERGED(self._path, self._target_modality_name, "h5ad")
         merged_aligned_adata.write_h5ad(merged_aligned_file)
         aligned_samples["merged"] = merged_aligned_file
 

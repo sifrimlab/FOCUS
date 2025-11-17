@@ -45,6 +45,12 @@ def preprocess_modality(path: str, modality_name: str, modality_type: str, prepr
     
     # Get a list of sample IDs from the specified path (assuming each subdirectory is a sample)
     sample_ids = [d for d in os.listdir(path) if os.path.isdir(os.path.join(path, d))]
+    sample_ids.sort()
+
+    sample_ids = [
+        "PDAC010N0",
+        "PDAC010T0"
+    ]
 
     # Remove from the sample IDs the standard output directories if they exists
     for output_dir in FocusOutputDirectories.list():
@@ -73,8 +79,7 @@ def preprocess_modality(path: str, modality_name: str, modality_type: str, prepr
             mi.MicroscopyImage(
                 source_path=path,
                 sample_id=sample_id,
-                modality_name=modality_name,
-                patch_extractor=None
+                modality_name=modality_name
             ) for sample_id in sample_ids
         ]
 

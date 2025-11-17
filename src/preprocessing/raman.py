@@ -1367,7 +1367,7 @@ class RamanDataset:
 					output_file = sample.ashlar_stitch(force_recomputing=force_recomputing)
 				else:
 					print(f"Sample {sample.sample_id} has already been processed. Using cached results.")
-					output_file = os.path.join(sample.output_path, f"{sample.sample_id}.ome.tiff")
+					output_file = MODALITY_PREPROCESSING(sample.base_path, sample.sample_id, sample.modality_name, "ome.tiff")
 
 				processed_samples[sample.sample_id] = output_file
 

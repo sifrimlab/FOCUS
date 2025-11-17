@@ -1,6 +1,7 @@
 import os
 from preprocessing import preprocessing
 from alignment import alignment
+from registration import registration
 
 from constants import MsiPreprocessingParams, MicroscopyImageProcessingParams, ModalityType
 from constants import SegmentationBackgroundColor, RamanPreprocessingParams
@@ -8,6 +9,7 @@ from constants import SegmentationBackgroundColor, RamanPreprocessingParams
 if __name__ == "__main__":
     PATH = "/staging/leuven/stg_00077/projects/Lorenzo/FOCUS/p_PDA/d_C1"
     PLOT_PATH = os.path.join(PATH, "plots", "preprocessing", "MSI")
+    HF_TOKEN = "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"
 
     # Define the MSI preprocessing settings
     msi_modality_name = "MSI"
@@ -31,10 +33,10 @@ if __name__ == "__main__":
         MicroscopyImageProcessingParams.REMOVE_BACKGROUND: True,
         MicroscopyImageProcessingParams.COLOR_ENHANCEMENT: False,
     }
-    #raman_modality_name = "Raman"
-    #raman_processing_settings = {
-    #    RamanPreprocessingParams.FORCE_RECOMPUTING: False,
-    #}
+    raman_modality_name = "Raman"
+    raman_processing_settings = {
+        RamanPreprocessingParams.FORCE_RECOMPUTING: False,
+    }
 
     # Preprocess MSI Dataset
     processed_msi = preprocessing.preprocess_modality(
@@ -53,12 +55,12 @@ if __name__ == "__main__":
     )
 
     # Preprocess Raman Dataset
-    #processed_raman = preprocessing.preprocess_modality(
-    #    path=PATH,
-    #    modality_type=ModalityType.RAMAN,
-    #    modality_name=raman_modality_name,
-    #    preprocessing_settings=raman_processing_settings,
-    #)
+    processed_raman = preprocessing.preprocess_modality(
+        path=PATH,
+        modality_type=ModalityType.RAMAN,
+        modality_name=raman_modality_name,
+        preprocessing_settings=raman_processing_settings,
+    )
 
     # Perform Direct Mapping Alignment
     aligner = alignment.DirectMappingAligner(
@@ -70,6 +72,29 @@ if __name__ == "__main__":
     )
 
     aligned_samples = aligner.align_dataset()
+
+    # Perform Registration
+    registrar = registration.FeatureExtractorRegistration(
+        path=PATH,
+        hf_token=HF_TOKEN
+    )
+
+    reference_modality = {
+        microscopy_modality_name: processed_microscopy
+    }
+
+    reference_modality_type = {
+        microscopy_modality_name: ModalityType.MICROSCOPY_IMAGE
+    }
+
+    registered_samples = registrar.register_dataset(
+        reference_modality=reference_modality,
+        target_modality=aligned_samples,
+        reference_modality_type=reference_modality_type,
+        target_modality_name=msi_modality_name,
+        force_recomputing=False
+    )
+
 
 
 
