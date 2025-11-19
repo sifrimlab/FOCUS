@@ -198,6 +198,59 @@ class DirectMappingAligner:
         # Set the dataset completed event to disable the GUI
         self._dataset_completed_event.set()
 
+    def uniform_aligned_dataset(self, force_recomputing: bool = False) -> dict[str, str]:
+        '''
+        This method is used to produce an aligned dataset that follows the stanrdard of FOCUS without
+        performing the alignment. This is useful when the target modality is already aligned to the reference modality.
+
+        Parameters
+        ----------
+        force_recomputing: bool
+            If True, force the re-alignment of all the samples even if there are cached results
+            If False, skip the re-alignment for samples with cached results.
+
+        Returns
+        -------
+        aligned_samples : dict[str, str]
+            A dictionary where keys are sample IDs (including "merged") and values are the paths to the aligned AnnData files.
+        '''
+
+        aligned_samples: dict[str, str] = {}
+
+        # For each aligned sample, load the AnnData file and store the aligned coordinates
+        for sample_id, processed_target_file in self._target_modality.items():
+
+            alignment_folder = os.path.join(self._path, sample_id, "alignment")
+            os.makedirs(alignment_folder, exist_ok=True)
+            aligned_target_file = MODALITY_ALIGNMENT(self._path, sample_id, self._target_modality_name, "h5ad")
+            
+            # If no aligned file exits load it from the processing step
+            if os.path.exists(aligned_target_file) == False:
+                adata = anndata.read_h5ad(processed_target_file)
+                adata.obsm[f'{self._reference_modality_name}_spatial'] = adata.obsm['spatial'].copy()
+                adata.write_h5ad(aligned_target_file)
+
+        # Load all the aligned AnnData involved in the dataset to generate a final aligned dataset
+        adata_list: list[anndata.AnnData] = []
+        for sample_id in self._common_samples:
+            aligned_target_file = MODALITY_ALIGNMENT(self._path, sample_id, self._target_modality_name, "h5ad")
+            adata_list.append(
+                anndata.read_h5ad(aligned_target_file)
+            )
+
+            # Save this file for the result
+            aligned_samples[sample_id] = aligned_target_file
+
+        # Generate the merged aligned dataset
+        merged_aligned_adata = anndata.concat(adata_list, axis=0)
+        alignment_folder = os.path.join(self._path, "merged", "alignment")
+        os.makedirs(alignment_folder, exist_ok=True)
+        merged_aligned_file = MODALITY_ALIGNMENT_MERGED(self._path, self._target_modality_name, "h5ad")
+        merged_aligned_adata.write_h5ad(merged_aligned_file)
+        aligned_samples["merged"] = merged_aligned_file
+
+        return aligned_samples
+
     def align_dataset(self, force_recomputing: bool = False) -> dict[str, str]:
         '''
         Align the target modality to the reference modality for all common samples.
