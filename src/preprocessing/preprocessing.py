@@ -47,11 +47,6 @@ def preprocess_modality(path: str, modality_name: str, modality_type: str, prepr
     sample_ids = [d for d in os.listdir(path) if os.path.isdir(os.path.join(path, d))]
     sample_ids.sort()
 
-    sample_ids = [
-        "PDAC010N0",
-        "PDAC010T0"
-    ]
-
     # Remove from the sample IDs the standard output directories if they exists
     for output_dir in FocusOutputDirectories.list():
         if output_dir in sample_ids:
