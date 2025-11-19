@@ -30,7 +30,6 @@ class SpatialTranscriptomic:
 
         # Create output directory if it doesn't exist
         os.makedirs(self.output_path, exist_ok=True)
-        self.load_data()
 
     def load_data(self) -> None:
         '''
@@ -43,7 +42,6 @@ class SpatialTranscriptomic:
             if file.endswith('.h5ad'):
                 adata_path = os.path.join(self.input_path, file)
                 self.data = sc.read_h5ad(adata_path)
-                print(f"Loaded ST data from {adata_path}")
                 return
             
     def preprocess_data(self,
@@ -74,11 +72,10 @@ class SpatialTranscriptomic:
                 Path to the preprocessed AnnData file.
         '''
 
-        if self.data is None:
-            raise ValueError("Data not loaded. Please load data before preprocessing.")
-
         if not (0.0 <= min_spots_per_gene <= 1.0):
             raise ValueError("min_spots_per_gene must be between 0 and 1.")
+
+        self.load_data()
 
         self.data.layers['raw'] = self.data.X.copy()
 
@@ -103,7 +100,7 @@ class SpatialTranscriptomic:
         self.data.obs_names = [f"{self.sample_id}_{obs_name}" for obs_name in self.data.obs_names]
 
         # Save the preprocessed data
-        output_file = MODALITY_PREPROCESSING(self.input_path, self.sample_id, self.modality_name, "h5ad")
+        output_file = MODALITY_PREPROCESSING(self.source_path, self.sample_id, self.modality_name, "h5ad")
         self.data.write_h5ad(output_file)
         return output_file
 
@@ -164,6 +161,7 @@ class SpatialTranscriptomicDataset():
 
         processed_samples: dict[str, str] = {}
         adata_list: list[ad.AnnData] = []
+        all_samples_processed = True
 
         for sample in self.samples:
             print(f"Preprocessing sample {sample.sample_id}")
@@ -175,7 +173,13 @@ class SpatialTranscriptomicDataset():
                 if os.path.exists(preprocessed_file):
                     print(f"Sample {sample.sample_id} already preprocessed. Using cached results.")
                     processed_samples[sample.sample_id] = preprocessed_file
+                    
+                    # Load the preprocessed data for merging
+                    adata = sc.read_h5ad(processed_samples[sample.sample_id])
+                    adata_list.append(adata)
                     continue
+                else:
+                    all_samples_processed = False
 
             processed_samples[sample.sample_id] = sample.preprocess_data(
                 min_count_per_spot=min_count_per_spot,
@@ -191,6 +195,13 @@ class SpatialTranscriptomicDataset():
 
         # Combine the data considering that each sample may have different genes
         print("2/2 - Generating combined Spatial Transcriptomic dataset")
+
+        if all_samples_processed and force_recomputing == False and os.path.exists(MODALITY_PREPROCESSING_MERGED(self.path, self.samples[0].modality_name, "h5ad")):
+            combined_output_file = MODALITY_PREPROCESSING_MERGED(self.path, self.samples[0].modality_name, "h5ad")
+            print("Combined dataset already exists. Using cached results.")
+            processed_samples["merged"] = combined_output_file
+            return processed_samples
+        
         self.combined_data = ad.concat(adata_list)
 
         # Save the combined data
