@@ -17,3 +17,5 @@ imagecodecs
 scanpy
 numpy
 timm
+czifile
+ome-types
