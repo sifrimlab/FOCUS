@@ -190,6 +190,11 @@ class MicroscopyImageFeatureExtractor:
 		# Convert patches and coordinates to torch tensors
 		patches_tensor = torch.from_numpy(patches).permute(0, 3, 1, 2).to(self.device)  # shape (N, C, H, W)
 
+		# Apply normalization as defined for this pretrained model
+		mean = torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1).to(self.device)
+		std = torch.tensor([0.229, 0.224, 0.225]).view(3, 1, 1).to(self.device)
+		patches_tensor = (patches_tensor - mean) / std
+
 		# Create a Dataset and a DataLoader
 		dataset = torch.utils.data.TensorDataset(patches_tensor)
 		dataloader = torch.utils.data.DataLoader(dataset, batch_size=32, shuffle=False)
@@ -203,6 +208,10 @@ class MicroscopyImageFeatureExtractor:
 				embeddings.append(self.patch_encoder(input_tensor).cpu().numpy())       # Shape [B, 1536]
 
 		embeddings: np.ndarray = np.concatenate(embeddings, axis=0)  					# Shape [N, 1536]
+
+		# Free memory
+		del mean, std, patches_tensor, dataset, dataloader
+		torch.cuda.empty_cache()
 
 		return embeddings
 	

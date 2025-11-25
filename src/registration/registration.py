@@ -54,10 +54,6 @@ class FeatureExtractorRegistration:
 			# Load the full resolution image
 			image_data = tif.asarray()
 
-		# Convert the image to Uint8 if necessary
-		if image_data.dtype != np.uint8:
-			image_data = (image_data * 255).astype(np.uint8)
-
 		# Check if the channel dim is the first or the last (the smallest should be the channel dim)
 		if np.argmin(image_data.shape) == 0:
 			image_data = np.transpose(image_data, (1, 2, 0))  # HWC format
