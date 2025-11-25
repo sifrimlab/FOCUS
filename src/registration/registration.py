@@ -1,5 +1,6 @@
-import os, tifffile, threading, anndata, copy
+import os, tifffile, anndata
 import numpy as np
+from sklearn.preprocessing import MinMaxScaler
 
 from constants import MODALITY_PREPROCESSING, MODALITY_ALIGNMENT, MODALITY_ALIGNMENT_MERGED, MODALITY_REGISTRATION, MODALITY_REGISTRATION_MERGED
 from constants import ModalityType
@@ -100,6 +101,7 @@ class FeatureExtractorRegistration:
 		target_modality: dict[str, str],
 		reference_modality_type: dict[str, ModalityType],
 		target_modality_name: str,
+		min_max_rescale: bool = True,
 		force_recomputing: bool = False
 	) -> dict[str, str]:
 		'''
@@ -118,6 +120,8 @@ class FeatureExtractorRegistration:
 			{reference_modality_name: ModalityType, ...}
 		target_modality_name : str
 			The name of the target modality.
+		min_max_rescale : bool, optional
+			Whether to apply min-max rescaling to the extracted features (default is True)
 		force_recomputing : bool, optional
 			Whether to force recomputing the registration even if it already exists (default is False)
 
@@ -152,6 +156,10 @@ class FeatureExtractorRegistration:
 			for sample_id, reference_file in samples.items():
 
 				print(f"Processing sample {sample_id}")
+
+				# Check if the output directory exists, if not create it
+				if os.path.exists(os.path.join(self._path, sample_id, "registration")) == False:
+					os.makedirs(os.path.join(self._path, sample_id, "registration"))
 
 				# Check if the registered file already exists
 				registered_file = MODALITY_REGISTRATION(self._path, sample_id, reference_modality_name, "h5ad")
@@ -188,6 +196,38 @@ class FeatureExtractorRegistration:
 				)
 				adata.write_h5ad(registered_file)
 				registered_samples[reference_modality_name][sample_id] = registered_file
+
+		# Generate merged modality file
+		if os.path.exists(os.path.join(self._path, 'merged', "registration")) == False:
+			os.makedirs(os.path.join(self._path, 'merged', "registration"))
+
+		for reference_modality_name in registered_samples.keys():
+			merged_registered_file = MODALITY_REGISTRATION_MERGED(self._path, reference_modality_name, "h5ad")
+
+			print(f"Generating merged registered file for modality '{reference_modality_name}'.")
+
+			# List of AnnData objects to merge
+			adata_list = []
+
+			for sample_id, registered_file in registered_samples[reference_modality_name].items():
+				adata = anndata.read_h5ad(registered_file)
+				adata.obs_names = [f"{sample_id}_{idx}" for idx in range(adata.n_obs)]
+				adata_list.append(adata)
+				
+			# Concatenate all AnnData objects
+			merged_adata = anndata.concat(adata_list)
+
+			# Apply global normalization of the embeddings
+			if min_max_rescale:
+				scaler = MinMaxScaler()
+				merged_adata.X = scaler.fit_transform(merged_adata.X)
+
+			merged_adata.write_h5ad(merged_registered_file)
+			registered_samples[reference_modality_name]['merged'] = merged_registered_file
+
+		return registered_samples
+
+			
 
 
 
