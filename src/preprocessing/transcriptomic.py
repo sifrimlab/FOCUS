@@ -59,12 +59,6 @@ class SpatialTranscriptomic:
             Minimum total counts per spot to retain the spot.
         max_count_per_spot:
             Maximum total counts per spot to retain the spot.
-        min_spots_per_gene:
-            Minimum percentage of spots in which a gene must be expressed to retain the gene.
-        total_counts_normalize:
-            Whether to perform total counts normalization.
-        log1p_transform:
-            Whether to perform log1p transformation.
 
         Returns:
         -------
@@ -85,13 +79,6 @@ class SpatialTranscriptomic:
 
         sc.pp.filter_cells(self.data, min_genes=min_count_per_spot)
         sc.pp.filter_cells(self.data, max_genes=max_count_per_spot)
-        sc.pp.filter_genes(self.data, min_cells=np.floor(self.data.n_obs * min_spots_per_gene))
-
-        if total_counts_normalize:
-            sc.pp.normalize_total(self.data, target_sum=1e4, inplace=True)
-
-        if log1p_transform:
-            sc.pp.log1p(self.data)
 
         # Include the sample ID in the AnnData object
         self.data.obs['sample_id'] = self.sample_id
@@ -203,6 +190,17 @@ class SpatialTranscriptomicDataset():
             return processed_samples
         
         self.combined_data = ad.concat(adata_list)
+
+        # Filter genes that are not expressed in at least min_spots_per_gene percentage of spots in the smallest sample
+        smallest_sample_size = min([adata.n_obs for adata in adata_list])
+
+        # Apply global filtering and normalization
+        sc.pp.filter_genes(self.combined_data, min_cells=np.floor(smallest_sample_size * min_spots_per_gene))
+
+        if total_counts_normalize:
+            sc.pp.normalize_total(self.combined_data, target_sum=1e4, inplace=True)
+        if log1p_transform:
+            sc.pp.log1p(self.combined_data)
 
         # Save the combined data
         combined_output_file = MODALITY_PREPROCESSING_MERGED(self.path, self.samples[0].modality_name, "h5ad")
