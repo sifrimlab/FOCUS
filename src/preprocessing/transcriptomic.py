@@ -45,11 +45,8 @@ class SpatialTranscriptomic:
                 return
             
     def preprocess_data(self,
-        min_count_per_spot: int,
-        max_count_per_spot: int,
-        min_spots_per_gene: float,
-        total_counts_normalize: bool = True,
-        log1p_transform: bool = True) -> str:
+        min_count_per_spot: int | None,
+        max_count_per_spot: int | None) -> str:
         '''
         Preprocess the spatial transcriptomic data using ScanPy.
         
@@ -66,8 +63,11 @@ class SpatialTranscriptomic:
                 Path to the preprocessed AnnData file.
         '''
 
-        if not (0.0 <= min_spots_per_gene <= 1.0):
-            raise ValueError("min_spots_per_gene must be between 0 and 1.")
+        if min_count_per_spot is not None and not (min_count_per_spot > 0):
+            raise ValueError("min_count_per_spot must be greater than 0.")
+
+        if max_count_per_spot is not None and not (max_count_per_spot > 0):
+            raise ValueError("max_count_per_spot must be greater than 0.")
 
         self.load_data()
 
@@ -77,8 +77,10 @@ class SpatialTranscriptomic:
         self.data.var['mt'] = self.data.var_names.str.upper().str.startswith('MT-')
         sc.pp.calculate_qc_metrics(self.data, qc_vars=['mt'], inplace=True)
 
-        sc.pp.filter_cells(self.data, min_genes=min_count_per_spot)
-        sc.pp.filter_cells(self.data, max_genes=max_count_per_spot)
+        if min_count_per_spot is not None:
+            sc.pp.filter_cells(self.data, min_genes=min_count_per_spot)
+        if max_count_per_spot is not None:
+            sc.pp.filter_cells(self.data, max_genes=max_count_per_spot)
 
         # Include the sample ID in the AnnData object
         self.data.obs['sample_id'] = self.sample_id
@@ -101,9 +103,10 @@ class SpatialTranscriptomicDataset():
         self.samples = samples
 
     def process_dataset(self, 
-        min_count_per_spot: int,
-        max_count_per_spot: int,
-        min_spots_per_gene: float,
+        min_count_per_spot: int | None,
+        max_count_per_spot: int | None,
+        min_spots_per_gene: float| None,
+        min_count_spots_ratio_per_gene: float | None = None,
         total_counts_normalize: bool = True,
         log1p_transform: bool = True,
         force_recomputing: bool = False
@@ -119,6 +122,8 @@ class SpatialTranscriptomicDataset():
             Maximum total counts per spot to retain the spot.
         min_spots_per_gene:
             Minimum number of spots in which a gene must be expressed to retain the gene.
+        min_count_spots_ratio_per_gene:
+            Minimum ratio between the number of spots a gene is expressed in and the total count of that gene across those spots.
         total_counts_normalize:
             Whether to perform total counts normalization.
         log1p_transform:
@@ -133,16 +138,20 @@ class SpatialTranscriptomicDataset():
         '''
 
         # Check the input parameters
-        if not (0.0 <= min_spots_per_gene <= 1.0):
+        if min_count_per_spot is not None and not (min_count_per_spot > 0):
+            raise ValueError("min_count_per_spot must be greater than 0.")
+        if max_count_per_spot is not None and not (max_count_per_spot > 0):
+            raise ValueError("max_count_per_spot must be greater than 0.")
+        if min_spots_per_gene is not None and not (0 < min_spots_per_gene < 1):
             raise ValueError("min_spots_per_gene must be between 0 and 1.")
-        if not type(min_count_per_spot) is int or not type(max_count_per_spot) is int:
-            raise ValueError("min_count_per_spot and max_count_per_spot must be integers.")
-        if not type(force_recomputing) is bool:
-            raise ValueError("force_recomputing must be a boolean.")
-        if not type(total_counts_normalize) is bool:
+        if min_count_spots_ratio_per_gene is not None and not (min_count_spots_ratio_per_gene > 0):
+            raise ValueError("min_count_spots_ratio_per_gene must be greater than 0.")
+        if type(total_counts_normalize) is not bool:
             raise ValueError("total_counts_normalize must be a boolean.")
-        if not type(log1p_transform) is bool:
+        if type(log1p_transform) is not bool:
             raise ValueError("log1p_transform must be a boolean.")
+        if type(force_recomputing) is not bool:
+            raise ValueError("force_recomputing must be a boolean.")
         
         print("1/2 - Processing Spatial Transcriptomic Samples")
 
@@ -170,10 +179,7 @@ class SpatialTranscriptomicDataset():
 
             processed_samples[sample.sample_id] = sample.preprocess_data(
                 min_count_per_spot=min_count_per_spot,
-                max_count_per_spot=max_count_per_spot,
-                min_spots_per_gene=min_spots_per_gene,
-                total_counts_normalize=total_counts_normalize,
-                log1p_transform=log1p_transform
+                max_count_per_spot=max_count_per_spot
             )
 
             # Load the preprocessed data for merging
@@ -191,11 +197,62 @@ class SpatialTranscriptomicDataset():
         
         self.combined_data = ad.concat(adata_list)
 
+        # TODO: Move this and the following filter to the sample class
         # Filter genes that are not expressed in at least min_spots_per_gene percentage of spots in the smallest sample
-        smallest_sample_size = min([adata.n_obs for adata in adata_list])
+        NUM_SAMPLES_FILTER = 0.05
+        print(f"Unfiltered genes in combined dataset: {self.combined_data.n_vars}")
+        if min_spots_per_gene is not None:
+            samples = self.combined_data.obs['sample_id'].unique()
+            num_samples = len(samples)
+            
+            # Array to count how many samples each gene is kept in
+            gene_preserved_counts = np.zeros(self.combined_data.n_vars, dtype=int)
 
-        # Apply global filtering and normalization
-        sc.pp.filter_genes(self.combined_data, min_cells=np.floor(smallest_sample_size * min_spots_per_gene))
+            for sample in samples:
+                sample_mask = self.combined_data.obs['sample_id'] == sample
+                ad_sample = self.combined_data[sample_mask, :]
+
+                sample_size = ad_sample.n_obs
+                min_cells = int(np.floor(sample_size * min_spots_per_gene))
+
+                # Keep mask per gene for current sample
+                keep_mask = np.array((ad_sample.X > 0).sum(axis=0)).flatten() >= min_cells
+
+                # Increment count for genes passing in this sample
+                gene_preserved_counts += keep_mask.astype(int)
+
+            # Minimum number of samples a gene must be preserved in (at least 5%)
+            min_samples_required = np.ceil(NUM_SAMPLES_FILTER * num_samples)
+
+            # Keep genes preserved in >= 5% of samples
+            combined_keep_mask = gene_preserved_counts >= min_samples_required
+
+            self.combined_data = self.combined_data[:, combined_keep_mask].copy()
+            print(f"Filtered genes in combined dataset after applying min_spots_per_gene={min_spots_per_gene}: {self.combined_data.n_vars}")
+
+        # Filter again the genes based on min_count_spots_ratio_per_gene
+        if min_count_spots_ratio_per_gene is not None:
+            num_samples = len(self.samples)
+            gene_preserved_counts = np.zeros(self.combined_data.n_vars, dtype=int)
+
+            X = self.combined_data.X.toarray() if hasattr(self.combined_data.X, 'toarray') else self.combined_data.X
+
+            for sample in self.samples:
+                sample_mask = self.combined_data.obs['sample_id'] == sample.sample_id
+                X_sample = X[sample_mask, :]
+
+                expressed_counts = np.sum(X_sample > 0, axis=0)
+                total_counts = np.sum(X_sample, axis=0)
+
+                keep_mask = total_counts >= min_count_spots_ratio_per_gene * expressed_counts
+
+                gene_preserved_counts += keep_mask.astype(int)
+
+            min_samples_required = np.ceil(NUM_SAMPLES_FILTER * num_samples)
+            combined_keep_mask = gene_preserved_counts >= min_samples_required
+
+            self.combined_data = self.combined_data[:, combined_keep_mask].copy()
+            print(f"Filtered genes in combined dataset after applying min_count_spots_ratio_per_gene={min_count_spots_ratio_per_gene}: {self.combined_data.n_vars}")
 
         if total_counts_normalize:
             sc.pp.normalize_total(self.combined_data, target_sum=1e4, inplace=True)
