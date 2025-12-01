@@ -156,6 +156,8 @@ class RamanPreprocessingParams(_AbstractEnum):
 class STPreprocessingParams(_AbstractEnum):
 	MIN_COUNT_PER_SPOT = "min_count_per_spot"
 	MAX_COUNT_PER_SPOT = "max_count_per_spot"
+	MIN_GENES_PER_SPOT = "min_genes_per_spot"
+	MAX_GENES_PER_SPOT = "max_genes_per_spot"
 	MIN_SPOTS_PER_GENE = "min_spots_per_gene"
 	MIN_COUNT_SPOTS_RATIO_PER_GENE = "min_count_spots_ratio_per_gene"
 	TOTAL_COUNTS_NORMALIZE = "total_counts_normalize"

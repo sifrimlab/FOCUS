@@ -46,7 +46,10 @@ class SpatialTranscriptomic:
             
     def preprocess_data(self,
         min_count_per_spot: int | None,
-        max_count_per_spot: int | None) -> str:
+        max_count_per_spot: int | None,
+        min_genes_per_spot: int | None = None,
+        max_genes_per_spot: int | None = None
+        ) -> str:
         '''
         Preprocess the spatial transcriptomic data using ScanPy.
         
@@ -68,6 +71,10 @@ class SpatialTranscriptomic:
 
         if max_count_per_spot is not None and not (max_count_per_spot > 0):
             raise ValueError("max_count_per_spot must be greater than 0.")
+        if min_genes_per_spot is not None and not (min_genes_per_spot > 0):
+            raise ValueError("min_genes_per_spot must be greater than 0.")
+        if max_genes_per_spot is not None and not (max_genes_per_spot > 0):
+            raise ValueError("max_genes_per_spot must be greater than 0.")
 
         self.load_data()
 
@@ -78,15 +85,21 @@ class SpatialTranscriptomic:
         sc.pp.calculate_qc_metrics(self.data, qc_vars=['mt'], inplace=True)
 
         if min_count_per_spot is not None:
-            sc.pp.filter_cells(self.data, min_genes=min_count_per_spot)
+            sc.pp.filter_cells(self.data, min_counts=min_count_per_spot)
         if max_count_per_spot is not None:
-            sc.pp.filter_cells(self.data, max_genes=max_count_per_spot)
+            sc.pp.filter_cells(self.data, max_counts=max_count_per_spot)
+        if min_genes_per_spot is not None:
+            sc.pp.filter_cells(self.data, min_genes=min_genes_per_spot)
+        if max_genes_per_spot is not None:
+            sc.pp.filter_cells(self.data, max_genes=max_genes_per_spot)
 
         # Include the sample ID in the AnnData object
         self.data.obs['sample_id'] = self.sample_id
 
-        # Make the observation names unique
-        self.data.obs_names = [f"{self.sample_id}_{obs_name}" for obs_name in self.data.obs_names]
+        # Check if the observation names already include the sample ID
+        if not (all(obs_name.startswith(f"{self.sample_id}_") for obs_name in self.data.obs_names)):
+            # Make the observation names unique
+            self.data.obs_names = [f"{self.sample_id}_{obs_name}" for obs_name in self.data.obs_names]
 
         # Save the preprocessed data
         output_file = MODALITY_PREPROCESSING(self.source_path, self.sample_id, self.modality_name, "h5ad")
@@ -103,9 +116,11 @@ class SpatialTranscriptomicDataset():
         self.samples = samples
 
     def process_dataset(self, 
-        min_count_per_spot: int | None,
-        max_count_per_spot: int | None,
-        min_spots_per_gene: float| None,
+        min_count_per_spot: int | None = None,
+        max_count_per_spot: int | None = None,
+        min_genes_per_spot: int | None = None,
+        max_genes_per_spot: int | None = None,
+        min_spots_per_gene: float| None = None,
         min_count_spots_ratio_per_gene: float | None = None,
         total_counts_normalize: bool = True,
         log1p_transform: bool = True,
@@ -120,6 +135,10 @@ class SpatialTranscriptomicDataset():
             Minimum total counts per spot to retain the spot.
         max_count_per_spot:
             Maximum total counts per spot to retain the spot.
+        min_genes_per_spot:
+            Minimum number of genes detected per spot to retain the spot.
+        max_genes_per_spot:
+            Maximum number of genes detected per spot to retain the spot.
         min_spots_per_gene:
             Minimum number of spots in which a gene must be expressed to retain the gene.
         min_count_spots_ratio_per_gene:
@@ -142,6 +161,10 @@ class SpatialTranscriptomicDataset():
             raise ValueError("min_count_per_spot must be greater than 0.")
         if max_count_per_spot is not None and not (max_count_per_spot > 0):
             raise ValueError("max_count_per_spot must be greater than 0.")
+        if min_genes_per_spot is not None and not (min_genes_per_spot > 0):
+            raise ValueError("min_genes_per_spot must be greater than 0.")
+        if max_genes_per_spot is not None and not (max_genes_per_spot > 0):
+            raise ValueError("max_genes_per_spot must be greater than 0.")
         if min_spots_per_gene is not None and not (0 < min_spots_per_gene < 1):
             raise ValueError("min_spots_per_gene must be between 0 and 1.")
         if min_count_spots_ratio_per_gene is not None and not (min_count_spots_ratio_per_gene > 0):
@@ -179,7 +202,9 @@ class SpatialTranscriptomicDataset():
 
             processed_samples[sample.sample_id] = sample.preprocess_data(
                 min_count_per_spot=min_count_per_spot,
-                max_count_per_spot=max_count_per_spot
+                max_count_per_spot=max_count_per_spot,
+                min_genes_per_spot=min_genes_per_spot,
+                max_genes_per_spot=max_genes_per_spot
             )
 
             # Load the preprocessed data for merging

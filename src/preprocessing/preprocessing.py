@@ -167,6 +167,8 @@ def preprocess_modality(path: str, modality_name: str, modality_type: str, prepr
     elif  modality_type == ModalityType.ST:
         min_count_per_spot = preprocessing_settings.get(STPreprocessingParams.MIN_COUNT_PER_SPOT, None)
         max_count_per_spot = preprocessing_settings.get(STPreprocessingParams.MAX_COUNT_PER_SPOT, None)
+        min_genes_per_spot = preprocessing_settings.get(STPreprocessingParams.MIN_GENES_PER_SPOT, None)
+        max_genes_per_spot = preprocessing_settings.get(STPreprocessingParams.MAX_GENES_PER_SPOT, None)
         min_spots_per_gene = preprocessing_settings.get(STPreprocessingParams.MIN_SPOTS_PER_GENE, None)
         min_count_spots_ratio_per_gene = preprocessing_settings.get(STPreprocessingParams.MIN_COUNT_SPOTS_RATIO_PER_GENE, None)
         total_counts_normalize = preprocessing_settings.get(STPreprocessingParams.TOTAL_COUNTS_NORMALIZE, False)
@@ -189,6 +191,8 @@ def preprocess_modality(path: str, modality_name: str, modality_type: str, prepr
         processed_samples = dataset.process_dataset(
             min_count_per_spot=min_count_per_spot,
             max_count_per_spot=max_count_per_spot,
+            min_genes_per_spot=min_genes_per_spot,
+            max_genes_per_spot=max_genes_per_spot,
             min_spots_per_gene=min_spots_per_gene,
             min_count_spots_ratio_per_gene=min_count_spots_ratio_per_gene,
             total_counts_normalize=total_counts_normalize,

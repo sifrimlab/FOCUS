@@ -1,9 +1,12 @@
 import numpy as np
-import torch, os, tqdm
+import os, tqdm, psutil
 from sklearn.linear_model import LinearRegression
 import anndata as ad
 import pandas as pd
 import xml.etree.ElementTree as ET
+import concurrent.futures
+from numba import njit
+from functools import partial
 from constants import ImzMLFileParser, MsiIntensityNormalization, MsiMetadata, MsiIonMode
 
 from constants import MODALITY_PREPROCESSING, MODALITY_PREPROCESSING_MERGED
@@ -115,6 +118,12 @@ class MsiSample:
 				physical_x = float(user_param.attrib['value'])
 			if user_param.attrib['name'] == "3DPositionY":
 				physical_y = float(user_param.attrib['value'])
+
+		# Fallback if the physical coordinates are not provided
+		if physical_x is None:
+			physical_x = float(x)
+		if physical_y is None:
+			physical_y = float(y)
 
 		bdal = spectra.find(ImzMLFileParser.BINARY_DATA_ARRAY_LIST)
 
@@ -484,6 +493,109 @@ class MsiSample:
 
 		return intensity_vectors
 
+@njit
+def cluster_unique_mz_chunk(unique_mz, counts, mass_tolerance_ppm):
+	"""
+	Cluster m/z values within a chunk using sliding window clustering and weighted centroids.
+
+	Parameters
+	----------
+	unique_mz : 1D np.ndarray (sorted)
+		Sorted m/z values within the chunk.
+	counts : 1D np.ndarray
+		Counts associated with each m/z.
+	mass_tolerance_ppm : int
+		Mass tolerance in ppm.
+
+	Returns
+	-------
+	consensus_mz : list of floats
+		Clustered consensus m/z values.
+	consensus_weights : list of floats
+		Corresponding cluster weights.
+	"""
+
+	consensus_mz = []
+	consensus_weights = []
+
+	n = len(unique_mz)
+	start_idx = 0
+
+	while start_idx < n:
+		cluster_mz = [unique_mz[start_idx]]
+		cluster_counts = [counts[start_idx]]
+		centroid = unique_mz[start_idx]
+		weight_sum = counts[start_idx]
+		end_idx = start_idx + 1
+
+		while end_idx < n:
+			candidate_mz = unique_mz[end_idx]
+			ppm_diff = abs(candidate_mz - centroid) / centroid * 1e6
+			if ppm_diff <= mass_tolerance_ppm:
+				cluster_mz.append(candidate_mz)
+				cluster_counts.append(counts[end_idx])
+				weight_sum += counts[end_idx]
+				# Update weighted centroid incrementally
+				weighted_sum = 0.0
+				total_weight = 0.0
+				for m, w in zip(cluster_mz, cluster_counts):
+					weighted_sum += m * w
+					total_weight += w
+				centroid = weighted_sum / total_weight
+				end_idx += 1
+			else:
+				break
+
+		consensus_mz.append(centroid)
+		consensus_weights.append(weight_sum)
+
+		start_idx = end_idx
+
+	return np.array(consensus_mz), np.array(consensus_weights)
+
+def merge_chunks(prev_mz, prev_w, curr_mz, curr_w, mass_tolerance_ppm):
+	"""
+	Merge consensus clusters from two adjacent chunks resolving overlaps.
+
+	Both prev_mz and curr_mz are sorted arrays.
+
+	Returns merged consensus m/z and weights arrays.
+	"""
+	i, j = 0, 0
+	merged_mz = []
+	merged_w = []
+
+	while i < len(prev_mz) and j < len(curr_mz):
+		ppm_diff = abs(curr_mz[j] - prev_mz[i]) / ((curr_mz[j] + prev_mz[i]) / 2) * 1e6
+		if ppm_diff <= mass_tolerance_ppm:
+			# Merge clusters by weighted average
+			tot_w = prev_w[i] + curr_w[j]
+			centroid = (prev_mz[i] * prev_w[i] + curr_mz[j] * curr_w[j]) / tot_w
+			merged_mz.append(centroid)
+			merged_w.append(tot_w)
+			i += 1
+			j += 1
+		elif prev_mz[i] < curr_mz[j]:
+			merged_mz.append(prev_mz[i])
+			merged_w.append(prev_w[i])
+			i += 1
+		else:
+			merged_mz.append(curr_mz[j])
+			merged_w.append(curr_w[j])
+			j += 1
+
+	# Append remaining
+	while i < len(prev_mz):
+		merged_mz.append(prev_mz[i])
+		merged_w.append(prev_w[i])
+		i += 1
+	while j < len(curr_mz):
+		merged_mz.append(curr_mz[j])
+		merged_w.append(curr_w[j])
+		j += 1
+
+	return np.array(merged_mz), np.array(merged_w)
+
 class MsiDataset:
 	def __init__(self, path: str,  samples: list[MsiSample], lipid_annotation_db: str | None = None) -> None:
 		'''
@@ -534,257 +646,164 @@ class MsiDataset:
 		else:
 			self.lipid_annotation_db = None
 
+	def _calculate_chunks_for_consensus_estimation(self, unique_mz_len, item_size_bytes=8, safety_factor=1.5):
+		"""
+		Estimate number of chunks constrained by memory and CPU.
+
+		Parameters
+		----------
+		unique_mz_len : int
+			Total number of unique m/z values.
+		item_size_bytes : int
+			Approximate bytes per item in arrays (float64 ~ 8 bytes).
+		safety_factor : float
+			Factor to account for overhead and auxiliary arrays.
+
+		Returns
+		-------
+		n_chunks : int
+			Number of chunks limited by CPU cores and available memory.
+		"""
+
+		# Estimate memory needed for one chunk as a fraction of total data
+		total_data_bytes = unique_mz_len * item_size_bytes
+
+		# Get available RAM in bytes (use psutil)
+		available_mem = psutil.virtual_memory().available
+
+		# Estimate max chunk size in bytes based on memory and safety factor
+		max_chunk_bytes = available_mem / safety_factor
+
+		# Max chunks by memory constraint
+		max_chunks_mem = int(np.ceil(total_data_bytes / max_chunk_bytes))
+
+		# Number of logical CPU cores
+		n_cores = os.cpu_count() or 1
+
+		# Choose number of chunks limited by cores and memory
+		n_chunks = max(n_cores, max_chunks_mem)
+		n_chunks = min(n_chunks, 32)  # Optional: cap max chunks to avoid overhead
+
+		return n_chunks
+
 	def _compute_reference_mz(self, spectra_list: list[np.ndarray], mass_tolerance: int = 10, frequency_threshold: float = 0.01, batch_size: int = 10000) -> np.ndarray:
 		"""
-		Create consensus reference m/z vector using adaptive mass tolerance
-		Reference: 10.1021/acs.analchem.0c03833
+		Create consensus reference m/z vector using adaptive mass tolerance with parallel CPU clustering.
 
 		Parameters:
 		-----------
-
 		spectra_list : list of np.ndarray
 			List of m/z arrays from different spectra.
 		mass_tolerance : int
 			Mass tolerance in ppm for grouping m/z values.
 		frequency_threshold : float
 			Minimum frequency threshold for m/z values to be included in the consensus.
+		batch_size : int
+			Legacy parameter, unused.
 
 		Returns:
 		-----------
-
 		consensus_mz : np.ndarray
 			Consensus m/z values after grouping and filtering.
 		"""
 
-		# Group the m/z values from all spectra and count occurrences
-		all_mz = np.concatenate(spectra_list)
-		all_mz = all_mz.astype(np.float32)                                  # Ensure all m/z values are float32 for consistency
-		all_mz = np.round(all_mz, decimals = 5)                               # Round m/z values to 5 decimal places to reduce numerical noise
+		# Concatenate and round m/z values
+		all_mz = np.concatenate(spectra_list).astype(np.float64)
+		all_mz = np.round(all_mz, decimals=6)
 		all_mz.sort()
+
+		# Unique m/z and counts
 		unique_mz, counts = np.unique(all_mz, return_counts=True)
 
-		# Cast unique_mz and counts to float32 for consistency
-		unique_mz = unique_mz.astype(np.float32)
-		counts = counts.astype(np.float32)
+		n = len(unique_mz)
+		n_chunks = self._calculate_chunks_for_consensus_estimation(n, item_size_bytes=8, safety_factor=2.0)
 
-		unique_mz = torch.from_numpy(unique_mz).float().cuda()
-		counts = torch.from_numpy(counts).float().cuda()
+		chunk_size = n // n_chunks
+		overlap = int(chunk_size * 0.05)  # 5% overlap dynamically scaled
 
-		# Get the total length of unique m/z values
-		total_length = unique_mz.shape[0]
+		chunk_indices = []
+		for i in range(n_chunks):
+			start = max(0, i * chunk_size - overlap)
+			end = min(n, (i + 1) * chunk_size + overlap)
+			chunk_indices.append((start, end))
 
-		# Store the totals
-		total_unique_mz, total_weights = None, None
+		# Prepare chunk arrays with overlap
+		chunks = [(unique_mz[start:end], counts[start:end]) for start, end in chunk_indices]
 
-		# Iterate over the unique m/z values and create consensus peaks
-		while total_unique_mz is None or torch.equal(total_unique_mz, unique_mz) == False:
+		with concurrent.futures.ProcessPoolExecutor() as executor:
+			futures = [executor.submit(cluster_unique_mz_chunk, chunk[0], chunk[1], mass_tolerance) for chunk in chunks]
+			results = [f.result() for f in futures]
 
-			# Define the new unique_mz as the result of the previous iteration
-			if total_unique_mz is not None:
-				unique_mz = total_unique_mz
-				counts = total_weights
-				total_length = unique_mz.shape[0]
+		# Merge clusters across chunks
+		merged_mz, merged_w = results[0]
+		for i in range(1, len(results)):
+			merged_mz, merged_w = merge_chunks(merged_mz, merged_w, results[i][0], results[i][1], mass_tolerance)
 
-				# Reset the totals for the next iteration
-				total_unique_mz, total_weights = None, None
+		# Filter by frequency threshold
+		max_count = merged_w.max()
+		threshold_count = max_count * frequency_threshold
+		filtered_idx = merged_w >= threshold_count
 
-			for batch_start in range(0, total_length, batch_size):
-
-				# Get the batch slice
-				batch_end: int = min(batch_start + batch_size, total_length)
-
-				unique_mz_batch: torch.Tensor = unique_mz[batch_start:batch_end]
-				counts_batch: torch.Tensor = counts[batch_start:batch_end]
-
-				# Computing adaptive mass tolerance windows around each m/z to compute the overlapping clusters
-				tolerance_mask = torch.zeros((unique_mz_batch.shape[0], unique_mz_batch.shape[0]), dtype=bool)
-				tolerance_mask = torch.abs(unique_mz_batch[:, None] - unique_mz_batch[None, :]) <= (unique_mz_batch[:, None] * mass_tolerance * 1e-6)
-
-				# Count the number of overlapping clusters
-				cluster_mz = torch.where(tolerance_mask, unique_mz_batch[None, :], torch.nan)
-				cluster_weights = torch.where(tolerance_mask, counts_batch[None, :], 0)
-
-				# Compute a unicity filter mask
-				unicity_mask = self._compute_tolerance_matrix(cluster_weights)
-
-				# Apply the unicity mask to the clusters
-				cluster_mz = torch.where(unicity_mask, cluster_mz, torch.nan)
-				cluster_weights = torch.where(unicity_mask, cluster_weights, torch.nan)
-
-				centroid_mz = torch.nanmean(cluster_mz, axis = 1)
-				centroid_weights = torch.nansum(cluster_weights, axis = 1)
-
-				# Filter duplicated m/z values and sum their intensities
-				unique_centroid_mz = torch.unique(centroid_mz)
-				unique_weights = torch.zeros_like(unique_centroid_mz, dtype=counts_batch.dtype)
-				weights_matrix = centroid_weights * (centroid_mz == unique_centroid_mz[:, None])
-				weights_matrix[weights_matrix == 0] = torch.nan
-				unique_weights = torch.nanmean(weights_matrix, axis=1)
-
-				# Get the indices of NaN values
-				nan_indices = torch.isnan(unique_centroid_mz)
-				# Remove NaN values
-				unique_centroid_mz = unique_centroid_mz[~nan_indices]
-				unique_weights = unique_weights[~nan_indices]
-
-				if total_unique_mz is None:
-					total_unique_mz = unique_centroid_mz
-					total_weights = unique_weights
-				else:
-					# Concatenate the results
-					total_unique_mz = torch.concatenate((total_unique_mz, unique_centroid_mz))
-					total_weights = torch.concatenate((total_weights, unique_weights))
-
-				del unique_mz_batch, counts_batch, tolerance_mask, cluster_mz, cluster_weights, unique_centroid_mz, unique_weights
-				del unicity_mask, centroid_mz, centroid_weights, weights_matrix
-				torch.cuda.empty_cache()
-				torch.cuda.synchronize()
-
-		# Apply a frequency threshold to filter out low-frequency m/z values
-		if frequency_threshold > 0:
-			peak_indices: torch.Tensor = self._find_peaks_torch(total_weights, prominence_factor = frequency_threshold)
-			consensus_mz: torch.Tensor = total_unique_mz[peak_indices]
-		else:
-			consensus_mz: torch.Tensor = total_unique_mz
-
-		consensus_mz_cpu = consensus_mz.cpu().numpy()
-
-		# Free GPU memory
-		del unique_mz, counts, total_unique_mz, total_weights, consensus_mz
-		torch.cuda.empty_cache()
-		torch.cuda.synchronize()
-
-		return consensus_mz_cpu
-
-	def _find_peaks_torch(self, density: torch.Tensor, prominence_factor: float = 0.01) -> torch.Tensor:
-		"""
-		PyTorch peak detection with basic prominence filtering
-		
-		Args:
-			density: 1D tensor of density values
-			prominence_factor: Relative threshold (0.01 = 1% of max density)
-		
-		Returns:
-			Tensor of peak indices
-		"""
-		# Find local maxima
-		shifted_left = density[:-2]
-		shifted_center = density[1:-1]
-		shifted_right = density[2:]
-		
-		peaks = (shifted_center > shifted_left) & (shifted_center > shifted_right)
-		peak_indices = torch.nonzero(peaks).squeeze() + 1  # Compensate for window shift
-		
-		# Apply prominence filter
-		if prominence_factor > 0:
-			threshold = prominence_factor * density.max()
-			peak_heights = density[peak_indices]
-			mask = peak_heights >= threshold
-			peak_indices = peak_indices[mask]
-		
-		return peak_indices
-
-	def _compute_tolerance_matrix(self, input: torch.Tensor) -> torch.Tensor:
-		"""
-		Scan the tolerance matrix and select to which row to uniquely assign an M/Z value (column).
-		This method takes a boolean matrix of shape (N, M) that represents the overlapping clusters of M/Z values.
-		It determines to which cluster to assign an M/Z value based on the weight of the clusters.
-		This ensures that each M/Z value that falls within multiple clusters is always assigned to the cluster with the highest density.
-		
-		Parameters:
-		-----------
-			input: torch.Tensor
-				A boolean tensor of shape (N, M) where N is the number of rows (clusters) and M is the number of columns (M/Z values).
-			
-		Returns:
-		-----------
-			torch.Tensor
-				A boolean tensor of shape (N, M) where each column has a single True value indicating the selected row for that M/Z value.
-				All other values are False.
-		"""
-
-		# Create boolean mask from non-zero values
-		bool_mask = (input != 0)
-		
-		# Calculate row sums of numeric values
-		row_sums = input.sum(dim=1)  # Shape: (N,)
-		
-		# Create scoring matrix with -inf for zeros
-		score = torch.where(bool_mask, row_sums.unsqueeze(1), -torch.inf)
-		
-		# Find best rows per column
-		max_indices = score.argmax(dim=0)
-		
-		# Identify active columns
-		has_nonzero = bool_mask.any(dim=0)
-		
-		# Build output mask
-		mask = torch.zeros_like(bool_mask)
-		valid_cols = has_nonzero.nonzero().squeeze(-1)
-		
-		if valid_cols.numel() > 0:
-			mask[max_indices[valid_cols], valid_cols] = True
-			
-		return mask
+		return merged_mz[filtered_idx]
 	
-	def _interpolate_intensities(self, original_mz: np.ndarray, original_intensity: np.ndarray, reference_mz: np.ndarray, mass_tolerance: int) -> np.ndarray:
+	def _interpolate_intensities(self,
+								original_mzs_list: list[np.ndarray],
+								original_intensities_list: list[np.ndarray],
+								reference_mz: np.ndarray,
+								mass_tolerance: float) -> np.ndarray:
 		"""
-		GPU-accelerated MSI intensities interpolation using variable-size windowing to map peaks to a reference M/Z vector.
-
-		Parameters
-		----------
-		original_mz : np.ndarray
-			Original m/z values with shape (N, ).
-		original_intensity : np.ndarray
-			Corresponding intensity values with shape (N, ).
-		reference_mz : np.ndarray
-			Target reference m/z values with shape (M, ).
-		mass_tolerance : float
-			Tolerance window in parts per million (ppm).
-
-		Returns
-		-------
-		np.ndarray
-			Intensities mapped to reference_mz.
+		Rebin intensities proportionally distributing each original peak's intensity
+		across overlapping reference_mz bins weighted inversely by distance.
 		"""
 
-		device = "cuda" if torch.cuda.is_available() else "cpu"
+		n_datapoints = len(original_mzs_list)
+		n_ref = reference_mz.size
 
-		# Move to GPU
-		mz = torch.from_numpy(original_mz).float().to(device)
-		intensity = torch.from_numpy(original_intensity).float().to(device)
-		ref_mz = torch.from_numpy(reference_mz).float().to(device)
+		if n_datapoints == 0 or n_ref == 0:
+			return np.zeros((n_datapoints, n_ref), dtype=reference_mz.dtype)
 
-		# Compute PPM window bounds
-		window = mz * mass_tolerance / 1e6
-		lower = mz - window
-		upper = mz + window
+		result_matrix = np.zeros((n_datapoints, n_ref), dtype=original_intensities_list[0].dtype)
 
-		# Expand dimensions for broadcasting
-		ref_mz_exp = ref_mz.unsqueeze(0)  # (1, M)
-		mz_exp = mz.unsqueeze(1)          # (N, 1)
-		lower_exp = lower.unsqueeze(1)    # (N, 1)
-		upper_exp = upper.unsqueeze(1)    # (N, 1)
+		assert np.all(reference_mz[:-1] <= reference_mz[1:]), "reference_mz must be sorted ascending"
 
-		# Boolean mask for matching windows
-		in_window = (ref_mz_exp >= lower_exp) & (ref_mz_exp <= upper_exp)
+		window = reference_mz * mass_tolerance / 1e6
+		lower_bounds = reference_mz - window
+		upper_bounds = reference_mz + window
 
-		# Distance from each mz to each reference mz (masked)
-		distances = torch.where(in_window, torch.abs(ref_mz_exp - mz_exp), torch.inf)
+		for idx, (original_mz, original_intensity) in enumerate(zip(original_mzs_list, original_intensities_list)):
+			if original_mz.size == 0:
+				continue
 
-		# Find index of closest ref_mz within window
-		nearest_idx = torch.argmin(distances, axis=1)
-		valid = torch.any(in_window, axis=1)  # mz values that found a match
+			original_mz = original_mz.astype(reference_mz.dtype)
 
-		# Only keep valid mappings
-		valid_idx = nearest_idx[valid]
-		valid_intensity = intensity[valid]
+			if not np.all(original_mz[:-1] <= original_mz[1:]):
+				sort_idx = np.argsort(original_mz)
+				original_mz = original_mz[sort_idx]
+				original_intensity = original_intensity[sort_idx]
 
-		# Accumulate using scatter_add for efficient summation
-		result = torch.zeros_like(ref_mz, dtype=intensity.dtype)
-		result.scatter_add_(0, valid_idx, valid_intensity)
+			# For each original mz peak, find all overlapping reference bins
+			for peak_mz, peak_int in zip(original_mz, original_intensity):
+				# Compute ppm distance to all reference_mz points
+				ppm_diff = np.abs(reference_mz - peak_mz) / peak_mz * 1e6
+				in_window_idx = np.where(ppm_diff <= mass_tolerance)[0]
 
-		return result.cpu().numpy()
+				if in_window_idx.size == 0:
+					# Peak doesn't fall in any bin, intensity lost here
+					continue
+
+				# Compute weights as inverse distance (add small epsilon to prevent div0)
+				distances = ppm_diff[in_window_idx]
+				weights = 1 / (distances + 1e-9)
+				weights_sum = weights.sum()
+
+				# Normalize weights so sum to 1
+				weights /= weights_sum
+
+				# Distribute intensity proportionally to the bins
+				for w_idx, w in zip(in_window_idx, weights):
+					result_matrix[idx, w_idx] += peak_int * w
+
+		return result_matrix
 
 	def _annotate_reference_mz(self, mz_vector: np.ndarray[np.float32], ion_mode: MsiIonMode, mass_tolerance: int = 10) -> np.ndarray:
 		'''
@@ -930,8 +949,6 @@ class MsiDataset:
 					mass_tolerance=mass_tolerance
 				)
 
-		
-
 		# Now that the global reference M/Z vectors are computed, process each sample to interpolate the intensities
 		for sample in tqdm.tqdm(self.samples, desc="3/4 - Aligning intensities to reference M/Z", unit="sample"):
 			self.interpolated[sample.sample_id] = {MsiIonMode.POSITIVE: None, MsiIonMode.NEGATIVE: None}
@@ -941,29 +958,54 @@ class MsiDataset:
 			intensities = sample.load_intensities()
 			original_mzs = sample.load_mz_vectors()
 
+			total_intensities = 0
+			for mode in sample.ion_modes:
+				for intensity_vector in intensities[mode]:
+					total_intensities += intensity_vector.sum()
+
 			# Process each ion mode separately
 			for mode in sample.ion_modes:
-				# Define the final data matrix to store the intensities values
-				merged_intensities = np.zeros((len(intensities[mode]), len(self.reference_mz[mode])), dtype = sample._metadata[mode][MsiMetadata.INTENSITIES_DTYPE])
+				merged_intensities = np.zeros((len(intensities[mode]), len(self.reference_mz[mode])),
+											dtype=sample._metadata[mode][MsiMetadata.INTENSITIES_DTYPE])
 
-				for index in range(0, merged_intensities.shape[0]):
-					# Interpolate the intensities values to the unified M/Z values
-					merged_intensities[index, :] = self._interpolate_intensities(
-						original_mzs[mode][index],
-						intensities[mode][index],
-						self.reference_mz[mode],
-						mass_tolerance=mass_tolerance
-					)
+				# Consider only the datapoints for the current ion mode
+				intensities_mode = intensities[mode]
+				original_mzs_mode = original_mzs[mode]
+				datapoints = len(intensities_mode)
+
+				# Determine chunk size for each worker
+				num_workers = min(os.cpu_count() or 1, datapoints)
+				chunk_size = (datapoints + num_workers - 1) // num_workers  # ceil division
+
+				# Split data into contiguous chunks: lists of arrays
+				chunks = [
+					(original_mzs_mode[start:end], intensities_mode[start:end])
+					for start, end in [(i * chunk_size, min((i + 1) * chunk_size, datapoints)) for i in range(num_workers)]
+				]
+
+				# Worker function which partially fixes reference_mz and mass_tolerance
+				worker_func = partial(self._interpolate_intensities, reference_mz=self.reference_mz[mode], mass_tolerance=mass_tolerance)
+
+				with concurrent.futures.ProcessPoolExecutor(max_workers=num_workers) as executor:
+					# Submit chunks to workers
+					futures = [executor.submit(worker_func, orig_chunk, intens_chunk) for orig_chunk, intens_chunk in chunks]
+					results = [f.result() for f in futures]
+
+				# Concatenate results in correct order into final array
+				current_idx = 0
+				for chunk_result in results:
+					chunk_len = chunk_result.shape[0]
+					merged_intensities[current_idx:current_idx + chunk_len, :] = chunk_result
+					current_idx += chunk_len
 
 				self.interpolated[sample.sample_id][mode] = merged_intensities
 
-				# Apply intensity normalization
+				# Intensity normalization
 				if intensity_normalization == MsiIntensityNormalization.TIC:
-					# Total Ion Current normalization
 					tic = merged_intensities.sum(axis=1, keepdims=True)
 					tic[tic == 0] = 1  # Prevent division by zero
 					merged_intensities = merged_intensities / tic
-				
+
 				self.normalized[sample.sample_id][mode] = merged_intensities
 
 		for sample in self.samples:

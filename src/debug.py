@@ -7,7 +7,7 @@ from constants import MsiPreprocessingParams, MicroscopyImageProcessingParams, M
 from constants import SegmentationBackgroundColor, RamanPreprocessingParams
 
 if __name__ == "__main__":
-    PATH = "/staging/leuven/stg_00077/projects/shared/FOCUS/p_PDA/d_C1/"
+    PATH = "/mnt/data/lorenzo/FOCUS/p_OtF/d_prostate/"
     HF_TOKEN = "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"
 
     # Define the MSI preprocessing settings
