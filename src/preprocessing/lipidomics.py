@@ -6,6 +6,7 @@ import pandas as pd
 import xml.etree.ElementTree as ET
 import concurrent.futures
 from numba import njit
+from joblib import Parallel, delayed
 from functools import partial
 from constants import ImzMLFileParser, MsiIntensityNormalization, MsiMetadata, MsiIonMode
 
@@ -926,6 +927,7 @@ class MsiDataset:
 						batch_size=batch_size
 					)
 				)
+			del raw_mz  # Free memory
 
 		# Compute the global reference M/Z vector for each ion mode. No frequency thresholding is applied here
 		for mode in reference_mz_samples.keys():
@@ -958,15 +960,9 @@ class MsiDataset:
 			intensities = sample.load_intensities()
 			original_mzs = sample.load_mz_vectors()
 
-			total_intensities = 0
-			for mode in sample.ion_modes:
-				for intensity_vector in intensities[mode]:
-					total_intensities += intensity_vector.sum()
-
 			# Process each ion mode separately
 			for mode in sample.ion_modes:
-				merged_intensities = np.zeros((len(intensities[mode]), len(self.reference_mz[mode])),
-											dtype=sample._metadata[mode][MsiMetadata.INTENSITIES_DTYPE])
+				merged_intensities = np.zeros((len(intensities[mode]), len(self.reference_mz[mode])), dtype=sample._metadata[mode][MsiMetadata.INTENSITIES_DTYPE])
 
 				# Consider only the datapoints for the current ion mode
 				intensities_mode = intensities[mode]
@@ -984,12 +980,17 @@ class MsiDataset:
 				]
 
 				# Worker function which partially fixes reference_mz and mass_tolerance
-				worker_func = partial(self._interpolate_intensities, reference_mz=self.reference_mz[mode], mass_tolerance=mass_tolerance)
+				worker_func = partial(self._interpolate_intensities, 
+                     reference_mz=self.reference_mz[mode], 
+                     mass_tolerance=mass_tolerance)
 
-				with concurrent.futures.ProcessPoolExecutor(max_workers=num_workers) as executor:
-					# Submit chunks to workers
-					futures = [executor.submit(worker_func, orig_chunk, intens_chunk) for orig_chunk, intens_chunk in chunks]
-					results = [f.result() for f in futures]
+				# Joblib parallel execution - auto-manages processes
+				results = Parallel(n_jobs=num_workers, 
+								backend='loky',      # Robust process management
+								verbose=0)(
+					delayed(worker_func)(orig_chunk, intens_chunk) 
+					for orig_chunk, intens_chunk in chunks
+				)
 
 				# Concatenate results in correct order into final array
 				current_idx = 0
@@ -1007,6 +1008,8 @@ class MsiDataset:
 					merged_intensities = merged_intensities / tic
 
 				self.normalized[sample.sample_id][mode] = merged_intensities
+			
+			del intensities, original_mzs  # Free memory
 
 		for sample in self.samples:
 			reference_mode = MsiIonMode.POSITIVE if MsiIonMode.POSITIVE in sample.ion_modes else MsiIonMode.NEGATIVE
