@@ -8,8 +8,9 @@ import concurrent.futures
 from numba import njit
 from joblib import Parallel, delayed
 from functools import partial
-from constants import ImzMLFileParser, MsiIntensityNormalization, MsiMetadata, MsiIonMode
 
+import utils
+from constants import ImzMLFileParser, MsiIntensityNormalization, MsiMetadata, MsiIonMode
 from constants import MODALITY_PREPROCESSING, MODALITY_PREPROCESSING_MERGED
 
 class MsiSample:
@@ -679,7 +680,7 @@ class MsiDataset:
 		max_chunks_mem = int(np.ceil(total_data_bytes / max_chunk_bytes))
 
 		# Number of logical CPU cores
-		n_cores = os.cpu_count() or 1
+		n_cores = utils.available_cpus() or 1
 
 		# Choose number of chunks limited by cores and memory
 		n_chunks = max(n_cores, max_chunks_mem)
@@ -970,7 +971,7 @@ class MsiDataset:
 				datapoints = len(intensities_mode)
 
 				# Determine chunk size for each worker
-				num_workers = min(os.cpu_count() or 1, datapoints)
+				num_workers = min(utils.available_cpus() or 1, datapoints)
 				chunk_size = (datapoints + num_workers - 1) // num_workers  # ceil division
 
 				# Split data into contiguous chunks: lists of arrays
@@ -1018,8 +1019,8 @@ class MsiDataset:
 			physical_coords = sample._metadata[reference_mode][MsiMetadata.PHYSICAL_COORDINATES]				# Shape (N, 2)
 			raster_coords = sample._metadata[reference_mode][MsiMetadata.PIXEL_COORDINATES]						# Shape (N, 2, 2)
 			rows = self.interpolated[sample_id][reference_mode].shape[0]										# Shape (N, )
-			positive_cols = self.interpolated[sample_id][MsiIonMode.POSITIVE].shape[1] if MsiIonMode.POSITIVE in sample.ion_modes else 0	# Shape (M1, )
-			negative_cols = self.interpolated[sample_id][MsiIonMode.NEGATIVE].shape[1] if MsiIonMode.NEGATIVE in sample.ion_modes else 0	# Shape (M2, )
+			positive_cols = self.reference_mz[MsiIonMode.POSITIVE].shape[0] if MsiIonMode.POSITIVE in self.reference_mz else 0	# Shape (M1, )
+			negative_cols = self.reference_mz[MsiIonMode.NEGATIVE].shape[0] if MsiIonMode.NEGATIVE in self.reference_mz else 0	# Shape (M2, )
 			rows_dtype = self.interpolated[sample_id][MsiIonMode.POSITIVE].dtype if MsiIonMode.POSITIVE in sample.ion_modes else self.interpolated[sample_id][MsiIonMode.NEGATIVE].dtype
 
 			merged_interpolated = np.zeros((
@@ -1042,20 +1043,12 @@ class MsiDataset:
 					self.lipid_annotations[MsiIonMode.NEGATIVE] if MsiIonMode.NEGATIVE in self.lipid_annotations else np.zeros_like(self.reference_mz[MsiIonMode.NEGATIVE], dtype=str)
 				])
 			
-			# Merge the two ion modes
-			if sample.double_ion_mode:
-				merged_interpolated[:, :self.interpolated[sample_id][MsiIonMode.POSITIVE].shape[1]] = self.interpolated[sample_id][MsiIonMode.POSITIVE]
-				merged_interpolated[:, self.interpolated[sample_id][MsiIonMode.POSITIVE].shape[1]:] = self.interpolated[sample_id][MsiIonMode.NEGATIVE]
+			
+			merged_interpolated[:, :self.interpolated[sample_id][MsiIonMode.POSITIVE].shape[1]] = self.interpolated[sample_id][MsiIonMode.POSITIVE] if MsiIonMode.POSITIVE in sample.ion_modes else 0.0
+			merged_interpolated[:, self.interpolated[sample_id][MsiIonMode.POSITIVE].shape[1]:] = self.interpolated[sample_id][MsiIonMode.NEGATIVE] if MsiIonMode.NEGATIVE in sample.ion_modes else 0.0
 
-				merged_normalized[:, :self.normalized[sample_id][MsiIonMode.POSITIVE].shape[1]] = self.normalized[sample_id][MsiIonMode.POSITIVE]
-				merged_normalized[:, self.normalized[sample_id][MsiIonMode.POSITIVE].shape[1]:] = self.normalized[sample_id][MsiIonMode.NEGATIVE]
-			else:
-				if sample.ion_mode == MsiIonMode.POSITIVE:
-					merged_interpolated = self.interpolated[sample_id][MsiIonMode.POSITIVE]
-					merged_normalized = self.normalized[sample_id][MsiIonMode.POSITIVE]
-				else:
-					merged_interpolated = self.interpolated[sample_id][MsiIonMode.NEGATIVE]
-					merged_normalized = self.normalized[sample_id][MsiIonMode.NEGATIVE]
+			merged_normalized[:, :self.normalized[sample_id][MsiIonMode.POSITIVE].shape[1]] = self.normalized[sample_id][MsiIonMode.POSITIVE] if MsiIonMode.POSITIVE in sample.ion_modes else 0.0 
+			merged_normalized[:, self.normalized[sample_id][MsiIonMode.POSITIVE].shape[1]:] = self.normalized[sample_id][MsiIonMode.NEGATIVE] if MsiIonMode.NEGATIVE in sample.ion_modes else 0.0
 
 			# Create the AnnData object
 			self.adata = ad.AnnData(

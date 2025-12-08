@@ -1,5 +1,15 @@
 import numpy as np
 import constants as constants
+import os
+import multiprocessing
+
+def available_cpus():
+    try:
+        # Linux: respects affinity (Slurm, cpuset cgroups, taskset)
+        return len(os.sched_getaffinity(0))
+    except AttributeError:
+        # Non-Linux fallback
+        return multiprocessing.cpu_count()
 
 def parse_config(config: dict) -> None:
     """
