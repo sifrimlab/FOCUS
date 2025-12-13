@@ -441,18 +441,93 @@ class MsiSample:
 				self._metadata[mode][MsiMetadata.RASTER_SIZE]
 			)
 
-	def load_mz_vectors(self) -> dict[list[list[np.float32 | np.float64]]]:
+	def _filter_datapoint_without_annotations(self, mz_vectors: list[np.ndarray], database: pd.DataFrame, mass_tolerance: int, ion_mode: MsiIonMode) -> list[int]:
 		'''
-		Load the M/Z vectors from the binary IBD files.
+		Scan the given M/Z vectors and filter out those that do not contain any annotated lipids
+
+		Parameters
+		----------
+		mz_vectors : list[np.ndarray]
+			List of M/Z vectors to filter.
+		database : pd.DataFrame
+			Lipid annotation database.
+		mass_tolerance : int
+			Mass tolerance in ppm to match the M/Z values against the lipid annotation database.
+		ion_mode: MsiIonMode
+			Ion mode of the sample.
+
+		Returns
+		-------
+		list[int]
+			List of indices of the M/Z vectors that contain at least one annotated lipid.
+		'''
+
+
+		# Get the reference masses from the database for the given ion mode
+		masses = database[database['ion_mode'] == ion_mode]['ionized_mass'].to_numpy(dtype=np.float32)
+		masses.sort()
+
+		# Conver the mass tolerance from ppm to absolute
+		tol = mass_tolerance * 1e-6
+
+		keep_indices = []
+
+		for i, arr in enumerate(mz_vectors):
+			a = np.asarray(arr, dtype=float).ravel()
+
+			# For each datapoint, find insertion indices in sorted masses
+			idx = np.searchsorted(masses, a)  # shape = a.shape
+
+			# Candidates on the left and right
+			left_idx  = np.clip(idx - 1, 0, len(masses) - 1)
+			right_idx = np.clip(idx,     0, len(masses) - 1)
+
+			# Compute distances to nearest masses
+			dist_left  = np.abs(a - masses[left_idx])
+			dist_right = np.abs(a - masses[right_idx])
+
+			# minimal distance to any mass for each element of a
+			min_dist = np.minimum(dist_left, dist_right)
+
+			# check if at least one element is within tolerance
+			if np.any(min_dist <= tol):
+				keep_indices.append(i)
+
+		return keep_indices
+
+	def load_payload(self, mass_tollerance: int | None = None, annotation_db: pd.DataFrame | None = None, mz_only: bool = False) -> tuple[dict[list[list[np.float32 | np.float64]]]]:
+		'''
+		Load the M/Z vectors and the corresponding intensities from the binary IBD files.
+		If the sample contains both ion modes, load the data for both modes.
+		Before loading, each datapoint is evaluated against the lipid annotation database to filter spots
+		that do not contain any annotated lipids. If the database is not provided, the filter is skipped.
+
+		Parameters
+		----------
+		annotation_db: pd.DataFrame
+			Database containing the annotated ionized_masses and the ion_mode
+		mass_tollerance : int
+			Mass tollerance in ppm to match the M/Z values against the lipid annotation database.
+		mz_only : bool
+			If True, only the M/Z vectors are loaded. If False, both M/Z and intensity vectors are loaded.
 
 		Returns
 		----------
-		dict[list[list[np.float32]]]
+
+		mz_vectors:	dict[list[list[np.float32]]]
 			A dictionary with the M/Z vectors for each ion mode.
 			Each ion mode contains a list of M/Z vectors, one for each spectrum. Each M/Z vector is a list of variable length.
+		intensity_vectors:	dict[list[list[np.float32]]]
+			A dictionary with the intensity vectors for each ion mode.
 		'''
 
 		mz_vectors = {}
+		intensity_vectors = {}
+
+		if annotation_db is not None and isinstance(annotation_db, pd.DataFrame) == False:
+			raise ValueError("If provided, annotation_db must be a pd.DataFrame")
+		if annotation_db is not None and mass_tollerance is None:
+			raise ValueError("Mass tollerance must be provided if annotation_db is provided")
 
 		# For each ion mode
 		for mode in self._metadata.keys():
@@ -466,34 +541,41 @@ class MsiSample:
 				self._metadata[mode][MsiMetadata.MZ_BINARY_METADATA][i, 2]
 			) for i in range(self._metadata[mode][MsiMetadata.MZ_BINARY_METADATA].shape[0])]
 
-		return mz_vectors
-	
-	def load_intensities(self) -> dict[list[list[np.float32 | np.float64]]]:
-		'''
-		Load the intensity vectors from the binary IBD files.
+			if mz_only == False:
+				# Define an utility to read the intensity values from the binary file
+				read_intensities = lambda count, offset: np.fromfile(self._binary_files[mode], dtype = self._metadata[mode][MsiMetadata.INTENSITIES_DTYPE], count = count, offset = offset)
 
-		Returns
-		----------
-		dict[list[list[np.float32]]]
-			A dictionary with the intensity vectors for each ion mode.
-			Each ion mode contains a list of intensity vectors, one for each spectrum. Each intensity vector is a list of variable length.
-		'''
+				# Read the intensity values for each spectrum
+				intensity_vectors[mode] = [read_intensities(
+					self._metadata[mode][MsiMetadata.INTENSITIES_BINARY_METADATA][i, 0],
+					self._metadata[mode][MsiMetadata.INTENSITIES_BINARY_METADATA][i, 2]
+				) for i in range(self._metadata[mode][MsiMetadata.INTENSITIES_BINARY_METADATA].shape[0])]
 
-		intensity_vectors = {}
+			if annotation_db is not None:
+				# Filter the datapoints that do not contain any annotated lipids
+				keep_indices = self._filter_datapoint_without_annotations(
+					mz_vectors[mode],
+					annotation_db,
+					mass_tollerance,
+					mode
+				)
 
-		# For each ion mode
-		for mode in self._metadata.keys():
+				full_length = len(mz_vectors[mode])
 
-			# Define an utility to read the intensity values from the binary file
-			read_intensities = lambda count, offset: np.fromfile(self._binary_files[mode], dtype = self._metadata[mode][MsiMetadata.INTENSITIES_DTYPE], count = count, offset = offset)
+				# Apply the filtering to the M/Z vectors and to intensity vectors
+				mz_vectors[mode] = [mz_vectors[mode][i] for i in keep_indices]
 
-			# Read the intensity values for each spectrum
-			intensity_vectors[mode] = [read_intensities(
-				self._metadata[mode][MsiMetadata.INTENSITIES_BINARY_METADATA][i, 0],
-				self._metadata[mode][MsiMetadata.INTENSITIES_BINARY_METADATA][i, 2]
-			) for i in range(self._metadata[mode][MsiMetadata.INTENSITIES_BINARY_METADATA].shape[0])]
+				if mz_only == False:
+					intensity_vectors[mode] = [intensity_vectors[mode][i] for i in keep_indices]
 
-		return intensity_vectors
+				# Filter the coordinates in the metadata (only if they have not been filtered before)
+				if len(self._metadata[mode][MsiMetadata.PHYSICAL_COORDINATES]) == full_length:
+					keep_indices = np.asarray(keep_indices, dtype=int)
+					self._metadata[mode][MsiMetadata.PHYSICAL_COORDINATES] = self._metadata[mode][MsiMetadata.PHYSICAL_COORDINATES][keep_indices]
+					self._metadata[mode][MsiMetadata.PIXEL_COORDINATES] = self._metadata[mode][MsiMetadata.PIXEL_COORDINATES][keep_indices]
+
+
+		return mz_vectors, intensity_vectors
 
 @njit
 def cluster_unique_mz_chunk(unique_mz, counts, mass_tolerance_ppm):
@@ -918,7 +1000,7 @@ class MsiDataset:
 
 		# For each ion mode in each sample, compute the reference M/Z vector
 		for sample in tqdm.tqdm(self.samples, desc="2/4 - Computing reference M/Z vectors", unit="sample"):
-			raw_mz = sample.load_mz_vectors()
+			raw_mz = sample.load_payload(annotation_db=self.lipid_annotation_db, mass_tollerance=mass_tolerance, mz_only=True)[0]
 			for mode in sample.ion_modes:
 				reference_mz_samples[mode].append(
 					self._compute_reference_mz(
@@ -958,8 +1040,7 @@ class MsiDataset:
 			self.normalized[sample.sample_id] = {MsiIonMode.POSITIVE: None, MsiIonMode.NEGATIVE: None}
 
 			# Load the intensities and M/Z values
-			intensities = sample.load_intensities()
-			original_mzs = sample.load_mz_vectors()
+			original_mzs, intensities = sample.load_payload(annotation_db=self.lipid_annotation_db, mass_tollerance=mass_tolerance, mz_only=False)
 
 			# Process each ion mode separately
 			for mode in sample.ion_modes:
