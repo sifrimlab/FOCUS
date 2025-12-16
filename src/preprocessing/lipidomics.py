@@ -117,6 +117,36 @@ def merge_chunks(prev_mz, prev_w, curr_mz, curr_w, mass_tolerance_ppm):
 
 	return np.array(merged_mz), np.array(merged_w)
 
+@njit
+def interpolate_single(original_mz, original_intensity, reference_mz, mass_tolerance):
+    """Numba-optimized function to interpolate a single spectrum onto a reference M/Z grid using weighted averaging."""
+    n_ref = len(reference_mz)
+    result = np.zeros(n_ref, dtype=original_intensity.dtype)
+    mz_tol = mass_tolerance * 1e-6
+    
+    if len(original_mz) == 0:
+        return result
+    
+    # Single pass over peaks (no ref_batch_size needed)
+    for i in range(len(original_mz)):
+        mz_peak = original_mz[i]
+        intens = original_intensity[i]
+        mz_low = mz_peak * (1 - mz_tol)
+        mz_high = mz_peak * (1 + mz_tol)
+        
+        left = np.searchsorted(reference_mz, mz_low)
+        right = np.searchsorted(reference_mz, mz_high)
+        
+        if left < right:
+            slice_mz = reference_mz[left:right]
+            ppm_diff = np.abs(slice_mz - mz_peak) / mz_peak * 1e6
+            weights_raw = 1.0 / (ppm_diff + 1e-9)
+            weights_sum = np.sum(weights_raw)
+            if weights_sum > 0:
+                result[left:right] += intens * (weights_raw / weights_sum)
+    
+    return result
+
 class MsiSample:
 	def __init__(
 			self,
@@ -1071,46 +1101,33 @@ class MsiDataset:
 			A 2D array of shape (n_datapoints, n_ref) containing the interpolated intensities.
 		"""
 		n_datapoints = len(original_mzs_list)
-		n_ref = reference_mz.size
-
+		n_ref = len(reference_mz)
+		
 		if n_datapoints == 0 or n_ref == 0:
-			return np.zeros((n_datapoints, n_ref), dtype=reference_mz.dtype)
-
-		result_matrix = np.zeros((n_datapoints, n_ref), dtype=original_intensities_list[0].dtype)
-
-		assert np.all(reference_mz[:-1] <= reference_mz[1:]), "reference_mz must be sorted ascending"
-
+			return np.zeros((n_datapoints, n_ref), dtype=original_intensities_list[0].dtype)
+		
+		out_dtype = original_intensities_list[0].dtype
+		result_matrix = np.zeros((n_datapoints, n_ref), dtype=out_dtype)
+		
 		for idx, (original_mz, original_intensity) in enumerate(zip(original_mzs_list, original_intensities_list)):
 			if original_mz.size == 0:
 				continue
-
-			original_mz = original_mz.astype(reference_mz.dtype)
-
-			if not np.all(original_mz[:-1] <= original_mz[1:]):
-				sort_idx = np.argsort(original_mz)
-				original_mz = original_mz[sort_idx]
-				original_intensity = original_intensity[sort_idx]
-
-			# Vectorized: compute distances for all peaks vs all ref bins
-			peak_mz_arr = original_mz[:, np.newaxis]  # (n_peaks, 1)
-			ref_mz_arr = reference_mz[np.newaxis, :]   # (1, n_ref)
-			ppm_diff = np.abs(ref_mz_arr - peak_mz_arr) / peak_mz_arr * 1e6  # (n_peaks, n_ref)
-
-			mask = ppm_diff <= mass_tolerance  # (n_peaks, n_ref) boolean
-
-			# Inverse distance weights, masked
-			weights_raw = 1.0 / (ppm_diff + 1e-9) * mask  # zero where no overlap
-
-			# Sum weights per peak (across ref bins)
-			weights_sum_per_peak = np.sum(weights_raw, axis=1, keepdims=True) + 1e-12  # (n_peaks, 1)
-
-			# Normalized weights per peak
-			normalized_weights = weights_raw / weights_sum_per_peak  # (n_peaks, n_ref)
-
-			# Peak contributions: intensity × weight → sum over peaks
-			peak_contribs = original_intensity[:, np.newaxis] * normalized_weights  # (n_peaks, n_ref)
-			result_matrix[idx] += np.sum(peak_contribs, axis=0)  # (n_ref,)
-
+				
+			mz = original_mz.astype(reference_mz.dtype, copy=False)
+			intens = original_intensity
+			
+			if mz.size != intens.size:
+				raise ValueError("mz and intensity must have same length")
+			
+			# Sort once (your existing logic)
+			if not np.all(mz[:-1] <= mz[1:]):
+				order = np.argsort(mz)
+				mz = mz[order]
+				intens = intens[order]
+			
+			# THE KEY CHANGE: Use searchsorted version
+			result_matrix[idx] = interpolate_single(mz, intens, reference_mz, mass_tolerance)
+		
 		return result_matrix
 
 	def _annotate_reference_mz(self, mz_vector: np.ndarray[np.float32], ion_mode: MsiIonMode, mass_tolerance: int) -> np.ndarray:
@@ -1525,11 +1542,11 @@ class MsiDataset:
 				])
 			
 			
-			merged_interpolated[:, :self.interpolated[sample_id][MsiIonMode.POSITIVE].shape[1]] = self.interpolated[sample_id][MsiIonMode.POSITIVE] if MsiIonMode.POSITIVE in sample.ion_modes else 0.0
-			merged_interpolated[:, self.interpolated[sample_id][MsiIonMode.POSITIVE].shape[1]:] = self.interpolated[sample_id][MsiIonMode.NEGATIVE] if MsiIonMode.NEGATIVE in sample.ion_modes else 0.0
+			merged_interpolated[:, :positive_cols] = self.interpolated[sample_id][MsiIonMode.POSITIVE] if MsiIonMode.POSITIVE in sample.ion_modes else 0.0
+			merged_interpolated[:, positive_cols:] = self.interpolated[sample_id][MsiIonMode.NEGATIVE] if MsiIonMode.NEGATIVE in sample.ion_modes else 0.0
 
-			merged_normalized[:, :self.normalized[sample_id][MsiIonMode.POSITIVE].shape[1]] = self.normalized[sample_id][MsiIonMode.POSITIVE] if MsiIonMode.POSITIVE in sample.ion_modes else 0.0 
-			merged_normalized[:, self.normalized[sample_id][MsiIonMode.POSITIVE].shape[1]:] = self.normalized[sample_id][MsiIonMode.NEGATIVE] if MsiIonMode.NEGATIVE in sample.ion_modes else 0.0
+			merged_normalized[:, :positive_cols] = self.normalized[sample_id][MsiIonMode.POSITIVE] if MsiIonMode.POSITIVE in sample.ion_modes else 0.0 
+			merged_normalized[:, positive_cols:] = self.normalized[sample_id][MsiIonMode.NEGATIVE] if MsiIonMode.NEGATIVE in sample.ion_modes else 0.0
 
 			# Create the AnnData object
 			self.adata = ad.AnnData(
