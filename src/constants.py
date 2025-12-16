@@ -96,6 +96,7 @@ class MsiMetadata(_AbstractEnum):
 
 	PIXEL_COORDINATES = "pixel_coordinates"
 	PHYSICAL_COORDINATES = "physical_coordinates"
+	RASTER_COORDINATES = "raster_coordinates"
 	MZ_BINARY_METADATA = "mz_binary_metadata"
 	INTENSITIES_BINARY_METADATA = "intensities_binary_metadata"
 
@@ -143,11 +144,11 @@ class MicroscopyImageProcessingParams(_AbstractEnum):
 class MsiPreprocessingParams(_AbstractEnum):
 
 	LIPID_ANNOTATION_DB = "lipid_annotation_db"
-	
 	MASS_TOLERANCE = "mass_tolerance"
 	FREQUENCY_THRESHOLD = "frequency_threshold"
 	INTENSITY_NORMALIZATION = "intensity_normalization"
-	BATCH_SIZE = "batch_size"
+	RECALIBRATION_REFERENCE = "recalibration_reference"
+	MIN_INTENSITY_THRESHOLD = "min_intensity_threshold"
 	FORCE_RECOMPUTING = "force_recomputing"
 
 class RamanPreprocessingParams(_AbstractEnum):

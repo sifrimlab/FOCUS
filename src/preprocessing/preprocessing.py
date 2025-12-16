@@ -97,7 +97,8 @@ def preprocess_modality(path: str, modality_name: str, modality_type: str, prepr
         mass_tolerance = preprocessing_settings.get(MsiPreprocessingParams.MASS_TOLERANCE, 10)
         frequency_threshold = preprocessing_settings.get(MsiPreprocessingParams.FREQUENCY_THRESHOLD, 0.01)
         intensity_normalization = preprocessing_settings.get(MsiPreprocessingParams.INTENSITY_NORMALIZATION, MsiIntensityNormalization.TIC)
-        batch_size = preprocessing_settings.get(MsiPreprocessingParams.BATCH_SIZE, 10000)
+        recalibration_reference = preprocessing_settings.get(MsiPreprocessingParams.RECALIBRATION_REFERENCE, None)
+        min_intensity_threshold = preprocessing_settings.get(MsiPreprocessingParams.MIN_INTENSITY_THRESHOLD, 1e4)
         force_recomputing = preprocessing_settings.get(MsiPreprocessingParams.FORCE_RECOMPUTING, False)
 
         # Define the sample list
@@ -140,7 +141,8 @@ def preprocess_modality(path: str, modality_name: str, modality_type: str, prepr
             mass_tolerance=mass_tolerance,
             frequency_threshold=frequency_threshold,
             intensity_normalization=intensity_normalization,
-            batch_size=batch_size,
+            recalibration_reference=recalibration_reference,
+            min_intensity_threshold=min_intensity_threshold,
             force_recomputing=force_recomputing
         )
 
