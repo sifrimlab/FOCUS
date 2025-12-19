@@ -669,92 +669,77 @@ class MsiSample:
 	def _filter_datapoint_without_annotations(
 		self,
 		mz_vectors: list[np.ndarray],
+		intensity_vectors: list[np.ndarray],
 		database: pd.DataFrame,
 		mass_tolerance: int,
 		ion_mode: MsiIonMode,
 	) -> list[int]:
 		"""
-		Spot filtering robust to:
-		- unknown scenario (balanced / mostly foreground / mostly background / tiny tissue islands)
-		- ion-mode differences (POS/NEG)
-		- DB size differences across modes and across DBs
-
-		Key ideas:
-		- Use UNIQUE target DB hits per spot (not peak-level hit count).
-		- Estimate random hit-rate with a decoy DB (same DB, m/z shifted).
-		- Score ~ density * purity where purity=(target+1)/(decoy+1).
-		- Threshold with 2-component GMM on log(score); if ambiguous, keep more (safety).
-
-		Returns:
-			kept spot indices (0..len(mz_vectors)-1)
+		Stable v3 (POS/NEG consistent):
+		- intensity-aware target matching (unique DB hits + summed max intensity per hit)
+		- peak-shift decoys (K random ppm shifts) to estimate chance matches
+		- optional calibration only if a near-null tail exists
+		- 1D robust score (MAD-z) combining intensity, TIC, and decoy-corrected purity terms
+		- GMM model selection via BIC for n_components in {1,2,3}
+		- tissue component selection by decoy-corrected intensity: J = log1p(I) - log1p(Idec)
+		- regime decision uses both tissue_weight and intensity-weighted posterior mass W
+			to avoid NEG selecting a broad "structured background" component.
+		Notes:
+		- Requires numpy/pandas/GaussianMixture imports outside.
+		- Returns indices of kept spots.
 		"""
+		# -----------------------
+		# 0) Validate + DB subset
+		# -----------------------
+		n_spots = len(mz_vectors)
+		if len(intensity_vectors) != n_spots:
+			raise ValueError("intensity_vectors must have same length as mz_vectors")
 
-		# -----------------------
-		# 0) DB subset per mode
-		# -----------------------
 		db_subset = database[database["ion_mode"] == ion_mode]
-		if db_subset.empty:
+		if db_subset.empty or n_spots == 0:
 			return []
 
 		masses = db_subset["ionized_mass"].to_numpy(dtype=np.float64)
 		masses.sort()
-
-		n_spots = len(mz_vectors)
-		if n_spots == 0 or masses.size == 0:
+		if masses.size == 0:
 			return []
 
-		# -----------------------
-		# 1) Mode-specific knobs
-		# -----------------------
 		ion_mode_str = str(ion_mode).lower()
 		is_neg = ion_mode_str.startswith("neg") or ("neg" in ion_mode_str)
-
-		# Score weights
-		alpha = 1.30 if is_neg else 1.55   # density exponent
-		gamma = 2.80 if is_neg else 2.40   # purity exponent
-
-		# Peak-shift decoys: MUST be > tolerance; multiple shifts stabilizes null estimate
-		min_shift_ppm = float(max(50, 5 * mass_tolerance))
-		max_shift_ppm = float(max(120, 12 * mass_tolerance))
-		K = 9  # decoy replicates
-
-		# GMM settings
-		min_candidates_for_gmm = 500
-		sep_strong = 1.25 if is_neg else 1.05
-		frac_tiny = 0.06
-		frac_huge = 0.92
-
-		# Thresholds after calibration (purity_adj ~ 1 for null/background-like)
-		purity_bg = 1.05
-		purity_tissue = 1.35 if is_neg else 1.45
-
-		# Additional guard: balanced requires some "above-null" evidence in excess
-		excess_bal_min = 2 if is_neg else 3
-
-		# Posterior cutoffs
-		post_bg = 0.85
-		post_bal = 0.70
-		post_tissue = 0.10
-
-		# Quantile fallbacks on log(score)
-		q_bg = 0.98      # keep top 2%
-		q_mid = 0.95     # keep top 5%
-		q_tissue = 0.01  # drop bottom 1%
-
 		eps = 1e-12
 
 		# -----------------------
-		# 2) Peak-shift decoy shifts
+		# 1) Hyperparameters (mode aware, but conservative)
 		# -----------------------
+		# decoy peak shifts (ppm), must be > tolerance
+		min_shift_ppm = float(max(50, 5 * mass_tolerance))
+		max_shift_ppm = float(max(120, 12 * mass_tolerance))
+		K = 7
 		rng = np.random.default_rng(0)
-		peak_shifts_ppm = rng.uniform(min_shift_ppm, max_shift_ppm, size=K) * rng.choice([-1.0, 1.0], size=K)
+		shifts_ppm = rng.uniform(min_shift_ppm, max_shift_ppm, size=K) * rng.choice([-1.0, 1.0], size=K)
+
+		# score weights: NEG leans more on purity terms
+		gamma_T = 1.35 if is_neg else 0.95
+		gamma_I = 2.40 if is_neg else 1.70
+		alpha = 1.20 if is_neg else 1.25
+
+		min_candidates_for_gmm = 500
+
+		# regime thresholds (do not hardcode "10k"; use posterior/intensity mass instead)
+		sparse_weight = 0.10     # tissue component weight <= 10% -> potentially sparse
+		sparse_W = 0.15          # intensity mass fraction <= 15% -> sparse
+		tissue_weight_hi = 0.90  # mostly tissue
+		tissue_W_hi = 0.80       # mostly tissue
+
+		post_sparse = 0.90
+		post_bal = 0.60
 
 		# -----------------------
-		# 3) Unique-hit matcher
+		# 2) Matching helper (unique DB hits + summed max intensity per hit)
 		# -----------------------
-		def _unique_match_count(peaks: np.ndarray, ref_masses: np.ndarray) -> int:
+		def _match_unique_and_intensity(peaks: np.ndarray, intens: np.ndarray, ref_masses: np.ndarray):
 			if peaks.size == 0:
-				return 0
+				return 0, 0.0
 
 			idx = np.searchsorted(ref_masses, peaks)
 			left = np.clip(idx - 1, 0, ref_masses.size - 1)
@@ -770,191 +755,188 @@ class MsiSample:
 			within_right = dist_right <= tol_right
 			within = within_left | within_right
 			if not np.any(within):
-				return 0
+				return 0, 0.0
 
 			w = np.where(within)[0]
 			chosen = np.where(within_left[w], left[w], right[w])
-			return int(np.unique(chosen).size)
+
+			best = {}
+			for db_idx, peak_idx in zip(chosen, w):
+				v = float(intens[peak_idx])
+				key = int(db_idx)
+				prev = best.get(key)
+				if prev is None or v > prev:
+					best[key] = v
+
+			T = len(best)
+			I = float(np.sum(list(best.values()))) if T > 0 else 0.0
+			return T, I
+
+		def _robust_z(x: np.ndarray) -> np.ndarray:
+			med = np.median(x)
+			mad = np.median(np.abs(x - med)) + eps
+			return (x - med) / (1.4826 * mad + eps)
 
 		# -----------------------
-		# 4) Per-spot statistics
+		# 3) Per-spot target/decoy stats
 		# -----------------------
-		n_spots = len(mz_vectors)
 		n_peaks = np.zeros(n_spots, dtype=np.int32)
-		n_tgt = np.zeros(n_spots, dtype=np.int32)
-		n_dec = np.zeros(n_spots, dtype=np.int32)
+		TIC = np.zeros(n_spots, dtype=np.float64)
 
-		for i, arr in enumerate(mz_vectors):
-			a = np.asarray(arr, dtype=np.float64).ravel()
-			n_peaks[i] = a.size
-			if a.size == 0:
+		T = np.zeros(n_spots, dtype=np.int32)
+		I = np.zeros(n_spots, dtype=np.float64)
+
+		Tdec = np.zeros(n_spots, dtype=np.float64)
+		Idec = np.zeros(n_spots, dtype=np.float64)
+
+		for i in range(n_spots):
+			mz = np.asarray(mz_vectors[i], dtype=np.float64).ravel()
+			inten = np.asarray(intensity_vectors[i], dtype=np.float64).ravel()
+			if mz.size != inten.size:
+				raise ValueError(f"Intensity length mismatch at spot {i}: {inten.size} != {mz.size}")
+
+			n_peaks[i] = mz.size
+			if mz.size == 0:
 				continue
 
-			t = _unique_match_count(a, masses)
+			TIC[i] = float(np.sum(inten))
 
-			d_sum = 0
-			for s in peak_shifts_ppm:
-				a_dec = a * (1.0 + s * 1e-6)
-				d_sum += _unique_match_count(a_dec, masses)
-			d = int(round(d_sum / K))
+			ti, ii = _match_unique_and_intensity(mz, inten, masses)
+			T[i] = ti
+			I[i] = ii
 
-			n_tgt[i] = t
-			n_dec[i] = d
+			td_sum = 0.0
+			id_sum = 0.0
+			for s in shifts_ppm:
+				mz_d = mz * (1.0 + s * 1e-6)
+				td, id_ = _match_unique_and_intensity(mz_d, inten, masses)
+				td_sum += td
+				id_sum += id_
+			Tdec[i] = td_sum / K
+			Idec[i] = id_sum / K
 
 		valid = n_peaks > 0
-		keep_cand = valid & (n_tgt > 0)
-		if not np.any(keep_cand):
+		if not np.any(valid):
 			return []
 
-		cand_idx = np.where(keep_cand)[0]
+		# candidates: any DB evidence OR high TIC (handles weak DB in a mode)
+		tic_thr = float(np.quantile(TIC[valid], 0.80))
+		cand = valid & ((T > 0) | (TIC >= tic_thr))
+		if not np.any(cand):
+			return []
+		cand_idx = np.where(cand)[0]
 
 		# -----------------------
-		# 5) Density / purity / excess
+		# 4) Derived metrics + conditional calibration
 		# -----------------------
-		density_raw = np.zeros(n_spots, dtype=np.float64)
-		density_raw[keep_cand] = n_tgt[keep_cand] / (n_peaks[keep_cand] + eps)
+		D_raw = np.zeros(n_spots, dtype=np.float64)
+		D_raw[cand] = T[cand] / (n_peaks[cand] + eps)
+		D = D_raw / max(float(np.median(D_raw[cand])), eps)
 
-		dens_med = float(np.median(density_raw[keep_cand]))
-		dens_med = max(dens_med, eps)
-		density = density_raw / dens_med
+		PT = (T.astype(np.float64) + 1.0) / (Tdec + 1.0)
+		PI = (I + 1.0) / (Idec + 1.0)
 
-		purity = (n_tgt.astype(np.float64) + 1.0) / (n_dec.astype(np.float64) + 1.0)
-		excess = (n_tgt - n_dec).astype(np.int32)
+		ex_T = np.abs(T.astype(np.float64)[cand_idx] - Tdec[cand_idx])
+		ex_I = np.abs(np.log1p(I[cand_idx]) - np.log1p(Idec[cand_idx]))
+		near_null_exists = (float(np.quantile(ex_T, 0.10)) <= (2.0 if is_neg else 3.0)) and (float(np.quantile(ex_I, 0.10)) <= 0.5)
 
-		# -----------------------
-		# 6) Purity calibration using SMALL |excess| as null/background proxy
-		# -----------------------
-		# Pick a null set where target≈decoy (closest to random-match behavior),
-		# rather than the "most negative excess" tail (which can make purity_null << 1).
-		abs_ex = np.abs(excess[cand_idx].astype(np.float64))
-		cut = int(max(200, 0.30 * cand_idx.size))  # smallest 30% |excess|
-		null_idx = cand_idx[np.argsort(abs_ex)[:cut]]
-
-		purity_null = float(np.median(purity[null_idx]))
-		purity_null = max(purity_null, eps)
-		purity_adj = purity / purity_null
-
-		# -----------------------
-		# 7) Final score
-		# -----------------------
-		score = np.zeros(n_spots, dtype=np.float64)
-		score[keep_cand] = (np.log1p(n_tgt[keep_cand]) + 0.05) * (density[keep_cand] ** alpha) * (purity_adj[keep_cand] ** gamma)
-
-		log_s = np.log(score[cand_idx] + eps)
-		log_s_2d = log_s.reshape(-1, 1)
-
-		purity_med = float(np.median(purity_adj[keep_cand]))
-		excess_med = float(np.median(excess[keep_cand]))
-		excess_p90 = float(np.quantile(excess[keep_cand], 0.90))
-
-		# -----------------------
-		# 8) Scenario + thresholding
-		# -----------------------
-		keep_mask = np.zeros(n_spots, dtype=bool)
-		scenario = "fallback"
-		sep = float("nan")
-		frac_hi = float("nan")
-		pur_hi = float("nan")
-		pur_lo = float("nan")
-
-		def _keep_top_quantile(q: float) -> None:
-			thr = float(np.quantile(log_s, q))
-			keep_mask[cand_idx] = (log_s >= thr)
-
-		if cand_idx.size >= min_candidates_for_gmm:
-			gmm = GaussianMixture(n_components=2, covariance_type="full", random_state=0, n_init=3)
-			gmm.fit(log_s_2d)
-
-			means = gmm.means_.ravel()
-			weights = gmm.weights_.ravel()
-			hi = int(np.argmax(means))
-			lo = 1 - hi
-
-			sep = float(means[hi] - means[lo])
-			frac_hi = float(weights[hi])
-
-			post_hi = gmm.predict_proba(log_s_2d)[:, hi]  # posterior membership [web:104]
-			hi_idx = cand_idx[post_hi >= 0.5]
-			lo_idx = cand_idx[post_hi < 0.5]
-			if hi_idx.size >= 50:
-				pur_hi = float(np.median(purity_adj[hi_idx]))
-			if lo_idx.size >= 50:
-				pur_lo = float(np.median(purity_adj[lo_idx]))
-
-			# Null sanity: target–decoy methods can misbehave when assumptions are violated,
-			# so avoid trusting mixture splits if null is far from 1. [web:145][web:78]
-			null_ok = (0.80 <= purity_null <= 1.25)
-
-			# Scenario 1: mostly background (very aggressive)
-			if (
-				(frac_hi <= frac_tiny)
-				or ((purity_med <= purity_bg) and (excess_p90 <= (3 if is_neg else 5)))
-				or ((sep >= sep_strong) and (frac_hi <= 0.25) and (excess_med <= 1) and (purity_med <= purity_tissue))
-			):
-				scenario = "mostly_background"
-				keep_mask[cand_idx] = (post_hi >= post_bg)
-
-				# cap to top 2% by score (hard bg behavior)
-				kept = np.where(keep_mask)[0]
-				cap = max(1, int(0.02 * n_spots))
-				if kept.size > cap:
-					order = np.argsort(score[kept])
-					keep_mask[:] = False
-					keep_mask[kept[order[-cap:]]] = True
-
-			# Scenario 2: mostly tissue (preserve)
-			elif (frac_hi >= frac_huge) or ((purity_med >= purity_tissue) and (excess_med >= (3 if is_neg else 5))):
-				scenario = "mostly_tissue"
-				keep_mask[cand_idx] = (post_hi >= post_tissue)
-
-				if np.sum(keep_mask[cand_idx]) < int(0.99 * cand_idx.size):
-					thr = float(np.quantile(log_s, q_tissue))
-					keep_mask[cand_idx] = (log_s >= thr)
-
-			# Scenario 3: balanced (only if null ok AND excess supports real signal)
-			elif (
-				(sep >= sep_strong)
-				and null_ok
-				and np.isfinite(pur_hi) and np.isfinite(pur_lo)
-				and (pur_hi > 1.15 * pur_lo)
-				and (pur_hi >= purity_tissue)
-				and (excess_med >= excess_bal_min)
-			):
-				scenario = "balanced"
-				keep_mask[cand_idx] = (post_hi >= post_bal)
-
-			# Scenario 4: ambiguous -> aggressive quantile fallback
-			else:
-				scenario = "ambiguous"
-				if (purity_med <= purity_tissue) and (excess_med <= 1):
-					_keep_top_quantile(q_bg)
-				else:
-					_keep_top_quantile(q_mid)
-
-			#print(
-			#	f"Annotation-based filtering (peak-decoy v2): kept {int(np.sum(keep_mask))} / {n_spots} "
-			#	f"(candidates={cand_idx.size}, sep={sep:.3f}, frac_high={frac_hi:.3f}, "
-			#	f"purity_null={purity_null:.3f}, purity_med={purity_med:.3f}, pur_hi={pur_hi:.3f}, pur_lo={pur_lo:.3f}, "
-			#	f"excess_med={excess_med:.1f}, excess_p90={excess_p90:.1f}, scenario={scenario}, mode={'NEG' if is_neg else 'POS'})"
-			#)
-
+		if near_null_exists:
+			comb = _robust_z(ex_T) + _robust_z(ex_I)
+			k0 = int(max(200, 0.30 * cand_idx.size))
+			null_idx = cand_idx[np.argsort(comb)[:k0]]
+			PT_adj = PT / max(float(np.median(PT[null_idx])), eps)
+			PI_adj = PI / max(float(np.median(PI[null_idx])), eps)
 		else:
-			scenario = "smallN_fallback"
-			if (purity_med <= purity_tissue) and (excess_med <= 1):
-				_keep_top_quantile(q_bg)
-			elif (purity_med >= purity_tissue) and (excess_med >= (3 if is_neg else 5)):
-				thr = float(np.quantile(log_s, q_tissue))
-				keep_mask[cand_idx] = (log_s >= thr)
-			else:
-				_keep_top_quantile(q_mid)
+			PT_adj = PT
+			PI_adj = PI
 
-			#print(
-			#	f"Annotation-based filtering (peak-decoy v2): kept {int(np.sum(keep_mask))} / {n_spots} "
-			#	f"(candidates={cand_idx.size}, purity_null={purity_null:.3f}, purity_med={purity_med:.3f}, "
-			#	f"excess_med={excess_med:.1f}, excess_p90={excess_p90:.1f}, scenario={scenario}, mode={'NEG' if is_neg else 'POS'})"
-			#)
+		# decoy-corrected matched intensity (for tissue component identification)
+		J = np.log1p(I[cand_idx]) - np.log1p(Idec[cand_idx])  # == log(PI) up to smoothing
 
-		return np.where(keep_mask)[0].tolist()
+		# -----------------------
+		# 5) Robust 1D score for clustering
+		# -----------------------
+		f_I = _robust_z(np.log1p(I[cand_idx]))
+		f_T = _robust_z(np.log1p(T[cand_idx].astype(np.float64)))
+		f_PI = _robust_z(np.log(PI_adj[cand_idx] + eps))
+		f_PT = _robust_z(np.log(PT_adj[cand_idx] + eps))
+		f_D = _robust_z(np.log(D[cand_idx] + eps))
+		f_TIC = _robust_z(np.log1p(TIC[cand_idx]))
+
+		score1d = (
+			1.00 * f_I
+			+ 0.50 * f_T
+			+ gamma_I * f_PI
+			+ gamma_T * f_PT
+			+ 0.25 * alpha * f_D
+			+ 0.50 * f_TIC
+		)
+
+		# -----------------------
+		# 6) If too small, fallback to top tail
+		# -----------------------
+		if cand_idx.size < min_candidates_for_gmm:
+			thr = float(np.quantile(score1d, 0.95))
+			kept = cand_idx[score1d >= thr]
+			print(
+				f"Annotation-based filtering (stable v3): kept {kept.size} / {n_spots} "
+				f"(candidates={cand_idx.size}, scenario=smallN_tail, near_null={near_null_exists}, mode={'NEG' if is_neg else 'POS'})"
+			)
+			return kept.tolist()
+
+		# -----------------------
+		# 7) GMM model selection (BIC) for K in {1,2,3}
+		# -----------------------
+		X = score1d.reshape(-1, 1)
+		models = []
+		bics = []
+		for k in (1, 2, 3):
+			gmm = GaussianMixture(n_components=k, covariance_type="full", random_state=0, n_init=3)
+			gmm.fit(X)
+			models.append(gmm)
+			bics.append(gmm.bic(X))
+		gmm = models[int(np.argmin(bics))]
+
+		post = gmm.predict_proba(X)  # posterior p(component|x) [web:105]
+		labels = np.argmax(post, axis=1)
+
+		# -----------------------
+		# 8) Tissue component selection: maximize median decoy-corrected intensity J
+		# -----------------------
+		med_J = np.array([np.median(J[labels == c]) if np.any(labels == c) else -np.inf for c in range(gmm.n_components)])
+		tissue_c = int(np.argmax(med_J))
+
+		tissue_weight = float(np.mean(labels == tissue_c))
+
+		# Intensity-weighted posterior mass W (prevents NEG “structured background” from dominating)
+		Jpos = np.maximum(0.0, J)
+		W = float(np.sum(post[:, tissue_c] * Jpos) / (np.sum(Jpos) + eps))
+
+		# -----------------------
+		# 9) Regime decision + keep mask
+		# -----------------------
+		if (tissue_weight <= sparse_weight) or (W <= sparse_W):
+			scenario = "sparse_tissue"
+			keep_local = post[:, tissue_c] >= post_sparse
+		elif (tissue_weight >= tissue_weight_hi) or (W >= tissue_W_hi):
+			scenario = "mostly_tissue"
+			thr = float(np.quantile(score1d, 0.01))  # drop bottom 1%
+			keep_local = score1d >= thr
+		else:
+			scenario = "balanced"
+			keep_local = post[:, tissue_c] >= post_bal
+
+		kept = cand_idx[keep_local]
+
+		print(
+			f"Annotation-based filtering (stable v3): kept {kept.size} / {n_spots} "
+			f"(candidates={cand_idx.size}, scenario={scenario}, n_comp={gmm.n_components}, "
+			f"tissue_weight={tissue_weight:.3f}, W={W:.3f}, near_null={near_null_exists}, mode={'NEG' if is_neg else 'POS'})"
+		)
+
+		return kept.tolist()
+
+
 
 	def _recalibrate_mz_vector(
 			self, 
@@ -1113,6 +1095,7 @@ class MsiSample:
 					# Filter the datapoints that do not contain any annotated lipids
 					keep_indices.update(self._filter_datapoint_without_annotations(
 						mz_vectors=mz_vectors[mode],
+						intensity_vectors=intensity_vectors[mode],
 						database=annotation_db,
 						mass_tolerance=mass_tolerance,
 						ion_mode=mode
@@ -1835,8 +1818,10 @@ class MsiDataset:
 			ad.experimental.concat_on_disk(
 				processed_samples,
 				merged_file,
-				join='inner',           # Same features across all samples
-				uns_merge='same'     	# Keep the first uns
+				axis=0,
+				join="inner",
+				merge="same",        # keep only entries which are identical across objects
+				uns_merge="first",   # keep first .uns when keys differ
 			)
 			
 			processed_samples["merged"] = merged_file
