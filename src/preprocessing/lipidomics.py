@@ -9,6 +9,9 @@ import concurrent.futures
 from numba import njit
 from joblib import Parallel, delayed
 from functools import partial
+import scanpy as sc
+import gc
+from sklearn.mixture import GaussianMixture
 
 import utils
 from constants import ImzMLFileParser, MsiIntensityNormalization, MsiMetadata, MsiIonMode
@@ -663,67 +666,295 @@ class MsiSample:
 				self._metadata[mode][MsiMetadata.RASTER_SIZE]
 			)
 
-	def _filter_datapoint_without_annotations(self, mz_vectors: list[np.ndarray], database: pd.DataFrame, mass_tolerance: int, ion_mode: MsiIonMode, min_annotations: int) -> list[int]:
-		'''
-		Scan the given M/Z vectors and filter out those that do not contain any annotated lipids
+	def _filter_datapoint_without_annotations(
+		self,
+		mz_vectors: list[np.ndarray],
+		database: pd.DataFrame,
+		mass_tolerance: int,
+		ion_mode: MsiIonMode,
+	) -> list[int]:
+		"""
+		Spot filtering robust to:
+		- unknown scenario (balanced / mostly foreground / mostly background / tiny tissue islands)
+		- ion-mode differences (POS/NEG)
+		- DB size differences across modes and across DBs
 
-		Parameters
-		----------
-		mz_vectors : list[np.ndarray]
-			List of M/Z vectors to filter.
-		database : pd.DataFrame
-			Lipid annotation database.
-		mass_tolerance : int
-			Mass tolerance in ppm to match the M/Z values against the lipid annotation database.
-		ion_mode: MsiIonMode
-			Ion mode of the sample.
-		min_annotations : int
-			Minimum number of annotations required to keep a datapoint.
+		Key ideas:
+		- Use UNIQUE target DB hits per spot (not peak-level hit count).
+		- Estimate random hit-rate with a decoy DB (same DB, m/z shifted).
+		- Score ~ density * purity where purity=(target+1)/(decoy+1).
+		- Threshold with 2-component GMM on log(score); if ambiguous, keep more (safety).
 
-		Returns
-		-------
-		list[int]
-			List of indices of the M/Z vectors that contain at least one annotated lipid.
-		'''
+		Returns:
+			kept spot indices (0..len(mz_vectors)-1)
+		"""
 
+		# -----------------------
+		# 0) DB subset per mode
+		# -----------------------
+		db_subset = database[database["ion_mode"] == ion_mode]
+		if db_subset.empty:
+			return []
 
-		# Get the reference masses from the database for the given ion mode
-		masses = database[database['ion_mode'] == ion_mode]['ionized_mass'].to_numpy(dtype=np.float32)
+		masses = db_subset["ionized_mass"].to_numpy(dtype=np.float64)
 		masses.sort()
-		keep_indices = []
+
+		n_spots = len(mz_vectors)
+		if n_spots == 0 or masses.size == 0:
+			return []
+
+		# -----------------------
+		# 1) Mode-specific knobs
+		# -----------------------
+		ion_mode_str = str(ion_mode).lower()
+		is_neg = ion_mode_str.startswith("neg") or ("neg" in ion_mode_str)
+
+		# Score weights
+		alpha = 1.30 if is_neg else 1.55   # density exponent
+		gamma = 2.80 if is_neg else 2.40   # purity exponent
+
+		# Peak-shift decoys: MUST be > tolerance; multiple shifts stabilizes null estimate
+		min_shift_ppm = float(max(50, 5 * mass_tolerance))
+		max_shift_ppm = float(max(120, 12 * mass_tolerance))
+		K = 9  # decoy replicates
+
+		# GMM settings
+		min_candidates_for_gmm = 500
+		sep_strong = 1.25 if is_neg else 1.05
+		frac_tiny = 0.06
+		frac_huge = 0.92
+
+		# Thresholds after calibration (purity_adj ~ 1 for null/background-like)
+		purity_bg = 1.05
+		purity_tissue = 1.35 if is_neg else 1.45
+
+		# Additional guard: balanced requires some "above-null" evidence in excess
+		excess_bal_min = 2 if is_neg else 3
+
+		# Posterior cutoffs
+		post_bg = 0.85
+		post_bal = 0.70
+		post_tissue = 0.10
+
+		# Quantile fallbacks on log(score)
+		q_bg = 0.98      # keep top 2%
+		q_mid = 0.95     # keep top 5%
+		q_tissue = 0.01  # drop bottom 1%
+
+		eps = 1e-12
+
+		# -----------------------
+		# 2) Peak-shift decoy shifts
+		# -----------------------
+		rng = np.random.default_rng(0)
+		peak_shifts_ppm = rng.uniform(min_shift_ppm, max_shift_ppm, size=K) * rng.choice([-1.0, 1.0], size=K)
+
+		# -----------------------
+		# 3) Unique-hit matcher
+		# -----------------------
+		def _unique_match_count(peaks: np.ndarray, ref_masses: np.ndarray) -> int:
+			if peaks.size == 0:
+				return 0
+
+			idx = np.searchsorted(ref_masses, peaks)
+			left = np.clip(idx - 1, 0, ref_masses.size - 1)
+			right = np.clip(idx, 0, ref_masses.size - 1)
+
+			dist_left = np.abs(peaks - ref_masses[left])
+			dist_right = np.abs(peaks - ref_masses[right])
+
+			tol_left = ref_masses[left] * mass_tolerance * 1e-6
+			tol_right = ref_masses[right] * mass_tolerance * 1e-6
+
+			within_left = dist_left <= tol_left
+			within_right = dist_right <= tol_right
+			within = within_left | within_right
+			if not np.any(within):
+				return 0
+
+			w = np.where(within)[0]
+			chosen = np.where(within_left[w], left[w], right[w])
+			return int(np.unique(chosen).size)
+
+		# -----------------------
+		# 4) Per-spot statistics
+		# -----------------------
+		n_spots = len(mz_vectors)
+		n_peaks = np.zeros(n_spots, dtype=np.int32)
+		n_tgt = np.zeros(n_spots, dtype=np.int32)
+		n_dec = np.zeros(n_spots, dtype=np.int32)
 
 		for i, arr in enumerate(mz_vectors):
-			a = np.asarray(arr, dtype=float).ravel()
-			if a.size == 0 or masses.size == 0:
+			a = np.asarray(arr, dtype=np.float64).ravel()
+			n_peaks[i] = a.size
+			if a.size == 0:
 				continue
 
-			# For each datapoint, find insertion indices in sorted masses
-			idx = np.searchsorted(masses, a)  # shape = a.shape
+			t = _unique_match_count(a, masses)
 
-			# Candidates on the left and right
-			left_idx  = np.clip(idx - 1, 0, len(masses) - 1)
-			right_idx = np.clip(idx,     0, len(masses) - 1)
+			d_sum = 0
+			for s in peak_shifts_ppm:
+				a_dec = a * (1.0 + s * 1e-6)
+				d_sum += _unique_match_count(a_dec, masses)
+			d = int(round(d_sum / K))
 
-			# Compute distances to nearest masses
-			dist_left  = np.abs(a - masses[left_idx])
-			dist_right = np.abs(a - masses[right_idx])
+			n_tgt[i] = t
+			n_dec[i] = d
 
-			# Per-candidate absolute tolerances (ppm -> Da)
-			tol_left  = masses[left_idx]  * mass_tolerance * 1e-6
-			tol_right = masses[right_idx] * mass_tolerance * 1e-6
+		valid = n_peaks > 0
+		keep_cand = valid & (n_tgt > 0)
+		if not np.any(keep_cand):
+			return []
 
-			within_left  = dist_left  <= tol_left
-			within_right = dist_right <= tol_right
+		cand_idx = np.where(keep_cand)[0]
 
-			within_tol = np.logical_or(within_left, within_right)
+		# -----------------------
+		# 5) Density / purity / excess
+		# -----------------------
+		density_raw = np.zeros(n_spots, dtype=np.float64)
+		density_raw[keep_cand] = n_tgt[keep_cand] / (n_peaks[keep_cand] + eps)
 
-			# Count how many elements are within their respective tolerance
-			n_matches = np.count_nonzero(within_tol)
+		dens_med = float(np.median(density_raw[keep_cand]))
+		dens_med = max(dens_med, eps)
+		density = density_raw / dens_med
 
-			if n_matches >= min_annotations:
-				keep_indices.append(i)
+		purity = (n_tgt.astype(np.float64) + 1.0) / (n_dec.astype(np.float64) + 1.0)
+		excess = (n_tgt - n_dec).astype(np.int32)
 
-		return keep_indices
+		# -----------------------
+		# 6) Purity calibration using SMALL |excess| as null/background proxy
+		# -----------------------
+		# Pick a null set where target≈decoy (closest to random-match behavior),
+		# rather than the "most negative excess" tail (which can make purity_null << 1).
+		abs_ex = np.abs(excess[cand_idx].astype(np.float64))
+		cut = int(max(200, 0.30 * cand_idx.size))  # smallest 30% |excess|
+		null_idx = cand_idx[np.argsort(abs_ex)[:cut]]
+
+		purity_null = float(np.median(purity[null_idx]))
+		purity_null = max(purity_null, eps)
+		purity_adj = purity / purity_null
+
+		# -----------------------
+		# 7) Final score
+		# -----------------------
+		score = np.zeros(n_spots, dtype=np.float64)
+		score[keep_cand] = (np.log1p(n_tgt[keep_cand]) + 0.05) * (density[keep_cand] ** alpha) * (purity_adj[keep_cand] ** gamma)
+
+		log_s = np.log(score[cand_idx] + eps)
+		log_s_2d = log_s.reshape(-1, 1)
+
+		purity_med = float(np.median(purity_adj[keep_cand]))
+		excess_med = float(np.median(excess[keep_cand]))
+		excess_p90 = float(np.quantile(excess[keep_cand], 0.90))
+
+		# -----------------------
+		# 8) Scenario + thresholding
+		# -----------------------
+		keep_mask = np.zeros(n_spots, dtype=bool)
+		scenario = "fallback"
+		sep = float("nan")
+		frac_hi = float("nan")
+		pur_hi = float("nan")
+		pur_lo = float("nan")
+
+		def _keep_top_quantile(q: float) -> None:
+			thr = float(np.quantile(log_s, q))
+			keep_mask[cand_idx] = (log_s >= thr)
+
+		if cand_idx.size >= min_candidates_for_gmm:
+			gmm = GaussianMixture(n_components=2, covariance_type="full", random_state=0, n_init=3)
+			gmm.fit(log_s_2d)
+
+			means = gmm.means_.ravel()
+			weights = gmm.weights_.ravel()
+			hi = int(np.argmax(means))
+			lo = 1 - hi
+
+			sep = float(means[hi] - means[lo])
+			frac_hi = float(weights[hi])
+
+			post_hi = gmm.predict_proba(log_s_2d)[:, hi]  # posterior membership [web:104]
+			hi_idx = cand_idx[post_hi >= 0.5]
+			lo_idx = cand_idx[post_hi < 0.5]
+			if hi_idx.size >= 50:
+				pur_hi = float(np.median(purity_adj[hi_idx]))
+			if lo_idx.size >= 50:
+				pur_lo = float(np.median(purity_adj[lo_idx]))
+
+			# Null sanity: target–decoy methods can misbehave when assumptions are violated,
+			# so avoid trusting mixture splits if null is far from 1. [web:145][web:78]
+			null_ok = (0.80 <= purity_null <= 1.25)
+
+			# Scenario 1: mostly background (very aggressive)
+			if (
+				(frac_hi <= frac_tiny)
+				or ((purity_med <= purity_bg) and (excess_p90 <= (3 if is_neg else 5)))
+				or ((sep >= sep_strong) and (frac_hi <= 0.25) and (excess_med <= 1) and (purity_med <= purity_tissue))
+			):
+				scenario = "mostly_background"
+				keep_mask[cand_idx] = (post_hi >= post_bg)
+
+				# cap to top 2% by score (hard bg behavior)
+				kept = np.where(keep_mask)[0]
+				cap = max(1, int(0.02 * n_spots))
+				if kept.size > cap:
+					order = np.argsort(score[kept])
+					keep_mask[:] = False
+					keep_mask[kept[order[-cap:]]] = True
+
+			# Scenario 2: mostly tissue (preserve)
+			elif (frac_hi >= frac_huge) or ((purity_med >= purity_tissue) and (excess_med >= (3 if is_neg else 5))):
+				scenario = "mostly_tissue"
+				keep_mask[cand_idx] = (post_hi >= post_tissue)
+
+				if np.sum(keep_mask[cand_idx]) < int(0.99 * cand_idx.size):
+					thr = float(np.quantile(log_s, q_tissue))
+					keep_mask[cand_idx] = (log_s >= thr)
+
+			# Scenario 3: balanced (only if null ok AND excess supports real signal)
+			elif (
+				(sep >= sep_strong)
+				and null_ok
+				and np.isfinite(pur_hi) and np.isfinite(pur_lo)
+				and (pur_hi > 1.15 * pur_lo)
+				and (pur_hi >= purity_tissue)
+				and (excess_med >= excess_bal_min)
+			):
+				scenario = "balanced"
+				keep_mask[cand_idx] = (post_hi >= post_bal)
+
+			# Scenario 4: ambiguous -> aggressive quantile fallback
+			else:
+				scenario = "ambiguous"
+				if (purity_med <= purity_tissue) and (excess_med <= 1):
+					_keep_top_quantile(q_bg)
+				else:
+					_keep_top_quantile(q_mid)
+
+			#print(
+			#	f"Annotation-based filtering (peak-decoy v2): kept {int(np.sum(keep_mask))} / {n_spots} "
+			#	f"(candidates={cand_idx.size}, sep={sep:.3f}, frac_high={frac_hi:.3f}, "
+			#	f"purity_null={purity_null:.3f}, purity_med={purity_med:.3f}, pur_hi={pur_hi:.3f}, pur_lo={pur_lo:.3f}, "
+			#	f"excess_med={excess_med:.1f}, excess_p90={excess_p90:.1f}, scenario={scenario}, mode={'NEG' if is_neg else 'POS'})"
+			#)
+
+		else:
+			scenario = "smallN_fallback"
+			if (purity_med <= purity_tissue) and (excess_med <= 1):
+				_keep_top_quantile(q_bg)
+			elif (purity_med >= purity_tissue) and (excess_med >= (3 if is_neg else 5)):
+				thr = float(np.quantile(log_s, q_tissue))
+				keep_mask[cand_idx] = (log_s >= thr)
+			else:
+				_keep_top_quantile(q_mid)
+
+			#print(
+			#	f"Annotation-based filtering (peak-decoy v2): kept {int(np.sum(keep_mask))} / {n_spots} "
+			#	f"(candidates={cand_idx.size}, purity_null={purity_null:.3f}, purity_med={purity_med:.3f}, "
+			#	f"excess_med={excess_med:.1f}, excess_p90={excess_p90:.1f}, scenario={scenario}, mode={'NEG' if is_neg else 'POS'})"
+			#)
+
+		return np.where(keep_mask)[0].tolist()
 
 	def _recalibrate_mz_vector(
 			self, 
@@ -802,8 +1033,9 @@ class MsiSample:
 						# Compute the offset
 						offsets[x-1, y-1, j] = mz_arr[max_peak_idx] - ref_mz
 
-			# Compute the mean offset for each row
-			recalibration_offset[ion_mode] = np.nanmean(offsets, axis=(1, 2))  # Shape (X,)
+			# Compute the mean offset for each row. Ingore RuntimeWarnings for rows with all NaN values
+			with np.errstate(invalid="ignore"):
+				recalibration_offset[ion_mode] = np.nanmean(offsets, axis=(1, 2))  # Shape (X,)
 
 		# Apply the offsets to each M/Z vector
 		recalibrated_mz_vector = []
@@ -817,7 +1049,7 @@ class MsiSample:
 
 		return recalibrated_mz_vector, recalibration_offset
 
-	def load_payload(self, mass_tolerance: int | None = None, annotation_db: pd.DataFrame | None = None, min_annotated_lipids_per_spot: int | None = None) -> tuple[dict[list[list[np.float32 | np.float64]]]]:
+	def load_payload(self, mass_tolerance: int | None = None, annotation_db: pd.DataFrame | None = None) -> tuple[dict[list[list[np.float32 | np.float64]]]]:
 		'''
 		Load the M/Z vectors and the corresponding intensities from the binary IBD files.
 		If the sample contains both ion modes, load the data for both modes.
@@ -834,8 +1066,6 @@ class MsiSample:
 		mass_tolerance : int
 			Mass tollerance in ppm to match the M/Z values against the lipid annotation database.
 			Must be provided if annotation_db is provided.
-		min_annotated_lipids_per_spot : int
-			Minimum number of annotated lipids required to keep a datapoint.
 
 		Returns
 		----------
@@ -855,11 +1085,6 @@ class MsiSample:
 			raise ValueError("If provided, annotation_db must be a pd.DataFrame")
 		if annotation_db is not None and mass_tolerance is None:
 			raise ValueError("Mass tolerance must be provided if annotation_db is provided")
-		if min_annotated_lipids_per_spot is not None:
-			if not isinstance(min_annotated_lipids_per_spot, int) or min_annotated_lipids_per_spot <= 0:
-				raise ValueError("min_annotated_lipids_per_spot must be a positive integer")
-			if annotation_db is None:
-				raise ValueError("annotation_db must be provided if min_annotated_lipids_per_spot is provided")
 		
 		# For each ion mode
 		for mode in self._metadata.keys():
@@ -890,8 +1115,7 @@ class MsiSample:
 						mz_vectors=mz_vectors[mode],
 						database=annotation_db,
 						mass_tolerance=mass_tolerance,
-						ion_mode=mode,
-						min_annotations=min_annotated_lipids_per_spot if min_annotated_lipids_per_spot is not None else 0
+						ion_mode=mode
 					))
 
 				# Save the filtered indices
@@ -1204,7 +1428,7 @@ class MsiDataset:
 
 		rng = np.random.default_rng()
 
-		# Downsample each sample and collect per-sample mz per mode
+		# Downsample each sample and collect per-sample mz per mode. Evaluate only 10% of the spectra to reduce memory usage
 		for sample_mz in mz_vectors:
 			for mode, spectra in sample_mz.items():
 				n = len(spectra)
@@ -1373,17 +1597,17 @@ class MsiDataset:
 		reference_mz_samples: dict[MsiIonMode, list[np.float32]] = {MsiIonMode.POSITIVE: [], MsiIonMode.NEGATIVE: []}
 
 		# STEP 1: Initialize each sample to load the metadata
-		for sample in tqdm.tqdm(self.samples, desc="1/7 - Loading MSI data", unit="sample"):
+		for sample in tqdm.tqdm(self.samples, desc="1/9 - Loading MSI data", unit="sample"):
 			sample.initialize_sample()
 
 		# STEP 2: Compute the recalibration offsets for each sample. If a reference is provided, it is used directly.
 		# Otherwise, if the annotation DB is provided, the reference is computed from the annotated lipids (5 annotated lipids with the highest intensity).
 		# If the DB is not provided and the recalibration reference is not provided, no recalibration is performed.
 		if recalibration_reference is None:
-			print("2/7 - Selecting recalibration reference M/Z values from the dataset because no reference was provided.")
 			mz_vectors_all_samples = []
-			for sample in self.samples:
-				raw_mz, _, filtered_mz, _ = sample.load_payload(annotation_db=self.lipid_annotation_db, mass_tolerance=mass_tolerance, min_annotated_lipids_per_spot=50)
+
+			for sample in tqdm.tqdm(self.samples, desc="2/9 - Selecting high-confidence tissue spots", unit="sample"):
+				raw_mz, _, filtered_mz, _ = sample.load_payload(annotation_db=self.lipid_annotation_db, mass_tolerance=mass_tolerance)
 				
 				# If it was possible to filter the datapoints using the lipid annotation DB, use the filtered M/Z values
 				if filtered_mz != {}:
@@ -1392,16 +1616,24 @@ class MsiDataset:
 					mz_vectors_all_samples.append(raw_mz)
 
 				del raw_mz, filtered_mz  # Free memory
+				gc.collect()
 
 			# Compute the recalibration reference from the dataset
+			print("3/9 - Selecting recalibration reference M/Z values from the dataset and filtering background datapoints")
 			recalibration_reference = self._find_calibration_reference(
 				mz_vectors=mz_vectors_all_samples,
 				mass_tolerance=mass_tolerance,
 				number_of_references=5
 			)
 			del mz_vectors_all_samples  # Free memory
+			gc.collect()
 		else:
-			print("2/7 - Using provided recalibration reference M/Z values.")
+			# Dummy call to still filter the datapoints in each sample
+			for sample in tqdm.tqdm(self.samples, desc="2/8 - Selecting high-confidence tissue spots", unit="sample"):
+				_, _, _, _ = sample.load_payload(annotation_db=self.lipid_annotation_db, mass_tolerance=mass_tolerance)
+				gc.collect()
+
+			print("3/9 - Using provided recalibration reference M/Z values.")
 
 		# Store the recalibration reference in each sample
 		for sample in self.samples:
@@ -1410,8 +1642,8 @@ class MsiDataset:
 		
 
 		# STEP 3: For each ion mode in each sample, compute the reference M/Z vector
-		for sample in tqdm.tqdm(self.samples, desc="3/7 - Computing reference M/Z backbone for each sample", unit="sample"):
-			raw_mz, _, filtered_mz, _ = sample.load_payload(annotation_db=self.lipid_annotation_db, mass_tolerance=mass_tolerance, min_annotated_lipids_per_spot=50)
+		for sample in tqdm.tqdm(self.samples, desc="4/9 - Computing reference M/Z backbone for each sample", unit="sample"):
+			raw_mz, _, filtered_mz, _ = sample.load_payload(annotation_db=self.lipid_annotation_db, mass_tolerance=mass_tolerance)
 			for mode in sample.ion_modes:
 				reference_mz_samples[mode].append(
 					self._compute_reference_mz(
@@ -1421,9 +1653,10 @@ class MsiDataset:
 					)
 				)
 			del raw_mz, filtered_mz  # Free memory
+			gc.collect()
 
 		# STEP 4: Compute the global reference M/Z vector for each ion mode. No frequency thresholding is applied here
-		print("4/7 - Computing global reference M/Z backbone for the dataset")
+		print("5/9 - Computing global reference M/Z backbone for the dataset")
 		for mode in reference_mz_samples.keys():
 			if len(reference_mz_samples[mode]) > 0:
 				self.reference_mz[mode] = self._compute_reference_mz(
@@ -1434,11 +1667,13 @@ class MsiDataset:
 			else:
 				self.reference_mz[mode] = np.array([], dtype=np.float32)
 
-			print(f"Computed global reference M/Z vector for {mode} mode with {len(self.reference_mz[mode])} M/Z values.")
 		del reference_mz_samples  # Free memory
+		gc.collect()
+
+		print(f"Selected {len(self.reference_mz.get(MsiIonMode.POSITIVE, []))} M/Z values for POSITIVE mode and {len(self.reference_mz.get(MsiIonMode.NEGATIVE, []))} M/Z values for NEGATIVE mode as reference backbone.")
 
 		# STEP 5: For each ion mode, annotate the reference M/Z vector if a lipid annotation database is provided
-		print("5/7 - Annotating features (backbone M/Z values) for each ion mode")
+		print("6/9 - Annotating features (backbone M/Z values) for each ion mode")
 		self.lipid_annotations: dict[MsiIonMode, np.ndarray] = {}
 		if self.lipid_annotation_db is not None:
 			for mode in self.reference_mz.keys():
@@ -1449,12 +1684,12 @@ class MsiDataset:
 				)
 
 		# STEP 6: Now that the global reference M/Z vectors are computed, process each sample to interpolate the intensities
-		for sample in tqdm.tqdm(self.samples, desc="6/7 - Aligning intensities to reference M/Z", unit="sample"):
+		for sample in tqdm.tqdm(self.samples, desc="7/9 - Aligning intensities to reference M/Z", unit="sample"):
 			self.interpolated[sample.sample_id] = {MsiIonMode.POSITIVE: None, MsiIonMode.NEGATIVE: None}
 			self.normalized[sample.sample_id] = {MsiIonMode.POSITIVE: None, MsiIonMode.NEGATIVE: None}
 
 			# Load the intensities and M/Z values
-			original_mzs, intensities, _, _ = sample.load_payload(annotation_db=self.lipid_annotation_db, mass_tolerance=mass_tolerance, min_annotated_lipids_per_spot=50)
+			original_mzs, intensities, _, _ = sample.load_payload(annotation_db=self.lipid_annotation_db, mass_tolerance=mass_tolerance)
 
 			# All the spots are interpolated but an additional obs mask is stored to separate foreground/background
 			self.foreground_masks[sample.sample_id] = sample.foreground_mask
@@ -1509,8 +1744,9 @@ class MsiDataset:
 				self.normalized[sample.sample_id][mode] = merged_intensities
 			
 			del intensities, original_mzs  # Free memory
+			gc.collect()
 
-		for sample in self.samples:
+		for sample in tqdm.tqdm(self.samples, desc="8/9 - Generating AnnData objects and saving results", unit="sample"):
 			reference_mode = MsiIonMode.POSITIVE if MsiIonMode.POSITIVE in sample.ion_modes else MsiIonMode.NEGATIVE
 			sample_id = sample.sample_id
 			raster_size = sample._metadata[reference_mode][MsiMetadata.RASTER_SIZE].tolist()
@@ -1541,7 +1777,6 @@ class MsiDataset:
 					self.lipid_annotations[MsiIonMode.NEGATIVE] if MsiIonMode.NEGATIVE in self.lipid_annotations else np.zeros_like(self.reference_mz[MsiIonMode.NEGATIVE], dtype=str)
 				])
 			
-			
 			merged_interpolated[:, :positive_cols] = self.interpolated[sample_id][MsiIonMode.POSITIVE] if MsiIonMode.POSITIVE in sample.ion_modes else 0.0
 			merged_interpolated[:, positive_cols:] = self.interpolated[sample_id][MsiIonMode.NEGATIVE] if MsiIonMode.NEGATIVE in sample.ion_modes else 0.0
 
@@ -1549,7 +1784,7 @@ class MsiDataset:
 			merged_normalized[:, positive_cols:] = self.normalized[sample_id][MsiIonMode.NEGATIVE] if MsiIonMode.NEGATIVE in sample.ion_modes else 0.0
 
 			# Create the AnnData object
-			self.adata = ad.AnnData(
+			adata = ad.AnnData(
 				X = merged_interpolated,
 				layers = {
 					f"X_{intensity_normalization}": merged_normalized
@@ -1572,31 +1807,37 @@ class MsiDataset:
                 }
 			)
 
+			# Update the obs_names to include the sample ID for uniqueness
+			adata.obs_names = [f"{sample_id}_{obs_name}" for obs_name in adata.obs_names]
+
+			# Compute Leiden clustering on the normalized data
+			sc.tl.pca(adata, n_comps=50, layer=f"X_{intensity_normalization}")
+			sc.pp.neighbors(adata, n_neighbors=15)
+			sc.tl.leiden(adata, resolution=0.5, flavor="igraph", n_iterations=2)
+
 			# Save the AnnData object to the output path
 			output_file = MODALITY_PREPROCESSING(self.dataset_source_path, sample.sample_id, sample.modality_name, 'h5ad')
-			self.adata.write_h5ad(output_file)
+			adata.write_h5ad(output_file)
 			processed_samples[sample.sample_id] = output_file
+
+			# Free memory
+			del merged_interpolated, merged_normalized, adata
+			gc.collect()
 
 		# Save the merged dataset
 		adatas: list[ad.AnnData] = []
 
-		# STEP 7: Merge all the AnnData objects into a single one
-		for sample_id, output_file in tqdm.tqdm(processed_samples.items(), desc="7/7 - Merging MSI samples into AnnData", unit="sample"):
-			sample_adata = ad.read_h5ad(output_file)
+		# STEP 7: Merge all the AnnData objects on disk (memory-efficient)
+		print("9/9 - Merging all samples into a single dataset")
+		merged_file = MODALITY_PREPROCESSING_MERGED(self.dataset_source_path, self.samples[0].modality_name, 'h5ad')
 
-			# Update the obs_names to include the sample ID for uniqueness
-			sample_adata.obs_names = [f"{sample_id}_{obs_name}" for obs_name in sample_adata.obs_names]
-			adatas.append(sample_adata)
-
-		# Concatenate all the AnnData objects, ensuring unique obs_names (indexes)
-		if adatas:
-			msi_adata = ad.concat(adatas)
-
-			# Add the var informations
-			msi_adata.var = adatas[0].var.copy()
-			msi_adata.uns = adatas[0].uns.copy()
-
-		# Save the combined AnnData
-		msi_adata.write_h5ad(MODALITY_PREPROCESSING_MERGED(self.dataset_source_path, self.samples[0].modality_name, 'h5ad'))
-		processed_samples["merged"] = MODALITY_PREPROCESSING_MERGED(self.dataset_source_path, self.samples[0].modality_name, 'h5ad')
+		if processed_samples:
+			ad.experimental.concat_on_disk(
+				processed_samples,
+				merged_file,
+				join='inner',           # Same features across all samples
+				uns_merge='same'     	# Keep the first uns
+			)
+			
+			processed_samples["merged"] = merged_file
 		return processed_samples
