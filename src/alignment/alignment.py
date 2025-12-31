@@ -3,6 +3,7 @@ import numpy as np
 from sklearn.decomposition import NMF
 
 from constants import MODALITY_PREPROCESSING, MODALITY_ALIGNMENT, MODALITY_ALIGNMENT_MERGED
+from constants import ModalityType
 
 from GUI.direct_mapping_alignment import DirectMappingAlignmentGUI
 
@@ -31,19 +32,26 @@ class DirectMappingAligner:
             reference_modality: dict,
             target_modality: dict,
             reference_modality_name: str,
-            target_modality_name: str
+            target_modality_name: str,
+            reference_modality_type: ModalityType,
+            target_modality_type: ModalityType
         ) -> None:
         if type(path) != str or type(reference_modality) != dict or type(target_modality) != dict:
             raise TypeError("Invalid input types. Please check the input types.")
     
         if type(reference_modality_name) != str or type(target_modality_name) != str:   
             raise TypeError("Invalid input types. Please check the input types.")
+        
+        if reference_modality_type not in ModalityType.list() or target_modality_type not in ModalityType.list():
+            raise ValueError("Invalid modality type. Please check the modality types.")
 
         self._path = path
         self._reference_modality = reference_modality
         self._target_modality = target_modality
         self._reference_modality_name = reference_modality_name
         self._target_modality_name = target_modality_name
+        self._reference_modality_type = reference_modality_type
+        self._target_modality_type = target_modality_type
 
         # Only align samples that are present in both modalities
         reference_samples = set(self._reference_modality.keys())
@@ -102,7 +110,16 @@ class DirectMappingAligner:
 
         # Convert the image to Uint8 if necessary
         if image_data.dtype != np.uint8:
+            
+            # First check if the image is normalized between 0 and 1
+            if np.min(image_data) < 0 or np.max(image_data) > 1:
+                image_data = (image_data - np.min(image_data)) / (np.max(image_data) - np.min(image_data))
+
+            # Convert to Uint8 with standard scaling between 0 and 255
             image_data = (image_data * 255).astype(np.uint8)
+
+        # Check if the image is hyperdimensional (more than 3 channels)
+        assert image_data.ndim in [2, 3], "The image data must be either 2D (grayscale) or 3D (RGB or hyperdimensional)."
 
         # Check if the channel dim is the first or the last (the smallest should be the channel dim)
         if np.argmin(image_data.shape) == 0:
@@ -115,7 +132,7 @@ class DirectMappingAligner:
             n_channels = image_data.shape[-1]
             reshaped_image = image_data.reshape(-1, n_channels)  # Shape (num_pixels, n_channels)
 
-            nmf_model = NMF(n_components=3, init='random', random_state=0)
+            nmf_model = NMF(n_components=3, init='random', random_state=None)
             W = nmf_model.fit_transform(reshaped_image)  # Shape (num_pixels, 3)
             H = nmf_model.components_  # Shape (3, n_channels)
 
@@ -125,7 +142,7 @@ class DirectMappingAligner:
 
         return image_data, lowest_shape, original_shape
     
-    def _load_anndata_coordinates(self, filename: str) -> tuple[np.ndarray, np.ndarray]:
+    def _load_anndata_coordinates(self, filename: str) -> tuple[np.ndarray]:
         '''
         Load the spatial coordinates from an AnnData file.
 
@@ -136,10 +153,14 @@ class DirectMappingAligner:
 
         Returns
         -------
-        coordinates, raster_size: tuple[np.ndarray, np.ndarray]
-            A tuple containing:
-            - The spatial coordinates as a numpy array of shape (N, 2)
-            - The raster size as a numpy array of shape (2,)
+        coordinates : np.ndarray
+            The spatial coordinates of the spots/cells
+        raster_size : np.ndarray
+            The raster size to render the points at scale
+        foreground_mask : np.ndarray
+            A boolean mask indicating which points belong to the foreground
+        clustering_labels : np.ndarray
+            The clustering labels for coloring the points in the GUI
         '''
 
         if type(filename) != str:
@@ -151,10 +172,29 @@ class DirectMappingAligner:
         adata = anndata.read_h5ad(filename)
         if 'spatial' not in adata.obsm:
             raise ValueError("The AnnData file does not contain spatial coordinates in obsm['spatial'].")
-
         coordinates = adata.obsm['spatial']
-        raster_size = adata.uns['raster_size'] if 'raster_size' in adata.uns else np.array([1.0, 1.0], dtype=np.float32)
-        return coordinates, raster_size
+        
+        # If the foreground mask is defined, filter the coordinates accordingly
+        if 'foreground' in adata.obs:
+            foreground_mask = adata.obs['foreground'].values
+        else:
+            foreground_mask = np.ones(adata.n_obs, dtype=bool)
+
+        # If a clustering is defined, load the labels to color the points in the GUI
+        if 'leiden' in adata.obs:
+            clustering_labels = adata.obs['leiden'].values
+        elif 'clusters' in adata.obs:
+            clustering_labels = adata.obs['clusters'].values
+        else:
+            clustering_labels = np.zeros(adata.n_obs, dtype=int)
+
+        # If the raster size is defined, load it to render points at scale
+        if 'raster_size' in adata.uns:
+            raster_size = adata.uns['raster_size']
+        else:
+            raster_size = np.array([1.0, 1.0], dtype=np.float32)
+
+        return coordinates, raster_size, foreground_mask, clustering_labels
 
     def _align_dataset_thread(self, **kwargs) -> None:
         force_recomputing = kwargs.get("force_recomputing", False)
@@ -175,11 +215,45 @@ class DirectMappingAligner:
             reference_file = self._reference_modality[sample_id]
             target_file = self._target_modality[sample_id]
 
-            # Load reference image
-            reference_image, lowest_shape, original_shape = self._load_ome_tiff(reference_file)
+            # Depending on the modality type, load the data accordingly
+            reference_modality_payload = {}
+            if self._reference_modality_type in [ModalityType.MICROSCOPY_IMAGE, ModalityType.RAMAN]:
+                # Load reference image
+                image, lowest_shape, original_shape = self._load_ome_tiff(reference_file)
+                reference_modality_payload["type"] = "image"
+                reference_modality_payload["image"] = image
+                reference_modality_payload["lowest_shape"] = lowest_shape
+                reference_modality_payload["original_shape"] = original_shape
+            elif self._reference_modality_type in [ModalityType.MSI, ModalityType.ST]:
+                # Load reference coordinates
+                coordinates, raster_size, foreground_mask, clustering_labels = self._load_anndata_coordinates(reference_file)
+                reference_modality_payload["type"] = "coordinates"
+                reference_modality_payload["coordinates"] = coordinates
+                reference_modality_payload["raster_size"] = raster_size
+                reference_modality_payload["foreground_mask"] = foreground_mask
+                reference_modality_payload["clustering_labels"] = clustering_labels
+            else:
+                raise ValueError("Unsupported reference modality type.")
+            
+            target_modality_payload = {}
+            if self._target_modality_type in [ModalityType.MICROSCOPY_IMAGE, ModalityType.RAMAN]:
+                # Load target image
+                image, lowest_shape, original_shape = self._load_ome_tiff(target_file)
+                target_modality_payload["type"] = "image"
+                target_modality_payload["image"] = image
+                target_modality_payload["lowest_shape"] = lowest_shape
+                target_modality_payload["original_shape"] = original_shape
+            elif self._target_modality_type in [ModalityType.MSI, ModalityType.ST]:
+                # Load target coordinates
+                coordinates, raster_size, foreground_mask, clustering_labels = self._load_anndata_coordinates(target_file)
+                target_modality_payload["type"] = "coordinates"
+                target_modality_payload["coordinates"] = coordinates
+                target_modality_payload["raster_size"] = raster_size
+                target_modality_payload["foreground_mask"] = foreground_mask
+                target_modality_payload["clustering_labels"] = clustering_labels
+            else:
+                raise ValueError("Unsupported target modality type.")
 
-            # Load target coordinates
-            target_coordinates, raster_size = self._load_anndata_coordinates(target_file)
     
             # Launch the GUI for alignment
             aligned_coordinates = self._gui_interface.align_sample(
@@ -225,7 +299,7 @@ class DirectMappingAligner:
             aligned_target_file = MODALITY_ALIGNMENT(self._path, sample_id, self._target_modality_name, "h5ad")
             
             # If no aligned file exits load it from the processing step
-            if os.path.exists(aligned_target_file) == False:
+            if os.path.exists(aligned_target_file) == False or force_recomputing == True:
                 adata = anndata.read_h5ad(processed_target_file)
                 adata.obsm[f'{self._reference_modality_name}_spatial'] = adata.obsm['spatial'].copy()
                 adata.write_h5ad(aligned_target_file)
@@ -234,21 +308,25 @@ class DirectMappingAligner:
         adata_list: list[anndata.AnnData] = []
         for sample_id in self._common_samples:
             aligned_target_file = MODALITY_ALIGNMENT(self._path, sample_id, self._target_modality_name, "h5ad")
-            adata_list.append(
-                anndata.read_h5ad(aligned_target_file)
-            )
+
+            if force_recomputing == True:
+                adata_list.append(
+                    anndata.read_h5ad(aligned_target_file)
+                )
 
             # Save this file for the result
             aligned_samples[sample_id] = aligned_target_file
 
         # Generate the merged aligned dataset
-        merged_aligned_adata = anndata.concat(adata_list, axis=0)
-        alignment_folder = os.path.join(self._path, "merged", "alignment")
-        os.makedirs(alignment_folder, exist_ok=True)
         merged_aligned_file = MODALITY_ALIGNMENT_MERGED(self._path, self._target_modality_name, "h5ad")
-        merged_aligned_adata.write_h5ad(merged_aligned_file)
         aligned_samples["merged"] = merged_aligned_file
 
+        if os.path.exists(merged_aligned_file) == False or force_recomputing == True:
+            merged_aligned_adata = anndata.concat(adata_list, axis=0)
+            alignment_folder = os.path.join(self._path, "merged", "alignment")
+            os.makedirs(alignment_folder, exist_ok=True)
+            merged_aligned_adata.write_h5ad(merged_aligned_file)
+            
         return aligned_samples
 
     def align_dataset(self, force_recomputing: bool = False) -> dict[str, str]:
