@@ -20,84 +20,124 @@ class DirectMappingAlignmentGUI:
             A list of sample identifiers.
     '''
 
-    def __init__(self, samples: list[str], dataset_completed_event: threading.Event):
+    def __init__(self, dataset_size: int, dataset_completed_event: threading.Event):
 
-        self._samples = samples
+        self._dataset_size = dataset_size       # Hold how many samples need to be processed
 
-        self._reference_image: Image.Image | None = None
-        self._raster_size: np.ndarray | None = None
-        self._target_coordinates: np.ndarray | None = None
-        self._aligned_coordinates: np.ndarray | None = None
+        # Syncronization events
+        self._user_event = threading.Event()    # Event to signal when the user has saved the aligned coordinates
+        self._dataset_completed_event = dataset_completed_event  # Event to signal when the dataset processing is completed
 
-        self._user_event = threading.Event()
-        self._dataset_completed_event = dataset_completed_event
+        # Sample metadata
+        self._sample_id: int | None = None      # Name of the sample (sample ID)
+        self._sample_index: int | None = None   # Index of the sample in the dataset
+
+        # Modalities' metadata
+        self._reference_metadata: dict | None = None  # Metadata of the reference modality
+        self._target_metadata: dict | None = None     # Metadata of the target modality
+
+        # Modalities' data
+        self._reference_payload: dict | Image.Image | None = None  # Payload of the reference modality
+        self._target_payload: dict | Image.Image | None = None      # Payload of the target modality
+
+        # Aliggned coordinates
+        self._aligned_target: dict | None = None                     # Aligned target modality data
 
         # Reset the events
         self._user_event.clear()
         self._dataset_completed_event.clear()
 
         self.app = Flask(__name__)
+        
+        # Enable CORS
+        @self.app.after_request
+        def after_request(response):
+            response.headers.add('Access-Control-Allow-Origin', '*')
+            response.headers.add('Access-Control-Allow-Headers', 'Content-Type,Authorization')
+            response.headers.add('Access-Control-Allow-Methods', 'GET,PUT,POST,DELETE,OPTIONS')
+            return response
+
         self._server = None
         self._register_routes()
 
     def _register_routes(self):
-        @self.app.route('/')
-        def index():
-            # Get the absolute path of the HTML file
-            html_path = os.path.join(os.path.dirname(__file__), "direct_mapping.html")
+        @self.app.route('/status', methods=['GET'])
+        def get_status():
+            if self._dataset_completed_event.is_set():
+                return jsonify({"message": "No more samples available"}), 404
+            
+            if self._sample_id is None:
+                return jsonify({"message": "Sample not ready"}), 400
+            
+            return jsonify({
+                "sample_id": self._sample_id,
+                "sample_index": self._sample_index,
+                "total_samples_count": self._dataset_size
+            })
 
-            # Read the HTML file
-            with open(html_path, 'r') as file:
-                html_content = file.read()
+        @self.app.route('/<type>/metadata', methods=['GET'])
+        def get_metadata(type):
+            if type == 'reference':
+                metadata = self._reference_metadata
+            elif type == 'target':
+                metadata = self._target_metadata
+            else:
+                return jsonify({"message": "Invalid type"}), 400
             
-            return html_content
+            if metadata is None:
+                return jsonify({"message": "Metadata not set"}), 404
+                
+            return jsonify(metadata)
 
-        @self.app.route('/get_reference_image', methods=['GET'])
-        def get_reference_image():
-            # If self._reference_image is None, return error 404
-            if self._reference_image is None:
-                return jsonify({"status": "error", "message": "Reference image not set."}), 404
+        @self.app.route('/<type>/payload', methods=['GET'])
+        def get_payload(type):
+            if type == 'reference':
+                payload = self._reference_payload
+                metadata = self._reference_metadata
+            elif type == 'target':
+                payload = self._target_payload
+                metadata = self._target_metadata
+            else:
+                return jsonify({"message": "Invalid type"}), 400
+
+            if payload is None or metadata is None:
+                return jsonify({"message": "Payload not set"}), 404
+
+            modality_type = metadata.get('modality_type')
             
-            # Convert the PIL image to a BytesIO object
-            img_io = BytesIO()
-            self._reference_image.save(img_io, 'PNG')
-            img_io.seek(0)
-            return send_file(img_io, mimetype='image/png')
-        
-        @self.app.route('/get_target_coordinates', methods=['GET'])
-        def get_target_coordinates():
-            if self._target_coordinates is None:
-                return jsonify({"status": "error", "message": "Target coordinates not set."}), 404
-            
-            # Conver the target coordinates to a JSON serializable format. self._target_coordinates is a numpy array of shape (N, 2)
-            coordinates_list = [{'x': float(coord[0]), 'y': float(coord[1])} for coord in self._target_coordinates]
-            return jsonify({"status": "success", "coordinates": coordinates_list})
-        
-        @self.app.route('/save_aligned_coordinates', methods=['POST'])
-        def save_aligned_coordinates():
+            if modality_type == 'IMAGE':
+                if isinstance(payload, Image.Image):
+                    img_io = BytesIO()
+                    payload.save(img_io, 'PNG')
+                    img_io.seek(0)
+                    return send_file(img_io, mimetype='image/png')
+                else:
+                     return jsonify({"message": "Invalid payload type for IMAGE"}), 500
+            elif modality_type == 'SPOT':
+                return jsonify(payload)
+            else:
+                return jsonify({"message": f"Unknown modality type: {modality_type}"}), 500
+
+        @self.app.route('/confirm', methods=['POST'])
+        def confirm_alignment():
             data = request.get_json()
-
-            aligned_coordinates = data.get('aligned_coordinates')
-
-            # Convert the aligned coordinates to a numpy array
-            self._aligned_coordinates = np.array([[float(coord['x_aligned']), float(coord['y_aligned'])] for coord in aligned_coordinates], dtype=np.float32)
-            self._user_event.set()
-
-            return jsonify({"status": "success", "message": "Aligned coordinates saved."})
-        
-        @self.app.route('//get_target_raster_size', methods=['GET'])
-        def get_raster_size():
-            if self._raster_size is None:
-                return jsonify({"status": "error", "message": "Raster size not set."}), 404
+            if not data:
+                return jsonify({"message": "No data provided"}), 400
             
-            raster_size_list = [int(size) for size in self._raster_size]
-            return jsonify({"status": "success", "raster_size": raster_size_list})
+            self._aligned_target = data
+            self._user_event.set()
+            
+            return jsonify({"message": "Alignment confirmed successfully"})
         
-        @self.app.route('/is_dataset_completed', methods=['GET'])
-        def is_dataset_completed():
-            return jsonify({"status": "success", "completed": self._dataset_completed_event.is_set()})
-        
-    def align_sample(self, sample_id: str, reference_image: np.ndarray, target_coordinates: np.ndarray, raster_size: np.ndarray) -> np.ndarray:
+    def align_sample(
+        self,
+        sample_id: str,
+        sample_index: int,
+        reference_metadata: dict,
+        target_metadata: dict,
+        reference_payload: dict | Image.Image,
+        target_payload: dict | Image.Image,
+        ) -> dict:
         '''
         Align the target coordinates to the reference image for a given sample.
 
@@ -105,25 +145,31 @@ class DirectMappingAlignmentGUI:
         ----------
             sample_id: str
                 The sample identifier.
-            reference_image: np.ndarray
-                The reference image as a numpy array.
-            target_coordinates: np.ndarray
-                The target coordinates as a numpy array of shape (N, 2).
-            raster_size: np.ndarray
-                The raster size as a numpy array of shape (2,).
+            sample_index: int
+                The index of the sample in the dataset.
+            reference_metadata: dict
+                The metadata of the reference modality.
+            target_metadata: dict
+                The metadata of the target modality.
+            reference_payload: dict | Image.Image
+                The payload of the reference modality.
+            target_payload: dict | Image.Image
+                The payload of the target modality.
 
         Returns
         -------
-            aligned_coordinates: np.ndarray
-                The aligned coordinates as a numpy array of shape (N, 2).
+            aligned_result: dict
+                The alignment result as a dictionary.
         '''
 
         # Set the reference image and target coordinates
-        self._reference_image = Image.fromarray(reference_image)
-        self._raster_size = raster_size
-        self._target_coordinates = target_coordinates
-        self._aligned_coordinates = None
-
+        self._sample_id = sample_id
+        self._sample_index = sample_index
+        self._reference_metadata = reference_metadata
+        self._target_metadata = target_metadata
+        self._reference_payload = reference_payload
+        self._target_payload = target_payload
+        
         # Clear the user event
         self._user_event.clear()
         print(f"Please align the coordinates for sample '{sample_id}' using the GUI.")
@@ -132,18 +178,21 @@ class DirectMappingAlignmentGUI:
         self._user_event.wait()
 
         print(f"Aligned coordinates for sample '{sample_id}' have been saved.")
-        self._reference_image = None
-        self._target_coordinates = None
-        self._raster_size = None
+        self._sample_id = None
+        self._sample_index = None
+        self._reference_metadata = None
+        self._target_metadata = None
+        self._reference_payload = None
+        self._target_payload = None
 
-        return self._aligned_coordinates
+        return self._aligned_target
         
     def enable_gui(self):
 
         # Start a thread that will pend on the dataset completed event
         threading.Thread(target=self._disable_gui, daemon=True).start()
         
-        self._server = make_server('localhost', 8080, self.app)
+        self._server = make_server('localhost', 8000, self.app)
         self._server.serve_forever()
 
     def _disable_gui(self):

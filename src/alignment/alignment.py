@@ -1,5 +1,6 @@
 import os, tifffile, threading, anndata, copy
 import numpy as np
+from PIL import Image
 from sklearn.decomposition import NMF
 
 from constants import MODALITY_PREPROCESSING, MODALITY_ALIGNMENT, MODALITY_ALIGNMENT_MERGED
@@ -200,7 +201,7 @@ class DirectMappingAligner:
         force_recomputing = kwargs.get("force_recomputing", False)
 
         # Process each sample
-        for sample_id in self._common_samples:
+        for sample_index, sample_id in enumerate(self._common_samples):
 
             # Check if there are cached results
             if force_recomputing == False:
@@ -215,59 +216,104 @@ class DirectMappingAligner:
             reference_file = self._reference_modality[sample_id]
             target_file = self._target_modality[sample_id]
 
-            # Depending on the modality type, load the data accordingly
-            reference_modality_payload = {}
+            # Prepare Reference Data
+            reference_metadata = {}
+            reference_payload = None
+            ref_scale_factors = np.array([1.0, 1.0]) # y, x
+
             if self._reference_modality_type in [ModalityType.MICROSCOPY_IMAGE, ModalityType.RAMAN]:
-                # Load reference image
                 image, lowest_shape, original_shape = self._load_ome_tiff(reference_file)
-                reference_modality_payload["type"] = "image"
-                reference_modality_payload["image"] = image
-                reference_modality_payload["lowest_shape"] = lowest_shape
-                reference_modality_payload["original_shape"] = original_shape
+                reference_payload = Image.fromarray(image)
+                reference_metadata = {
+                    "modality_type": "IMAGE",
+                    "modality_name": self._reference_modality_name,
+                    "image_shape": [lowest_shape[0], lowest_shape[1]] # H, W
+                }
+                ref_scale_factors = np.array([original_shape[0] / lowest_shape[0], original_shape[1] / lowest_shape[1]])
             elif self._reference_modality_type in [ModalityType.MSI, ModalityType.ST]:
-                # Load reference coordinates
                 coordinates, raster_size, foreground_mask, clustering_labels = self._load_anndata_coordinates(reference_file)
-                reference_modality_payload["type"] = "coordinates"
-                reference_modality_payload["coordinates"] = coordinates
-                reference_modality_payload["raster_size"] = raster_size
-                reference_modality_payload["foreground_mask"] = foreground_mask
-                reference_modality_payload["clustering_labels"] = clustering_labels
+                reference_payload = [
+                    {"spatial": coord.tolist(), "class": int(label)} 
+                    for coord, label in zip(coordinates, clustering_labels)
+                ]
+                reference_metadata = {
+                    "modality_type": "SPOT",
+                    "modality_name": self._reference_modality_name,
+                    "raster_size": raster_size.tolist()
+                }
             else:
                 raise ValueError("Unsupported reference modality type.")
             
-            target_modality_payload = {}
+            # Prepare Target Data
+            target_metadata = {}
+            target_payload = None
+            
             if self._target_modality_type in [ModalityType.MICROSCOPY_IMAGE, ModalityType.RAMAN]:
-                # Load target image
                 image, lowest_shape, original_shape = self._load_ome_tiff(target_file)
-                target_modality_payload["type"] = "image"
-                target_modality_payload["image"] = image
-                target_modality_payload["lowest_shape"] = lowest_shape
-                target_modality_payload["original_shape"] = original_shape
+                target_payload = Image.fromarray(image)
+                target_metadata = {
+                    "modality_type": "IMAGE",
+                    "modality_name": self._target_modality_name,
+                    "image_shape": [lowest_shape[0], lowest_shape[1]]
+                }
             elif self._target_modality_type in [ModalityType.MSI, ModalityType.ST]:
-                # Load target coordinates
                 coordinates, raster_size, foreground_mask, clustering_labels = self._load_anndata_coordinates(target_file)
-                target_modality_payload["type"] = "coordinates"
-                target_modality_payload["coordinates"] = coordinates
-                target_modality_payload["raster_size"] = raster_size
-                target_modality_payload["foreground_mask"] = foreground_mask
-                target_modality_payload["clustering_labels"] = clustering_labels
+                target_payload = [
+                    {"spatial": coord.tolist(), "class": int(label)} 
+                    for coord, label in zip(coordinates, clustering_labels)
+                ]
+                target_metadata = {
+                    "modality_type": "SPOT",
+                    "modality_name": self._target_modality_name,
+                    "raster_size": raster_size.tolist()
+                }
             else:
                 raise ValueError("Unsupported target modality type.")
 
-    
             # Launch the GUI for alignment
-            aligned_coordinates = self._gui_interface.align_sample(
+            alignment_result = self._gui_interface.align_sample(
                 sample_id=sample_id,
-                reference_image=reference_image,
-                target_coordinates=target_coordinates,
-                raster_size=raster_size
+                sample_index=sample_index + 1,
+                reference_metadata=reference_metadata,
+                target_metadata=target_metadata,
+                reference_payload=reference_payload,
+                target_payload=target_payload
             )
 
-            # The aligned coordinates refers to the lowest resolution level, we need to scale them to the original resolution
-            scale_factors = np.array([original_shape[0] / lowest_shape[0], original_shape[1] / lowest_shape[1]], dtype=np.float32)
-            aligned_coordinates = aligned_coordinates * scale_factors
+            # Process Result
+            aligned_coordinates = None
+            
+            if "spots" in alignment_result:
+                spots = alignment_result["spots"]
+                # Determine number of spots from payload if possible, or max ID
+                num_spots = 0
+                if isinstance(target_payload, list):
+                    num_spots = len(target_payload)
+                elif spots:
+                    num_spots = max(s.get("id", 0) for s in spots) + 1
+                
+                if num_spots > 0:
+                    aligned_coords_arr = np.full((num_spots, 2), np.nan)
+                    for spot in spots:
+                        idx = spot.get("id")
+                        px = spot.get("pixel_x")
+                        py = spot.get("pixel_y")
+                        if idx is not None and 0 <= idx < num_spots:
+                            if px is not None and py is not None:
+                                aligned_coords_arr[idx] = [px, py]
+                    aligned_coordinates = aligned_coords_arr
 
-            self._aligned_coordinates[sample_id] = copy.deepcopy(aligned_coordinates)
+            elif "corner_pixels" in alignment_result:
+                aligned_coordinates = np.array(alignment_result["corner_pixels"])
+
+            if aligned_coordinates is not None:
+                # Scale coordinates to original reference resolution
+                # aligned_coordinates is (N, 2) where col 0 is x, col 1 is y
+                # ref_scale_factors is (y_scale, x_scale)
+                aligned_coordinates[:, 0] *= ref_scale_factors[1]
+                aligned_coordinates[:, 1] *= ref_scale_factors[0]
+
+                self._aligned_coordinates[sample_id] = copy.deepcopy(aligned_coordinates)
 
         # Set the dataset completed event to disable the GUI
         self._dataset_completed_event.set()
