@@ -17,6 +17,7 @@ export interface Metadata {
 export interface Spot {
   spatial: [number, number];
   class: number;
+  foreground: boolean;
 }
 
 export type SpotModalityPayload = Spot[];

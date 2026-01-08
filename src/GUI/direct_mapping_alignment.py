@@ -6,7 +6,7 @@ from typing import Callable
 
 from io import BytesIO
 
-from flask import Flask, request, jsonify, send_file
+from flask import Flask, request, jsonify, send_file, send_from_directory
 from werkzeug.serving import make_server
 from threading import Thread
 
@@ -61,6 +61,16 @@ class DirectMappingAlignmentGUI:
         self._register_routes()
 
     def _register_routes(self):
+        @self.app.route('/')
+        def index():
+            dist_dir = os.path.join(os.path.dirname(__file__), 'Direct Mapping GUI', 'dist')
+            return send_from_directory(dist_dir, 'index.html')
+
+        @self.app.route('/assets/<path:path>')
+        def static_assets(path):
+            dist_dir = os.path.join(os.path.dirname(__file__), 'Direct Mapping GUI', 'dist', 'assets')
+            return send_from_directory(dist_dir, path)
+
         @self.app.route('/status', methods=['GET'])
         def get_status():
             if self._dataset_completed_event.is_set():
@@ -199,6 +209,9 @@ class DirectMappingAlignmentGUI:
         
         # Wait for the dataset to be completed
         self._dataset_completed_event.wait()
+
+        # Introduce two seconds delay to allow any ongoing requests to complete
+        time.sleep(2)
 
         if self._server:
             self._server.shutdown()

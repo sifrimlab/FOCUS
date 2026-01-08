@@ -59,6 +59,13 @@ class DirectMappingAligner:
         target_samples = set(self._target_modality.keys())
         self._common_samples = list(reference_samples.intersection(target_samples))
 
+        # Remove 'merged' if present
+        if "merged" in self._common_samples:
+            self._common_samples.remove("merged")
+
+        # Sort the common samples for consistency
+        self._common_samples.sort()
+
         # Define an event to signal when all the samples are processed
         self._dataset_completed_event = threading.Event()
 
@@ -66,7 +73,7 @@ class DirectMappingAligner:
         self._aligned_coordinates: dict[str, np.ndarray] = {}
 
         # Define the GUI interface
-        self._gui_interface = DirectMappingAlignmentGUI(samples=self._common_samples, dataset_completed_event=self._dataset_completed_event)
+        self._gui_interface = DirectMappingAlignmentGUI(dataset_size=len(self._common_samples), dataset_completed_event=self._dataset_completed_event)
 
     def _load_ome_tiff(self, filename: str) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         '''
@@ -193,7 +200,7 @@ class DirectMappingAligner:
         if 'raster_size' in adata.uns:
             raster_size = adata.uns['raster_size']
         else:
-            raster_size = np.array([1.0, 1.0], dtype=np.float32)
+            raster_size = np.array([10.0, 10.0], dtype=np.float32)
 
         return coordinates, raster_size, foreground_mask, clustering_labels
 
@@ -233,8 +240,8 @@ class DirectMappingAligner:
             elif self._reference_modality_type in [ModalityType.MSI, ModalityType.ST]:
                 coordinates, raster_size, foreground_mask, clustering_labels = self._load_anndata_coordinates(reference_file)
                 reference_payload = [
-                    {"spatial": coord.tolist(), "class": int(label)} 
-                    for coord, label in zip(coordinates, clustering_labels)
+                    {"spatial": coord.tolist(), "class": int(label), "foreground": bool(fg)} 
+                    for coord, label, fg in zip(coordinates, clustering_labels, foreground_mask)
                 ]
                 reference_metadata = {
                     "modality_type": "SPOT",
@@ -259,8 +266,8 @@ class DirectMappingAligner:
             elif self._target_modality_type in [ModalityType.MSI, ModalityType.ST]:
                 coordinates, raster_size, foreground_mask, clustering_labels = self._load_anndata_coordinates(target_file)
                 target_payload = [
-                    {"spatial": coord.tolist(), "class": int(label)} 
-                    for coord, label in zip(coordinates, clustering_labels)
+                    {"spatial": coord.tolist(), "class": int(label), "foreground": bool(fg)} 
+                    for coord, label, fg in zip(coordinates, clustering_labels, foreground_mask)
                 ]
                 target_metadata = {
                     "modality_type": "SPOT",
@@ -408,42 +415,96 @@ class DirectMappingAligner:
         # Enable the GUI (this will block until the GUI is closed)
         self._gui_interface.enable_gui()
 
-        # For each aligned sample, load the AnnData file and store the aligned coordinates
-        for sample_id, aligned_coords in self._aligned_coordinates.items():
-            processed_target_file = self._target_modality[sample_id]
+        is_ref_image = self._reference_modality_type in [ModalityType.MICROSCOPY_IMAGE, ModalityType.RAMAN]
+        is_target_image = self._target_modality_type in [ModalityType.MICROSCOPY_IMAGE, ModalityType.RAMAN]
+        is_ref_spot = self._reference_modality_type in [ModalityType.MSI, ModalityType.ST]
+        is_target_spot = self._target_modality_type in [ModalityType.MSI, ModalityType.ST]
 
-            alignment_folder = os.path.join(self._path, sample_id, "alignment")
+        if is_ref_image and is_target_image:
+            for sample_id, aligned_coords in self._aligned_coordinates.items():
+                reference_file = self._reference_modality[sample_id]
+                
+                # Calculate bounding box
+                min_x = int(np.min(aligned_coords[:, 0]))
+                max_x = int(np.max(aligned_coords[:, 0]))
+                min_y = int(np.min(aligned_coords[:, 1]))
+                max_y = int(np.max(aligned_coords[:, 1]))
+
+                with tifffile.TiffFile(reference_file) as tif:
+                    series = tif.series[0]
+                    img_shape = series.shape
+                    
+                    # Handle dimensions (assuming last two are Y, X)
+                    y_dim = -2
+                    x_dim = -1
+                    
+                    h = img_shape[y_dim]
+                    w = img_shape[x_dim]
+                    
+                    min_x = max(0, min_x)
+                    min_y = max(0, min_y)
+                    max_x = min(w, max_x)
+                    max_y = min(h, max_y)
+                    
+                    if min_x >= max_x or min_y >= max_y:
+                        print(f"Invalid crop for sample {sample_id}")
+                        continue
+
+                    # Construct slices
+                    slices = [slice(None)] * len(img_shape)
+                    slices[y_dim] = slice(min_y, max_y)
+                    slices[x_dim] = slice(min_x, max_x)
+                    
+                    crop_data = series.asarray()[tuple(slices)]
+                
+                alignment_folder = os.path.join(self._path, sample_id, "alignment")
+                os.makedirs(alignment_folder, exist_ok=True)
+                aligned_target_file = MODALITY_ALIGNMENT(self._path, sample_id, self._target_modality_name, "ome.tiff")
+                
+                tifffile.imwrite(aligned_target_file, crop_data)
+                aligned_samples[sample_id] = aligned_target_file
+
+        elif (is_ref_image and is_target_spot) or (is_ref_spot and is_target_spot):
+            # For each aligned sample, load the AnnData file and store the aligned coordinates
+            for sample_id, aligned_coords in self._aligned_coordinates.items():
+                processed_target_file = self._target_modality[sample_id]
+
+                alignment_folder = os.path.join(self._path, sample_id, "alignment")
+                os.makedirs(alignment_folder, exist_ok=True)
+                aligned_target_file = MODALITY_ALIGNMENT(self._path, sample_id, self._target_modality_name, "h5ad")
+                
+                # If no aligned file exits load it from the processing step
+                if os.path.exists(aligned_target_file) == False:
+                    adata = anndata.read_h5ad(processed_target_file)
+                else:
+                    adata = anndata.read_h5ad(aligned_target_file)
+
+                # Save the aligned coordinates
+                adata.obsm[f'{self._reference_modality_name}_spatial'] = aligned_coords
+                
+                adata.write_h5ad(aligned_target_file)
+
+            # Load all the aligned AnnData involved in the dataset to generate a final aligned dataset
+            aligned_files = []
+            for sample_id in self._common_samples:
+                aligned_target_file = MODALITY_ALIGNMENT(self._path, sample_id, self._target_modality_name, "h5ad")
+                aligned_files.append(aligned_target_file)
+                aligned_samples[sample_id] = aligned_target_file
+
+            # Generate the merged aligned dataset
+            alignment_folder = os.path.join(self._path, "merged", "alignment")
             os.makedirs(alignment_folder, exist_ok=True)
-            aligned_target_file = MODALITY_ALIGNMENT(self._path, sample_id, self._target_modality_name, "h5ad")
+            merged_aligned_file = MODALITY_ALIGNMENT_MERGED(self._path, self._target_modality_name, "h5ad")
             
-            # If no aligned file exits load it from the processing step
-            if os.path.exists(aligned_target_file) == False:
-                adata = anndata.read_h5ad(processed_target_file)
-            else:
-                adata = anndata.read_h5ad(aligned_target_file)
-
-            # Save the aligned coordinates
-            adata.obsm[f'{self._reference_modality_name}_spatial'] = aligned_coords
-            
-            adata.write_h5ad(aligned_target_file)
-
-        # Load all the aligned AnnData involved in the dataset to generate a final aligned dataset
-        adata_list: list[anndata.AnnData] = []
-        for sample_id in self._common_samples:
-            aligned_target_file = MODALITY_ALIGNMENT(self._path, sample_id, self._target_modality_name, "h5ad")
-            adata_list.append(
-                anndata.read_h5ad(aligned_target_file)
+            anndata.experimental.concat_on_disk(
+                aligned_files,
+                merged_aligned_file,
+                merge="same",
+                uns_merge="same"
             )
-
-            # Save this file for the result
-            aligned_samples[sample_id] = aligned_target_file
-
-        # Generate the merged aligned dataset
-        merged_aligned_adata = anndata.concat(adata_list, axis=0)
-        alignment_folder = os.path.join(self._path, "merged", "alignment")
-        os.makedirs(alignment_folder, exist_ok=True)
-        merged_aligned_file = MODALITY_ALIGNMENT_MERGED(self._path, self._target_modality_name, "h5ad")
-        merged_aligned_adata.write_h5ad(merged_aligned_file)
-        aligned_samples["merged"] = merged_aligned_file
+            aligned_samples["merged"] = merged_aligned_file
+        
+        elif is_ref_spot and is_target_image:
+            print("Reference Spot and Target Image alignment is not implemented yet.")
 
         return aligned_samples

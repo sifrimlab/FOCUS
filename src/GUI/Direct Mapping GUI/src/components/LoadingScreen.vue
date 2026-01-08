@@ -12,10 +12,20 @@ const progress = computed(() => {
 });
 
 const message = computed(() => {
+  if (store.loadingMessage) {
+    return store.loadingMessage;
+  }
   if (!store.sampleInfo) {
     return "Obtaining dataset informations...";
   }
   return `Loading sample ${store.sampleInfo.sample_index} of ${store.sampleInfo.total_samples_count}`;
+});
+
+const subMessage = computed(() => {
+    if (store.loadingMessage && store.sampleInfo) {
+        return `Sample ${store.sampleInfo.sample_index} of ${store.sampleInfo.total_samples_count}`;
+    }
+    return null;
 });
 </script>
 
@@ -23,7 +33,8 @@ const message = computed(() => {
   <div class="fixed inset-0 z-40 flex flex-col items-center justify-center bg-gray-900 text-white">
     <div class="animate-spin rounded-full h-16 w-16 border-t-4 border-b-4 border-blue-500 mb-6"></div>
     
-    <h2 class="text-xl font-semibold mb-4">{{ message }}</h2>
+    <h2 class="text-xl font-semibold mb-2">{{ message }}</h2>
+    <p v-if="subMessage" class="text-gray-400 mb-4">{{ subMessage }}</p>
     
     <div v-if="hasInfo" class="w-80 bg-gray-700 rounded-full h-4 overflow-hidden">
       <div 

@@ -81,18 +81,18 @@ const stopHold = () => {
 const toggleRefClass = (cls: number) => {
     const idx = store.referenceClassFilter.indexOf(cls);
     if (idx === -1) {
-        store.referenceClassFilter.push(cls);
+        store.referenceClassFilter = [...store.referenceClassFilter, cls];
     } else {
-        store.referenceClassFilter.splice(idx, 1);
+        store.referenceClassFilter = store.referenceClassFilter.filter(c => c !== cls);
     }
 };
 
 const toggleTgtClass = (cls: number) => {
     const idx = store.targetClassFilter.indexOf(cls);
     if (idx === -1) {
-        store.targetClassFilter.push(cls);
+        store.targetClassFilter = [...store.targetClassFilter, cls];
     } else {
-        store.targetClassFilter.splice(idx, 1);
+        store.targetClassFilter = store.targetClassFilter.filter(c => c !== cls);
     }
 };
 </script>
@@ -121,27 +121,62 @@ const toggleTgtClass = (cls: number) => {
           Shape: {{ store.referenceMeta?.image_shape?.join(' x ') }}
         </div>
         <div v-else>
-          Raster: {{ store.referenceMeta?.raster_size?.join(' x ') }} µm
+          <div class="flex items-center justify-between mb-1">
+             <span>Raster Size (µm)</span>
+          </div>
+          <div class="flex space-x-2">
+             <input type="number" v-model.number="store.referenceRasterSize[0]" class="w-1/2 border rounded px-1 dark:bg-gray-800 dark:border-gray-600">
+             <input type="number" v-model.number="store.referenceRasterSize[1]" class="w-1/2 border rounded px-1 dark:bg-gray-800 dark:border-gray-600">
+          </div>
         </div>
       </div>
       
       <div class="flex items-center space-x-2 mb-2">
-        <label class="text-sm">View Zoom:</label>
-        <input type="range" min="0.1" max="5" step="0.1" v-model.number="store.globalZoom" class="w-full">
-        <span class="text-xs w-8">{{ store.globalZoom.toFixed(1) }}x</span>
+        <label class="text-sm">Control Mode:</label>
+        <div class="flex bg-gray-200 dark:bg-gray-700 rounded p-1 flex-1">
+            <button 
+                @click="store.setControlMode('aligner')"
+                :class="['flex-1 py-1 text-xs rounded', store.controlMode === 'aligner' ? 'bg-white dark:bg-gray-600 shadow font-bold' : 'text-gray-500 dark:text-gray-400']"
+            >Aligner</button>
+            <button 
+                @click="store.setControlMode('camera')"
+                :class="['flex-1 py-1 text-xs rounded', store.controlMode === 'camera' ? 'bg-white dark:bg-gray-600 shadow font-bold' : 'text-gray-500 dark:text-gray-400']"
+            >Camera</button>
+        </div>
       </div>
-      
-      <!-- Navigation Controls -->
-      <div class="grid grid-cols-3 gap-1 w-24 mx-auto mb-4">
-        <div></div>
-        <button @mousedown="startHold(() => store.updateViewOffset(0, 10))" @mouseup="stopHold" @mouseleave="stopHold" class="btn-secondary p-1 text-xs">▲</button>
-        <div></div>
-        <button @mousedown="startHold(() => store.updateViewOffset(10, 0))" @mouseup="stopHold" @mouseleave="stopHold" class="btn-secondary p-1 text-xs">◀</button>
-        <button @click="store.viewOffset = [0, 0]" class="btn-secondary p-1 text-xs">●</button>
-        <button @mousedown="startHold(() => store.updateViewOffset(-10, 0))" @mouseup="stopHold" @mouseleave="stopHold" class="btn-secondary p-1 text-xs">▶</button>
-        <div></div>
-        <button @mousedown="startHold(() => store.updateViewOffset(0, -10))" @mouseup="stopHold" @mouseleave="stopHold" class="btn-secondary p-1 text-xs">▼</button>
-        <div></div>
+
+      <div v-if="store.controlMode === 'aligner'" class="flex items-center space-x-2 mb-2">
+        <label class="text-sm">Interaction:</label>
+        <div class="flex bg-gray-200 dark:bg-gray-700 rounded p-1 flex-1">
+            <button 
+                @click="store.setAlignerInteraction('translate')"
+                :class="['flex-1 py-1 text-xs rounded', store.alignerInteraction === 'translate' ? 'bg-white dark:bg-gray-600 shadow font-bold' : 'text-gray-500 dark:text-gray-400']"
+            >Translate</button>
+            <button 
+                @click="store.setAlignerInteraction('rotate')"
+                :class="['flex-1 py-1 text-xs rounded', store.alignerInteraction === 'rotate' ? 'bg-white dark:bg-gray-600 shadow font-bold' : 'text-gray-500 dark:text-gray-400']"
+            >Rotate</button>
+        </div>
+      </div>
+
+      <div class="flex justify-between items-center mb-1">
+          <label class="text-sm">View Zoom</label>
+          <button @click="store.globalZoom = 1.0" class="text-xs text-blue-500 hover:underline">Reset</button>
+      </div>
+      <div class="flex items-center space-x-2 mb-4">
+          <button 
+              @mousedown="startHold(() => store.globalZoom *= 0.98)" 
+              @mouseup="stopHold" 
+              @mouseleave="stopHold"
+              class="btn-secondary w-8 h-8 flex items-center justify-center select-none"
+          >-</button>
+          <input type="number" step="0.1" v-model.number="store.globalZoom" class="flex-1 h-8 border rounded px-2 text-center dark:bg-gray-800 dark:border-gray-600">
+          <button 
+              @mousedown="startHold(() => store.globalZoom *= 1.02)" 
+              @mouseup="stopHold" 
+              @mouseleave="stopHold"
+              class="btn-secondary w-8 h-8 flex items-center justify-center select-none"
+          >+</button>
       </div>
 
       <div v-if="store.referenceMeta?.modality_type === 'SPOT'">
@@ -161,6 +196,22 @@ const toggleTgtClass = (cls: number) => {
             <button @click="store.referenceClassFilter = [...store.referenceSpotClasses]" class="text-xs text-blue-500 hover:underline mr-2">Select All</button>
             <button @click="store.referenceClassFilter = []" class="text-xs text-blue-500 hover:underline">Clear</button>
         </div>
+        
+        <h4 class="text-sm font-semibold mt-2 mb-1">Foreground Filter</h4>
+        <div class="flex bg-gray-200 dark:bg-gray-700 rounded p-1">
+            <button 
+                @click="store.referenceForegroundMode = 'all'"
+                :class="['flex-1 py-1 text-xs rounded', store.referenceForegroundMode === 'all' ? 'bg-white dark:bg-gray-600 shadow font-bold' : 'text-gray-500 dark:text-gray-400']"
+            >All</button>
+            <button 
+                @click="store.referenceForegroundMode = 'foreground'"
+                :class="['flex-1 py-1 text-xs rounded', store.referenceForegroundMode === 'foreground' ? 'bg-white dark:bg-gray-600 shadow font-bold' : 'text-gray-500 dark:text-gray-400']"
+            >FG</button>
+            <button 
+                @click="store.referenceForegroundMode = 'background'"
+                :class="['flex-1 py-1 text-xs rounded', store.referenceForegroundMode === 'background' ? 'bg-white dark:bg-gray-600 shadow font-bold' : 'text-gray-500 dark:text-gray-400']"
+            >BG</button>
+        </div>
       </div>
     </div>
 
@@ -173,7 +224,13 @@ const toggleTgtClass = (cls: number) => {
           Shape: {{ store.targetMeta?.image_shape?.join(' x ') }}
         </div>
         <div v-else>
-          Raster: {{ store.targetMeta?.raster_size?.join(' x ') }} µm
+          <div class="flex items-center justify-between mb-1">
+             <span>Raster Size (µm)</span>
+          </div>
+          <div class="flex space-x-2">
+             <input type="number" v-model.number="store.targetRasterSize[0]" class="w-1/2 border rounded px-1 dark:bg-gray-800 dark:border-gray-600">
+             <input type="number" v-model.number="store.targetRasterSize[1]" class="w-1/2 border rounded px-1 dark:bg-gray-800 dark:border-gray-600">
+          </div>
         </div>
       </div>
 
@@ -198,6 +255,22 @@ const toggleTgtClass = (cls: number) => {
         <div class="flex mt-1">
             <button @click="store.targetClassFilter = [...store.targetSpotClasses]" class="text-xs text-blue-500 hover:underline mr-2">Select All</button>
             <button @click="store.targetClassFilter = []" class="text-xs text-blue-500 hover:underline">Clear</button>
+        </div>
+
+        <h4 class="text-sm font-semibold mt-2 mb-1">Foreground Filter</h4>
+        <div class="flex bg-gray-200 dark:bg-gray-700 rounded p-1">
+            <button 
+                @click="store.targetForegroundMode = 'all'"
+                :class="['flex-1 py-1 text-xs rounded', store.targetForegroundMode === 'all' ? 'bg-white dark:bg-gray-600 shadow font-bold' : 'text-gray-500 dark:text-gray-400']"
+            >All</button>
+            <button 
+                @click="store.targetForegroundMode = 'foreground'"
+                :class="['flex-1 py-1 text-xs rounded', store.targetForegroundMode === 'foreground' ? 'bg-white dark:bg-gray-600 shadow font-bold' : 'text-gray-500 dark:text-gray-400']"
+            >FG</button>
+            <button 
+                @click="store.targetForegroundMode = 'background'"
+                :class="['flex-1 py-1 text-xs rounded', store.targetForegroundMode === 'background' ? 'bg-white dark:bg-gray-600 shadow font-bold' : 'text-gray-500 dark:text-gray-400']"
+            >BG</button>
         </div>
       </div>
 

@@ -59,14 +59,11 @@ export function computeExportPayload(
     
     const mappedSpots = spots.map(spot => {
       const [px, py] = transformPoint(spot.spatial[0], spot.spatial[1]);
-      // Check if inside reference image
-      const [h, w] = refMeta.image_shape!;
-      const inside = px >= 0 && px <= w && py >= 0 && py <= h;
       
       return {
         id: (spot as any).id || spots.indexOf(spot), // Assuming ID exists or use index
-        pixel_x: inside ? px : null,
-        pixel_y: inside ? py : null
+        pixel_x: px,
+        pixel_y: py
       };
     });
 
@@ -119,34 +116,14 @@ export function computeExportPayload(
 
   if (refMeta.modality_type === 'SPOT' && tgtMeta.modality_type === 'SPOT') {
     const spots = tgtData as SpotModalityPayload;
-    const refSpots = refData as SpotModalityPayload;
-    // Bounds of ref cloud? "Spots outside -> null".
-    // We need bounds of ref spots.
-    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
-    for (const s of refSpots) {
-        minX = Math.min(minX, s.spatial[0]);
-        maxX = Math.max(maxX, s.spatial[0]);
-        minY = Math.min(minY, s.spatial[1]);
-        maxY = Math.max(maxY, s.spatial[1]);
-    }
-    // Add some padding? Or strictly within the bounding box of the centers?
-    // Or within the raster area?
-    // "Spots outside -> null". Usually means outside the convex hull or bounding box.
-    // I'll use bounding box of the centers + raster size/2.
-    const refRaster = refMeta.raster_size!;
-    minX -= refRaster[0]/2;
-    maxX += refRaster[0]/2;
-    minY -= refRaster[1]/2;
-    maxY += refRaster[1]/2;
-
+    
     const mappedSpots = spots.map(spot => {
       const [refX, refY] = transformPoint(spot.spatial[0], spot.spatial[1]);
-      const inside = refX >= minX && refX <= maxX && refY >= minY && refY <= maxY;
       
       return {
         id: (spot as any).id || spots.indexOf(spot),
-        ref_x: inside ? refX : null,
-        ref_y: inside ? refY : null
+        pixel_x: refX,
+        pixel_y: refY
       };
     });
 
