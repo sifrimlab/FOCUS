@@ -21,7 +21,7 @@ if __name__ == "__main__":
     msi_modality_name = "MSI"
     msi_modality_type = ModalityType.MSI
     msi_preprocessing_settings = {
-        MsiPreprocessingParams.FORCE_RECOMPUTING: False,
+        MsiPreprocessingParams.FORCE_RECOMPUTING: True,
         MsiPreprocessingParams.FREQUENCY_THRESHOLD: 0.01,
         MsiPreprocessingParams.INTENSITY_NORMALIZATION: preprocessing.MsiIntensityNormalization.TIC,
         MsiPreprocessingParams.LIPID_ANNOTATION_DB: os.path.join(PATH, "resources", "MSI_database_POS_NEG_combined.json"),

@@ -627,8 +627,6 @@ class MsiSample:
 				y_new = model_y.predict(aug)
 				return np.stack([x_new, y_new], axis=1)
 
-			# If the two sets have different lenghts, 
-
 			A = np.hstack([pos_coords, np.ones((pos_coords.shape[0], 1))])
 			model_x = LinearRegression().fit(A, neg_coords[:,0])
 			model_y = LinearRegression().fit(A, neg_coords[:,1])
@@ -655,6 +653,10 @@ class MsiSample:
 
 		# Normalize the physical coordinates to start from (0,0)
 		final_physical_coords -= final_physical_coords.min(axis=0)
+
+		# Shift them to be the center of the raster 
+		offset = self._metadata[mode][MsiMetadata.RASTER_SIZE].astype(np.float64) / 2
+		final_physical_coords += offset
 
 		# Replace the physical coordinates in the metadata
 		for mode in self._metadata.keys():
@@ -935,8 +937,6 @@ class MsiSample:
 		)
 
 		return kept.tolist()
-
-
 
 	def _recalibrate_mz_vector(
 			self, 
