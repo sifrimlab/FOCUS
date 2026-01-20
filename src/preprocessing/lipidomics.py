@@ -1031,7 +1031,7 @@ class MsiSample:
 
 		return recalibrated_mz_vector, recalibration_offset
 
-	def load_payload(self, mass_tolerance: int | None = None, annotation_db: pd.DataFrame | None = None) -> tuple[dict[list[list[np.float32 | np.float64]]]]:
+	def load_payload(self, mass_tolerance: int | None = None, annotation_db: pd.DataFrame | None = None, detect_background: bool = False) -> tuple[dict[list[list[np.float32 | np.float64]]]]:
 		'''
 		Load the M/Z vectors and the corresponding intensities from the binary IBD files.
 		If the sample contains both ion modes, load the data for both modes.
@@ -1048,6 +1048,8 @@ class MsiSample:
 		mass_tolerance : int
 			Mass tollerance in ppm to match the M/Z values against the lipid annotation database.
 			Must be provided if annotation_db is provided.
+		detect_background : bool
+			If True, detect background spots and exclude them from the loaded data.
 
 		Returns
 		----------
@@ -1092,14 +1094,18 @@ class MsiSample:
 				keep_indices: set[int] = set()
 
 				for mode in self._metadata.keys():
-					# Filter the datapoints that do not contain any annotated lipids
-					keep_indices.update(self._filter_datapoint_without_annotations(
-						mz_vectors=mz_vectors[mode],
-						intensity_vectors=intensity_vectors[mode],
-						database=annotation_db,
-						mass_tolerance=mass_tolerance,
-						ion_mode=mode
-					))
+					if detect_background:
+						# Filter the datapoints that do not contain any annotated lipids
+						keep_indices.update(self._filter_datapoint_without_annotations(
+							mz_vectors=mz_vectors[mode],
+							intensity_vectors=intensity_vectors[mode],
+							database=annotation_db,
+							mass_tolerance=mass_tolerance,
+							ion_mode=mode
+						))
+					else:
+						# Keep all the datapoints
+						keep_indices.update(range(len(mz_vectors[mode])))
 
 				# Save the filtered indices
 				self.filtered_idx = sorted(list(keep_indices))
@@ -1503,6 +1509,7 @@ class MsiDataset:
 			intensity_normalization: MsiIntensityNormalization = MsiIntensityNormalization.TIC,
 			recalibration_reference: dict[MsiIonMode, np.ndarray] | None = None,
 			min_intensity_threshold: float = 10000.0,
+			detect_background: bool = True,
 			force_recomputing: bool = False
 		) -> dict[str, str]:
 		'''
@@ -1520,6 +1527,8 @@ class MsiDataset:
 			Reference M/Z vectors for recalibration per ion mode.
 		min_intensity_threshold : float
 			Minimum intensity threshold to consider a peak valid in the recalibration process.
+		detect_background : bool
+			If True, detects and stores the foreground mask for each sample. If False, the foreground mask covers all the spots.
 		force_recomputing : bool
 			If True, forces recomputation of the reference M/Z vectors and interpolation even if they were already computed.
 			If False, the computation is skipped if the merged dataset already exists.

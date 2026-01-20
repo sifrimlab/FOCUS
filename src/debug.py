@@ -12,7 +12,9 @@ if __name__ == "__main__":
 
     PROCESSED_MODALITIES = [ModalityType.MSI, ModalityType.ST]
     ALIGN = True
-    REGISTER = False
+    REGISTER = True
+
+    REGISTRATION_MODE = "SpotInterpolation"
 
 
     ############# PREPROCESSING #############
@@ -21,7 +23,7 @@ if __name__ == "__main__":
     msi_modality_name = "MSI"
     msi_modality_type = ModalityType.MSI
     msi_preprocessing_settings = {
-        MsiPreprocessingParams.FORCE_RECOMPUTING: True,
+        MsiPreprocessingParams.FORCE_RECOMPUTING: False,
         MsiPreprocessingParams.FREQUENCY_THRESHOLD: 0.01,
         MsiPreprocessingParams.INTENSITY_NORMALIZATION: preprocessing.MsiIntensityNormalization.TIC,
         MsiPreprocessingParams.LIPID_ANNOTATION_DB: os.path.join(PATH, "resources", "MSI_database_POS_NEG_combined.json"),
@@ -80,26 +82,50 @@ if __name__ == "__main__":
     ############# REGISTRATION #############
     
     if REGISTER:
-        # Perform Registration
-        registrar = registration.FeatureExtractorRegistration(
-            path=PATH,
-            hf_token=HF_TOKEN
-        )
+        if REGISTRATION_MODE == "FeatureExtractor":
+            # Perform Registration
+            registrar = registration.FeatureExtractorRegistration(
+                path=PATH,
+                hf_token=HF_TOKEN
+            )
 
-        reference_modality = {
-            st_modality_name: processed_st
-        }
+            reference_modality = {
+                st_modality_name: processed_st
+            }
 
-        reference_modality_type = {
-            st_modality_name: ModalityType.ST
-        }
+            reference_modality_type = {
+                st_modality_name: ModalityType.ST
+            }
 
-        registered_samples = registrar.register_dataset(
-            reference_modality=reference_modality,
-            target_modality=aligned_samples,
-            reference_modality_type=reference_modality_type,
-            target_modality_name=msi_modality_name,
-            force_recomputing=False
-        )
+            registered_samples = registrar.register_dataset(
+                reference_modality=reference_modality,
+                target_modality=aligned_samples,
+                reference_modality_type=reference_modality_type,
+                target_modality_name=msi_modality_name,
+                force_recomputing=False
+            )
+        elif REGISTRATION_MODE == "SpotInterpolation":
+            # Perform Registration
+            registrar = registration.SpotInterpolationRegistration(
+                path=PATH,
+                nearest_neighbors=4,
+                max_distance=None
+            )
+
+            reference_modality = {
+                msi_modality_name: processed_msi
+            }
+
+            reference_modality_type = {
+                msi_modality_name: ModalityType.MSI
+            }
+
+            registered_samples = registrar.register_dataset(
+                reference_modality=reference_modality,
+                target_modality=aligned_samples,
+                reference_modality_type=reference_modality_type,
+                target_modality_name=st_modality_name,
+                force_recomputing=False
+            )
 
 

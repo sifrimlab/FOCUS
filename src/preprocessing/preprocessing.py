@@ -100,6 +100,7 @@ def preprocess_modality(path: str, modality_name: str, modality_type: str, prepr
 		recalibration_reference = preprocessing_settings.get(MsiPreprocessingParams.RECALIBRATION_REFERENCE, None)
 		min_intensity_threshold = preprocessing_settings.get(MsiPreprocessingParams.MIN_INTENSITY_THRESHOLD, 1e4)
 		force_recomputing = preprocessing_settings.get(MsiPreprocessingParams.FORCE_RECOMPUTING, False)
+		detect_background = preprocessing_settings.get(MsiPreprocessingParams.DETECT_BACKGROUND, False)
 
 		# Define the sample list
 		samples: list[lipidomics.MsiSample] = []
@@ -143,6 +144,7 @@ def preprocess_modality(path: str, modality_name: str, modality_type: str, prepr
 			intensity_normalization=intensity_normalization,
 			recalibration_reference=recalibration_reference,
 			min_intensity_threshold=min_intensity_threshold,
+			detect_background=detect_background,
 			force_recomputing=force_recomputing
 		)
 
