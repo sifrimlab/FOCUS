@@ -141,9 +141,9 @@ class MicroscopyImage():
 		# Normalize the image to 0-1
 		image = image / np.max(image)
 
-		# Ensure that the image has at most 3 channels
-		if image.shape[-1] > 3:
-			image = image[:, :, :3]
+		# If the image is grayscale with shape (H, W), convert to (H, W, 1)
+		if image.ndim == 2:
+			image = image[:, :, np.newaxis]
 
 		return image
 
@@ -162,12 +162,15 @@ class MicroscopyImage():
 			The number of resolution levels to generate (default is 4).
 		"""
 
-		assert img.ndim == 3 and img.shape[2] == 3, "Expecting RGB image [H,W,3]"
 		assert img.dtype == np.float32, "Expecting float32 array"
+		
+		# Normalize to [H,W,C] shape
+		if img.ndim == 2:
+			img = img[..., np.newaxis]  # Grayscale -> [H,W,1]
+		H_base, W_base, C = img.shape
+		is_rgb = (C == 3)
 
-		H_base, W_base, _ = img.shape
-
-		# 1. Generate the downscaled RGB images for the pyramid
+		# 1. Generate pyramid (resize preserves shape type)
 		pyramid_data = []
 		for i in range(levels):
 			scale = 0.5 ** i
@@ -176,55 +179,64 @@ class MicroscopyImage():
 			resized = cv2.resize(img, (w_scaled, h_scaled), interpolation=cv2.INTER_AREA)
 			pyramid_data.append(resized)
 
-		# 2. Build the OME-XML with separate <Image> entries, each with interleaved RGB pixels
+		# 2. Build OME-XML
 		ome = OME()
 		ifd_counter = 0
 		for i, level_img in enumerate(pyramid_data):
-			H, W, _ = level_img.shape
+			# Safe shape unpack
+			if len(level_img.shape) == 3:
+				H, W, CC = level_img.shape  # CC to avoid overwriting C
+			else:
+				H, W = level_img.shape
+				CC = 1
 
-			image_block = Image(
-				id=f"Image:{i}",
-				name=f"ResolutionLevel_{i}",
-				pixels=Pixels(
-					id=f"Pixels:{i}",
-					dimension_order="XYCZT",
-					type="float",
-					size_x=W,
-					size_y=H,
-					size_z=1,
-					size_c=1,  # Single channel since RGB pixels are interleaved
-					size_t=1,
-					interleaved=True,  # Interleaved RGB
-					channels=[
-						Channel(id=f"Channel:{i}:0", name="RGB", samples_per_pixel=3),
-					],
-					planes=[
-						Plane(the_c=0, the_z=0, the_t=0)
-					],
-					tiff_data_blocks=[
-						TiffData(ifd=ifd_counter, plane_count=1)
-					],
+			if is_rgb:
+				# RGB interleaved
+				image_block = Image(
+					id=f"Image:{i}", name=f"ResolutionLevel_{i}",
+					pixels=Pixels(
+						id=f"Pixels:{i}", dimension_order="XYCZT", type="float",
+						size_x=W, size_y=H, size_z=1, size_c=1, size_t=1, interleaved=True,
+						channels=[Channel(id=f"Channel:{i}:0", name="RGB", samples_per_pixel=3)],
+						planes=[Plane(the_c=0, the_z=0, the_t=0)],
+						tiff_data_blocks=[TiffData(ifd=ifd_counter, plane_count=1)]
+					)
 				)
-			)
+				ifd_counter += 1
+			else:
+				# Multi/single-channel separate planes
+				image_block = Image(
+					id=f"Image:{i}", name=f"ResolutionLevel_{i}",
+					pixels=Pixels(
+						id=f"Pixels:{i}", dimension_order="XYCZT", type="float",
+						size_x=W, size_y=H, size_z=1, size_c=CC, size_t=1,
+						channels=[Channel(id=f"Channel:{i}:{c}", name=f"Channel_{c}") for c in range(CC)],
+						planes=[Plane(the_c=c, the_z=0, the_t=0) for c in range(CC)],
+						tiff_data_blocks=[TiffData(ifd=ifd_counter + c, plane_count=1) for c in range(CC)]
+					)
+				)
+				ifd_counter += CC
 			ome.images.append(image_block)
-			ifd_counter += 1
 
 		xml_metadata = ome.to_xml()
 
-		# 3. Write all image planes sequentially to a single TIFF file
-		import tifffile
-
+		# 3. Write TIFF
 		with tifffile.TiffWriter(output_file, bigtiff=True) as tif:
 			for c, level_img in enumerate(pyramid_data):
-				# level_img shape is (H, W, 3), interleaved RGB float32 pixels
-				description = xml_metadata if c == 0 else None
-				tif.write(
-					level_img,
-					description=description,
-					photometric='rgb',
-					metadata={'axes': 'YXC'},  # Y: rows, X: columns, C: channels interleaved
-					compression="zlib"
-				)
+				if is_rgb:
+					description = xml_metadata if c == 0 else None
+					tif.write(level_img, description=description, photometric='rgb',
+							metadata={'axes': 'YXC'}, compression="zlib")
+				else:
+					# Write each channel slice
+					if len(level_img.shape) == 2:
+						ch_data = [level_img]
+					else:
+						ch_data = [level_img[:,:,ch] for ch in range(C)]
+					for ch_idx, ch_img in enumerate(ch_data):
+						description = xml_metadata if c == 0 and ch_idx == 0 else None
+						tif.write(ch_img, description=description, photometric='minisblack',
+								metadata={'axes': 'YX'}, compression="zlib")
 
 		return output_file
 
@@ -374,6 +386,26 @@ class MicroscopyImage():
 		cropped_image = image[ymin:ymax+1, xmin:xmax+1, :]
 
 		return cropped_image
+
+	def preview_image(self) -> np.ndarray:
+		'''
+		Load and return a preview of the microscopy image.
+
+		Returns
+		-------
+		image : np.ndarray
+			The preview image as a NumPy array.
+		'''
+
+		# Load the input file
+		if self.filename.endswith(".czi"):
+			print(f"Loading CZI from file {self.filename}")
+			image = self._load_czi(self.filename)
+		else:
+			print(f"Loading TIFF from file {self.filename}")
+			image = self._load_tiff(self.filename)
+
+		return image
 
 	def process_image(self, 
 		color_enhancement: bool = True,
