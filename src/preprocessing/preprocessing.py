@@ -96,7 +96,7 @@ def preprocess_modality(path: str, modality_name: str, modality_type: str, prepr
 		lipid_annotation_db = preprocessing_settings.get(MsiPreprocessingParams.LIPID_ANNOTATION_DB, None)
 		mass_tolerance = preprocessing_settings.get(MsiPreprocessingParams.MASS_TOLERANCE, 10)
 		frequency_threshold = preprocessing_settings.get(MsiPreprocessingParams.FREQUENCY_THRESHOLD, 0.01)
-		intensity_normalization = preprocessing_settings.get(MsiPreprocessingParams.INTENSITY_NORMALIZATION, MsiIntensityNormalization.TIC)
+		intensity_normalization = preprocessing_settings.get(MsiPreprocessingParams.INTENSITY_NORMALIZATION, MsiIntensityNormalization.NONE)
 		recalibration_reference = preprocessing_settings.get(MsiPreprocessingParams.RECALIBRATION_REFERENCE, None)
 		min_intensity_threshold = preprocessing_settings.get(MsiPreprocessingParams.MIN_INTENSITY_THRESHOLD, 1e4)
 		force_recomputing = preprocessing_settings.get(MsiPreprocessingParams.FORCE_RECOMPUTING, False)

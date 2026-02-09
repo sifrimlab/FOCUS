@@ -1729,9 +1729,13 @@ class MsiDataset:
 
 				# Intensity normalization
 				if intensity_normalization == MsiIntensityNormalization.TIC:
+					# Total Ion Count normalization
 					tic = merged_intensities.sum(axis=1, keepdims=True)
 					tic[tic == 0] = 1  # Prevent division by zero
 					merged_intensities = merged_intensities / tic
+				elif intensity_normalization == MsiIntensityNormalization.LOG:
+					# Log-Transform normalization
+					merged_intensities = np.log1p(merged_intensities)
 
 				self.normalized[sample.sample_id][mode] = merged_intensities
 			

@@ -180,6 +180,7 @@ class TransformationType(_AbstractEnum):
 
 class MsiIntensityNormalization(_AbstractEnum):
 	TIC = "tic"
+	LOG = "log"
 	NONE = "none"
 
 class DecompositionMethod(_AbstractEnum):

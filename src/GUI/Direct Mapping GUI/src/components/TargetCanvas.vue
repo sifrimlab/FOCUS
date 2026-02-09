@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted, watch } from 'vue';
-import { Application, Container, Sprite, Graphics, Assets } from 'pixi.js';
+import { Application, Container, Sprite, Graphics, Texture } from 'pixi.js';
 import { useMainStore } from '../store/main';
 import { mat3 } from 'gl-matrix';
 import { createIdentity, scale, translate, multiply, rotate } from '../utils/matrix';
@@ -199,7 +199,11 @@ const updateContent = async () => {
         const imgBlob = store.targetData as Blob;
         const url = URL.createObjectURL(imgBlob);
         try {
-            const texture = await Assets.load(url);
+            const img = new Image();
+            img.src = url;
+            await img.decode();
+            URL.revokeObjectURL(url);
+            const texture = Texture.from(img);
             const sprite = new Sprite(texture);
             contentContainer.addChild(sprite);
         } catch (e) { console.error(e); }

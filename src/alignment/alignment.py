@@ -473,12 +473,9 @@ class DirectMappingAligner:
                 os.makedirs(alignment_folder, exist_ok=True)
                 aligned_target_file = MODALITY_ALIGNMENT(self._path, sample_id, self._target_modality_name, "h5ad")
                 
-                # If no aligned file exits load it from the processing step
-                if os.path.exists(aligned_target_file) == False:
-                    adata = anndata.read_h5ad(processed_target_file)
-                else:
-                    adata = anndata.read_h5ad(aligned_target_file)
-
+                # Load data from processing step
+                adata = anndata.read_h5ad(processed_target_file)
+                
                 # Save the aligned coordinates
                 adata.obsm[f'{self._reference_modality_name}_spatial'] = aligned_coords
                 

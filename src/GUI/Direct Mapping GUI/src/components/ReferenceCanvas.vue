@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted, watch } from 'vue';
-import { Application, Container, Sprite, Graphics, Assets } from 'pixi.js';
+import { Application, Container, Sprite, Graphics, Texture } from 'pixi.js';
 import { useMainStore } from '../store/main';
 import { createIdentity, scale, translate } from '../utils/matrix';
 import { getReferenceColor } from '../utils/colors';
@@ -118,7 +118,11 @@ const updateContent = async () => {
     const url = URL.createObjectURL(imgBlob);
     
     try {
-        const texture = await Assets.load(url);
+        const img = new Image();
+        img.src = url;
+        await img.decode();
+        URL.revokeObjectURL(url);
+        const texture = Texture.from(img);
         const sprite = new Sprite(texture);
         
         const imgW = texture.width;
