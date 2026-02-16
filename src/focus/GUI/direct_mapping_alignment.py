@@ -1,30 +1,25 @@
 import os, time, threading
-import numpy as np
 from PIL import Image
-from typing import Callable
-
-
 from io import BytesIO
 
 from flask import Flask, request, jsonify, send_file, send_from_directory
 from werkzeug.serving import make_server
-from threading import Thread
 
 class DirectMappingAlignmentGUI:
-    '''
+    """
     A GUI interface that allows the user to directly map target coordinates to a reference image
 
     Parameters
     ----------
         samples: list[str]
             A list of sample identifiers.
-    '''
+    """
 
     def __init__(self, dataset_size: int, dataset_completed_event: threading.Event):
 
         self._dataset_size = dataset_size       # Hold how many samples need to be processed
 
-        # Syncronization events
+        # Synchronization events
         self._user_event = threading.Event()    # Event to signal when the user has saved the aligned coordinates
         self._dataset_completed_event = dataset_completed_event  # Event to signal when the dataset processing is completed
 
@@ -40,7 +35,7 @@ class DirectMappingAlignmentGUI:
         self._reference_payload: dict | Image.Image | None = None  # Payload of the reference modality
         self._target_payload: dict | Image.Image | None = None      # Payload of the target modality
 
-        # Aliggned coordinates
+        # Aligned coordinates
         self._aligned_target: dict | None = None                     # Aligned target modality data
 
         # Reset the events
@@ -152,7 +147,7 @@ class DirectMappingAlignmentGUI:
         reference_payload: dict | Image.Image,
         target_payload: dict | Image.Image,
         ) -> dict:
-        '''
+        """
         Align the target coordinates to the reference image for a given sample.
 
         Parameters
@@ -174,7 +169,7 @@ class DirectMappingAlignmentGUI:
         -------
             aligned_result: dict
                 The alignment result as a dictionary.
-        '''
+        """
 
         # Set the reference image and target coordinates
         self._sample_id = sample_id
