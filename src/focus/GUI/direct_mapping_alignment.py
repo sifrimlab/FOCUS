@@ -47,6 +47,8 @@ class DirectMappingAlignmentGUI:
         self._user_event.clear()
         self._dataset_completed_event.clear()
 
+        self._basedir = os.path.join(os.path.dirname(__file__), 'alignment')
+
         self.app = Flask(__name__)
         
         # Enable CORS
@@ -63,13 +65,15 @@ class DirectMappingAlignmentGUI:
     def _register_routes(self):
         @self.app.route('/')
         def index():
-            dist_dir = os.path.join(os.path.dirname(__file__), 'Direct Mapping GUI', 'dist')
-            return send_from_directory(dist_dir, 'index.html')
+            return send_from_directory(self._basedir, 'index.html')
+
+        @self.app.route('/<path:filename>')
+        def serve_static(filename):
+            return send_from_directory(self._basedir, filename)
 
         @self.app.route('/assets/<path:path>')
         def static_assets(path):
-            dist_dir = os.path.join(os.path.dirname(__file__), 'Direct Mapping GUI', 'dist', 'assets')
-            return send_from_directory(dist_dir, path)
+            return send_from_directory(self._basedir, path)
 
         @self.app.route('/status', methods=['GET'])
         def get_status():

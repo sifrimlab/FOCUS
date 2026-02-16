@@ -1,10 +1,10 @@
 import os
-from preprocessing import preprocessing
-from alignment import alignment
-from registration import registration
+from focus.preprocessing import preprocessing
+from focus.alignment import alignment
+from focus.registration import registration
 
-from constants import MsiPreprocessingParams, MicroscopyImageProcessingParams, ModalityType
-from constants import SegmentationBackgroundColor, RamanPreprocessingParams, STPreprocessingParams
+from focus.constants import MsiPreprocessingParams, MicroscopyImageProcessingParams, ModalityType
+from focus.constants import SegmentationBackgroundColor, RamanPreprocessingParams, STPreprocessingParams
 
 if __name__ == "__main__":
     PATH = "/mnt/data/lorenzo/FOCUS/p_LipidQMap/d_liver_VIB_Ghent/"
