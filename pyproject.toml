@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "FOCUS"
+version = "0.1.0"
+description = "Fusion of Omics for Cohesive Unified Standardization"
+readme = "README.md"
+license = {text = "MIT"}
+authors = [
+    {name = "Lorenzo Venturelli", email = "venturelli.lorenzo@proton.me"}
+]
+requires-python = ">=3.11"
+
+dependencies = [
+    "pathlib",
+    "tqdm",
+    "numpy",
+    "matplotlib",
+    "scikit-learn",
+    "opencv-python",
+    "tifffile",
+    "scikit-image",
+    "torch",
+    "readlif",
+    "ramanspy",
+    "mudata",
+    "anndata",
+    "pandas",
+    "flask",
+    "imagecodecs",
+    "scanpy",
+    "timm",
+    "dask"
+]

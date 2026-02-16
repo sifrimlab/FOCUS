@@ -22,6 +22,7 @@ else
     conda create -y -n FOCUS python=3.11
     echo "Installing dependencies from requirements.txt into 'FOCUS'..."
     conda run -n FOCUS pip install -r requirements.txt
+    conda run -n FOCUS pip install -e .
 fi
 
 # Locate src/tools directory

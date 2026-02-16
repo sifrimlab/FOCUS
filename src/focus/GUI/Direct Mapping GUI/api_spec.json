@@ -1,0 +1,229 @@
+{
+  "info": {
+    "title": "Direct Mapping GUI API",
+    "description": "API specification for the backend service supporting the Direct Mapping GUI application. The backend is responsible for serving dataset samples (images or spot data) and receiving alignment results.",
+    "version": "1.0.0"
+  },
+  "server": {
+    "url": "http://localhost:8000",
+    "description": "Default local development server"
+  },
+  "endpoints": [
+    {
+      "path": "/status",
+      "method": "GET",
+      "summary": "Get Processing Status",
+      "description": "Checks the current status of the dataset processing. Used to determine if a sample is ready to be served and to track progress.",
+      "responses": {
+        "200": {
+          "description": "Sample is ready",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "sample_id": {
+                    "type": "string",
+                    "description": "Unique identifier for the current sample"
+                  },
+                  "sample_index": {
+                    "type": "integer",
+                    "description": "1-based index of the current sample"
+                  },
+                  "total_samples_count": {
+                    "type": "integer",
+                    "description": "Total number of samples in the dataset"
+                  }
+                },
+                "required": ["sample_id", "sample_index", "total_samples_count"]
+              }
+            }
+          }
+        },
+        "400": {
+          "description": "Sample not ready (Client should retry with backoff)"
+        },
+        "404": {
+          "description": "No more samples available (Processing finished)"
+        }
+      }
+    },
+    {
+      "path": "/{type}/metadata",
+      "method": "GET",
+      "summary": "Get Modality Metadata",
+      "description": "Retrieves metadata for either the reference or target modality.",
+      "parameters": [
+        {
+          "name": "type",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "enum": ["reference", "target"]
+          }
+        }
+      ],
+      "responses": {
+        "200": {
+          "description": "Metadata retrieved successfully",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "modality_type": {
+                    "type": "string",
+                    "enum": ["IMAGE", "SPOT"],
+                    "description": "The type of data (Raster Image or Spot/Point Cloud)"
+                  },
+                  "modality_name": {
+                    "type": "string",
+                    "description": "Display name for the modality"
+                  },
+                  "raster_size": {
+                    "type": "array",
+                    "items": { "type": "number" },
+                    "minItems": 2,
+                    "maxItems": 2,
+                    "description": "[width, height] of the raster grid. Required if modality_type is SPOT."
+                  },
+                  "image_shape": {
+                    "type": "array",
+                    "items": { "type": "number" },
+                    "minItems": 2,
+                    "maxItems": 2,
+                    "description": "[height, width] of the image. Required if modality_type is IMAGE."
+                  },
+                  "scaling_factor": {
+                    "type": "number",
+                    "description": "Optional scaling factor applied to the data"
+                  }
+                },
+                "required": ["modality_type", "modality_name"]
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "path": "/{type}/payload",
+      "method": "GET",
+      "summary": "Get Modality Data Payload",
+      "description": "Retrieves the actual data for the modality. The response format depends on the modality_type defined in metadata.",
+      "parameters": [
+        {
+          "name": "type",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "enum": ["reference", "target"]
+          }
+        }
+      ],
+      "responses": {
+        "200": {
+          "description": "Data payload",
+          "content": {
+            "image/*": {
+              "description": "Binary image data (if modality_type is IMAGE)"
+            },
+            "application/json": {
+              "description": "JSON array of spots (if modality_type is SPOT)",
+              "schema": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "spatial": {
+                      "type": "array",
+                      "items": { "type": "number" },
+                      "minItems": 2,
+                      "maxItems": 2,
+                      "description": "[x, y] coordinates of the spot"
+                    },
+                    "class": {
+                      "type": "integer",
+                      "description": "Class identifier for the spot"
+                    }
+                  },
+                  "required": ["spatial", "class"]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "path": "/confirm",
+      "method": "POST",
+      "summary": "Submit Alignment Result",
+      "description": "Submits the result of the manual alignment. The payload structure varies based on the Reference-Target modality pair.",
+      "requestBody": {
+        "required": true,
+        "content": {
+          "application/json": {
+            "schema": {
+              "oneOf": [
+                {
+                  "description": "Payload for IMAGE (Ref) vs IMAGE (Target)",
+                  "type": "object",
+                  "properties": {
+                    "corner_pixels": {
+                      "type": "array",
+                      "items": {
+                        "type": "array",
+                        "items": { "type": "number" },
+                        "minItems": 2,
+                        "maxItems": 2
+                      },
+                      "description": "The 4 corners of the target image mapped into the reference image pixel space"
+                    },
+                    "scale_factor": {
+                      "type": "number",
+                      "description": "The calculated scaling factor between target and reference"
+                    }
+                  }
+                },
+                {
+                  "description": "Payload for IMAGE (Ref) vs SPOT (Target)",
+                  "type": "object",
+                  "properties": {
+                    "spots": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": { "type": "integer" },
+                          "pixel_x": { "type": ["number", "null"] },
+                          "pixel_y": { "type": ["number", "null"] }
+                        }
+                      },
+                      "description": "List of target spots mapped to reference pixel coordinates. Null if outside reference bounds."
+                    },
+                    "raster_size_px": {
+                      "type": "array",
+                      "items": { "type": "number" },
+                      "description": "The size of the target raster projected into reference pixel space"
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        }
+      },
+      "responses": {
+        "200": {
+          "description": "Alignment confirmed successfully. Backend will proceed to next sample."
+        },
+        "500": {
+          "description": "Server error processing the alignment"
+        }
+      }
+    }
+  ]
+}

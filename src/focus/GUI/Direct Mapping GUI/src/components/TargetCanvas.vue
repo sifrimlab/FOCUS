@@ -1,0 +1,501 @@
+<script setup lang="ts">
+import { ref, onMounted, onUnmounted, watch } from 'vue';
+import { Application, Container, Sprite, Graphics, Texture } from 'pixi.js';
+import { useMainStore } from '../store/main';
+import { mat3 } from 'gl-matrix';
+import { createIdentity, scale, translate, multiply, rotate } from '../utils/matrix';
+import { getTargetColor } from '../utils/colors';
+import type { SpotModalityPayload } from '../api/types';
+
+const canvasContainer = ref<HTMLElement | null>(null);
+const store = useMainStore();
+let app: Application | null = null;
+let viewContainer: Container | null = null;
+let contentContainer: Container | null = null;
+let resizeObserver: ResizeObserver | null = null;
+let isDragging = false;
+let lastX = 0;
+let lastY = 0;
+let cachedLocalCenter: [number, number] | null = null;
+
+const calculateFitMatrix = (width: number, height: number) => {
+  // Use Base Dimensions
+  width = width / store.globalZoom;
+  height = height / store.globalZoom;
+
+  const m = createIdentity();
+  if (!store.targetData || !store.targetMeta) return m;
+
+  if (store.targetMeta.modality_type === 'IMAGE') {
+    if (store.targetMeta.image_shape) {
+        const [h, w] = store.targetMeta.image_shape;
+        const s = 1.0;
+        const dx = (width - w * s) / 2;
+        const dy = (height - h * s) / 2;
+        translate(m, m, [dx, dy]);
+        scale(m, m, [s, s]);
+    }
+  } else {
+    const data = store.targetData as SpotModalityPayload;
+    const spots = data;
+    const rasterSize = store.targetMeta!.raster_size!;
+    
+    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+    for (const s of spots) {
+      minX = Math.min(minX, s.spatial[0]);
+      maxX = Math.max(maxX, s.spatial[0]);
+      minY = Math.min(minY, s.spatial[1]);
+      maxY = Math.max(maxY, s.spatial[1]);
+    }
+    const rx = rasterSize[0];
+    const ry = rasterSize[1];
+    minX -= rx/2; maxX += rx/2;
+    minY -= ry/2; maxY += ry/2;
+    
+    const s = 1.0;
+    
+    const cx = (minX + maxX) / 2;
+    const cy = (minY + maxY) / 2;
+    
+    translate(m, m, [width/2, height/2]);
+    scale(m, m, [s, -s]);
+    translate(m, m, [-cx, -cy]);
+  }
+  return m;
+};
+
+const getLocalCenter = () => {
+  if (cachedLocalCenter) return cachedLocalCenter;
+  if (!store.targetMeta) return [0, 0];
+  if (store.targetMeta.modality_type === 'IMAGE') {
+     const [h, w] = store.targetMeta.image_shape || [0, 0];
+     cachedLocalCenter = [w/2, h/2];
+     return cachedLocalCenter;
+  } else {
+     const data = store.targetData as SpotModalityPayload;
+     if (!data) return [0, 0];
+     let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+     for (const s of data) {
+        minX = Math.min(minX, s.spatial[0]);
+        maxX = Math.max(maxX, s.spatial[0]);
+        minY = Math.min(minY, s.spatial[1]);
+        maxY = Math.max(maxY, s.spatial[1]);
+     }
+     if (minX === Infinity) return [0, 0];
+     cachedLocalCenter = [(minX + maxX) / 2, (minY + maxY) / 2];
+     return cachedLocalCenter;
+  }
+};
+
+// Reset cache when data changes
+watch(() => store.targetData, () => {
+    cachedLocalCenter = null;
+    if (app && store.targetData) {
+        const { width, height } = app.screen;
+        const fitM = calculateFitMatrix(width, height);
+        store.updateTargetTransform(fitM);
+        updateContent();
+    }
+});
+
+const initPixi = async () => {
+  if (!canvasContainer.value) return;
+  
+  if (app) {
+      try {
+        app.destroy(true, { children: true, texture: true });
+      } catch (e) { console.error(e); }
+      app = null;
+  }
+  
+  const newApp = new Application();
+  try {
+      await newApp.init({ 
+        resizeTo: canvasContainer.value, 
+        backgroundAlpha: 0,
+        antialias: true,
+        autoDensity: true,
+        resolution: window.devicePixelRatio || 1,
+        preference: 'webgl',
+        autoStart: false
+      });
+  } catch (e) { return; }
+  
+  if (!canvasContainer.value) {
+      newApp.destroy(true);
+      return;
+  }
+  
+  app = newApp;
+  canvasContainer.value.appendChild(app.canvas);
+  app.canvas.style.width = '100%';
+  app.canvas.style.height = '100%';
+  app.canvas.style.display = 'block';
+  
+  // Attach event listeners
+  app.canvas.addEventListener('mousedown', onMouseDown);
+  app.canvas.addEventListener('wheel', onWheel);
+  
+  viewContainer = new Container();
+  app.stage.addChild(viewContainer);
+  
+  contentContainer = new Container();
+  viewContainer.addChild(contentContainer);
+  
+  render();
+  
+  setTimeout(() => {
+      if (app && app.renderer) {
+          app.resize();
+          updateViewTransform();
+          updateContent();
+      }
+  }, 100);
+};
+
+const updateViewTransform = () => {
+  if (!viewContainer || !app) return;
+  const { width, height } = app.screen;
+  const cx = width / 2;
+  const cy = height / 2;
+  
+  viewContainer.position.set(cx, cy);
+  viewContainer.scale.set(store.globalZoom);
+  viewContainer.pivot.set(cx - store.viewOffset[0], cy - store.viewOffset[1]);
+};
+
+const updateContentTransform = () => {
+    if (!contentContainer || !store.targetTransform) return;
+    const m = store.targetTransform;
+    
+    // Manual decomposition to avoid PixiJS version issues with decompose()
+    const a = m[0];
+    const b = m[1];
+    const c = m[3];
+    const d = m[4];
+    const tx = m[6];
+    const ty = m[7];
+    
+    contentContainer.position.set(tx, ty);
+    contentContainer.rotation = Math.atan2(b, a);
+    contentContainer.scale.set(Math.sqrt(a * a + b * b), Math.sqrt(c * c + d * d));
+    
+    // Handle flip (determinant < 0)
+    const det = a * d - b * c;
+    if (det < 0) {
+        contentContainer.scale.y *= -1;
+    }
+    
+    contentContainer.alpha = store.targetOpacity;
+};
+
+const updateContent = async () => {
+    if (!app || !contentContainer) return;
+    contentContainer.removeChildren();
+    
+    if (!store.targetData || !store.targetMeta) return;
+    
+    if (store.targetMeta.modality_type === 'IMAGE') {
+        const imgBlob = store.targetData as Blob;
+        const url = URL.createObjectURL(imgBlob);
+        try {
+            const img = new Image();
+            img.src = url;
+            await img.decode();
+            URL.revokeObjectURL(url);
+            const texture = Texture.from(img);
+            const sprite = new Sprite(texture);
+            contentContainer.addChild(sprite);
+        } catch (e) { console.error(e); }
+    } else {
+        const data = store.targetData as SpotModalityPayload;
+        const spots = data;
+        const rasterSize = store.targetRasterSize;
+        const rx = rasterSize[0];
+        const ry = rasterSize[1];
+        
+        store.setTargetSpotBoost(1.0);
+        const finalBoost = store.commonSpotBoost;
+        const drawRx = rx * finalBoost;
+        const drawRy = ry * finalBoost;
+        
+        const graphics = new Graphics();
+        contentContainer.addChild(graphics);
+        
+        spots.forEach(spot => {
+            const isClassVisible = store.targetClassFilter.includes(spot.class);
+            let isForegroundVisible = true;
+            if (store.targetForegroundMode === 'foreground') isForegroundVisible = spot.foreground;
+            if (store.targetForegroundMode === 'background') isForegroundVisible = !spot.foreground;
+            
+            const isVisible = isClassVisible && isForegroundVisible;
+            if (!isVisible) return;
+
+            const color = getTargetColor(spot.class);
+            graphics.rect(spot.spatial[0] - drawRx/2, spot.spatial[1] - drawRy/2, drawRx, drawRy);
+            graphics.fill(color);
+        });
+    }
+    updateContentTransform();
+};
+
+const render = () => {
+    if (!app || !app.renderer) return;
+    updateViewTransform();
+    updateContentTransform();
+    app.render();
+};
+
+watch(() => store.pendingCommand, (cmd) => {
+  if (!cmd || !app) return;
+  const { width, height } = app.screen;
+  
+  const cx_screen = (width / store.globalZoom) / 2;
+  const cy_screen = (height / store.globalZoom) / 2;
+  
+  const localCenter = getLocalCenter();
+  const mCurrent = store.targetTransform;
+  const cx_target = (localCenter[0] || 0) * mCurrent[0] + (localCenter[1] || 0) * mCurrent[3] + mCurrent[6];
+  const cy_target = (localCenter[0] || 0) * mCurrent[1] + (localCenter[1] || 0) * mCurrent[4] + mCurrent[7];
+
+  const m = mat3.create();
+  
+  if (cmd.type === 'reset') {
+     store.updateTargetTransform(createIdentity());
+  } else if (cmd.type === 'zoom') {
+     translate(m, m, [cx_screen, cy_screen]);
+     scale(m, m, [cmd.value, cmd.value]);
+     translate(m, m, [-cx_screen, -cy_screen]);
+     const newM = mat3.create();
+     multiply(newM, m, store.targetTransform);
+     store.updateTargetTransform(newM);
+  } else if (cmd.type === 'rotate') {
+     translate(m, m, [cx_target, cy_target]);
+     rotate(m, m, cmd.value);
+     translate(m, m, [-cx_target, -cy_target]);
+     const newM = mat3.create();
+     multiply(newM, m, store.targetTransform);
+     store.updateTargetTransform(newM);
+  } else if (cmd.type === 'flip') {
+     translate(m, m, [cx_target, cy_target]);
+     scale(m, m, cmd.value ? [-1, 1] : [1, -1]);
+     translate(m, m, [-cx_target, -cy_target]);
+     const newM = mat3.create();
+     multiply(newM, m, store.targetTransform);
+     store.updateTargetTransform(newM);
+  } else if (cmd.type === 'setScale') {
+     const currentM = store.targetTransform;
+     const currentScale = Math.hypot(currentM[0], currentM[1]);
+     const targetScale = cmd.value;
+     if (currentScale !== 0) {
+        const ratio = targetScale / currentScale;
+        translate(m, m, [cx_target, cy_target]);
+        scale(m, m, [ratio, ratio]);
+        translate(m, m, [-cx_target, -cy_target]);
+        const newM = mat3.create();
+        multiply(newM, m, store.targetTransform);
+        store.updateTargetTransform(newM);
+     }
+  } else if (cmd.type === 'setRotation') {
+     const currentM = store.targetTransform;
+     const currentRot = Math.atan2(currentM[1], currentM[0]);
+     const targetRot = cmd.value * Math.PI / 180;
+     const delta = targetRot - currentRot;
+     
+     translate(m, m, [cx_target, cy_target]);
+     rotate(m, m, delta);
+     translate(m, m, [-cx_target, -cy_target]);
+     const newM = mat3.create();
+     multiply(newM, m, store.targetTransform);
+     store.updateTargetTransform(newM);
+  } else if (cmd.type === 'resetScale') {
+     const initialScale = store.targetMeta?.scaling_factor || 1.0;
+     const currentM = store.targetTransform;
+     const currentScale = Math.hypot(currentM[0], currentM[1]);
+     if (currentScale !== 0) {
+        const ratio = initialScale / currentScale;
+        translate(m, m, [cx_target, cy_target]);
+        scale(m, m, [ratio, ratio]);
+        translate(m, m, [-cx_target, -cy_target]);
+        const newM = mat3.create();
+        multiply(newM, m, store.targetTransform);
+        store.updateTargetTransform(newM);
+     }
+  } else if (cmd.type === 'resetRotation') {
+     const currentM = store.targetTransform;
+     const s = Math.hypot(currentM[0], currentM[1]);
+     const tx = cx_target - s * (localCenter[0] || 0);
+     const ty = cy_target - s * (localCenter[1] || 0);
+     const newM = mat3.fromValues(s, 0, 0, 0, s, 0, tx, ty, 1);
+     store.updateTargetTransform(newM);
+  }
+  store.pendingCommand = null;
+});
+
+// Initialize transform on data load
+// watch(() => store.targetData, () => { ... }) // Moved above to handle cache reset
+
+
+watch(() => [store.targetTransform, store.targetOpacity], () => {
+    updateContentTransform();
+    render();
+}, { deep: true });
+
+watch(() => [store.globalZoom, store.viewOffset], () => {
+    updateViewTransform();
+    render();
+}, { deep: true });
+
+watch(() => [store.targetClassFilter, store.commonSpotBoost, store.targetRasterSize, store.targetForegroundMode], async () => {
+    await updateContent();
+    render();
+}, { deep: true });
+
+const onMouseDown = (e: MouseEvent) => {
+  isDragging = true;
+  lastX = e.clientX;
+  lastY = e.clientY;
+};
+
+const onMouseMove = (e: MouseEvent) => {
+  if (!isDragging) return;
+  
+  if (store.controlMode === 'camera') {
+      const screenDx = e.clientX - lastX;
+      const screenDy = e.clientY - lastY;
+      lastX = e.clientX;
+      lastY = e.clientY;
+      store.updateViewOffset(screenDx, screenDy);
+      return;
+  }
+
+  // Aligner Mode
+  if (store.alignerInteraction === 'rotate') {
+      if (!app) return;
+      const rect = app.canvas.getBoundingClientRect();
+      const cx_screen = rect.width / 2;
+      const cy_screen = rect.height / 2;
+
+      const localCenter = getLocalCenter();
+      const mCurrent = store.targetTransform;
+      
+      const cx_target_world = (localCenter[0] || 0) * mCurrent[0] + (localCenter[1] || 0) * mCurrent[3] + mCurrent[6];
+      const cy_target_world = (localCenter[0] || 0) * mCurrent[1] + (localCenter[1] || 0) * mCurrent[4] + mCurrent[7];
+
+      const cx_target_screen = (cx_target_world - store.viewOffset[0]) * store.globalZoom + cx_screen;
+      const cy_target_screen = (cy_target_world - store.viewOffset[1]) * store.globalZoom + cy_screen;
+
+      const mx_screen = e.clientX - rect.left;
+      const my_screen = e.clientY - rect.top;
+      const last_mx_screen = lastX - rect.left;
+      const last_my_screen = lastY - rect.top;
+
+      const angleOld = Math.atan2(last_my_screen - cy_target_screen, last_mx_screen - cx_target_screen);
+      const angleNew = Math.atan2(my_screen - cy_target_screen, mx_screen - cx_target_screen);
+      const dAngle = angleNew - angleOld;
+      
+      const m = mat3.create();
+      translate(m, m, [cx_target_world, cy_target_world]);
+      rotate(m, m, dAngle);
+      translate(m, m, [-cx_target_world, -cy_target_world]);
+      
+      const newM = mat3.create();
+      multiply(newM, m, store.targetTransform);
+      store.updateTargetTransform(newM);
+      
+      lastX = e.clientX;
+      lastY = e.clientY;
+      return;
+  }
+
+  const dx = (e.clientX - lastX) / store.globalZoom;
+  const dy = (e.clientY - lastY) / store.globalZoom;
+  lastX = e.clientX;
+  lastY = e.clientY;
+  
+  // We need to apply translation in the Target's Local Space?
+  // No, usually we translate in the "World" space (which is View Space / Zoom).
+  // But here we are modifying the Target Transform Matrix (M).
+  // M maps Local -> World.
+  // We want to move the object in World space by (dx, dy).
+  // New_Pos = Old_Pos + Delta
+  // M_new * p = M_old * p + Delta
+  // M_new = Translate(Delta) * M_old
+  
+  const m = mat3.create();
+  translate(m, m, [dx, dy]);
+  
+  const newM = mat3.create();
+  multiply(newM, m, store.targetTransform);
+  store.updateTargetTransform(newM);
+};
+
+const onMouseUp = () => {
+  isDragging = false;
+};
+
+const onWheel = (e: WheelEvent) => {
+  e.preventDefault();
+  const zoom = e.deltaY > 0 ? 0.98 : 1.02;
+  
+  if (store.controlMode === 'camera') {
+      store.globalZoom *= zoom;
+      return;
+  }
+  
+  if (!app) return;
+  const rect = app.canvas.getBoundingClientRect();
+  const mx_screen = e.clientX - rect.left;
+  const my_screen = e.clientY - rect.top;
+  
+  const cx = rect.width / 2;
+  const cy = rect.height / 2;
+  
+  const mx = (mx_screen - cx - store.viewOffset[0] * store.globalZoom) / store.globalZoom + cx;
+  const my = (my_screen - cy - store.viewOffset[1] * store.globalZoom) / store.globalZoom + cy;
+  
+  const m = mat3.create();
+  translate(m, m, [mx, my]);
+  scale(m, m, [zoom, zoom]);
+  translate(m, m, [-mx, -my]);
+  
+  const newM = mat3.create();
+  multiply(newM, m, store.targetTransform);
+  store.updateTargetTransform(newM);
+};
+
+onMounted(() => {
+  initPixi();
+  if (canvasContainer.value) {
+    resizeObserver = new ResizeObserver(() => {
+        if (app && app.renderer) {
+            updateViewTransform();
+            app.render();
+        }
+    });
+    resizeObserver.observe(canvasContainer.value);
+    
+    window.addEventListener('mouseup', onMouseUp);
+    window.addEventListener('mousemove', onMouseMove);
+  }
+});
+
+onUnmounted(() => {
+  resizeObserver?.disconnect();
+  window.removeEventListener('mouseup', onMouseUp);
+  window.removeEventListener('mousemove', onMouseMove);
+  if (app) {
+    try {
+        app.destroy(true, { children: true, texture: true });
+    } catch (e) { console.error(e); }
+    app = null;
+  }
+});
+</script>
+
+<template>
+  <div 
+    ref="canvasContainer" 
+    class="absolute inset-0 w-full h-full cursor-move"
+  ></div>
+</template>
