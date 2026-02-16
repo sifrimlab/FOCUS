@@ -4,9 +4,9 @@ import vue from '@vitejs/plugin-vue'
 // https://vite.dev/config/
 export default defineConfig({
   plugins: [vue()],
-  base: "alignment",
+  base: "./",
   build: {
-    outDir: "release",
+    outDir: "../../src/focus/GUI/alignment/",
     assetsDir: ""
   }
 })
