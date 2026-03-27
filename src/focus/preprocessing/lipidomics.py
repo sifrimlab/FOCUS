@@ -17,6 +17,7 @@ import focus.utils as utils
 from focus.constants import ImzMLFileParser, MsiIntensityNormalization, MsiMetadata, MsiIonMode
 from focus.constants import MODALITY_PREPROCESSING, MODALITY_PREPROCESSING_MERGED
 
+
 @njit
 def cluster_unique_mz_chunk(unique_mz, counts, mass_tolerance_ppm):
 	"""
@@ -77,6 +78,7 @@ def cluster_unique_mz_chunk(unique_mz, counts, mass_tolerance_ppm):
 
 	return np.array(consensus_mz), np.array(consensus_weights)
 
+
 def merge_chunks(prev_mz, prev_w, curr_mz, curr_w, mass_tolerance_ppm):
 	"""
 	Merge consensus clusters from two adjacent chunks resolving overlaps.
@@ -120,35 +122,37 @@ def merge_chunks(prev_mz, prev_w, curr_mz, curr_w, mass_tolerance_ppm):
 
 	return np.array(merged_mz), np.array(merged_w)
 
+
 @njit
 def interpolate_single(original_mz, original_intensity, reference_mz, mass_tolerance):
-    """Numba-optimized function to interpolate a single spectrum onto a reference M/Z grid using weighted averaging."""
-    n_ref = len(reference_mz)
-    result = np.zeros(n_ref, dtype=original_intensity.dtype)
-    mz_tol = mass_tolerance * 1e-6
-    
-    if len(original_mz) == 0:
-        return result
-    
-    # Single pass over peaks (no ref_batch_size needed)
-    for i in range(len(original_mz)):
-        mz_peak = original_mz[i]
-        intens = original_intensity[i]
-        mz_low = mz_peak * (1 - mz_tol)
-        mz_high = mz_peak * (1 + mz_tol)
-        
-        left = np.searchsorted(reference_mz, mz_low)
-        right = np.searchsorted(reference_mz, mz_high)
-        
-        if left < right:
-            slice_mz = reference_mz[left:right]
-            ppm_diff = np.abs(slice_mz - mz_peak) / mz_peak * 1e6
-            weights_raw = 1.0 / (ppm_diff + 1e-9)
-            weights_sum = np.sum(weights_raw)
-            if weights_sum > 0:
-                result[left:right] += intens * (weights_raw / weights_sum)
-    
-    return result
+	"""Numba-optimized function to interpolate a single spectrum onto a reference M/Z grid using weighted averaging."""
+	n_ref = len(reference_mz)
+	result = np.zeros(n_ref, dtype=original_intensity.dtype)
+	mz_tol = mass_tolerance * 1e-6
+
+	if len(original_mz) == 0:
+		return result
+
+	# Single pass over peaks (no ref_batch_size needed)
+	for i in range(len(original_mz)):
+		mz_peak = original_mz[i]
+		intens = original_intensity[i]
+		mz_low = mz_peak * (1 - mz_tol)
+		mz_high = mz_peak * (1 + mz_tol)
+
+		left = np.searchsorted(reference_mz, mz_low)
+		right = np.searchsorted(reference_mz, mz_high)
+
+		if left < right:
+			slice_mz = reference_mz[left:right]
+			ppm_diff = np.abs(slice_mz - mz_peak) / mz_peak * 1e6
+			weights_raw = 1.0 / (ppm_diff + 1e-9)
+			weights_sum = np.sum(weights_raw)
+			if weights_sum > 0:
+				result[left:right] += intens * (weights_raw / weights_sum)
+
+	return result
+
 
 class MsiSample:
 	def __init__(
@@ -158,7 +162,7 @@ class MsiSample:
 			modality_name: str,
 			double_ion_mode: bool = False,
 			ion_mode: MsiIonMode | None = None
-		) -> None:
+	) -> None:
 		'''
 		Load and preprocess a MSI sample using ImzML and IBD files.
 
@@ -178,14 +182,15 @@ class MsiSample:
 
 		# Ensure consistency of input parameters
 		if double_ion_mode != True and ion_mode not in MsiIonMode.list():
-			raise ValueError(f'Invalid ion_mode value. Expected one of {MsiIonMode.list()} when double_ion_mode is False.')
+			raise ValueError(
+				f'Invalid ion_mode value. Expected one of {MsiIonMode.list()} when double_ion_mode is False.')
 
 		# Check that the input path exists and it can be read
 		if not os.path.exists(source_path):
 			raise FileNotFoundError(f"Input path {source_path} does not exist.")
 		if not os.access(source_path, os.R_OK):
 			raise PermissionError(f"Input path {source_path} is not readable.")
-		
+
 		# If double ion mode is True, check that the input path contains both pos and neg subdirectories
 		pos_path = os.path.join(source_path, sample_id, modality_name, 'pos')
 		neg_path = os.path.join(source_path, sample_id, modality_name, 'neg')
@@ -204,17 +209,19 @@ class MsiSample:
 		self.modality_name = modality_name
 		self.ion_mode = ion_mode
 
-		self.recalibration_reference: dict[MsiIonMode, np.ndarray] | None = None		# To be set during dataset preprocessing
-		self.min_intensity_threshold: float | None = None								# To be set during dataset preprocessing
-		self.raw_recalibration_offset: dict[MsiIonMode, np.ndarray] = {}				# To be computed during dataset preprocessing
-		self.filtered_recalibration_offset: dict[MsiIonMode, np.ndarray] = {}			# To be computed during dataset preprocessing
-		self.filtered_idx: list[int] | None = None										# To be computed during dataset preprocessing
+		self.recalibration_reference: dict[
+			                              MsiIonMode, np.ndarray] | None = None  # To be set during dataset preprocessing
+		self.min_intensity_threshold: float | None = None  # To be set during dataset preprocessing
+		self.raw_recalibration_offset: dict[MsiIonMode, np.ndarray] = {}  # To be computed during dataset preprocessing
+		self.filtered_recalibration_offset: dict[
+			MsiIonMode, np.ndarray] = {}  # To be computed during dataset preprocessing
+		self.filtered_idx: list[int] | None = None  # To be computed during dataset preprocessing
 
 		# Initialize the other variables
-		self._metadata_files = {}				# For each ion mode, store the absolute path to the imzML file
-		self._binary_files = {}					# For each ion mode, store the absolute path to the IBD file
-		self._metadata = {}						# For each ion mode, store the metadata extracted from the imzML file
-		self._aligned_mz = {}					# For each ion mode, store the aligned M/Z values (obtained from preprocessing)
+		self._metadata_files = {}  # For each ion mode, store the absolute path to the imzML file
+		self._binary_files = {}  # For each ion mode, store the absolute path to the IBD file
+		self._metadata = {}  # For each ion mode, store the metadata extracted from the imzML file
+		self._aligned_mz = {}  # For each ion mode, store the aligned M/Z values (obtained from preprocessing)
 
 	@property
 	def ion_modes(self) -> list[MsiIonMode]:
@@ -240,7 +247,7 @@ class MsiSample:
 			If no recalibration reference is set, returns None.
 		'''
 		return self._recalibration_reference
-	
+
 	@recalibration_reference.setter
 	def recalibration_reference(self, value: dict[MsiIonMode, np.ndarray] | None) -> None:
 		'''
@@ -272,7 +279,7 @@ class MsiSample:
 			Dictionary containing the minimum intensity threshold for each ion mode.
 		'''
 		return self._min_intensity_threshold
-	
+
 	@property
 	def foreground_mask(self) -> np.ndarray | None:
 		'''
@@ -283,14 +290,15 @@ class MsiSample:
 		np.ndarray | None
 			Boolean array indicating which spots are foreground (True) and which are background (False).
 		'''
-		foreground_mask = np.zeros(self._metadata[self.ion_modes[0]][MsiMetadata.PIXEL_COORDINATES].shape[0], dtype=bool)
+		foreground_mask = np.zeros(self._metadata[self.ion_modes[0]][MsiMetadata.PIXEL_COORDINATES].shape[0],
+		                           dtype=bool)
 		if self.filtered_idx is not None:
 			foreground_mask[self.filtered_idx] = True
 
 		# If no foreground spots are defined, invert the mask to consider every spot as foreground
 		if not np.any(foreground_mask):
 			foreground_mask = ~foreground_mask
-		
+
 		return foreground_mask
 
 	@min_intensity_threshold.setter
@@ -324,11 +332,11 @@ class MsiSample:
 		dict
 			A dictionary with the spectrum data.
 		'''
-		
+
 		# Check input parameter type
 		if not isinstance(spectra, ET.Element):
 			raise TypeError('Invalid input type. Expected ET.Element.')
-		
+
 		x, y, mzs, intesities = None, None, None, None
 		physical_x, physical_y = None, None
 
@@ -369,16 +377,19 @@ class MsiSample:
 					'encoded_length': encoded_length,
 					'offset': offset
 				}
-			elif element.find(ImzMLFileParser.REFERENCEABLE_PARAM_GROUP_REF).attrib['ref'] in ['intensities', "intensityArray"]:
+			elif element.find(ImzMLFileParser.REFERENCEABLE_PARAM_GROUP_REF).attrib['ref'] in ['intensities',
+			                                                                                   "intensityArray"]:
 				intesities = {
 					'length': length,
 					'encoded_length': encoded_length,
 					'offset': offset
 				}
 
-		return {'pixel_x': x, 'pixel_y': y, 'mzs': mzs, 'intensities': intesities, 'physical_x': physical_x, 'physical_y': physical_y}
-	
-	def _correct_rotation_error(self, physical_coords: np.ndarray[np.float32], pixel_coords: np.ndarray[np.int32]) -> np.ndarray[np.float32]:
+		return {'pixel_x': x, 'pixel_y': y, 'mzs': mzs, 'intensities': intesities, 'physical_x': physical_x,
+		        'physical_y': physical_y}
+
+	def _correct_rotation_error(self, physical_coords: np.ndarray[np.float32], pixel_coords: np.ndarray[np.int32]) -> \
+			np.ndarray[np.float32]:
 		"""
 		Compute and correct for rotation error between physical coordinates and pixel coordinates.
 
@@ -394,7 +405,7 @@ class MsiSample:
 		rotated_physical : np.ndarray
 			Array of shape (N, 2) with rotated physical coordinates.
 		"""
-		
+
 		# Select the X coordinate from the pixel set based on the line with the most points
 		x_coords, count = np.unique(pixel_coords[:, 0], return_counts=True)
 		fixed_pixel_x = x_coords[np.argmax(count)]
@@ -411,7 +422,7 @@ class MsiSample:
 		# Define helper function (for code clarity)
 		def rotate(points, angle, center):
 			R = np.array([[np.cos(angle), -np.sin(angle)],
-						[np.sin(angle),  np.cos(angle)]])
+			              [np.sin(angle), np.cos(angle)]])
 			shifted = points - center
 			rotated = shifted.dot(R.T) + center
 			return rotated
@@ -438,7 +449,7 @@ class MsiSample:
 			raise FileNotFoundError(f"ImzML file {filename} does not exist.")
 		if not os.access(filename, os.R_OK):
 			raise PermissionError(f"ImzML file {filename} is not readable.")
-		
+
 		# Parse the imzML file
 		tree = ET.parse(filename)
 		root = tree.getroot()
@@ -461,29 +472,36 @@ class MsiSample:
 						intensities_dtype = str_to_dtype(cv_param.attrib['name'])
 
 		if mz_dtype is None or intensities_dtype is None:
-			raise KeyError("Could not find the data types for mz and intensities in the imzML file. Check the metadata name")
+			raise KeyError(
+				"Could not find the data types for mz and intensities in the imzML file. Check the metadata name")
 
 		# Extract the raster size in micrometers
-		raster_size = np.array([0, 0], dtype = np.int16)
+		raster_size = np.array([0, 0], dtype=np.int16)
 		for scan_settings_list in root.find(ImzMLFileParser.SCAN_SETTINGS_LIST):
 			for scan_settings in scan_settings_list:
 				if scan_settings.attrib['name'] == "pixel size x":
 					raster_size[0] = int(scan_settings.attrib['value'])
 				if scan_settings.attrib['name'] == "pixel size y":
-					raster_size[1] = int(scan_settings.attrib['value'])	
+					raster_size[1] = int(scan_settings.attrib['value'])
 
 		run = root.find(ImzMLFileParser.RUN_KEY)
 		spectrum_list = run.find(ImzMLFileParser.SPECTRUM_LIST_KEY)
 		spectra = spectrum_list.findall(ImzMLFileParser.SPECTRUM_KEY)
-		
+
 		# Decode the binary data from the imzML file
 		parsed_spectra = [self._spectra_to_dict(spectrum) for spectrum in spectra]
 
 		# Convert the parsed spectra to a set of Numpy arrays to facilitate further processing
-		pixel_coordinates = np.array([(metadata["pixel_y"], metadata['pixel_x']) for metadata in parsed_spectra], dtype = np.int32)		#NOTE: The X and Y axes are inverted between pixel and physical coordinates
-		physical_coordinates = np.array([(metadata["physical_x"], metadata['physical_y']) for metadata in parsed_spectra], dtype = np.float32)
-		mz_binary_metadata = np.array([(metadata["mzs"]["length"], metadata["mzs"]["encoded_length"], metadata["mzs"]["offset"]) for metadata in parsed_spectra])
-		intensities_binary_metadata = np.array([(metadata["intensities"]["length"], metadata["intensities"]["encoded_length"], metadata["intensities"]["offset"]) for metadata in parsed_spectra])
+		pixel_coordinates = np.array([(metadata["pixel_y"], metadata['pixel_x']) for metadata in parsed_spectra],
+		                             dtype=np.int32)  #NOTE: The X and Y axes are inverted between pixel and physical coordinates
+		physical_coordinates = np.array(
+			[(metadata["physical_x"], metadata['physical_y']) for metadata in parsed_spectra], dtype=np.float32)
+		mz_binary_metadata = np.array(
+			[(metadata["mzs"]["length"], metadata["mzs"]["encoded_length"], metadata["mzs"]["offset"]) for metadata in
+			 parsed_spectra])
+		intensities_binary_metadata = np.array([(metadata["intensities"]["length"],
+		                                         metadata["intensities"]["encoded_length"],
+		                                         metadata["intensities"]["offset"]) for metadata in parsed_spectra])
 
 		# Align MSI laser grid to the axes using linear regression
 		physical_coordinates = self._correct_rotation_error(physical_coordinates, pixel_coordinates)
@@ -501,7 +519,8 @@ class MsiSample:
 
 		return experiment_metadata
 
-	def _compute_raster_coordinates(physical_coords: np.ndarray, raster_size: np.ndarray[np.int16]) -> np.ndarray[np.int32]:
+	def _compute_raster_coordinates(physical_coords: np.ndarray, raster_size: np.ndarray[np.int16]) -> np.ndarray[
+		np.int32]:
 		'''
 		Convert physical coordinates (in microns) to raster pixel coordinates. This method assumes a raster pixel size of 1 micron.
 		
@@ -521,24 +540,24 @@ class MsiSample:
 
 		# Find which block each coordinate belongs to
 		# tile_x, tile_y are the block indices
-		tile_x = np.floor_divide(physical_coords[:,0], raster_size[0]).astype(int)
-		tile_y = np.floor_divide(physical_coords[:,1], raster_size[1]).astype(int)
-		
+		tile_x = np.floor_divide(physical_coords[:, 0], raster_size[0]).astype(int)
+		tile_y = np.floor_divide(physical_coords[:, 1], raster_size[1]).astype(int)
+
 		# Top-left coordinate of the block in raster
 		x1 = tile_x * raster_size[0]
 		y1 = tile_y * raster_size[1]
-		
+
 		# Bottom-right coordinate
 		x2 = x1 + raster_size[0]
 		y2 = y1 + raster_size[1]
-		
+
 		# Output shape: (N,2,2): [[x1,y1],[x2,y2]] for each coord
 		pixel_coords = np.zeros((physical_coords.shape[0], 2, 2), dtype=np.int32)
-		pixel_coords[:,0,:] = np.stack([x1, y1], axis=1)   # top-left
-		pixel_coords[:,1,:] = np.stack([x2, y2], axis=1)   # bottom-right
+		pixel_coords[:, 0, :] = np.stack([x1, y1], axis=1)  # top-left
+		pixel_coords[:, 1, :] = np.stack([x2, y2], axis=1)  # bottom-right
 
 		return pixel_coords
-	
+
 	def _filter_unpaired_spots(self) -> None:
 		'''
 		Analyze the metadata of both ion modes and remove unpaired spots (experimental artifacts).
@@ -546,7 +565,7 @@ class MsiSample:
 
 		if not self.double_ion_mode:
 			return
-		
+
 		# Extract the pixel coordinates for both ion modes
 		pos_pixel_coords = self._metadata[MsiIonMode.POSITIVE][MsiMetadata.PIXEL_COORDINATES]
 		neg_pixel_coords = self._metadata[MsiIonMode.NEGATIVE][MsiMetadata.PIXEL_COORDINATES]
@@ -601,12 +620,12 @@ class MsiSample:
 			if len(imzml_files) == 0:
 				raise FileNotFoundError(f"No imzML files found in {input_path}.")
 			self._metadata_files[mode] = os.path.join(input_path, imzml_files[0])
-			
+
 			# Obtain the IBD file using the same filename and swapping the extension
 			self._binary_files[mode] = self._metadata_files[mode].replace('.imzML', '.ibd')
 			if not os.path.exists(self._binary_files[mode]):
 				raise FileNotFoundError(f"IBD file {self._binary_files[mode]} not found in {input_path}.")
-			
+
 			# Parse the imzML file to extract the metadata and the parsed spectra
 			self._metadata[mode] = self._parse_imzml(self._metadata_files[mode])
 
@@ -622,23 +641,26 @@ class MsiSample:
 
 			# Use an affine transformation to account for the translation
 			def affine_transform(points):
-				aug = np.hstack([points, np.ones((points.shape[0],1))])
+				aug = np.hstack([points, np.ones((points.shape[0], 1))])
 				x_new = model_x.predict(aug)
 				y_new = model_y.predict(aug)
 				return np.stack([x_new, y_new], axis=1)
 
 			A = np.hstack([pos_coords, np.ones((pos_coords.shape[0], 1))])
-			model_x = LinearRegression().fit(A, neg_coords[:,0])
-			model_y = LinearRegression().fit(A, neg_coords[:,1])
+			model_x = LinearRegression().fit(A, neg_coords[:, 0])
+			model_y = LinearRegression().fit(A, neg_coords[:, 1])
 
 			# Apply the transformation to the positive ion mode physical coordinates
 			pos_coords_transformed = affine_transform(pos_coords)
 
 			# Depending on the raster size, move the coordinates to the center
-			if self._metadata[MsiIonMode.POSITIVE][MsiMetadata.RASTER_SIZE][0] == self._metadata[MsiIonMode.POSITIVE][MsiMetadata.RASTER_SIZE][1]:
+			if self._metadata[MsiIonMode.POSITIVE][MsiMetadata.RASTER_SIZE][0] == \
+					self._metadata[MsiIonMode.POSITIVE][MsiMetadata.RASTER_SIZE][1]:
 				# The raster is square, offset along both axes
-				offset = (self._metadata[MsiIonMode.POSITIVE][MsiMetadata.RASTER_SIZE][0] // 2, self._metadata[MsiIonMode.POSITIVE][MsiMetadata.RASTER_SIZE][1] // 2)
-			elif self._metadata[MsiIonMode.POSITIVE][MsiMetadata.RASTER_SIZE][0] > self._metadata[MsiIonMode.POSITIVE][MsiMetadata.RASTER_SIZE][1]:
+				offset = (self._metadata[MsiIonMode.POSITIVE][MsiMetadata.RASTER_SIZE][0] // 2,
+				          self._metadata[MsiIonMode.POSITIVE][MsiMetadata.RASTER_SIZE][1] // 2)
+			elif self._metadata[MsiIonMode.POSITIVE][MsiMetadata.RASTER_SIZE][0] > \
+					self._metadata[MsiIonMode.POSITIVE][MsiMetadata.RASTER_SIZE][1]:
 				# The raster is rectangular, offset along the X axis
 				offset = (self._metadata[MsiIonMode.POSITIVE][MsiMetadata.RASTER_SIZE][0] // 2, 0)
 			else:
@@ -647,14 +669,15 @@ class MsiSample:
 
 			# Apply the offset to the transformed coordinates and compute the average between pos and neg to have the coordinate of the raster's center
 			pos_coords_transformed -= np.array(offset)
-			final_physical_coords = np.mean([pos_coords_transformed, neg_coords], axis=0)  # Midpoint between the two physical sets
+			final_physical_coords = np.mean([pos_coords_transformed, neg_coords],
+			                                axis=0)  # Midpoint between the two physical sets
 		else:
 			final_physical_coords = self._metadata[self.ion_mode][MsiMetadata.PHYSICAL_COORDINATES]
 
 		# Normalize the physical coordinates to start from (0,0)
 		final_physical_coords -= final_physical_coords.min(axis=0)
 
-		# Shift them to be the center of the raster 
+		# Shift them to be the center of the raster
 		offset = self._metadata[mode][MsiMetadata.RASTER_SIZE].astype(np.float64) / 2
 		final_physical_coords += offset
 
@@ -669,12 +692,12 @@ class MsiSample:
 			)
 
 	def _filter_datapoint_without_annotations(
-		self,
-		mz_vectors: list[np.ndarray],
-		intensity_vectors: list[np.ndarray],
-		database: pd.DataFrame,
-		mass_tolerance: int,
-		ion_mode: MsiIonMode,
+			self,
+			mz_vectors: list[np.ndarray],
+			intensity_vectors: list[np.ndarray],
+			database: pd.DataFrame,
+			mass_tolerance: int,
+			ion_mode: MsiIonMode,
 	) -> list[int]:
 		"""
 		Stable v3 (POS/NEG consistent):
@@ -728,10 +751,10 @@ class MsiSample:
 		min_candidates_for_gmm = 500
 
 		# regime thresholds (do not hardcode "10k"; use posterior/intensity mass instead)
-		sparse_weight = 0.10     # tissue component weight <= 10% -> potentially sparse
-		sparse_W = 0.15          # intensity mass fraction <= 15% -> sparse
+		sparse_weight = 0.10  # tissue component weight <= 10% -> potentially sparse
+		sparse_W = 0.15  # intensity mass fraction <= 15% -> sparse
 		tissue_weight_hi = 0.90  # mostly tissue
-		tissue_W_hi = 0.80       # mostly tissue
+		tissue_W_hi = 0.80  # mostly tissue
 
 		post_sparse = 0.90
 		post_bal = 0.60
@@ -840,7 +863,8 @@ class MsiSample:
 
 		ex_T = np.abs(T.astype(np.float64)[cand_idx] - Tdec[cand_idx])
 		ex_I = np.abs(np.log1p(I[cand_idx]) - np.log1p(Idec[cand_idx]))
-		near_null_exists = (float(np.quantile(ex_T, 0.10)) <= (2.0 if is_neg else 3.0)) and (float(np.quantile(ex_I, 0.10)) <= 0.5)
+		near_null_exists = (float(np.quantile(ex_T, 0.10)) <= (2.0 if is_neg else 3.0)) and (
+				float(np.quantile(ex_I, 0.10)) <= 0.5)
 
 		if near_null_exists:
 			comb = _robust_z(ex_T) + _robust_z(ex_I)
@@ -866,12 +890,12 @@ class MsiSample:
 		f_TIC = _robust_z(np.log1p(TIC[cand_idx]))
 
 		score1d = (
-			1.00 * f_I
-			+ 0.50 * f_T
-			+ gamma_I * f_PI
-			+ gamma_T * f_PT
-			+ 0.25 * alpha * f_D
-			+ 0.50 * f_TIC
+				1.00 * f_I
+				+ 0.50 * f_T
+				+ gamma_I * f_PI
+				+ gamma_T * f_PT
+				+ 0.25 * alpha * f_D
+				+ 0.50 * f_TIC
 		)
 
 		# -----------------------
@@ -905,7 +929,8 @@ class MsiSample:
 		# -----------------------
 		# 8) Tissue component selection: maximize median decoy-corrected intensity J
 		# -----------------------
-		med_J = np.array([np.median(J[labels == c]) if np.any(labels == c) else -np.inf for c in range(gmm.n_components)])
+		med_J = np.array(
+			[np.median(J[labels == c]) if np.any(labels == c) else -np.inf for c in range(gmm.n_components)])
 		tissue_c = int(np.argmax(med_J))
 
 		tissue_weight = float(np.mean(labels == tissue_c))
@@ -939,7 +964,7 @@ class MsiSample:
 		return kept.tolist()
 
 	def _recalibrate_mz_vector(
-			self, 
+			self,
 			mz_vector: list[np.ndarray],
 			intensity_vector: list[np.ndarray],
 			coordinates: np.ndarray,
@@ -947,7 +972,7 @@ class MsiSample:
 			mass_tolerance: int,
 			ion_mode: MsiIonMode,
 			recalibration_offset: dict[MsiIonMode, np.ndarray]
-		) -> tuple[list[np.ndarray], dict[MsiIonMode, np.ndarray]]:
+	) -> tuple[list[np.ndarray], dict[MsiIonMode, np.ndarray]]:
 		'''
 		Recalibrate each element of the M/Z vector list by applying a per-row offset computed using the reference M/Z peaks.
 		To compute the offset, the highest peak within the mass tolerance for each reference M/Z in each spectrum is used.
@@ -1013,7 +1038,7 @@ class MsiSample:
 						max_peak_idx = peak_indices[np.argmax(peak_intensities)]
 
 						# Compute the offset
-						offsets[x-1, y-1, j] = mz_arr[max_peak_idx] - ref_mz
+						offsets[x - 1, y - 1, j] = mz_arr[max_peak_idx] - ref_mz
 
 			# Compute the mean offset for each row. Ingore RuntimeWarnings for rows with all NaN values
 			with np.errstate(invalid="ignore"):
@@ -1023,7 +1048,7 @@ class MsiSample:
 		recalibrated_mz_vector = []
 		for mz, pixel_coord in zip(mz_vector, coordinates):
 			x, y = pixel_coord
-			offset = recalibration_offset[ion_mode][x-1]
+			offset = recalibration_offset[ion_mode][x - 1]
 			if np.isnan(offset):
 				recalibrated_mz_vector.append(mz)
 			else:
@@ -1031,7 +1056,8 @@ class MsiSample:
 
 		return recalibrated_mz_vector, recalibration_offset
 
-	def load_payload(self, mass_tolerance: int | None = None, annotation_db: pd.DataFrame | None = None, detect_background: bool = False) -> tuple[dict[list[list[np.float32 | np.float64]]]]:
+	def load_payload(self, mass_tolerance: int | None = None, annotation_db: pd.DataFrame | None = None,
+	                 detect_background: bool = False) -> tuple[dict[list[list[np.float32 | np.float64]]]]:
 		'''
 		Load the M/Z vectors and the corresponding intensities from the binary IBD files.
 		If the sample contains both ion modes, load the data for both modes.
@@ -1069,13 +1095,15 @@ class MsiSample:
 			raise ValueError("If provided, annotation_db must be a pd.DataFrame")
 		if annotation_db is not None and mass_tolerance is None:
 			raise ValueError("Mass tolerance must be provided if annotation_db is provided")
-		
+
 		# For each ion mode
 		for mode in self._metadata.keys():
-
 			# Define an utility to read the M/Z values and the intensityfrom the binary file
-			read_mzs = lambda count, offset: np.fromfile(self._binary_files[mode], dtype = self._metadata[mode][MsiMetadata.MZ_DTYPE], count = count, offset = offset)
-			read_intensities = lambda count, offset: np.fromfile(self._binary_files[mode], dtype = self._metadata[mode][MsiMetadata.INTENSITIES_DTYPE], count = count, offset = offset)
+			read_mzs = lambda count, offset: np.fromfile(self._binary_files[mode],
+			                                             dtype=self._metadata[mode][MsiMetadata.MZ_DTYPE], count=count,
+			                                             offset=offset)
+			read_intensities = lambda count, offset: np.fromfile(self._binary_files[mode], dtype=self._metadata[mode][
+				MsiMetadata.INTENSITIES_DTYPE], count=count, offset=offset)
 
 			# Read the M/Z values for each spectrum
 			mz_vectors[mode] = [read_mzs(
@@ -1111,17 +1139,16 @@ class MsiSample:
 				self.filtered_idx = sorted(list(keep_indices))
 
 			# Apply the filtering to the M/Z vectors and to intensity vectors. This computes the offsets per row as well
-			for mode in self._metadata.keys():	
+			for mode in self._metadata.keys():
 				filtered_mz[mode] = [mz_vectors[mode][i] for i in self.filtered_idx]
 				filtered_intensity[mode] = [intensity_vectors[mode][i] for i in self.filtered_idx]
 
 				# If the reclaibration reference is set, apply it to the M/Z vectors
 				if self.recalibration_reference is not None and mode in self.recalibration_reference:
-
 					# Apply the recalibration to both raw and filtered M/Z vectors. It must be done separately to keep the correct coordinates
 					mz_vectors[mode], self.raw_recalibration_offset = self._recalibrate_mz_vector(
-						mz_vector = mz_vectors[mode],
-						intensity_vector = intensity_vectors[mode],
+						mz_vector=mz_vectors[mode],
+						intensity_vector=intensity_vectors[mode],
 						coordinates=self._metadata[mode][MsiMetadata.PIXEL_COORDINATES],
 						reference_mz=self.recalibration_reference[mode],
 						mass_tolerance=mass_tolerance,
@@ -1130,8 +1157,8 @@ class MsiSample:
 					)
 
 					filtered_mz[mode], self.filtered_recalibration_offset = self._recalibrate_mz_vector(
-						mz_vector = filtered_mz[mode],
-						intensity_vector = filtered_intensity[mode],
+						mz_vector=filtered_mz[mode],
+						intensity_vector=filtered_intensity[mode],
 						coordinates=self._metadata[mode][MsiMetadata.PIXEL_COORDINATES][self.filtered_idx],
 						reference_mz=self.recalibration_reference[mode],
 						mass_tolerance=mass_tolerance,
@@ -1141,8 +1168,9 @@ class MsiSample:
 
 		return mz_vectors, intensity_vectors, filtered_mz, filtered_intensity
 
+
 class MsiDataset:
-	def __init__(self, path: str,  samples: list[MsiSample], lipid_annotation_db: str | None = None) -> None:
+	def __init__(self, path: str, samples: list[MsiSample], lipid_annotation_db: str | None = None) -> None:
 		'''
 		MSI dataset containing multiple samples. This class provide utilities to preprocess the raw experiments
 		and generate an aligned and corrected AnnData object.
@@ -1160,7 +1188,7 @@ class MsiDataset:
 
 		if not isinstance(samples, list) or not all(isinstance(sample, MsiSample) for sample in samples):
 			raise TypeError('Invalid input type. Expected list of MsiSample objects.')
-		
+
 		self.samples = samples
 		self.reference_mz: dict[MsiIonMode, np.ndarray] = {}
 		self.interpolated: dict[str, dict[MsiIonMode, np.ndarray]] = {}
@@ -1175,7 +1203,7 @@ class MsiDataset:
 				raise FileNotFoundError(f"Lipid annotation database {lipid_annotation_db} does not exist.")
 			if not os.access(lipid_annotation_db, os.R_OK):
 				raise PermissionError(f"Lipid annotation database {lipid_annotation_db} is not readable.")
-			
+
 		# Based on the data type, load the lipid annotation database
 		if lipid_annotation_db is not None:
 			if lipid_annotation_db.endswith('.csv'):
@@ -1184,7 +1212,7 @@ class MsiDataset:
 				self.lipid_annotation_db = pd.read_json(lipid_annotation_db)
 			else:
 				raise ValueError("Invalid lipid annotation database format. Supported formats are CSV and JSON.")
-			
+
 			# Check that the required columns are present
 			required_columns = ['db_name', 'ionized_mass', 'ion_mode']
 			if not all(column in self.lipid_annotation_db.columns for column in required_columns):
@@ -1232,7 +1260,8 @@ class MsiDataset:
 
 		return n_chunks
 
-	def _compute_reference_mz(self, spectra_list: list[np.ndarray], mass_tolerance: int, frequency_threshold: float) -> np.ndarray:
+	def _compute_reference_mz(self, spectra_list: list[np.ndarray], mass_tolerance: int,
+	                          frequency_threshold: float) -> np.ndarray:
 		"""
 		Create consensus reference m/z vector using adaptive mass tolerance with parallel CPU clustering.
 
@@ -1289,8 +1318,9 @@ class MsiDataset:
 		filtered_idx = merged_w >= threshold_count
 
 		return merged_mz[filtered_idx]
-	
-	def _interpolate_intensities(self, original_mzs_list: list[np.ndarray], original_intensities_list: list[np.ndarray], reference_mz: np.ndarray, mass_tolerance: float) -> np.ndarray:
+
+	def _interpolate_intensities(self, original_mzs_list: list[np.ndarray], original_intensities_list: list[np.ndarray],
+	                             reference_mz: np.ndarray, mass_tolerance: float) -> np.ndarray:
 		"""
 		Rebin intensities to reference M/Z vector. This method processes a chunk of spectra.
 		The interpolation distributes the intensity of each original peak to the reference M/Z bins that fall within the mass tolerance,
@@ -1315,35 +1345,36 @@ class MsiDataset:
 		"""
 		n_datapoints = len(original_mzs_list)
 		n_ref = len(reference_mz)
-		
+
 		if n_datapoints == 0 or n_ref == 0:
 			return np.zeros((n_datapoints, n_ref), dtype=original_intensities_list[0].dtype)
-		
+
 		out_dtype = original_intensities_list[0].dtype
 		result_matrix = np.zeros((n_datapoints, n_ref), dtype=out_dtype)
-		
+
 		for idx, (original_mz, original_intensity) in enumerate(zip(original_mzs_list, original_intensities_list)):
 			if original_mz.size == 0:
 				continue
-				
+
 			mz = original_mz.astype(reference_mz.dtype, copy=False)
 			intens = original_intensity
-			
+
 			if mz.size != intens.size:
 				raise ValueError("mz and intensity must have same length")
-			
+
 			# Sort once (your existing logic)
 			if not np.all(mz[:-1] <= mz[1:]):
 				order = np.argsort(mz)
 				mz = mz[order]
 				intens = intens[order]
-			
+
 			# THE KEY CHANGE: Use searchsorted version
 			result_matrix[idx] = interpolate_single(mz, intens, reference_mz, mass_tolerance)
-		
+
 		return result_matrix
 
-	def _annotate_reference_mz(self, mz_vector: np.ndarray[np.float32], ion_mode: MsiIonMode, mass_tolerance: int) -> np.ndarray:
+	def _annotate_reference_mz(self, mz_vector: np.ndarray[np.float32], ion_mode: MsiIonMode,
+	                           mass_tolerance: int) -> np.ndarray:
 		'''
 		Annotate the reference M/Z vector using the lipid annotation database.
 
@@ -1376,7 +1407,7 @@ class MsiDataset:
 				(self.lipid_annotation_db['ionized_mass'] >= mz - tolerance_da) &
 				(self.lipid_annotation_db['ionized_mass'] <= mz + tolerance_da) &
 				(self.lipid_annotation_db['ion_mode'] == ion_mode)
-			]
+				]
 
 			if matches.shape[0] > 0:
 				annotation_str = '; '.join(matches['db_name'].tolist())
@@ -1387,12 +1418,13 @@ class MsiDataset:
 
 		return np.array(annotations, dtype=str)
 
-	def _find_calibration_reference(self, mz_vectors: list[dict[MsiIonMode, list[np.ndarray]]], mass_tolerance: int, number_of_references: int = 1) -> dict[MsiIonMode, np.ndarray]:
+	def _find_calibration_reference(self, mz_vectors: list[dict[MsiIonMode, list[np.ndarray]]], mass_tolerance: int,
+	                                number_of_references: int = 1) -> dict[MsiIonMode, np.ndarray]:
 		'''
 		Scan the dataset to select the M/Z values to use as reference for recalibration.
 		Each ion mode is processed separately. For each ion mode, the M/Z values from all samples are concatenated,
 		and the top 'number_of_references' most frequent M/Z values are selected as reference.
-		To reduce memory usage, only a random subset (5%) of the M/Z values from each sample is used.
+		To reduce memory usage, only a random subset (10%) of the M/Z values from each sample is used.
 
 		Parameters
 		----------
@@ -1457,7 +1489,7 @@ class MsiDataset:
 			coverage_fraction = sample_coverage / max(1, n_samples)
 
 			# Score the candidates combining global counts and coverage
-			scores = global_counts * (coverage_fraction ** 1.0)		# Alpha
+			scores = global_counts * (coverage_fraction ** 1.0)  # Alpha
 
 			# Sort candidates by score
 			sorted_idx = np.argsort(-scores)
@@ -1504,14 +1536,14 @@ class MsiDataset:
 		return recalibration_reference
 
 	def process_dataset(self,
-			mass_tolerance: int = 10,
-			frequency_threshold: float = 0.01,
-			intensity_normalization: MsiIntensityNormalization = MsiIntensityNormalization.TIC,
-			recalibration_reference: dict[MsiIonMode, np.ndarray] | None = None,
-			min_intensity_threshold: float = 10000.0,
-			detect_background: bool = True,
-			force_recomputing: bool = False
-		) -> dict[str, str]:
+	                    mass_tolerance: int = 10,
+	                    frequency_threshold: float = 0.01,
+	                    intensity_normalization: MsiIntensityNormalization = MsiIntensityNormalization.TIC,
+	                    recalibration_reference: dict[MsiIonMode, np.ndarray] | None = None,
+	                    min_intensity_threshold: float = 10000.0,
+	                    detect_background: bool = True,
+	                    force_recomputing: bool = False
+	                    ) -> dict[str, str]:
 		'''
 		Process the dataset by aligning the M/Z values across all samples and interpolating the intensities.
 
@@ -1541,8 +1573,9 @@ class MsiDataset:
 
 		# Check if the required normalization method is implemented
 		if intensity_normalization not in MsiIntensityNormalization.list():
-			raise ValueError(f'Invalid intensity normalization method. Expected one of {MsiIntensityNormalization.list()}.')
-		
+			raise ValueError(
+				f'Invalid intensity normalization method. Expected one of {MsiIntensityNormalization.list()}.')
+
 		# Check the input parameters
 		if type(mass_tolerance) is not int or mass_tolerance <= 0:
 			raise ValueError('mass_tolerance must be a positive integer representing ppm.')
@@ -1555,10 +1588,11 @@ class MsiDataset:
 		if recalibration_reference is not None:
 			for mode, ref in recalibration_reference.items():
 				if mode not in MsiIonMode:
-					raise ValueError(f'Invalid ion mode in recalibration_reference: {mode}. Expected one of {list(MsiIonMode)}.')
+					raise ValueError(
+						f'Invalid ion mode in recalibration_reference: {mode}. Expected one of {list(MsiIonMode)}.')
 				if not isinstance(ref, np.ndarray):
 					raise ValueError(f'Reference M/Z vector for mode {mode} must be a numpy array.')
-		
+
 		processed_samples = {}
 
 		# STEP 0: Check if the computation is complete and can be skipped
@@ -1567,23 +1601,29 @@ class MsiDataset:
 
 			# Check if all the samples have already been processed
 			for sample in self.samples:
-				if not os.path.exists(MODALITY_PREPROCESSING(self.dataset_source_path, sample.sample_id, sample.modality_name, 'h5ad')):
+				if not os.path.exists(
+						MODALITY_PREPROCESSING(self.dataset_source_path, sample.sample_id, sample.modality_name,
+						                       'h5ad')):
 					all_sample_computed = False
 					break
 				else:
-					processed_samples[sample.sample_id] = MODALITY_PREPROCESSING(self.dataset_source_path, sample.sample_id, sample.modality_name, 'h5ad')
-			
+					processed_samples[sample.sample_id] = MODALITY_PREPROCESSING(self.dataset_source_path,
+					                                                             sample.sample_id, sample.modality_name,
+					                                                             'h5ad')
+
 			# Check if the merged dataset already exists
-			if not os.path.exists(MODALITY_PREPROCESSING_MERGED(self.dataset_source_path, self.samples[0].modality_name, 'h5ad')):
+			if not os.path.exists(
+					MODALITY_PREPROCESSING_MERGED(self.dataset_source_path, self.samples[0].modality_name, 'h5ad')):
 				all_sample_computed = False
 			else:
-				processed_samples["merged"] = MODALITY_PREPROCESSING_MERGED(self.dataset_source_path, self.samples[0].modality_name, 'h5ad')
+				processed_samples["merged"] = MODALITY_PREPROCESSING_MERGED(self.dataset_source_path,
+				                                                            self.samples[0].modality_name, 'h5ad')
 
 			# If the merged dataset already exists and force_recompute is False, skip the computation
 			if all_sample_computed:
 				print("All samples have already been processed and merged dataset exists. Using cached results.")
 				return processed_samples
-			
+
 		print("Processing Lipidomic Dataset")
 		processed_samples = {}
 		reference_mz_samples: dict[MsiIonMode, list[np.float32]] = {MsiIonMode.POSITIVE: [], MsiIonMode.NEGATIVE: []}
@@ -1599,8 +1639,9 @@ class MsiDataset:
 			mz_vectors_all_samples = []
 
 			for sample in tqdm.tqdm(self.samples, desc="2/9 - Selecting high-confidence tissue spots", unit="sample"):
-				raw_mz, _, filtered_mz, _ = sample.load_payload(annotation_db=self.lipid_annotation_db, mass_tolerance=mass_tolerance)
-				
+				raw_mz, _, filtered_mz, _ = sample.load_payload(annotation_db=self.lipid_annotation_db,
+				                                                mass_tolerance=mass_tolerance)
+
 				# If it was possible to filter the datapoints using the lipid annotation DB, use the filtered M/Z values
 				if filtered_mz != {}:
 					mz_vectors_all_samples.append(filtered_mz)
@@ -1611,7 +1652,8 @@ class MsiDataset:
 				gc.collect()
 
 			# Compute the recalibration reference from the dataset
-			print("3/9 - Selecting recalibration reference M/Z values from the dataset and filtering background datapoints")
+			print(
+				"3/9 - Selecting recalibration reference M/Z values from the dataset and filtering background datapoints")
 			recalibration_reference = self._find_calibration_reference(
 				mz_vectors=mz_vectors_all_samples,
 				mass_tolerance=mass_tolerance,
@@ -1631,11 +1673,12 @@ class MsiDataset:
 		for sample in self.samples:
 			sample.recalibration_reference = recalibration_reference
 			sample.min_intensity_threshold = min_intensity_threshold
-		
 
 		# STEP 3: For each ion mode in each sample, compute the reference M/Z vector
-		for sample in tqdm.tqdm(self.samples, desc="4/9 - Computing reference M/Z backbone for each sample", unit="sample"):
-			raw_mz, _, filtered_mz, _ = sample.load_payload(annotation_db=self.lipid_annotation_db, mass_tolerance=mass_tolerance)
+		for sample in tqdm.tqdm(self.samples, desc="4/9 - Computing reference M/Z backbone for each sample",
+		                        unit="sample"):
+			raw_mz, _, filtered_mz, _ = sample.load_payload(annotation_db=self.lipid_annotation_db,
+			                                                mass_tolerance=mass_tolerance)
 			for mode in sample.ion_modes:
 				reference_mz_samples[mode].append(
 					self._compute_reference_mz(
@@ -1662,7 +1705,8 @@ class MsiDataset:
 		del reference_mz_samples  # Free memory
 		gc.collect()
 
-		print(f"Selected {len(self.reference_mz.get(MsiIonMode.POSITIVE, []))} M/Z values for POSITIVE mode and {len(self.reference_mz.get(MsiIonMode.NEGATIVE, []))} M/Z values for NEGATIVE mode as reference backbone.")
+		print(
+			f"Selected {len(self.reference_mz.get(MsiIonMode.POSITIVE, []))} M/Z values for POSITIVE mode and {len(self.reference_mz.get(MsiIonMode.NEGATIVE, []))} M/Z values for NEGATIVE mode as reference backbone.")
 
 		# STEP 5: For each ion mode, annotate the reference M/Z vector if a lipid annotation database is provided
 		print("6/9 - Annotating features (backbone M/Z values) for each ion mode")
@@ -1681,14 +1725,16 @@ class MsiDataset:
 			self.normalized[sample.sample_id] = {MsiIonMode.POSITIVE: None, MsiIonMode.NEGATIVE: None}
 
 			# Load the intensities and M/Z values
-			original_mzs, intensities, _, _ = sample.load_payload(annotation_db=self.lipid_annotation_db, mass_tolerance=mass_tolerance)
+			original_mzs, intensities, _, _ = sample.load_payload(annotation_db=self.lipid_annotation_db,
+			                                                      mass_tolerance=mass_tolerance)
 
 			# All the spots are interpolated but an additional obs mask is stored to separate foreground/background
 			self.foreground_masks[sample.sample_id] = sample.foreground_mask
 
 			# Process each ion mode separately
 			for mode in sample.ion_modes:
-				merged_intensities = np.zeros((len(intensities[mode]), len(self.reference_mz[mode])), dtype=sample._metadata[mode][MsiMetadata.INTENSITIES_DTYPE])
+				merged_intensities = np.zeros((len(intensities[mode]), len(self.reference_mz[mode])),
+				                              dtype=sample._metadata[mode][MsiMetadata.INTENSITIES_DTYPE])
 
 				# Consider only the datapoints for the current ion mode
 				intensities_mode = intensities[mode]
@@ -1702,19 +1748,20 @@ class MsiDataset:
 				# Split data into contiguous chunks: lists of arrays
 				chunks = [
 					(original_mzs_mode[start:end], intensities_mode[start:end])
-					for start, end in [(i * chunk_size, min((i + 1) * chunk_size, datapoints)) for i in range(num_workers)]
+					for start, end in
+					[(i * chunk_size, min((i + 1) * chunk_size, datapoints)) for i in range(num_workers)]
 				]
 
 				# Worker function which partially fixes reference_mz and mass_tolerance
-				worker_func = partial(self._interpolate_intensities, 
-                     reference_mz=self.reference_mz[mode], 
-                     mass_tolerance=mass_tolerance)
+				worker_func = partial(self._interpolate_intensities,
+				                      reference_mz=self.reference_mz[mode],
+				                      mass_tolerance=mass_tolerance)
 
 				# Joblib parallel execution - auto-manages processes
-				results = Parallel(n_jobs=num_workers, 
-								backend='loky',      # Robust process management
-								verbose=0)(
-					delayed(worker_func)(orig_chunk, intens_chunk) 
+				results = Parallel(n_jobs=num_workers,
+				                   backend='loky',  # Robust process management
+				                   verbose=0)(
+					delayed(worker_func)(orig_chunk, intens_chunk)
 					for orig_chunk, intens_chunk in chunks
 				)
 
@@ -1738,69 +1785,86 @@ class MsiDataset:
 					merged_intensities = np.log1p(merged_intensities)
 
 				self.normalized[sample.sample_id][mode] = merged_intensities
-			
+
 			del intensities, original_mzs  # Free memory
 			gc.collect()
 
-		for sample in tqdm.tqdm(self.samples, desc="8/9 - Generating AnnData objects and saving results", unit="sample"):
+		for sample in tqdm.tqdm(self.samples, desc="8/9 - Generating AnnData objects and saving results",
+		                        unit="sample"):
 			reference_mode = MsiIonMode.POSITIVE if MsiIonMode.POSITIVE in sample.ion_modes else MsiIonMode.NEGATIVE
 			sample_id = sample.sample_id
 			raster_size = sample._metadata[reference_mode][MsiMetadata.RASTER_SIZE].tolist()
-			physical_coords = sample._metadata[reference_mode][MsiMetadata.PHYSICAL_COORDINATES]				# Shape (N, 2)
-			raster_coords = sample._metadata[reference_mode][MsiMetadata.RASTER_COORDINATES]					# Shape (N, 2, 2)
-			rows = self.interpolated[sample_id][reference_mode].shape[0]										# Shape (N, )
-			positive_cols = self.reference_mz[MsiIonMode.POSITIVE].shape[0] if MsiIonMode.POSITIVE in self.reference_mz else 0	# Shape (M1, )
-			negative_cols = self.reference_mz[MsiIonMode.NEGATIVE].shape[0] if MsiIonMode.NEGATIVE in self.reference_mz else 0	# Shape (M2, )
-			rows_dtype = self.interpolated[sample_id][MsiIonMode.POSITIVE].dtype if MsiIonMode.POSITIVE in sample.ion_modes else self.interpolated[sample_id][MsiIonMode.NEGATIVE].dtype
+			physical_coords = sample._metadata[reference_mode][MsiMetadata.PHYSICAL_COORDINATES]  # Shape (N, 2)
+			raster_coords = sample._metadata[reference_mode][MsiMetadata.RASTER_COORDINATES]  # Shape (N, 2, 2)
+			rows = self.interpolated[sample_id][reference_mode].shape[0]  # Shape (N, )
+			positive_cols = self.reference_mz[MsiIonMode.POSITIVE].shape[
+				0] if MsiIonMode.POSITIVE in self.reference_mz else 0  # Shape (M1, )
+			negative_cols = self.reference_mz[MsiIonMode.NEGATIVE].shape[
+				0] if MsiIonMode.NEGATIVE in self.reference_mz else 0  # Shape (M2, )
+			rows_dtype = self.interpolated[sample_id][
+				MsiIonMode.POSITIVE].dtype if MsiIonMode.POSITIVE in sample.ion_modes else self.interpolated[sample_id][
+				MsiIonMode.NEGATIVE].dtype
 
 			merged_interpolated = np.zeros((
 				rows,
 				positive_cols + negative_cols
-				), dtype = rows_dtype)
-			
+			), dtype=rows_dtype)
+
 			merged_normalized = np.zeros((
 				rows,
 				positive_cols + negative_cols
-			), dtype = rows_dtype)
+			), dtype=rows_dtype)
 
-			merged_reference_mz = np.concatenate([self.reference_mz[MsiIonMode.POSITIVE], self.reference_mz[MsiIonMode.NEGATIVE]])
-			reference_mode = np.concatenate([[MsiIonMode.POSITIVE] * len(self.reference_mz[MsiIonMode.POSITIVE]), [MsiIonMode.NEGATIVE] * len(self.reference_mz[MsiIonMode.NEGATIVE])])
+			merged_reference_mz = np.concatenate(
+				[self.reference_mz[MsiIonMode.POSITIVE], self.reference_mz[MsiIonMode.NEGATIVE]])
+			reference_mode = np.concatenate([[MsiIonMode.POSITIVE] * len(self.reference_mz[MsiIonMode.POSITIVE]),
+			                                 [MsiIonMode.NEGATIVE] * len(self.reference_mz[MsiIonMode.NEGATIVE])])
 
 			# Concatenate the annotations if available
 			if self.lipid_annotation_db is not None:
 				reference_annotations = np.concatenate([
-					self.lipid_annotations[MsiIonMode.POSITIVE] if MsiIonMode.POSITIVE in self.lipid_annotations else np.zeros_like(self.reference_mz[MsiIonMode.POSITIVE], dtype=str),
-					self.lipid_annotations[MsiIonMode.NEGATIVE] if MsiIonMode.NEGATIVE in self.lipid_annotations else np.zeros_like(self.reference_mz[MsiIonMode.NEGATIVE], dtype=str)
+					self.lipid_annotations[
+						MsiIonMode.POSITIVE] if MsiIonMode.POSITIVE in self.lipid_annotations else np.zeros_like(
+						self.reference_mz[MsiIonMode.POSITIVE], dtype=str),
+					self.lipid_annotations[
+						MsiIonMode.NEGATIVE] if MsiIonMode.NEGATIVE in self.lipid_annotations else np.zeros_like(
+						self.reference_mz[MsiIonMode.NEGATIVE], dtype=str)
 				])
-			
-			merged_interpolated[:, :positive_cols] = self.interpolated[sample_id][MsiIonMode.POSITIVE] if MsiIonMode.POSITIVE in sample.ion_modes else 0.0
-			merged_interpolated[:, positive_cols:] = self.interpolated[sample_id][MsiIonMode.NEGATIVE] if MsiIonMode.NEGATIVE in sample.ion_modes else 0.0
 
-			merged_normalized[:, :positive_cols] = self.normalized[sample_id][MsiIonMode.POSITIVE] if MsiIonMode.POSITIVE in sample.ion_modes else 0.0 
-			merged_normalized[:, positive_cols:] = self.normalized[sample_id][MsiIonMode.NEGATIVE] if MsiIonMode.NEGATIVE in sample.ion_modes else 0.0
+			merged_interpolated[:, :positive_cols] = self.interpolated[sample_id][
+				MsiIonMode.POSITIVE] if MsiIonMode.POSITIVE in sample.ion_modes else 0.0
+			merged_interpolated[:, positive_cols:] = self.interpolated[sample_id][
+				MsiIonMode.NEGATIVE] if MsiIonMode.NEGATIVE in sample.ion_modes else 0.0
+
+			merged_normalized[:, :positive_cols] = self.normalized[sample_id][
+				MsiIonMode.POSITIVE] if MsiIonMode.POSITIVE in sample.ion_modes else 0.0
+			merged_normalized[:, positive_cols:] = self.normalized[sample_id][
+				MsiIonMode.NEGATIVE] if MsiIonMode.NEGATIVE in sample.ion_modes else 0.0
 
 			# Create the AnnData object
 			adata = ad.AnnData(
-				X = merged_interpolated,
-				layers = {
+				X=merged_interpolated,
+				layers={
 					f"X_{intensity_normalization}": merged_normalized
 				},
-				obs = pd.DataFrame({
+				obs=pd.DataFrame({
 					'sample_id': [sample_id] * merged_interpolated.shape[0],
 					'foreground': self.foreground_masks[sample_id]
-				}, index = [str(i) for i in range(merged_interpolated.shape[0])]),
+				}, index=[str(i) for i in range(merged_interpolated.shape[0])]),
 				obsm={
 					'spatial': physical_coords,
 					'raster_coordinates': raster_coords
 				},
-				var = pd.DataFrame({
+				var=pd.DataFrame({
 					"mz": merged_reference_mz,
 					"mz_mode": reference_mode,
-					"lipid_annotation": reference_annotations if self.lipid_annotation_db is not None else ['Unannotated'] * merged_reference_mz.shape[0]
-				}, index = [str(i) for i in range(merged_interpolated.shape[1])]),
-				uns = {
+					"lipid_annotation": reference_annotations if self.lipid_annotation_db is not None else ['Unannotated'] *
+					                                                                                       merged_reference_mz.shape[
+						                                                                                       0]
+				}, index=[str(i) for i in range(merged_interpolated.shape[1])]),
+				uns={
 					"raster_size": raster_size,
-                }
+				}
 			)
 
 			# Update the obs_names to include the sample ID for uniqueness
@@ -1812,7 +1876,8 @@ class MsiDataset:
 			sc.tl.leiden(adata, resolution=0.5, flavor="igraph", n_iterations=2)
 
 			# Save the AnnData object to the output path
-			output_file = MODALITY_PREPROCESSING(self.dataset_source_path, sample.sample_id, sample.modality_name, 'h5ad')
+			output_file = MODALITY_PREPROCESSING(self.dataset_source_path, sample.sample_id, sample.modality_name,
+			                                     'h5ad')
 			adata.write_h5ad(output_file)
 			processed_samples[sample.sample_id] = output_file
 
@@ -1833,9 +1898,9 @@ class MsiDataset:
 				merged_file,
 				axis=0,
 				join="inner",
-				merge="same",        # keep only entries which are identical across objects
-				uns_merge="first",   # keep first .uns when keys differ
+				merge="same",  # keep only entries which are identical across objects
+				uns_merge="first",  # keep first .uns when keys differ
 			)
-			
+
 			processed_samples["merged"] = merged_file
 		return processed_samples
