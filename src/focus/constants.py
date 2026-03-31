@@ -132,7 +132,7 @@ class RegistrationType(_AbstractEnum):
 	
 
 class MicroscopyImageProcessingParams(_AbstractEnum):
-	
+
 	COLOR_ENHANCEMENT = "color_enhancement"
 	REMOVE_BACKGROUND = "remove_background"
 	CROP_TO_TISSUE = "crop_to_tissue"
@@ -140,6 +140,12 @@ class MicroscopyImageProcessingParams(_AbstractEnum):
 	PYRAMID_LEVELS = "pyramid_levels"
 	MIN_OBJECT_COVERAGE = "min_object_coverage"
 	FORCE_RECOMPUTING = "force_recomputing"
+	GAUSSIAN_BLUR_KERNEL_SIZE = "gaussian_blur_kernel_size"
+	MIN_OBJECT_SIZE = "min_object_size"
+	CLIP_PERCENTILE = "clip_percentile"
+	CROP_MARGIN = "crop_margin"
+	GAMMA = "gamma"
+	CONTRAST_SATURATION = "contrast_saturation"
 
 class MsiPreprocessingParams(_AbstractEnum):
 
@@ -154,6 +160,12 @@ class MsiPreprocessingParams(_AbstractEnum):
 
 class RamanPreprocessingParams(_AbstractEnum):
 	FORCE_RECOMPUTING = "force_recomputing"
+	MAX_WORKERS = "max_workers"
+	SAVGOL_WINDOW = "savgol_window"
+	SAVGOL_POLYORDER = "savgol_polyorder"
+	BG_MIN_AREA_FRACTION = "bg_min_area_fraction"
+	OTSU_THRESHOLD_FACTOR = "otsu_threshold_factor"
+	MIN_OBJECT_SIZE = "min_object_size"
 
 class STPreprocessingParams(_AbstractEnum):
 	MIN_COUNT_PER_SPOT = "min_count_per_spot"

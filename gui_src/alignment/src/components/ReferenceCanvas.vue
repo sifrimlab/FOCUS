@@ -148,7 +148,7 @@ const updateContent = async () => {
     const spots = data;
     if (!spots || spots.length === 0) return;
 
-    const rasterSize = store.referenceRasterSize;
+    const spotSize = store.referenceSpotSize;
     
     let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
     for (const s of spots) {
@@ -158,8 +158,8 @@ const updateContent = async () => {
       maxY = Math.max(maxY, s.spatial[1]);
     }
     
-    const rx = rasterSize[0];
-    const ry = rasterSize[1];
+    const rx = spotSize[0];
+    const ry = spotSize[1];
     minX -= rx/2; maxX += rx/2;
     minY -= ry/2; maxY += ry/2;
     
@@ -224,7 +224,7 @@ watch(() => [store.referenceData, store.referenceMeta], () => {
 });
 
 // For spot appearance changes, we need to redraw spots but keep transform
-watch(() => [store.referenceClassFilter, store.commonSpotBoost, store.referenceRasterSize, store.referenceForegroundMode], async () => {
+watch(() => [store.referenceClassFilter, store.commonSpotBoost, store.referenceSpotSize, store.referenceForegroundMode], async () => {
     await updateContent();
     if (app && app.renderer) app.render();
 }, { deep: true });

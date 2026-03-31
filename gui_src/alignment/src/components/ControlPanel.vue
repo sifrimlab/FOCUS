@@ -122,11 +122,11 @@ const toggleTgtClass = (cls: number) => {
         </div>
         <div v-else>
           <div class="flex items-center justify-between mb-1">
-             <span>Raster Size (µm)</span>
+             <span>Spot Size (µm)</span>
           </div>
           <div class="flex space-x-2">
-             <input type="number" v-model.number="store.referenceRasterSize[0]" class="w-1/2 border rounded px-1 dark:bg-gray-800 dark:border-gray-600">
-             <input type="number" v-model.number="store.referenceRasterSize[1]" class="w-1/2 border rounded px-1 dark:bg-gray-800 dark:border-gray-600">
+             <input type="number" v-model.number="store.referenceSpotSize[0]" class="w-1/2 border rounded px-1 dark:bg-gray-800 dark:border-gray-600">
+             <input type="number" v-model.number="store.referenceSpotSize[1]" class="w-1/2 border rounded px-1 dark:bg-gray-800 dark:border-gray-600">
           </div>
         </div>
       </div>
@@ -225,11 +225,11 @@ const toggleTgtClass = (cls: number) => {
         </div>
         <div v-else>
           <div class="flex items-center justify-between mb-1">
-             <span>Raster Size (µm)</span>
+             <span>Spot Size (µm)</span>
           </div>
           <div class="flex space-x-2">
-             <input type="number" v-model.number="store.targetRasterSize[0]" class="w-1/2 border rounded px-1 dark:bg-gray-800 dark:border-gray-600">
-             <input type="number" v-model.number="store.targetRasterSize[1]" class="w-1/2 border rounded px-1 dark:bg-gray-800 dark:border-gray-600">
+             <input type="number" v-model.number="store.targetSpotSize[0]" class="w-1/2 border rounded px-1 dark:bg-gray-800 dark:border-gray-600">
+             <input type="number" v-model.number="store.targetSpotSize[1]" class="w-1/2 border rounded px-1 dark:bg-gray-800 dark:border-gray-600">
           </div>
         </div>
       </div>

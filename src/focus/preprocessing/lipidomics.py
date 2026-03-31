@@ -1,4 +1,5 @@
 import numpy as np
+import scipy.sparse as sp
 import os, tqdm, psutil
 from collections import defaultdict
 from sklearn.linear_model import LinearRegression
@@ -14,8 +15,10 @@ import gc
 from sklearn.mixture import GaussianMixture
 
 import focus.utils as utils
-from focus.constants import ImzMLFileParser, MsiIntensityNormalization, MsiMetadata, MsiIonMode
+from focus.constants import ImzMLFileParser, MsiIntensityNormalization, MsiMetadata, MsiIonMode, MsiPreprocessingParams
 from focus.constants import MODALITY_PREPROCESSING, MODALITY_PREPROCESSING_MERGED
+from focus.preprocessing.base import BaseSample, BaseDataset
+from focus.preprocessing._registry import ModalityHandler, register_modality
 
 
 @njit
@@ -154,7 +157,17 @@ def interpolate_single(original_mz, original_intensity, reference_mz, mass_toler
 	return result
 
 
-class MsiSample:
+class MsiSample(BaseSample):
+
+	# Domain-calibrated hyperparameters for background detection
+	_GAMMA_T_NEG = 1.35
+	_GAMMA_T_POS = 0.95
+	_GAMMA_I_NEG = 2.40
+	_GAMMA_I_POS = 1.70
+	_ALPHA_NEG = 1.20
+	_ALPHA_POS = 1.25
+	_DECOY_K = 7
+
 	def __init__(
 			self,
 			source_path: str,
@@ -168,7 +181,7 @@ class MsiSample:
 
 		Parameters
 		----------
-		input_path : str
+		source_path : str
 			Path to the data source directory. If double_ion_mode is True, this should be the parent directory containing both ion mode subdirectories.
 		sample_id : str
 			Sample ID.
@@ -181,15 +194,11 @@ class MsiSample:
 		'''
 
 		# Ensure consistency of input parameters
-		if double_ion_mode != True and ion_mode not in MsiIonMode.list():
+		if not double_ion_mode and ion_mode not in MsiIonMode.list():
 			raise ValueError(
 				f'Invalid ion_mode value. Expected one of {MsiIonMode.list()} when double_ion_mode is False.')
 
-		# Check that the input path exists and it can be read
-		if not os.path.exists(source_path):
-			raise FileNotFoundError(f"Input path {source_path} does not exist.")
-		if not os.access(source_path, os.R_OK):
-			raise PermissionError(f"Input path {source_path} is not readable.")
+		super().__init__(source_path, sample_id, modality_name)
 
 		# If double ion mode is True, check that the input path contains both pos and neg subdirectories
 		pos_path = os.path.join(source_path, sample_id, modality_name, 'pos')
@@ -203,10 +212,7 @@ class MsiSample:
 		else:
 			self.input_paths = {ion_mode: os.path.join(source_path, sample_id, modality_name, ion_mode)}
 
-		self.source_path = source_path
-		self.sample_id = sample_id
 		self.double_ion_mode = double_ion_mode
-		self.modality_name = modality_name
 		self.ion_mode = ion_mode
 
 		self.recalibration_reference: dict[
@@ -337,7 +343,7 @@ class MsiSample:
 		if not isinstance(spectra, ET.Element):
 			raise TypeError('Invalid input type. Expected ET.Element.')
 
-		x, y, mzs, intesities = None, None, None, None
+		x, y, mzs, intensities = None, None, None, None
 		physical_x, physical_y = None, None
 
 		scan_list = spectra.find(ImzMLFileParser.SCAN_LIST)
@@ -379,13 +385,13 @@ class MsiSample:
 				}
 			elif element.find(ImzMLFileParser.REFERENCEABLE_PARAM_GROUP_REF).attrib['ref'] in ['intensities',
 			                                                                                   "intensityArray"]:
-				intesities = {
+				intensities = {
 					'length': length,
 					'encoded_length': encoded_length,
 					'offset': offset
 				}
 
-		return {'pixel_x': x, 'pixel_y': y, 'mzs': mzs, 'intensities': intesities, 'physical_x': physical_x,
+		return {'pixel_x': x, 'pixel_y': y, 'mzs': mzs, 'intensities': intensities, 'physical_x': physical_x,
 		        'physical_y': physical_y}
 
 	def _correct_rotation_error(self, physical_coords: np.ndarray[np.float32], pixel_coords: np.ndarray[np.int32]) -> \
@@ -739,14 +745,14 @@ class MsiSample:
 		# decoy peak shifts (ppm), must be > tolerance
 		min_shift_ppm = float(max(50, 5 * mass_tolerance))
 		max_shift_ppm = float(max(120, 12 * mass_tolerance))
-		K = 7
+		K = self._DECOY_K
 		rng = np.random.default_rng(0)
 		shifts_ppm = rng.uniform(min_shift_ppm, max_shift_ppm, size=K) * rng.choice([-1.0, 1.0], size=K)
 
 		# score weights: NEG leans more on purity terms
-		gamma_T = 1.35 if is_neg else 0.95
-		gamma_I = 2.40 if is_neg else 1.70
-		alpha = 1.20 if is_neg else 1.25
+		gamma_T = self._GAMMA_T_NEG if is_neg else self._GAMMA_T_POS
+		gamma_I = self._GAMMA_I_NEG if is_neg else self._GAMMA_I_POS
+		alpha = self._ALPHA_NEG if is_neg else self._ALPHA_POS
 
 		min_candidates_for_gmm = 500
 
@@ -1091,7 +1097,7 @@ class MsiSample:
 		intensity_vectors = {}
 		filtered_mz, filtered_intensity = {}, {}
 
-		if annotation_db is not None and isinstance(annotation_db, pd.DataFrame) == False:
+		if annotation_db is not None and not isinstance(annotation_db, pd.DataFrame):
 			raise ValueError("If provided, annotation_db must be a pd.DataFrame")
 		if annotation_db is not None and mass_tolerance is None:
 			raise ValueError("Mass tolerance must be provided if annotation_db is provided")
@@ -1169,7 +1175,11 @@ class MsiSample:
 		return mz_vectors, intensity_vectors, filtered_mz, filtered_intensity
 
 
-class MsiDataset:
+class MsiDataset(BaseDataset):
+
+	_LEIDEN_RESOLUTION = 0.5
+	_H5AD_COMPRESSION = "gzip"
+
 	def __init__(self, path: str, samples: list[MsiSample], lipid_annotation_db: str | None = None) -> None:
 		'''
 		MSI dataset containing multiple samples. This class provide utilities to preprocess the raw experiments
@@ -1186,16 +1196,15 @@ class MsiDataset:
 			The file can be a CSV or a JSON and it must contain three columns: name, ionized_mass, ion_mode.
 		'''
 
-		if not isinstance(samples, list) or not all(isinstance(sample, MsiSample) for sample in samples):
+		super().__init__(path, samples)
+
+		if not all(isinstance(sample, MsiSample) for sample in samples):
 			raise TypeError('Invalid input type. Expected list of MsiSample objects.')
 
-		self.samples = samples
 		self.reference_mz: dict[MsiIonMode, np.ndarray] = {}
 		self.interpolated: dict[str, dict[MsiIonMode, np.ndarray]] = {}
 		self.normalized: dict[str, dict[MsiIonMode, np.ndarray]] = {}
 		self.foreground_masks: dict[str, np.ndarray] = {}
-
-		self.dataset_source_path = path
 
 		# If the lipid DB is provided, check if it exists and we can read it
 		if lipid_annotation_db is not None:
@@ -1789,118 +1798,187 @@ class MsiDataset:
 			del intensities, original_mzs  # Free memory
 			gc.collect()
 
+		# Pre-build var metadata (shared across all samples)
+		positive_cols = self.reference_mz[MsiIonMode.POSITIVE].shape[0] if MsiIonMode.POSITIVE in self.reference_mz else 0
+		negative_cols = self.reference_mz[MsiIonMode.NEGATIVE].shape[0] if MsiIonMode.NEGATIVE in self.reference_mz else 0
+		total_cols = positive_cols + negative_cols
+
+		# Reference mz, mode labels, and annotations (shared var metadata)
+		mz_parts, mode_parts, annotation_parts = [], [], []
+		for mode in [MsiIonMode.POSITIVE, MsiIonMode.NEGATIVE]:
+			if mode not in self.reference_mz or self.reference_mz[mode].size == 0:
+				continue
+			mz_parts.append(self.reference_mz[mode])
+			mode_parts.extend([mode] * self.reference_mz[mode].shape[0])
+			if self.lipid_annotation_db is not None and mode in self.lipid_annotations:
+				annotation_parts.append(self.lipid_annotations[mode])
+			else:
+				annotation_parts.append(np.array(['Unannotated'] * self.reference_mz[mode].shape[0]))
+
+		merged_reference_mz = np.concatenate(mz_parts).astype(np.float32)
+		merged_mode_labels = mode_parts
+		merged_annotations = np.concatenate(annotation_parts) if annotation_parts else np.array(['Unannotated'] * total_cols)
+
+		var_df = pd.DataFrame({
+			"mz": merged_reference_mz,
+			"mz_mode": pd.Categorical(merged_mode_labels),
+			"lipid_annotation": pd.Categorical(merged_annotations),
+		}, index=[str(i) for i in range(total_cols)])
+
+		spot_sizes: dict[str, list[float]] = {}
+
 		for sample in tqdm.tqdm(self.samples, desc="8/9 - Generating AnnData objects and saving results",
 		                        unit="sample"):
-			reference_mode = MsiIonMode.POSITIVE if MsiIonMode.POSITIVE in sample.ion_modes else MsiIonMode.NEGATIVE
+			ref_mode = MsiIonMode.POSITIVE if MsiIonMode.POSITIVE in sample.ion_modes else MsiIonMode.NEGATIVE
 			sample_id = sample.sample_id
-			raster_size = sample._metadata[reference_mode][MsiMetadata.RASTER_SIZE].tolist()
-			physical_coords = sample._metadata[reference_mode][MsiMetadata.PHYSICAL_COORDINATES]  # Shape (N, 2)
-			raster_coords = sample._metadata[reference_mode][MsiMetadata.RASTER_COORDINATES]  # Shape (N, 2, 2)
-			rows = self.interpolated[sample_id][reference_mode].shape[0]  # Shape (N, )
-			positive_cols = self.reference_mz[MsiIonMode.POSITIVE].shape[
-				0] if MsiIonMode.POSITIVE in self.reference_mz else 0  # Shape (M1, )
-			negative_cols = self.reference_mz[MsiIonMode.NEGATIVE].shape[
-				0] if MsiIonMode.NEGATIVE in self.reference_mz else 0  # Shape (M2, )
-			rows_dtype = self.interpolated[sample_id][
-				MsiIonMode.POSITIVE].dtype if MsiIonMode.POSITIVE in sample.ion_modes else self.interpolated[sample_id][
-				MsiIonMode.NEGATIVE].dtype
+			physical_coords = sample._metadata[ref_mode][MsiMetadata.PHYSICAL_COORDINATES].astype(np.float32)
+			raster_coords = sample._metadata[ref_mode][MsiMetadata.RASTER_COORDINATES]
+			rows = self.interpolated[sample_id][ref_mode].shape[0]
 
-			merged_interpolated = np.zeros((
-				rows,
-				positive_cols + negative_cols
-			), dtype=rows_dtype)
+			# Spot size from raster_size: [width, height] in micrometers
+			raster_size = sample._metadata[ref_mode][MsiMetadata.RASTER_SIZE]
+			spot_size = np.array([float(raster_size[0]), float(raster_size[1])], dtype=np.float32)
+			spot_sizes[sample_id] = spot_size.tolist()
 
-			merged_normalized = np.zeros((
-				rows,
-				positive_cols + negative_cols
-			), dtype=rows_dtype)
+			# Merge pos/neg intensity matrices into a single (N, M) float32 array
+			raw_matrix = np.zeros((rows, total_cols), dtype=np.float32)
+			norm_matrix = np.zeros((rows, total_cols), dtype=np.float32)
 
-			merged_reference_mz = np.concatenate(
-				[self.reference_mz[MsiIonMode.POSITIVE], self.reference_mz[MsiIonMode.NEGATIVE]])
-			reference_mode = np.concatenate([[MsiIonMode.POSITIVE] * len(self.reference_mz[MsiIonMode.POSITIVE]),
-			                                 [MsiIonMode.NEGATIVE] * len(self.reference_mz[MsiIonMode.NEGATIVE])])
+			if MsiIonMode.POSITIVE in sample.ion_modes and positive_cols > 0:
+				raw_matrix[:, :positive_cols] = self.interpolated[sample_id][MsiIonMode.POSITIVE].astype(np.float32)
+				norm_matrix[:, :positive_cols] = self.normalized[sample_id][MsiIonMode.POSITIVE].astype(np.float32)
+			if MsiIonMode.NEGATIVE in sample.ion_modes and negative_cols > 0:
+				raw_matrix[:, positive_cols:] = self.interpolated[sample_id][MsiIonMode.NEGATIVE].astype(np.float32)
+				norm_matrix[:, positive_cols:] = self.normalized[sample_id][MsiIonMode.NEGATIVE].astype(np.float32)
 
-			# Concatenate the annotations if available
-			if self.lipid_annotation_db is not None:
-				reference_annotations = np.concatenate([
-					self.lipid_annotations[
-						MsiIonMode.POSITIVE] if MsiIonMode.POSITIVE in self.lipid_annotations else np.zeros_like(
-						self.reference_mz[MsiIonMode.POSITIVE], dtype=str),
-					self.lipid_annotations[
-						MsiIonMode.NEGATIVE] if MsiIonMode.NEGATIVE in self.lipid_annotations else np.zeros_like(
-						self.reference_mz[MsiIonMode.NEGATIVE], dtype=str)
-				])
+			# Free per-mode arrays now that they're merged
+			del self.interpolated[sample_id], self.normalized[sample_id]
 
-			merged_interpolated[:, :positive_cols] = self.interpolated[sample_id][
-				MsiIonMode.POSITIVE] if MsiIonMode.POSITIVE in sample.ion_modes else 0.0
-			merged_interpolated[:, positive_cols:] = self.interpolated[sample_id][
-				MsiIonMode.NEGATIVE] if MsiIonMode.NEGATIVE in sample.ion_modes else 0.0
+			# Convert to sparse CSR for memory efficiency
+			X_sparse = sp.csr_matrix(norm_matrix)
+			raw_sparse = sp.csr_matrix(raw_matrix)
+			del raw_matrix, norm_matrix
 
-			merged_normalized[:, :positive_cols] = self.normalized[sample_id][
-				MsiIonMode.POSITIVE] if MsiIonMode.POSITIVE in sample.ion_modes else 0.0
-			merged_normalized[:, positive_cols:] = self.normalized[sample_id][
-				MsiIonMode.NEGATIVE] if MsiIonMode.NEGATIVE in sample.ion_modes else 0.0
+			# Build obs DataFrame
+			n_obs = rows
+			obs_index = [f"{sample_id}_{i}" for i in range(n_obs)]
 
-			# Create the AnnData object
+			obs_df = pd.DataFrame({
+				'sample_id': pd.Categorical([sample_id] * n_obs),
+				'foreground': pd.Categorical(self.foreground_masks[sample_id]),
+			}, index=obs_index)
+
+			# Create AnnData: .X = normalized (sparse), .layers["raw"] = raw interpolated (sparse)
 			adata = ad.AnnData(
-				X=merged_interpolated,
-				layers={
-					f"X_{intensity_normalization}": merged_normalized
-				},
-				obs=pd.DataFrame({
-					'sample_id': [sample_id] * merged_interpolated.shape[0],
-					'foreground': self.foreground_masks[sample_id]
-				}, index=[str(i) for i in range(merged_interpolated.shape[0])]),
+				X=X_sparse,
+				layers={'raw': raw_sparse},
+				obs=obs_df,
 				obsm={
 					'spatial': physical_coords,
 					'raster_coordinates': raster_coords
 				},
-				var=pd.DataFrame({
-					"mz": merged_reference_mz,
-					"mz_mode": reference_mode,
-					"lipid_annotation": reference_annotations if self.lipid_annotation_db is not None else ['Unannotated'] *
-					                                                                                       merged_reference_mz.shape[
-						                                                                                       0]
-				}, index=[str(i) for i in range(merged_interpolated.shape[1])]),
-				uns={
-					"raster_size": raster_size,
-				}
+				var=var_df.copy(),
+				uns={'spot_size': spot_size.tolist()}
 			)
 
-			# Update the obs_names to include the sample ID for uniqueness
-			adata.obs_names = [f"{sample_id}_{obs_name}" for obs_name in adata.obs_names]
+			# Per-sample Leiden clustering on the normalized data
+			n_pcs = min(50, adata.n_obs - 1, adata.n_vars - 1)
+			if adata.n_obs >= 2 and n_pcs >= 2:
+				sc.pp.pca(adata, n_comps=n_pcs)
+				sc.pp.neighbors(adata, n_neighbors=min(15, adata.n_obs - 1))
+				sc.tl.leiden(adata, resolution=self._LEIDEN_RESOLUTION, flavor="igraph", n_iterations=2, key_added='leiden')
+			else:
+				adata.obs['leiden'] = '0'
+			adata.obs['leiden'] = pd.Categorical(adata.obs['leiden'])
 
-			# Compute Leiden clustering on the normalized data
-			sc.tl.pca(adata, n_comps=50, layer=f"X_{intensity_normalization}")
-			sc.pp.neighbors(adata, n_neighbors=15)
-			sc.tl.leiden(adata, resolution=0.5, flavor="igraph", n_iterations=2)
-
-			# Save the AnnData object to the output path
-			output_file = MODALITY_PREPROCESSING(self.dataset_source_path, sample.sample_id, sample.modality_name,
-			                                     'h5ad')
-			adata.write_h5ad(output_file)
+			# Save with compression
+			output_file = MODALITY_PREPROCESSING(self.dataset_source_path, sample.sample_id, sample.modality_name, 'h5ad')
+			adata.write_h5ad(output_file, compression=self._H5AD_COMPRESSION)
 			processed_samples[sample.sample_id] = output_file
 
-			# Free memory
-			del merged_interpolated, merged_normalized, adata
+			del adata, X_sparse, raw_sparse
 			gc.collect()
 
-		# Save the merged dataset
-		adatas: list[ad.AnnData] = []
-
-		# STEP 7: Merge all the AnnData objects on disk (memory-efficient)
+		# STEP 9: Merge all samples into a single dataset (memory-efficient on-disk concat)
 		print("9/9 - Merging all samples into a single dataset")
 		merged_file = MODALITY_PREPROCESSING_MERGED(self.dataset_source_path, self.samples[0].modality_name, 'h5ad')
 
 		if processed_samples:
+			# Filter to only per-sample files (exclude any "merged" key)
+			sample_files = {k: v for k, v in processed_samples.items() if k != "merged"}
+
 			ad.experimental.concat_on_disk(
-				processed_samples,
+				sample_files,
 				merged_file,
 				axis=0,
 				join="inner",
-				merge="same",  # keep only entries which are identical across objects
-				uns_merge="first",  # keep first .uns when keys differ
+				merge="same",
+				uns_merge="first",
 			)
+
+			# Update the merged file's .uns["spot_size"] to be a per-sample dict
+			merged_adata = ad.read_h5ad(merged_file)
+			merged_adata.uns["spot_size"] = spot_sizes
+			merged_adata.write_h5ad(merged_file, compression=self._H5AD_COMPRESSION)
+			del merged_adata
+			gc.collect()
 
 			processed_samples["merged"] = merged_file
 		return processed_samples
+
+
+# --- Modality Registration ---
+
+def _create_msi_samples(path, sample_ids, modality_name, settings):
+	samples = []
+	for sample_id in sample_ids:
+		subdir = os.listdir(os.path.join(path, sample_id, modality_name))
+		ion_modes = 0
+
+		for mode in MsiIonMode.list():
+			if mode in subdir:
+				ion_modes += 1
+
+		if ion_modes == 0:
+			raise ValueError(f"No ion mode subdirectories found for sample {sample_id}. Expected at least one of: {MsiIonMode.list()}")
+		elif ion_modes == 1:
+			samples.append(
+				MsiSample(
+					source_path=path,
+					sample_id=sample_id,
+					modality_name=modality_name,
+					double_ion_mode=False,
+					ion_mode=MsiIonMode.POSITIVE if MsiIonMode.POSITIVE in subdir else MsiIonMode.NEGATIVE
+				)
+			)
+		else:
+			samples.append(
+				MsiSample(
+					source_path=path,
+					sample_id=sample_id,
+					modality_name=modality_name,
+					double_ion_mode=True,
+				)
+			)
+	return samples
+
+def _create_msi_dataset(path, samples, settings):
+	lipid_annotation_db = settings.get(MsiPreprocessingParams.LIPID_ANNOTATION_DB, None)
+	return MsiDataset(path=path, samples=samples, lipid_annotation_db=lipid_annotation_db)
+
+def _extract_msi_settings(settings):
+	return {
+		'mass_tolerance': settings.get(MsiPreprocessingParams.MASS_TOLERANCE, 10),
+		'frequency_threshold': settings.get(MsiPreprocessingParams.FREQUENCY_THRESHOLD, 0.01),
+		'intensity_normalization': settings.get(MsiPreprocessingParams.INTENSITY_NORMALIZATION, MsiIntensityNormalization.NONE),
+		'recalibration_reference': settings.get(MsiPreprocessingParams.RECALIBRATION_REFERENCE, None),
+		'min_intensity_threshold': settings.get(MsiPreprocessingParams.MIN_INTENSITY_THRESHOLD, 1e4),
+		'detect_background': settings.get(MsiPreprocessingParams.DETECT_BACKGROUND, False),
+		'force_recomputing': settings.get(MsiPreprocessingParams.FORCE_RECOMPUTING, False),
+	}
+
+register_modality('msi', ModalityHandler(
+	create_samples=_create_msi_samples,
+	create_dataset=_create_msi_dataset,
+	extract_settings=_extract_msi_settings,
+))

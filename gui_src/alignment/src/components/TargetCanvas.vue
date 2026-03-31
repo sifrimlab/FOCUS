@@ -38,7 +38,7 @@ const calculateFitMatrix = (width: number, height: number) => {
   } else {
     const data = store.targetData as SpotModalityPayload;
     const spots = data;
-    const rasterSize = store.targetMeta!.raster_size!;
+    const spotSize = store.targetMeta!.spot_size!;
     
     let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
     for (const s of spots) {
@@ -47,8 +47,8 @@ const calculateFitMatrix = (width: number, height: number) => {
       minY = Math.min(minY, s.spatial[1]);
       maxY = Math.max(maxY, s.spatial[1]);
     }
-    const rx = rasterSize[0];
-    const ry = rasterSize[1];
+    const rx = spotSize[0];
+    const ry = spotSize[1];
     minX -= rx/2; maxX += rx/2;
     minY -= ry/2; maxY += ry/2;
     
@@ -210,9 +210,9 @@ const updateContent = async () => {
     } else {
         const data = store.targetData as SpotModalityPayload;
         const spots = data;
-        const rasterSize = store.targetRasterSize;
-        const rx = rasterSize[0];
-        const ry = rasterSize[1];
+        const spotSize = store.targetSpotSize;
+        const rx = spotSize[0];
+        const ry = spotSize[1];
         
         store.setTargetSpotBoost(1.0);
         const finalBoost = store.commonSpotBoost;
@@ -346,7 +346,7 @@ watch(() => [store.globalZoom, store.viewOffset], () => {
     render();
 }, { deep: true });
 
-watch(() => [store.targetClassFilter, store.commonSpotBoost, store.targetRasterSize, store.targetForegroundMode], async () => {
+watch(() => [store.targetClassFilter, store.commonSpotBoost, store.targetSpotSize, store.targetForegroundMode], async () => {
     await updateContent();
     render();
 }, { deep: true });

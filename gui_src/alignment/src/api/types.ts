@@ -9,15 +9,17 @@ export type ModalityType = 'IMAGE' | 'SPOT';
 export interface Metadata {
   modality_type: ModalityType;
   modality_name: string;
-  raster_size?: [number, number];
+  spot_size?: [number, number];
   image_shape?: [number, number];
   scaling_factor?: number;
+  color_map?: Record<string, string>;
 }
 
 export interface Spot {
   spatial: [number, number];
   class: number;
   foreground: boolean;
+  color?: string;
 }
 
 export type SpotModalityPayload = Spot[];
