@@ -105,30 +105,24 @@ class MsiIonMode(_AbstractEnum):
 	NEGATIVE = "neg"
 
 class ConfigParameters(_AbstractEnum):
-	
-	DATA_SOURCE_PATH = "data_source_path"
-	SAMPLE_NAME = "sample_name"
+	DATASET_PATH = "dataset_path"
 	MODALITIES = "modalities"
-	ANCHOR_MODALITY = "anchor_modality"
-	PERFORM_PREPROCESSING = "perform_preprocessing"
+	REFERENCE_MODALITY = "reference_modality"
+	PERFORM_ALIGNMENT = "perform_alignment"
+	PERFORM_REGISTRATION = "perform_registration"
+	HUGGINGFACE_TOKEN = "huggingface_token"
 
 class ModalityParameters(_AbstractEnum):
-
-	MODALITY_NAME = "modality_name"
-	MODALITY_TYPE = "modality_type"
-	PREPROCESSING_SETTINGS = "preprocessing_settings"
-	ALIGNMENT_SETTINGS = "alignment_settings"
-	REGISTRATION_SETTINGS = "registration_settings"
-	PHYSICAL_PIXEL_COVERAGE = "physical_pixel_coverage"
-
-
-class RegistrationSettings(_AbstractEnum):
+	NAME = "name"
 	TYPE = "type"
+	PROCESSING_SETTINGS = "processing_settings"
+	REGISTRATION_TYPE = "registration_type"
+	REGISTRATION_SETTINGS = "registration_settings"
 
 class RegistrationType(_AbstractEnum):
 	NONE = "none"
-	RESOLUTION_SCALING_TO_TARGET = "resolution_scaling_to_target"
-	RESOLUTION_SCALING_TO_ANCHOR = "resolution_scaling_to_anchor"
+	FEATURE_EXTRACTION = "feature_extraction"
+	SPOT_INTERPOLATION = "spot_interpolation"
 	
 
 class MicroscopyImageProcessingParams(_AbstractEnum):
@@ -183,6 +177,21 @@ class ModalityType(_AbstractEnum):
 	MSI = "msi"
 	RAMAN = "raman"
 	ST = "st"
+
+# Maps modality type to the file extension used for preprocessed/aligned output
+MODALITY_FILE_EXTENSION = {
+	ModalityType.MICROSCOPY_IMAGE: "ome.tiff",
+	ModalityType.RAMAN: "ome.tiff",
+	ModalityType.MSI: "h5ad",
+	ModalityType.ST: "h5ad",
+}
+
+# Maps registration type to compatible modality types (None = all types)
+REGISTRATION_COMPATIBILITY = {
+	RegistrationType.FEATURE_EXTRACTION: [ModalityType.MICROSCOPY_IMAGE],
+	RegistrationType.SPOT_INTERPOLATION: [ModalityType.MSI, ModalityType.ST, ModalityType.RAMAN],
+	RegistrationType.NONE: None,
+}
 
 class TransformationType(_AbstractEnum):
 	TRANSLATION = "translation"
