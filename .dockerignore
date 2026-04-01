@@ -1,0 +1,45 @@
+# Build intermediates
+gui_src/**/node_modules/
+gui_src/**/.vite/
+gui_src/**/*.tsbuildinfo
+gui_src/**/dist/
+**/__pycache__/
+**/*.py[cod]
+**/*.egg-info/
+.eggs/
+build/
+dist/
+
+# Dev / local env
+.env
+.venv
+venv/
+env/
+
+# Data files that should never go into the image
+*.nii
+*.tiff
+*.czi
+*.npy
+*.pt
+*.RData
+*.csv
+*.lif
+*.ibd
+*.imzML
+*.mzML
+*.mzXML
+*.pts
+
+# Notebooks and test data
+notebooks/
+configs/
+
+# CI / tools / docs
+tools/
+.github/
+.git/
+
+# IDE
+.idea/
+.vscode/

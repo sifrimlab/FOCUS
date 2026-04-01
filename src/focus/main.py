@@ -1,6 +1,7 @@
 import os, json, argparse
 
-if __name__ == "__main__":
+
+def main():
 	parser = argparse.ArgumentParser(
 		description='FOCUS: Flexible Multiomics data preprocessing and alignment pipeline.'
 	)
@@ -34,3 +35,7 @@ if __name__ == "__main__":
 		from focus.GUI.main_gui import MainGUI
 		gui = MainGUI()
 		gui.start()
+
+
+if __name__ == "__main__":
+	main()

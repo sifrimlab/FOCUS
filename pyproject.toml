@@ -40,3 +40,6 @@ dependencies = [
     "flask",
     "dask",
 ]
+
+[project.scripts]
+focus = "focus.main:main"

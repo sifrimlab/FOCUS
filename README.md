@@ -1,73 +1,352 @@
-# FOCUS: Fusion of Omics for Cohesive Unified Standardization
+# FOCUS — Flexible Omics Curation and Unified Standardization
 
-This data processing pipeline has been designed to accomodate multiple projects in a versatile way
-and it's focused on being modality and task agnostic.
+FOCUS is an end-to-end preprocessing, alignment, and registration pipeline for **spatial multiomics** datasets. It integrates data acquired from different imaging and omics modalities on the same tissue section — such as microscopy images, mass spectrometry imaging (MSI/lipidomics), Raman spectroscopy, and spatial transcriptomics — into a single, analysis-ready multimodal dataset. The output is structured as [MuData](https://mudata.readthedocs.io/) (`.h5mu`), making it immediately compatible with established single-cell and spatial omics frameworks such as [scanpy](https://scanpy.readthedocs.io/), [squidpy](https://squidpy.readthedocs.io/), and [AnnData](https://anndata.readthedocs.io/).
 
-## 1. Getting Started
+No programming is required to use FOCUS. The entire pipeline is driven by a JSON configuration file that can be built interactively through a web-based GUI.
 
-The pipeline can be executed locally using this repository. In principle, no coding is required
-to use this pipeline, as the parameters required to function can be defined into a configuration
-file. 
+---
 
-### Prerequisites
-1. Python 3.11
-2. NVIDIA CUDA support
-3. Anaconda and Miniconda to manage the enviroinment
+## Table of Contents
 
-### Installation
+- [Supported Modalities](#supported-modalities)
+- [Pipeline Overview](#pipeline-overview)
+- [Requirements](#requirements)
+- [Installation](#installation)
+  - [macOS and Linux](#macos-and-linux)
+  - [Windows](#windows)
+- [Dataset Structure](#dataset-structure)
+- [Usage on the Host Machine](#usage-on-the-host-machine)
+  - [GUI Mode](#gui-mode)
+  - [CLI Mode](#cli-mode)
+- [Usage with Containers](#usage-with-containers)
+  - [Building the Image](#building-the-image)
+  - [macOS and Linux (Docker · Podman · Singularity)](#macos-and-linux-docker--podman--singularity)
+  - [Windows (Docker Desktop · Podman Desktop)](#windows-docker-desktop--podman-desktop)
+  - [HPC / Headless Servers (Singularity · Apptainer)](#hpc--headless-servers-singularity--apptainer)
+- [Platform Compatibility](#platform-compatibility)
 
-1. Clone the repo
-```sh
-git clone https://github.com/sifrimlab/FOCUS FOCUS
+---
+
+## Supported Modalities
+
+| Modality | Key `"type"` | Input Format | Output Format |
+|---|---|---|---|
+| Fluorescence / brightfield microscopy | `microscopy_image` | `.tiff`, `.tif`, `.czi` | OME-TIFF pyramid |
+| Mass Spectrometry Imaging (MSI / lipidomics) | `msi` | `.imzML` + `.ibd` | AnnData `.h5ad` |
+| Raman spectroscopy | `raman` | `.lif` | OME-TIFF (hyperspectral) |
+| Spatial transcriptomics | `st` | AnnData `.h5ad` | AnnData `.h5ad` |
+
+---
+
+## Pipeline Overview
+
+```
+Raw Data  ──►  Preprocessing  ──►  Alignment  ──►  Registration  ──►  MuData dataset
+               (per modality)      (interactive      (feature-based     (.h5mu)
+                                    web GUI)          or interpolation)
 ```
 
-2. Move to the project repository
-```sh
+1. **Preprocessing** — modality-specific quality control, normalisation, background removal, and storage in a standardised format.
+2. **Alignment** — an interactive web GUI lets you manually register corresponding landmarks between modalities. Each sample is handled individually.
+3. **Registration** — computationally maps features from one modality onto the coordinate space of another using either deep-learning patch embeddings (requires GPU) or Gaussian-weighted spot interpolation.
+4. **Compilation** — all aligned and registered modalities are merged into a single MuData (`.h5mu`) file.
+
+---
+
+## Requirements
+
+| Requirement | Notes |
+|---|---|
+| **[Conda](https://docs.conda.io/en/latest/miniconda.html)** (Miniconda or Anaconda) | Required for environment management |
+| **Python 3.11** | Managed automatically by the install script |
+| **NVIDIA GPU + CUDA** | *Optional.* Required only for the `feature_extraction` registration type (uses the [Prov-GigaPath](https://huggingface.co/prov-gigapath/prov-gigapath) model via HuggingFace). All other pipeline stages run on CPU. |
+| **HuggingFace token** | *Optional.* Required only when `feature_extraction` registration is enabled and the model has not been cached locally. |
+
+FOCUS runs on **Windows 10/11**, **macOS**, and **Linux** (both desktop and headless servers).
+
+---
+
+## Installation
+
+Clone the repository and run the install script for your platform. The script will:
+
+- Check that conda is available and guide you to install it if not.
+- Create a `FOCUS` conda environment with all dependencies.
+- Register the `focus` command so you can run the software from any directory after activating the environment.
+- Optionally create auxiliary `FOCUS_ASHLAR` and `FOCUS_BaSiCpy` environments for Raman spectroscopy processing.
+
+```bash
+git clone https://github.com/sifrimlab/FOCUS.git
 cd FOCUS
 ```
 
-3. Create a Python enviroinment using conda
-```sh
-conda create -n FOCUS python=3.12
+### macOS and Linux
+
+```bash
+bash install.sh
 ```
 
-4. Activate the conda env and install the rest of the requirements
-```sh
+To wipe and recreate all environments (e.g. after a dependency update):
+
+```bash
+bash install.sh --reinstall
+```
+
+### Windows
+
+Open an **Anaconda Prompt** or **PowerShell with conda initialised** and run:
+
+```bat
+install.bat
+```
+
+Or with the reinstall flag:
+
+```bat
+install.bat --reinstall
+```
+
+> **Tip:** If `conda` is not found, install [Miniconda for Windows](https://docs.conda.io/en/latest/miniconda.html), then open a new **Anaconda Prompt** and retry.
+
+---
+
+## Dataset Structure
+
+FOCUS expects your data to follow a simple two-level directory hierarchy:
+
+```
+dataset_path/
+├── sample_001/
+│   ├── <modality_name>/          ← raw input files for this modality
+│   └── <modality_name>/          ← raw input files for a second modality
+├── sample_002/
+│   ├── <modality_name>/
+│   └── <modality_name>/
+└── ...
+```
+
+- **`dataset_path`** is the root directory you provide in your config.
+- Each **first-level subdirectory** is treated as a sample. Directory names become the sample identifiers.
+- Each **second-level subdirectory** must match the modality `"name"` defined in your config (case-sensitive).
+- Input file names within a modality folder are not significant; FOCUS selects files by extension.
+
+FOCUS automatically creates the following output directories inside `dataset_path` as the pipeline progresses:
+
+```
+dataset_path/
+├── sample_001/
+│   ├── preprocessing/<modality>/   ← preprocessed files
+│   ├── alignment/                  ← aligned files
+│   └── registration/<modality>/    ← registered files
+├── ...
+└── merged/
+    ├── preprocessing/
+    ├── alignment/
+    ├── registration/
+    └── multimodal_dataset.h5mu     ← final output
+```
+
+---
+
+## Usage on the Host Machine
+
+Activate the FOCUS conda environment first:
+
+```bash
 conda activate FOCUS
-pip install --no-cache-dir -r requirements.txt
 ```
 
-## 2. Input data structure
+### GUI Mode
 
-FOCUS uses a semi-rigid data structure to ensure a predictable behaviour and flexible configuration. 
-The configuration file must be a JSON file and it is provided with a CLI argument, therefore the only requirement is
-that is must be accessible for the user running FOCUS.
+Running `focus` without arguments starts a local web server and opens the interactive interface:
 
-The input data must follow the following structure:
-<pre>
-├── data_source_path                                    // Source folder = data_source_path
-│   ├── sample_0001                                     // Folder name = sample_name
-│   │   ├── MOD_1                                       // Folder name = modalities[0]["modality_name"]
-│   │   │   └── file1_mod_1                             // Input file
-│   │   ├── MOD_2                                       // Folder name = modalities[1]["modality_name"]
-│   │   │   ├── file1_mod_2
-│   │   │   └── file2_mod_2
-│   │   ├── alignment                                   // Generated by FOCUS after alignment
-│   │   │   └── MOD_1
-│   │   │       ├── aligned_file1_mod1
-│   │   └── preprocessing                               // Generated by FOCUS after pre-processing
-│   │       ├── MOD_1
-│   │       │   └── preprocessing_file1_mod1
-│   │       └── MOD_2
-│   │           ├── preprocessing_file1_mod2
-│   │           └── preprocessing_file2_mod2
-│   ├── sample_0002
-│   │   ├── MOD_1
-│   │   │   └── file1_mod_1
-│   │   ├── MOD_2
-│   │   │   ├── file1_mod_2
-│   │   │   └── file2_mod_2
-</pre>
+```bash
+focus
+```
 
-For the input files, names are not taken into account as long as the files have the right extension (i.e. .tiff / .tif for microscopy images).
-The file structure of output artifacts is generated automatically.
+```
+FOCUS GUI started. Open http://localhost:5050 in your browser.
+```
+
+The GUI guides you through four stages:
+
+1. **Setup** — enter your `dataset_path` or load an existing configuration file.
+2. **Configuration** — define your modalities, processing settings, and registration options. The configuration is auto-saved as `focus_config.json` inside your `dataset_path`.
+3. **Running** — monitor pipeline progress. When the alignment stage is reached, a button appears to open the interactive alignment tool (served separately at `http://localhost:8000`).
+4. **Complete** — review the list of generated output files.
+
+### CLI Mode
+
+If you already have a configuration file, you can run the full pipeline non-interactively:
+
+```bash
+focus --config /path/to/your/dataset/focus_config.json
+```
+
+The configuration file must be a valid JSON file. Its path can be anywhere on the filesystem as long as it is readable. See the GUI for an interactive config builder, or refer to the example in `configs/` for the expected structure.
+
+---
+
+## Usage with Containers
+
+FOCUS provides a `Dockerfile`, a Singularity definition file (`focus.def`), and launcher scripts for all three major container runtimes. The key design principle is **same-path mounting**: the directory you choose to mount is mapped to the *identical absolute path* inside the container, so every path in your config file is valid without any translation.
+
+### Building the Image
+
+**Docker or Podman:**
+
+```bash
+docker build -t focus .
+# or
+podman build -t focus .
+```
+
+**Singularity / Apptainer:**
+
+```bash
+singularity build focus.sif focus.def
+# or
+apptainer build focus.sif focus.def
+```
+
+> Building from `focus.def` does not require Docker; it bootstraps directly from `python:3.11-slim`.
+
+---
+
+### macOS and Linux (Docker · Podman · Singularity)
+
+Use `focus-container.sh`. It auto-detects the first available runtime (Docker → Podman → Singularity → Apptainer) and mounts your data directory at the same path inside the container.
+
+**GUI mode** (opens `http://localhost:5050`):
+
+```bash
+bash focus-container.sh --mount /path/to/your/data
+```
+
+**CLI mode:**
+
+```bash
+bash focus-container.sh --mount /path/to/your/data -- --config /path/to/your/data/project/focus_config.json
+```
+
+> Note the `--` separator: everything after it is passed directly to the `focus` command inside the container.
+
+**Select a specific runtime:**
+
+```bash
+bash focus-container.sh --runtime podman --mount /data/mylab -- --config /data/mylab/project/focus_config.json
+bash focus-container.sh --runtime singularity --mount /data/mylab -- --config /data/mylab/project/focus_config.json
+```
+
+**GPU support:**
+
+```bash
+bash focus-container.sh --gpu --mount /data/mylab -- --config /data/mylab/project/focus_config.json
+```
+
+**Mount multiple directories:**
+
+```bash
+bash focus-container.sh --mount /data/images --mount /data/omics -- --config /data/omics/project/focus_config.json
+```
+
+**Build and run in one step:**
+
+```bash
+bash focus-container.sh --build --mount /data/mylab
+```
+
+---
+
+### Windows (Docker Desktop · Podman Desktop)
+
+Use `focus-container.ps1` from a PowerShell prompt. Windows paths are automatically converted to the Unix-style paths that Docker uses internally (`C:\path\to\data` → `/c/path/to/data`), preserving the directory tree so no path translation is needed in your config file.
+
+**GUI mode:**
+
+```powershell
+.\focus-container.ps1 -Mount C:\data\mylab
+```
+
+**CLI mode:**
+
+```powershell
+.\focus-container.ps1 -Mount C:\data\mylab -- --config /c/data/mylab/project/focus_config.json
+```
+
+> On Windows, use the converted Unix path (`/c/...`) in your config file when running inside a container.
+
+**Select runtime:**
+
+```powershell
+.\focus-container.ps1 -Runtime podman -Mount C:\data\mylab
+```
+
+**GPU support:**
+
+```powershell
+.\focus-container.ps1 -Gpu -Mount C:\data\mylab -- --config /c/data/mylab/project/focus_config.json
+```
+
+> Singularity/Apptainer is not natively supported on Windows. Use [WSL2](https://learn.microsoft.com/en-us/windows/wsl/install) and run `focus-container.sh` from within the WSL2 terminal for Singularity support.
+
+---
+
+### HPC / Headless Servers (Singularity · Apptainer)
+
+On HPC clusters, Singularity or Apptainer is typically the only available container runtime. Copy the pre-built `focus.sif` file to the cluster and use `focus-container.sh` directly, or invoke Singularity manually:
+
+**CLI mode** (recommended on HPC):
+
+```bash
+singularity run --bind /scratch/mylab focus.sif --config /scratch/mylab/project/focus_config.json
+```
+
+`--bind /path` maps the host path to the same path inside the container. All paths in your config remain unchanged.
+
+**GUI mode on a remote server:**
+
+The GUI requires access to port 5050. Set up an SSH tunnel from your local machine:
+
+```bash
+# On your local machine:
+ssh -L 5050:localhost:5050 username@hpc-cluster.example.org
+
+# Then on the cluster:
+singularity run --bind /scratch/mylab focus.sif
+
+# Open http://localhost:5050 in your local browser
+```
+
+**Submitting a batch job (SLURM example):**
+
+```bash
+#!/bin/bash
+#SBATCH --job-name=focus
+#SBATCH --cpus-per-task=8
+#SBATCH --mem=32G
+#SBATCH --gres=gpu:1          # remove if not using feature_extraction
+
+singularity run \
+  --bind /scratch/mylab \
+  --nv \
+  focus.sif \
+  --config /scratch/mylab/project/focus_config.json
+```
+
+> The `--nv` flag passes NVIDIA GPU access to the Singularity container.
+
+---
+
+## Platform Compatibility
+
+| Feature | Windows 10/11 | macOS | Linux (desktop) | Linux (headless / HPC) |
+|---|:---:|:---:|:---:|:---:|
+| Host install (`install.sh` / `install.bat`) | ✓ | ✓ | ✓ | ✓ |
+| GUI mode | ✓ | ✓ | ✓ | via SSH tunnel |
+| CLI mode | ✓ | ✓ | ✓ | ✓ |
+| Docker / Podman container | ✓ | ✓ | ✓ | ✓ |
+| Singularity / Apptainer container | via WSL2 | ✓ | ✓ | ✓ |
+| GPU acceleration (feature extraction) | ✓ | — | ✓ | ✓ |
+
+> GPU acceleration via CUDA is not available on macOS (Apple Silicon uses MPS, which is not currently supported). All pipeline stages that do not use `feature_extraction` registration run fully on CPU and are supported on all platforms.
