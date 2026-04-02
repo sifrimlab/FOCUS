@@ -1144,12 +1144,16 @@ class MsiSample(BaseSample):
 				# Save the filtered indices
 				self.filtered_idx = sorted(list(keep_indices))
 
-			# Apply the filtering to the M/Z vectors and to intensity vectors. This computes the offsets per row as well
-			for mode in self._metadata.keys():
-				filtered_mz[mode] = [mz_vectors[mode][i] for i in self.filtered_idx]
-				filtered_intensity[mode] = [intensity_vectors[mode][i] for i in self.filtered_idx]
+		# Always populate filtered vectors: use filtered_idx when available, otherwise keep all spectra
+		for mode in self._metadata.keys():
+			indices = self.filtered_idx if self.filtered_idx is not None else range(len(mz_vectors[mode]))
+			filtered_mz[mode] = [mz_vectors[mode][i] for i in indices]
+			filtered_intensity[mode] = [intensity_vectors[mode][i] for i in indices]
 
-				# If the reclaibration reference is set, apply it to the M/Z vectors
+		# Apply recalibration if configured (requires mass_tolerance, only available when annotation_db is provided)
+		if annotation_db is not None:
+			for mode in self._metadata.keys():
+				# If the recalibration reference is set, apply it to the M/Z vectors
 				if self.recalibration_reference is not None and mode in self.recalibration_reference:
 					# Apply the recalibration to both raw and filtered M/Z vectors. It must be done separately to keep the correct coordinates
 					mz_vectors[mode], self.raw_recalibration_offset = self._recalibrate_mz_vector(
@@ -1649,7 +1653,8 @@ class MsiDataset(BaseDataset):
 
 			for sample in tqdm.tqdm(self.samples, desc="2/9 - Selecting high-confidence tissue spots", unit="sample"):
 				raw_mz, _, filtered_mz, _ = sample.load_payload(annotation_db=self.lipid_annotation_db,
-				                                                mass_tolerance=mass_tolerance)
+				                                                mass_tolerance=mass_tolerance,
+				                                                detect_background=detect_background)
 
 				# If it was possible to filter the datapoints using the lipid annotation DB, use the filtered M/Z values
 				if filtered_mz != {}:
@@ -1673,7 +1678,8 @@ class MsiDataset(BaseDataset):
 		else:
 			# Dummy call to still filter the datapoints in each sample
 			for sample in tqdm.tqdm(self.samples, desc="2/8 - Selecting high-confidence tissue spots", unit="sample"):
-				_, _, _, _ = sample.load_payload(annotation_db=self.lipid_annotation_db, mass_tolerance=mass_tolerance)
+				_, _, _, _ = sample.load_payload(annotation_db=self.lipid_annotation_db, mass_tolerance=mass_tolerance,
+				                                 detect_background=detect_background)
 				gc.collect()
 
 			print("3/9 - Using provided recalibration reference M/Z values.")
