@@ -32,8 +32,8 @@ export const api = {
     return r.data;
   },
 
-  async loadExistingConfig(): Promise<ValidationResult> {
-    const r = await apiClient.post<ValidationResult>('/api/config/load-existing');
+  async loadExistingConfig(datasetPath: string): Promise<ValidationResult> {
+    const r = await apiClient.post<ValidationResult>('/api/config/load-existing', { dataset_path: datasetPath });
     return r.data;
   },
 

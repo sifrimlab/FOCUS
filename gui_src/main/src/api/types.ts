@@ -51,6 +51,7 @@ export interface ValidationResult {
   valid: boolean;
   config?: Config;
   errors?: string[];
+  corrupted?: boolean;
 }
 
 export interface SamplesResult {

@@ -7,6 +7,8 @@ const store = useMainStore();
 const pathInput = ref(store.config.dataset_path || '');
 const pathError = ref('');
 const showExistingPrompt = ref(false);
+const showCorruptedPrompt = ref(false);
+const corruptedErrors = ref<string[]>([]);
 
 const onSetPath = async () => {
   pathError.value = '';
@@ -27,14 +29,34 @@ const onSetPath = async () => {
 };
 
 const loadExisting = async () => {
-  await store.loadExistingConfig();
-  showExistingPrompt.value = false;
-  store.goToConfig();
+  const result = await store.loadExistingConfig();
+  if (result.success) {
+    showExistingPrompt.value = false;
+    store.goToConfig();
+  } else {
+    // Config file is corrupted — ask the user what to do instead of silently overwriting
+    showExistingPrompt.value = false;
+    corruptedErrors.value = result.errors ?? ['Unknown error reading config file.'];
+    showCorruptedPrompt.value = true;
+  }
 };
 
 const skipExisting = () => {
   showExistingPrompt.value = false;
   store.goToConfig();
+};
+
+// User acknowledges corruption and wants to start fresh (overwrites the corrupted file)
+const proceedFreshAfterCorruption = async () => {
+  showCorruptedPrompt.value = false;
+  // Immediately overwrite the corrupted file so the user has a clean slate
+  await store.autoSave();
+  store.goToConfig();
+};
+
+// User wants to go back and inspect / fix the corrupted file manually
+const goBackFromCorruption = () => {
+  showCorruptedPrompt.value = false;
 };
 </script>
 
@@ -81,6 +103,25 @@ const skipExisting = () => {
           </button>
           <button @click="skipExisting" class="px-4 py-2 bg-gray-200 dark:bg-gray-700 rounded hover:bg-gray-300 dark:hover:bg-gray-600 font-medium">
             Start Fresh
+          </button>
+        </div>
+      </div>
+
+      <!-- Corrupted config prompt -->
+      <div v-if="showCorruptedPrompt" class="bg-red-50 dark:bg-red-900/20 border border-red-300 dark:border-red-700 rounded-lg p-4 mb-6">
+        <p class="font-semibold text-red-700 dark:text-red-400 mb-2">Configuration file is corrupted and could not be loaded.</p>
+        <ul class="text-sm text-red-600 dark:text-red-300 mb-4 list-disc list-inside space-y-1">
+          <li v-for="(err, i) in corruptedErrors" :key="i">{{ err }}</li>
+        </ul>
+        <p class="text-sm text-gray-600 dark:text-gray-400 mb-4">
+          You can go back and inspect or repair the file manually, or proceed with a fresh configuration (this will overwrite the corrupted file).
+        </p>
+        <div class="flex gap-3">
+          <button @click="proceedFreshAfterCorruption" class="px-4 py-2 bg-red-600 text-white rounded hover:bg-red-700 font-medium">
+            Proceed Fresh (Overwrite File)
+          </button>
+          <button @click="goBackFromCorruption" class="px-4 py-2 bg-gray-200 dark:bg-gray-700 rounded hover:bg-gray-300 dark:hover:bg-gray-600 font-medium">
+            Go Back
           </button>
         </div>
       </div>

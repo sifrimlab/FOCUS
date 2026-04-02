@@ -83,13 +83,15 @@ export const useMainStore = defineStore('main', {
       }
     },
 
-    async loadExistingConfig() {
-      // First set dataset_path so the backend knows where to look
-      await api.putConfig(this.config);
-      const result = await api.loadExistingConfig();
+    async loadExistingConfig(): Promise<{ success: boolean; corrupted?: boolean; errors?: string[] }> {
+      // Pass dataset_path directly — do NOT call putConfig first, which would
+      // overwrite the file on disk before we get a chance to read it.
+      const result = await api.loadExistingConfig(this.config.dataset_path);
       if (result.valid && result.config) {
         this.config = result.config as Config;
+        return { success: true };
       }
+      return { success: false, corrupted: result.corrupted, errors: result.errors };
     },
 
     async loadConfigFromFile(content: string) {

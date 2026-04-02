@@ -129,8 +129,14 @@ class MainGUI:
 
 		@self.app.route('/api/config/load-existing', methods=['POST'])
 		def load_existing_config():
-			"""Load the focus_config.json from the dataset_path."""
-			dataset_path = self._config.get(ConfigParameters.DATASET_PATH, '')
+			"""Load the focus_config.json from the dataset_path.
+
+			Accepts an optional 'dataset_path' in the request body; falls back to
+			the in-memory config if not provided.  Never writes to disk — callers
+			must not call PUT /api/config before this endpoint.
+			"""
+			data = request.get_json() or {}
+			dataset_path = data.get('dataset_path') or self._config.get(ConfigParameters.DATASET_PATH, '')
 			if not dataset_path:
 				return jsonify({"error": "dataset_path not set"}), 400
 
@@ -141,10 +147,11 @@ class MainGUI:
 			try:
 				with open(config_path, 'r') as f:
 					loaded = json.load(f)
-			except json.JSONDecodeError as e:
-				return jsonify({"valid": False, "errors": [f"Invalid JSON: {e}"]})
+			except (json.JSONDecodeError, OSError) as e:
+				# File exists but cannot be parsed — report as corrupted so the
+				# frontend can ask the user before overwriting it.
+				return jsonify({"valid": False, "corrupted": True, "errors": [str(e)]})
 
-			# Validate softly (don't require all fields since it may be partial)
 			self._config = loaded
 			return jsonify({"valid": True, "config": loaded})
 
