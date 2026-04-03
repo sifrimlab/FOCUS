@@ -151,13 +151,18 @@ class MicroscopyImage(BaseSample):
 		is_rgb = (C == 3)
 		tile_size = (512, 512)
 
-		# Generate pyramid levels by progressive downscaling
+		# Generate pyramid levels by progressive downscaling.
+		# cv2.resize squeezes the channel dim on single-channel (H,W,1) inputs,
+		# returning (h, w) instead of (h, w, 1). Re-add the axis when that happens.
 		pyramid_data = [img]
 		for i in range(1, levels):
 			scale = 0.5 ** i
 			h = max(1, int(H_base * scale))
 			w = max(1, int(W_base * scale))
-			pyramid_data.append(cv2.resize(img, (w, h), interpolation=cv2.INTER_AREA))
+			resized = cv2.resize(img, (w, h), interpolation=cv2.INTER_AREA)
+			if resized.ndim == 2:
+				resized = resized[..., np.newaxis]
+			pyramid_data.append(resized)
 
 		# Write standard OME-TIFF pyramid: full resolution declares SubIFD slots,
 		# each subsequent level is stored as a SubIFD (subfiletype=1).
