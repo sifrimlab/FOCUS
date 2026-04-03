@@ -507,6 +507,36 @@ class DirectMappingAligner:
 
 		return aligned_samples
 
+	def is_alignment_needed(self, force_recomputing: bool = False) -> bool:
+		"""Return True if at least one sample still needs to be aligned."""
+		if force_recomputing:
+			return len(self._common_samples) > 0
+		for sample_id in self._common_samples:
+			aligned_target_file = MODALITY_ALIGNMENT(self._path, sample_id, self._target_modality_name, "h5ad")
+			if not os.path.exists(aligned_target_file):
+				return True
+			adata = anndata.read_h5ad(aligned_target_file)
+			has_key = f'{self._reference_modality_name}_spatial' in adata.obsm.keys()
+			del adata
+			if not has_key:
+				return True
+		return False
+
+	def collect_aligned_files(self) -> dict[str, str]:
+		"""Return paths to already-aligned files without starting the GUI."""
+		aligned_samples: dict[str, str] = {}
+		is_target_image = self._target_modality_type in _IMAGE_MODALITIES
+		file_ext = "ome.tiff" if is_target_image else "h5ad"
+		for sample_id in self._common_samples:
+			aligned_file = MODALITY_ALIGNMENT(self._path, sample_id, self._target_modality_name, file_ext)
+			if os.path.exists(aligned_file):
+				aligned_samples[sample_id] = aligned_file
+		if not is_target_image:
+			merged_file = MODALITY_ALIGNMENT_MERGED(self._path, self._target_modality_name, "h5ad")
+			if os.path.exists(merged_file):
+				aligned_samples["merged"] = merged_file
+		return aligned_samples
+
 	def align_dataset(self, force_recomputing: bool = False) -> dict[str, str]:
 		"""
 		Align the target modality to the reference using the interactive GUI.

@@ -109,6 +109,7 @@ class ConfigParameters(_AbstractEnum):
 	MODALITIES = "modalities"
 	REFERENCE_MODALITY = "reference_modality"
 	PERFORM_ALIGNMENT = "perform_alignment"
+	ALIGNMENT_FORCE_RECOMPUTING = "alignment_force_recomputing"
 	PERFORM_REGISTRATION = "perform_registration"
 	HUGGINGFACE_TOKEN = "huggingface_token"
 

@@ -140,6 +140,7 @@ const updateContent = async () => {
         
         contentContainer.addChild(sprite);
         store.updateReferenceTransform(mRef);
+        if (app && app.renderer) app.render();
     } catch (e) {
         console.error("Failed to load texture", e);
     }

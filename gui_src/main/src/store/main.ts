@@ -7,6 +7,7 @@ function emptyConfig(): Config {
     dataset_path: '',
     reference_modality: '',
     perform_alignment: true,
+    alignment_force_recomputing: false,
     perform_registration: true,
     huggingface_token: null,
     modalities: [],

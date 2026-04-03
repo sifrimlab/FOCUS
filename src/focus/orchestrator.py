@@ -160,6 +160,9 @@ def _run_alignment(config: dict, modality_files: dict, report) -> dict:
 	ref_mod = _get_reference_modality(config)
 	ref_type = ref_mod[ModalityParameters.TYPE]
 
+	global_force = config.get(ConfigParameters.ALIGNMENT_FORCE_RECOMPUTING, False)
+	ref_proc_force = ref_mod[ModalityParameters.PROCESSING_SETTINGS].get("force_recomputing", False)
+
 	aligned_files: dict[str, dict[str, str]] = {}
 
 	# The reference modality is not aligned — its preprocessed files are passed through
@@ -170,12 +173,11 @@ def _run_alignment(config: dict, modality_files: dict, report) -> dict:
 		if mod_name == ref_name:
 			continue
 
-		logger.info(f"Aligning '{mod_name}' to reference '{ref_name}'")
+		# Force recomputing if: global switch is on, or either modality's preprocessing was forced
+		tgt_proc_force = modality[ModalityParameters.PROCESSING_SETTINGS].get("force_recomputing", False)
+		pair_force = global_force or ref_proc_force or tgt_proc_force
 
-		# Signal that alignment is starting — the GUI should show "Open Alignment Tool"
-		report(state="alignment_waiting", stage="alignment", stage_index=2, total_stages=4,
-			   current_modality=mod_name,
-			   message=f"Waiting for manual alignment of '{mod_name}' to '{ref_name}'...")
+		logger.info(f"Aligning '{mod_name}' to reference '{ref_name}' (force_recomputing={pair_force})")
 
 		aligner = DirectMappingAligner(
 			path=dataset_path,
@@ -187,7 +189,16 @@ def _run_alignment(config: dict, modality_files: dict, report) -> dict:
 			target_modality_type=modality[ModalityParameters.TYPE]
 		)
 
-		aligned_files[mod_name] = aligner.align_dataset()
+		if aligner.is_alignment_needed(force_recomputing=pair_force):
+			# Signal that alignment is starting — the GUI should show "Open Alignment Tool"
+			report(state="alignment_waiting", stage="alignment", stage_index=2, total_stages=4,
+				   current_modality=mod_name,
+				   message=f"Waiting for manual alignment of '{mod_name}' to '{ref_name}'...")
+
+			aligned_files[mod_name] = aligner.align_dataset(force_recomputing=pair_force)
+		else:
+			logger.info(f"All samples for '{mod_name}' already aligned — skipping GUI")
+			aligned_files[mod_name] = aligner.collect_aligned_files()
 
 		report(state="running", stage="alignment", stage_index=2, total_stages=4,
 			   current_modality=mod_name,

@@ -27,6 +27,7 @@ export interface Config {
   dataset_path: string;
   reference_modality: string;
   perform_alignment: boolean;
+  alignment_force_recomputing: boolean;
   perform_registration: boolean;
   huggingface_token: string | null;
   modalities: Modality[];

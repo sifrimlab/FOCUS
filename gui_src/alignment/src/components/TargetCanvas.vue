@@ -206,6 +206,7 @@ const updateContent = async () => {
             const texture = Texture.from(img);
             const sprite = new Sprite(texture);
             contentContainer.addChild(sprite);
+            if (app && app.renderer) app.render();
         } catch (e) { console.error(e); }
     } else {
         const data = store.targetData as SpotModalityPayload;
