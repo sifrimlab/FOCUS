@@ -9,7 +9,7 @@ import focus.preprocessing.raman
 import focus.preprocessing.transcriptomic
 
 
-def preprocess_modality(path: str, modality_name: str, modality_type: str, preprocessing_settings: dict) -> dict[str, str]:
+def preprocess_modality(path: str, modality_name: str, modality_type: str, preprocessing_settings: dict, step_reporter=None) -> dict[str, str]:
 	'''
 	Apply preprocessing steps to a given modality based on its type and settings.
 	This method is an entry point for the preprocessing pipeline.
@@ -48,4 +48,4 @@ def preprocess_modality(path: str, modality_name: str, modality_type: str, prepr
 	dataset = handler.create_dataset(path, samples, preprocessing_settings)
 	settings = handler.extract_settings(preprocessing_settings)
 
-	return dataset.process_dataset(**settings)
+	return dataset.process_dataset(step_reporter=step_reporter, **settings)

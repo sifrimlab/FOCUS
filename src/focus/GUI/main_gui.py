@@ -277,6 +277,11 @@ def _default_status() -> dict:
 		"error": None,
 		"output_files": [],
 		"alignment_port": 8000,
+		"sub_step": None,
+		"sub_step_index": 0,
+		"sub_step_total": 0,
+		"sub_step_progress": 0,
+		"sub_step_items_total": 0,
 	}
 
 

@@ -39,6 +39,27 @@ const openAlignmentTool = () => {
         </p>
       </div>
 
+      <!-- Sub-step progress -->
+      <div v-if="store.pipelineStatus.sub_step" class="mb-4">
+        <div class="flex justify-between items-baseline mb-1">
+          <p class="text-sm font-medium text-gray-700 dark:text-gray-300 truncate pr-2">
+            {{ store.pipelineStatus.sub_step }}
+          </p>
+          <p v-if="store.pipelineStatus.sub_step_items_total > 0"
+             class="text-xs text-gray-400 dark:text-gray-500 shrink-0">
+            {{ store.pipelineStatus.sub_step_progress }} / {{ store.pipelineStatus.sub_step_items_total }}
+          </p>
+        </div>
+        <div class="w-full bg-gray-200 dark:bg-gray-700 rounded-full h-2 overflow-hidden">
+          <div
+            v-if="store.pipelineStatus.sub_step_items_total > 0"
+            class="bg-blue-500 h-2 rounded-full transition-all duration-300"
+            :style="{ width: `${Math.min(100, Math.round((store.pipelineStatus.sub_step_progress / store.pipelineStatus.sub_step_items_total) * 100))}%` }"
+          />
+          <div v-else class="bg-blue-400 h-2 rounded-full animate-pulse w-full" />
+        </div>
+      </div>
+
       <!-- Message log -->
       <div class="bg-gray-50 dark:bg-gray-900 rounded p-3 text-sm font-mono min-h-[60px]">
         {{ store.pipelineStatus.message || 'Starting...' }}

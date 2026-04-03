@@ -8,6 +8,7 @@ from ome_types.model import OME, Image, Pixels, Channel, TiffData, Plane
 from scipy.ndimage import binary_fill_holes
 
 import focus.utils as utils
+from focus.preprocessing._utils import StepReporter
 from focus.constants import SegmentationBackgroundColor, MicroscopyImageProcessingParams
 from focus.constants import MODALITY_PREPROCESSING
 from focus.preprocessing.base import BaseSample, BaseDataset
@@ -413,21 +414,23 @@ class MicroscopyImage(BaseSample):
 
 		output_ome_tiff = MODALITY_PREPROCESSING(self.source_path, self.sample_id, self.modality_name, 'ome.tiff')
 
+		reporter = getattr(self, '_step_reporter', None) or StepReporter()
+
 		if not force_recomputing and os.path.exists(output_ome_tiff):
 			print(f"Processed image already exists. Using cached results.")
 			return output_ome_tiff
 
 		# 1. Load
-		print(f"1/5 - Loading image from {self.filename}")
+		reporter.step(f"1/5 - Loading image from {self.filename}")
 		image = self._load_image(self.filename)
 
 		# 2. Color enhancement
 		if color_enhancement:
-			print(f"2/5 - Enhancing colors (gamma={gamma}, saturation={contrast_saturation})")
+			reporter.step(f"2/5 - Enhancing colors (gamma={gamma}, saturation={contrast_saturation})")
 			image = utils.gamma_correction(image, gamma=gamma)
 			image = utils.enhance_contrast(image, saturated_pixels=contrast_saturation)
 		else:
-			print(f"2/5 - Color enhancement not required")
+			reporter.step(f"2/5 - Color enhancement not required")
 
 		# Ensure float32 after enhancement
 		if image.dtype != np.float32:
@@ -435,7 +438,7 @@ class MicroscopyImage(BaseSample):
 
 		# 3. Background removal
 		if remove_background:
-			print(f"3/5 - Removing background")
+			reporter.step(f"3/5 - Removing background")
 			image = self._remove_background(
 				image,
 				background_color=background_color,
@@ -445,17 +448,17 @@ class MicroscopyImage(BaseSample):
 				clip_percentile=clip_percentile
 			)
 		else:
-			print(f"3/5 - Background removal not required")
+			reporter.step(f"3/5 - Background removal not required")
 
 		# 4. Crop
 		if crop_to_tissue:
-			print(f"4/5 - Cropping to tissue area (margin={crop_margin}px)")
+			reporter.step(f"4/5 - Cropping to tissue area (margin={crop_margin}px)")
 			image = self._crop_image(image, background_color=background_color, margin=crop_margin)
 		else:
-			print(f"4/5 - Cropping not required")
+			reporter.step(f"4/5 - Cropping not required")
 
 		# 5. Save
-		print(f"5/5 - Saving OME-TIFF with {pyramid_levels} pyramid levels")
+		reporter.step(f"5/5 - Saving OME-TIFF with {pyramid_levels} pyramid levels")
 		self._save_image_pyramid(image, output_ome_tiff, levels=pyramid_levels)
 		return output_ome_tiff
 
@@ -482,7 +485,8 @@ class MicroscopyImageDataset(BaseDataset):
 		clip_percentile: int = MicroscopyImage._CLIP_PERCENTILE,
 		crop_margin: int = MicroscopyImage._CROP_MARGIN_PX,
 		gamma: float = MicroscopyImage._GAMMA,
-		contrast_saturation: float = MicroscopyImage._CONTRAST_SATURATION
+		contrast_saturation: float = MicroscopyImage._CONTRAST_SATURATION,
+		step_reporter=None
 	) -> dict[str, str]:
 		"""
 		Preprocess all microscopy images in the dataset.
@@ -493,9 +497,11 @@ class MicroscopyImageDataset(BaseDataset):
 		dict[str, str]
 			Maps sample IDs to output OME-TIFF paths.
 		"""
+		reporter = step_reporter or StepReporter()
 		processed_samples = {}
 		for sample in self.samples:
 			print(f"Processing sample: {sample.sample_id}")
+			sample._step_reporter = reporter
 			try:
 				output_file = sample.process_image(
 					color_enhancement=color_enhancement,

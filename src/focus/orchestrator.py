@@ -7,6 +7,7 @@ from focus.constants import (
 	ModalityType, MODALITY_FILE_EXTENSION, MULTIMODAL_DATASET
 )
 from focus.preprocessing import preprocess_modality
+from focus.preprocessing._utils import StepReporter
 from focus.alignment.alignment import DirectMappingAligner
 from focus.registration.registration import FeatureExtractorRegistration, SpotInterpolationRegistration
 
@@ -43,12 +44,15 @@ def run(config: dict, progress_callback=None) -> list[str]:
 		if progress_callback:
 			progress_callback(kwargs)
 
+	step_reporter = StepReporter(callback=progress_callback)
+
 	# --- Stage 1: Preprocessing (always runs, caching is internal) ---
 	logger.info("=" * 60)
 	logger.info("STAGE 1: Preprocessing")
 	logger.info("=" * 60)
 	_report(state="running", stage="preprocessing", stage_index=1, total_stages=4,
-			message="Starting preprocessing...")
+			message="Starting preprocessing...", sub_step=None, sub_step_index=0,
+			sub_step_total=0, sub_step_progress=0, sub_step_items_total=0)
 
 	modality_files: dict[str, dict[str, str]] = {}
 	for modality in modalities:
@@ -56,13 +60,16 @@ def run(config: dict, progress_callback=None) -> list[str]:
 		mod_type = modality[ModalityParameters.TYPE]
 		logger.info(f"Preprocessing modality '{mod_name}' (type: {mod_type})")
 		_report(state="running", stage="preprocessing", stage_index=1, total_stages=4,
-				current_modality=mod_name, message=f"Preprocessing '{mod_name}'")
+				current_modality=mod_name, message=f"Preprocessing '{mod_name}'",
+				sub_step=None, sub_step_index=0, sub_step_total=0,
+				sub_step_progress=0, sub_step_items_total=0)
 
 		modality_files[mod_name] = preprocess_modality(
 			path=dataset_path,
 			modality_name=mod_name,
 			modality_type=mod_type,
-			preprocessing_settings=modality[ModalityParameters.PROCESSING_SETTINGS]
+			preprocessing_settings=modality[ModalityParameters.PROCESSING_SETTINGS],
+			step_reporter=step_reporter
 		)
 		for path in modality_files[mod_name].values():
 			output_files.append(path)
@@ -75,7 +82,8 @@ def run(config: dict, progress_callback=None) -> list[str]:
 		logger.info("STAGE 2: Alignment")
 		logger.info("=" * 60)
 		_report(state="running", stage="alignment", stage_index=2, total_stages=4,
-				message="Starting alignment...")
+				message="Starting alignment...", sub_step=None, sub_step_index=0,
+				sub_step_total=0, sub_step_progress=0, sub_step_items_total=0)
 		aligned_files = _run_alignment(config, modality_files, _report)
 		for mod_files in aligned_files.values():
 			for path in mod_files.values():
@@ -91,7 +99,8 @@ def run(config: dict, progress_callback=None) -> list[str]:
 		logger.info("STAGE 3: Registration")
 		logger.info("=" * 60)
 		_report(state="running", stage="registration", stage_index=3, total_stages=4,
-				message="Starting registration...")
+				message="Starting registration...", sub_step=None, sub_step_index=0,
+				sub_step_total=0, sub_step_progress=0, sub_step_items_total=0)
 		registered_files = _run_registration(config, modality_files, aligned_files)
 		for mod_files in registered_files.values():
 			for path in mod_files.values():
@@ -105,7 +114,8 @@ def run(config: dict, progress_callback=None) -> list[str]:
 		logger.info("STAGE 4: Compiling multimodal dataset")
 		logger.info("=" * 60)
 		_report(state="running", stage="compiling", stage_index=4, total_stages=4,
-				message="Compiling multimodal dataset...")
+				message="Compiling multimodal dataset...", sub_step=None, sub_step_index=0,
+				sub_step_total=0, sub_step_progress=0, sub_step_items_total=0)
 		mudata_path = _compile_mudata(config, modality_files, registered_files)
 		if mudata_path:
 			output_files.append(mudata_path)

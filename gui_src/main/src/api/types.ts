@@ -45,6 +45,11 @@ export interface PipelineStatus {
   error: string | null;
   output_files: string[];
   alignment_port: number;
+  sub_step: string | null;
+  sub_step_index: number;
+  sub_step_total: number;
+  sub_step_progress: number;
+  sub_step_items_total: number;
 }
 
 export interface ValidationResult {

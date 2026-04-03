@@ -6,6 +6,7 @@ import scanpy as sc
 import scipy.sparse as sp
 
 from focus.constants import MODALITY_PREPROCESSING, MODALITY_PREPROCESSING_MERGED, STPreprocessingParams
+from focus.preprocessing._utils import StepReporter
 from focus.preprocessing.base import BaseSample, BaseDataset
 from focus.preprocessing._registry import ModalityHandler, register_modality
 
@@ -238,7 +239,8 @@ class SpatialTranscriptomicDataset(BaseDataset):
         min_count_spots_ratio_per_gene: float | None = None,
         total_counts_normalize: bool = True,
         log1p_transform: bool = True,
-        force_recomputing: bool = False
+        force_recomputing: bool = False,
+        step_reporter=None
     ) -> dict[str, str]:
         '''
         Process and combine multiple spatial transcriptomic samples.
@@ -294,8 +296,10 @@ class SpatialTranscriptomicDataset(BaseDataset):
         if min_count_spots_ratio_per_gene is not None and min_count_spots_ratio_per_gene <= 0:
             raise ValueError("min_count_spots_ratio_per_gene must be greater than 0.")
 
+        reporter = step_reporter or StepReporter()
+
         # ---- Step 1: Process each sample individually ----
-        print("1/2 - Processing Spatial Transcriptomic Samples")
+        reporter.step("1/2 - Processing Spatial Transcriptomic Samples")
 
         processed_samples: dict[str, str] = {}
         adata_list: list[ad.AnnData] = []
@@ -325,7 +329,7 @@ class SpatialTranscriptomicDataset(BaseDataset):
             adata_list.append(adata)
 
         # ---- Step 2: Merge and cross-sample processing ----
-        print("2/2 - Generating combined Spatial Transcriptomic dataset")
+        reporter.step("2/2 - Generating combined Spatial Transcriptomic dataset")
 
         merged_file = MODALITY_PREPROCESSING_MERGED(self.dataset_source_path, self.samples[0].modality_name, "h5ad")
 

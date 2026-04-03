@@ -1,4 +1,5 @@
 import tqdm, tifffile, os, subprocess, shlex
+from focus.preprocessing._utils import StepReporter
 import warnings, copy, cv2, shutil, json, time
 import numpy as np
 from readlif.reader import LifFile, LifImage
@@ -229,11 +230,12 @@ class RamanImage(BaseSample):
 		"""Load the source data. Looks for supported file formats (LIF) in the input directory."""
 		os.makedirs(self.output_path, exist_ok=True)
 
+		reporter = getattr(self, '_step_reporter', None) or StepReporter()
 		found = False
 		with os.scandir(self.input_path) as it:
 			for entry in it:
 				if entry.is_file() and entry.name.lower().endswith('.lif'):
-					print(f"1/5 - Loading Raman data from LIF file: {entry.name}")
+					reporter.step(f"1/5 - Loading Raman data from LIF file: {entry.name}")
 					self._load_lif(os.path.join(self.input_path, entry.name))
 					found = True
 					break
@@ -662,13 +664,14 @@ class RamanImage(BaseSample):
 							savgol_window, savgol_polyorder
 						))
 
+				_reporter = getattr(self, '_step_reporter', None) or StepReporter()
 				slice_result = list(
-					tqdm.tqdm(
+					_reporter.tqdm(
 						Parallel(n_jobs=self._max_workers, return_as="generator")(
 							delayed(self._process_tile_parallel)(*args) for args in units
 						),
-						total=len(units),
 						desc="4/5 - Cleaning Raman Spectra (Parallel)",
+						total=len(units),
 						unit="tile"
 					)
 				)
@@ -677,7 +680,8 @@ class RamanImage(BaseSample):
 					start_ch, end_ch = self._spectra_slices[slice_index]
 					self._raman_corrected_tiles[tile_index, start_ch:end_ch + 1] = processed_tile
 			else:
-				for tile_idx in tqdm.tqdm(range(self._basic_corrected_tiles.shape[0]), desc="4/5 - Cleaning Raman Spectra"):
+				_reporter = getattr(self, '_step_reporter', None) or StepReporter()
+				for tile_idx in _reporter.tqdm(range(self._basic_corrected_tiles.shape[0]), desc="4/5 - Cleaning Raman Spectra"):
 					for slice_index, (start_ch, end_ch) in enumerate(self._spectra_slices):
 						processed_tile, _, _ = self._process_tile_parallel(
 							self._basic_corrected_tiles[tile_idx, start_ch:end_ch + 1, :, :],
@@ -690,7 +694,8 @@ class RamanImage(BaseSample):
 			np.save(cache_file, self._raman_corrected_tiles)
 		else:
 			self._raman_corrected_tiles = np.load(cache_file)
-			print("4/5 - Loaded Clean Raman Spectra from disk. (Using cached results)")
+			_reporter = getattr(self, '_step_reporter', None) or StepReporter()
+			_reporter.step("4/5 - Loaded Clean Raman Spectra from disk. (Using cached results)")
 
 	def basic_correct(self, force_recomputing: bool = False) -> None:
 		"""Apply BaSiC illumination correction to raw tiles via external conda environment."""
@@ -742,11 +747,12 @@ class RamanImage(BaseSample):
 				os.remove(output_file)
 				return channel_idx, corrected
 
+			_reporter = getattr(self, '_step_reporter', None) or StepReporter()
 			self._basic_corrected_tiles = np.zeros_like(self._raw_tiles, dtype=np.float32)
 
 			with concurrent.futures.ThreadPoolExecutor(max_workers=self._max_workers) as executor:
 				futures = {executor.submit(run_correction, idx): idx for idx in range(self._raw_tiles.shape[1])}
-				for future in tqdm.tqdm(concurrent.futures.as_completed(futures), total=len(futures), desc="2/5 - Applying BaSiC Correction", unit='channel'):
+				for future in _reporter.tqdm(concurrent.futures.as_completed(futures), desc="2/5 - Applying BaSiC Correction", total=len(futures), unit='channel'):
 					channel_idx, corrected_channel = future.result()
 					self._basic_corrected_tiles[:, channel_idx, :, :] = corrected_channel
 
@@ -760,7 +766,8 @@ class RamanImage(BaseSample):
 			np.save(cache_file, self._basic_corrected_tiles)
 		else:
 			self._basic_corrected_tiles = np.load(cache_file)
-			print("2/5 - Loaded BaSiC corrected tiles from disk. (Using cached results)")
+			_reporter = getattr(self, '_step_reporter', None) or StepReporter()
+			_reporter.step("2/5 - Loaded BaSiC corrected tiles from disk. (Using cached results)")
 
 	def remove_background(self, force_recomputing: bool = False,
 		bg_min_area_fraction: float = _BG_MIN_AREA_FRACTION,
@@ -787,7 +794,8 @@ class RamanImage(BaseSample):
 		cache_file = os.path.join(self.output_path, "segmented_tiles.npy")
 
 		if force_recomputing or not os.path.exists(cache_file):
-			print("3/5 - Removing background from BaSiC corrected tiles")
+			_reporter = getattr(self, '_step_reporter', None) or StepReporter()
+			_reporter.step("3/5 - Removing background from BaSiC corrected tiles")
 
 			self._quick_stitch()
 
@@ -832,7 +840,8 @@ class RamanImage(BaseSample):
 			self._basic_corrected_tiles = segmented_tiles
 		else:
 			self._basic_corrected_tiles = np.load(cache_file)
-			print("3/5 - Loaded segmented BaSiC corrected tiles from disk. (Using cached results)")
+			_reporter = getattr(self, '_step_reporter', None) or StepReporter()
+			_reporter.step("3/5 - Loaded segmented BaSiC corrected tiles from disk. (Using cached results)")
 
 	def _quick_stitch(self) -> None:
 		"""Stitch tiles into a quick mosaic (with blending) for background removal only."""
@@ -1013,7 +1022,8 @@ class RamanImage(BaseSample):
 				tiles=self.corrected,
 				coordinates=copy.deepcopy(self.tiles_coordinates)
 			)
-			print(f"5/5 - Stitching tiles with ASHLAR using channel {align_channel} as reference")
+			_reporter = getattr(self, '_step_reporter', None) or StepReporter()
+			_reporter.step(f"5/5 - Stitching tiles with ASHLAR using channel {align_channel} as reference")
 
 			main_script = os.path.join(_TOOLS_DIR, "ASHLAR", "main.py")
 			if not os.path.isfile(main_script):
@@ -1040,7 +1050,8 @@ class RamanImage(BaseSample):
 			print(f"Sample {self.sample_id}: Stitched mosaic saved to {output_file}")
 		else:
 			self._mosaic = tifffile.imread(output_file)
-			print(f"5/5 - Loaded ASHLAR stitched mosaic from disk. (Using cached results)")
+			_reporter = getattr(self, '_step_reporter', None) or StepReporter()
+			_reporter.step(f"5/5 - Loaded ASHLAR stitched mosaic from disk. (Using cached results)")
 
 		return output_file
 
@@ -1060,7 +1071,8 @@ class RamanDataset(BaseDataset):
 		savgol_polyorder: int = RamanImage._SAVGOL_POLYORDER,
 		bg_min_area_fraction: float = RamanImage._BG_MIN_AREA_FRACTION,
 		otsu_threshold_factor: float = RamanImage._OTSU_THRESHOLD_FACTOR,
-		min_object_size: int = RamanImage._MIN_OBJECT_SIZE
+		min_object_size: int = RamanImage._MIN_OBJECT_SIZE,
+		step_reporter=None
 	) -> dict[str, str]:
 		"""
 		Process each sample through the full Raman preprocessing pipeline.
@@ -1088,10 +1100,12 @@ class RamanDataset(BaseDataset):
 		dict[str, str]
 			Maps sample IDs to output OME-TIFF paths.
 		"""
+		reporter = step_reporter or StepReporter()
 		processed_samples = {}
 		for sample in self.samples:
 			print(f"Processing sample: {sample.sample_id}")
 			sample._max_workers = max_workers
+			sample._step_reporter = reporter
 
 			try:
 				output_expected = MODALITY_PREPROCESSING(sample.source_path, sample.sample_id, sample.modality_name, "ome.tiff")
