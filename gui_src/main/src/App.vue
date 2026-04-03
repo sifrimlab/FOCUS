@@ -15,10 +15,11 @@ const toggleDark = () => {
   document.documentElement.classList.toggle('dark', isDark.value);
 };
 
-onMounted(() => {
-  store.fetchSchema();
+onMounted(async () => {
   isDark.value = window.matchMedia('(prefers-color-scheme: dark)').matches;
   document.documentElement.classList.toggle('dark', isDark.value);
+  await store.fetchSchema();
+  await store.restoreState();
 });
 </script>
 

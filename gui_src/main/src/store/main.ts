@@ -76,6 +76,36 @@ export const useMainStore = defineStore('main', {
       this.schema = await api.getSchema();
     },
 
+    async restoreState() {
+      try {
+        const state = await api.getState();
+
+        // Restore config and samples
+        if (state.config && state.config.dataset_path) {
+          this.config = state.config as Config;
+          this.samples = state.samples;
+          this.hasExistingConfig = state.has_existing_config;
+        }
+
+        // Restore pipeline status and derive the correct view
+        this.pipelineStatus = state.status;
+        const s = state.status.state;
+        if (s === 'running' || s === 'alignment_waiting') {
+          this.currentView = 'running';
+          this.startStatusPolling();
+        } else if (s === 'completed') {
+          this.currentView = 'complete';
+        } else if (s === 'error') {
+          this.currentView = 'running';  // RunningView shows the error UI
+        } else if (state.config && state.config.modalities && state.config.modalities.length > 0) {
+          this.currentView = 'config';
+        }
+        // else stay on 'setup' (the default)
+      } catch {
+        // Backend not reachable or fresh start — stay on setup
+      }
+    },
+
     async setDatasetPath(path: string) {
       this.config.dataset_path = path;
       try {

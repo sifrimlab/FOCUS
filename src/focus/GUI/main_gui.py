@@ -197,6 +197,27 @@ class MainGUI:
 		def get_status():
 			return jsonify(self._pipeline_status)
 
+		# --- Full state (for restoring the frontend on reload) ---
+
+		@self.app.route('/api/state', methods=['GET'])
+		def get_state():
+			"""Return the full backend state so the frontend can restore its view."""
+			dataset_path = self._config.get(ConfigParameters.DATASET_PATH, '')
+			samples = []
+			has_existing_config = False
+			if dataset_path and os.path.isdir(dataset_path):
+				try:
+					samples = discover_sample_ids(dataset_path)
+					has_existing_config = os.path.isfile(os.path.join(dataset_path, _CONFIG_FILENAME))
+				except Exception:
+					pass
+			return jsonify({
+				"config": self._config,
+				"status": self._pipeline_status,
+				"samples": samples,
+				"has_existing_config": has_existing_config,
+			})
+
 		# --- Reset ---
 
 		@self.app.route('/api/reset', methods=['POST'])

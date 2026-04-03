@@ -52,6 +52,16 @@ export const api = {
     return r.data;
   },
 
+  async getState(): Promise<{
+    config: Config;
+    status: PipelineStatus;
+    samples: string[];
+    has_existing_config: boolean;
+  }> {
+    const r = await apiClient.get('/api/state');
+    return r.data;
+  },
+
   async reset(): Promise<void> {
     await apiClient.post('/api/reset');
   },

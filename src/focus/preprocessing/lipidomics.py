@@ -1183,6 +1183,7 @@ class MsiDataset(BaseDataset):
 
 	_LEIDEN_RESOLUTION = 0.5
 	_H5AD_COMPRESSION = "gzip"
+	_H5AD_INTERMEDIATE_COMPRESSION = "lzf"
 
 	def __init__(self, path: str, samples: list[MsiSample], lipid_annotation_db: str | None = None) -> None:
 		'''
@@ -1837,6 +1838,8 @@ class MsiDataset(BaseDataset):
 		}, index=[str(i) for i in range(total_cols)])
 
 		spot_sizes: dict[str, list[float]] = {}
+		write_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+		write_futures = []
 
 		for sample in reporter.tqdm(self.samples, desc="8/9 - Generating AnnData objects and saving results",
 		                            unit="sample"):
@@ -1902,13 +1905,21 @@ class MsiDataset(BaseDataset):
 				adata.obs['leiden'] = '0'
 			adata.obs['leiden'] = pd.Categorical(adata.obs['leiden'])
 
-			# Save with compression
+			# Save with lzf compression (faster than gzip for intermediate files)
 			output_file = MODALITY_PREPROCESSING(self.dataset_source_path, sample.sample_id, sample.modality_name, 'h5ad')
-			adata.write_h5ad(output_file, compression=self._H5AD_COMPRESSION)
+			# Wait for any previous write to finish before reusing gc
+			for f in write_futures:
+				f.result()
+			write_futures.clear()
+			# Write in background thread so next sample's computation overlaps with I/O
+			write_futures.append(write_executor.submit(adata.write_h5ad, output_file, compression=self._H5AD_INTERMEDIATE_COMPRESSION))
 			processed_samples[sample.sample_id] = output_file
 
-			del adata, X_sparse, raw_sparse
-			gc.collect()
+		# Wait for the last write to complete
+		for f in write_futures:
+			f.result()
+		write_executor.shutdown(wait=False)
+		gc.collect()
 
 		# STEP 9: Merge all samples into a single dataset (memory-efficient on-disk concat)
 		reporter.step("9/9 - Merging all samples into a single dataset")
