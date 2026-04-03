@@ -149,29 +149,56 @@ class DirectMappingAligner:
 		"""
 		Load an OME-TIFF file, returning the lowest pyramid level as RGB uint8.
 
+		Handles SubIFD-based pyramids (new format, written with subifds + ome=True),
+		direct SubIFD page access (fallback when series.levels doesn't expose SubIFDs),
+		and multi-series pyramids (old format with a separate series per level).
+
 		Returns
 		-------
 		tuple of (image_rgb, lowest_shape, original_shape)
 			image_rgb: uint8 array (H, W, 3) at lowest pyramid resolution
-			lowest_shape: shape of the lowest pyramid level
-			original_shape: shape of the original (full) resolution level
+			lowest_shape: (H_low, W_low[, C]) shape of the loaded level
+			original_shape: (H_orig, W_orig[, C]) shape of the full-resolution level
 		"""
 		if not os.path.exists(filename):
 			raise FileNotFoundError(f"File not found: {filename}")
 
 		with tifffile.TiffFile(filename) as tif:
-			# Pyramidal resolution encoded in levels of the first series
-			if len(tif.series[0].levels) > 1:
-				lowest_level = tif.series[0].levels[-1]
-				image_data = lowest_level.asarray()
-				lowest_shape = lowest_level.shape
-				original_shape = tif.series[0].shape
+			series0 = tif.series[0]
+			original_shape = series0.shape
+
+			# Priority 1: SubIFD pyramid via series.levels (modern tifffile with ome=True + subifds)
+			if len(series0.levels) > 1:
+				lowest = series0.levels[-1]
+				image_data = lowest.asarray()
+				lowest_shape = lowest.shape
+
+			# Priority 2: direct SubIFD page access — handles ome=True + subifds written by
+			# tifffile versions that don't expose SubIFDs through series.levels
+			elif tif.pages[0].pages:
+				lowest_page = tif.pages[0].pages[-1]
+				image_data = lowest_page.asarray()
+				lowest_shape = image_data.shape
+
+			# Priority 3: separate top-level series per pyramid level (old ome_types format)
+			elif len(tif.series) > 1:
+				lowest = tif.series[-1]
+				image_data = lowest.asarray()
+				lowest_shape = lowest.shape
+
+			# Priority 4: single-level file (no pyramid at all)
 			else:
-				# Fallback: pyramid encoded as separate series
-				lowest_level = tif.series[-1]
-				image_data = lowest_level.asarray()
-				lowest_shape = lowest_level.shape
-				original_shape = tif.series[0].shape
+				image_data = series0.asarray()
+				lowest_shape = series0.shape
+
+		# Squeeze leading singleton OME dimensions (e.g. T=1, Z=1 from TZCYX)
+		# so that all shapes are ≤ 3D before passing to _image_to_rgb_uint8.
+		while image_data.ndim > 3 and image_data.shape[0] == 1:
+			image_data = image_data[0]
+		while len(lowest_shape) > 3 and lowest_shape[0] == 1:
+			lowest_shape = lowest_shape[1:]
+		while len(original_shape) > 3 and original_shape[0] == 1:
+			original_shape = original_shape[1:]
 
 		return _image_to_rgb_uint8(image_data, lowest_shape, original_shape)
 
@@ -492,6 +519,9 @@ class DirectMappingAligner:
 			Maps sample IDs (and "merged") to aligned file paths.
 		"""
 		aligned_samples: dict[str, str] = {}
+
+		if not self._common_samples:
+			return aligned_samples
 
 		# Start alignment in background thread
 		alignment_thread = threading.Thread(

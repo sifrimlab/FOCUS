@@ -225,8 +225,9 @@ class DirectMappingAlignmentGUI:
         # Wait for the dataset to be completed
         self._dataset_completed_event.wait()
 
-        # Introduce two seconds delay to allow any ongoing requests to complete
-        time.sleep(2)
+        # Give the browser time to read any error screen; otherwise just drain in-flight requests
+        delay = 60 if self._error_message else 2
+        time.sleep(delay)
 
         if self._server:
             self._server.shutdown()
