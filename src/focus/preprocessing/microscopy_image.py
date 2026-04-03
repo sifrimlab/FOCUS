@@ -155,6 +155,9 @@ class MicroscopyImage(BaseSample):
 		# Storing as uint8 is the standard OME-TIFF convention for display images and
 		# ensures that any TIFF reader (including tifffile's SubIFD path) returns the
 		# correct dtype without relying on implicit float→uint8 interpretation.
+		# Perform robust normalization if the image has very low dynamic range
+		if img.max() > 0 and img.max() < 1.0/255.0:
+			img = (img - img.min()) / (img.max() - img.min())
 		img_u8 = (img.clip(0.0, 1.0) * 255.0 + 0.5).astype(np.uint8)
 
 		# Generate pyramid levels by progressive downscaling.

@@ -45,16 +45,23 @@ def _image_to_rgb_uint8(image_data: np.ndarray, lowest_shape: tuple, original_sh
 
 	Returns (image_rgb_uint8, lowest_shape_hwc, original_shape_hwc).
 	"""
-	# Convert to uint8 if needed
+	# Convert to uint8 if needed.
+	# Always use min-max normalisation: never assume a specific input range such as
+	# [0, 1] for float32, because tifffile may return SubIFD data in any numeric
+	# range (uint8 0-255, uint16 0-65535, float32 0-1, etc.).
 	if image_data.dtype != np.uint8:
-		if image_data.max() > 1.0 or image_data.min() < 0.0:
-			dmin, dmax = image_data.min(), image_data.max()
-			if dmax > dmin:
-				image_data = ((image_data - dmin) / (dmax - dmin) * 255).astype(np.uint8)
-			else:
-				image_data = np.zeros_like(image_data, dtype=np.uint8)
+		arr = image_data.astype(np.float32)
+		dmin, dmax = float(arr.min()), float(arr.max())
+		if dmax > dmin:
+			image_data = ((arr - dmin) / (dmax - dmin) * 255.0).astype(np.uint8)
 		else:
-			image_data = (image_data * 255).astype(np.uint8)
+			image_data = np.zeros_like(arr, dtype=np.uint8)
+	else:
+		# If uint8 but very low range (e.g. [0, 1]), re-scale for GUI visibility
+		dmin, dmax = int(image_data.min()), int(image_data.max())
+		if 0 < dmax < 10:  # Arbitrary threshold for "very low dynamic range"
+			arr = image_data.astype(np.float32)
+			image_data = ((arr - dmin) / (dmax - dmin) * 255.0).astype(np.uint8)
 
 	# Ensure HWC format
 	if image_data.ndim == 2:
