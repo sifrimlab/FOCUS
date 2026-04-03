@@ -5,6 +5,7 @@ import tifffile
 import czifile
 import skimage.morphology as morphology
 from scipy.ndimage import binary_fill_holes
+from ome_types.model import OME, Image, Pixels, Channel, TiffData, Plane
 
 import focus.utils as utils
 from focus.preprocessing._utils import StepReporter
@@ -131,87 +132,101 @@ class MicroscopyImage(BaseSample):
 
 	def _save_image_pyramid(self, img: np.ndarray, output_file: str, levels: int = 4) -> str:
 		"""
-		Save an image as a multi-resolution OME-TIFF pyramid.
-
-		Uses SubIFDs for proper pyramid storage, 512×512 tiles for random-access
-		efficiency, and zstd compression (faster than zlib with comparable ratios).
+		Saves an RGB/multi-channel image as a multi-resolution OME-TIFF containing
+		multiple independent images, one for each resolution level.
+		Uses separate top-level IFDs (not SubIFDs) and zlib compression,
+		following the reference implementation for maximum compatibility.
 
 		Parameters
 		----------
 		img : np.ndarray
-			Float32 image of shape (H, W, C) or (H, W).
+			The input image as a NumPy array of shape (H, W, C) or (H, W) and dtype float32.
 		output_file : str
-			Output path.
+			The path to the output OME-TIFF file.
 		levels : int
-			Number of resolution levels.
+			The number of resolution levels to generate (default is 4).
 		"""
+		assert img.dtype == np.float32, "Expecting float32 array"
+
+		# Normalize to [H,W,C] shape
 		if img.ndim == 2:
-			img = img[..., np.newaxis]
+			img = img[..., np.newaxis]  # Grayscale -> [H,W,1]
 		H_base, W_base, C = img.shape
 		is_rgb = (C == 3)
-		tile_size = (512, 512)
 
-		# Convert float32 [0, 1] → uint8 [0, 255].
-		# Storing as uint8 is the standard OME-TIFF convention for display images and
-		# ensures that any TIFF reader (including tifffile's SubIFD path) returns the
-		# correct dtype without relying on implicit float→uint8 interpretation.
-		# Perform robust normalization if the image has very low dynamic range
-		if img.max() > 0 and img.max() < 1.0/255.0:
-			img = (img - img.min()) / (img.max() - img.min())
-		img_u8 = (img.clip(0.0, 1.0) * 255.0 + 0.5).astype(np.uint8)
-
-		# Generate pyramid levels by progressive downscaling.
-		# cv2.resize squeezes the channel dim on single-channel (H,W,1) inputs,
-		# returning (h, w) instead of (h, w, 1). Re-add the axis when that happens.
-		pyramid_data = [img_u8]
-		for i in range(1, levels):
+		# 1. Generate pyramid (resize preserves shape type)
+		pyramid_data = []
+		for i in range(levels):
 			scale = 0.5 ** i
-			h = max(1, int(H_base * scale))
-			w = max(1, int(W_base * scale))
-			resized = cv2.resize(img_u8, (w, h), interpolation=cv2.INTER_AREA)
+			h_scaled = max(1, int(H_base * scale))
+			w_scaled = max(1, int(W_base * scale))
+			resized = cv2.resize(img, (w_scaled, h_scaled), interpolation=cv2.INTER_AREA)
+			# Re-add channel axis if cv2.resize squeezed it for 1-channel images
 			if resized.ndim == 2:
 				resized = resized[..., np.newaxis]
 			pyramid_data.append(resized)
 
-		# Write standard OME-TIFF pyramid: full resolution declares SubIFD slots,
-		# each subsequent level is stored as a SubIFD (subfiletype=1).
-		# tifffile with ome=True auto-generates correct OME-XML from array shape.
-		with tifffile.TiffWriter(output_file, bigtiff=True, ome=True) as tif:
+		# 2. Build OME-XML
+		ome = OME()
+		ifd_counter = 0
+		for i, level_img in enumerate(pyramid_data):
+			H, W, CC = level_img.shape
+
 			if is_rgb:
-				tif.write(
-					pyramid_data[0],
-					subifds=levels - 1,
-					tile=tile_size,
-					compression='zstd',
-					photometric='rgb',
-					metadata={'axes': 'YXS'},
+				# RGB interleaved
+				image_block = Image(
+					id=f"Image:{i}", name=f"ResolutionLevel_{i}",
+					pixels=Pixels(
+						id=f"Pixels:{i}", dimension_order="XYCZT", type="float",
+						size_x=W, size_y=H, size_z=1, size_c=1, size_t=1, interleaved=True,
+						channels=[Channel(id=f"Channel:{i}:0", name="RGB", samples_per_pixel=3)],
+						planes=[Plane(the_c=0, the_z=0, the_t=0)],
+						tiff_data_blocks=[TiffData(ifd=ifd_counter, plane_count=1)]
+					)
 				)
-				for level_img in pyramid_data[1:]:
+				ifd_counter += 1
+			else:
+				# Multi/single-channel separate planes
+				image_block = Image(
+					id=f"Image:{i}", name=f"ResolutionLevel_{i}",
+					pixels=Pixels(
+						id=f"Pixels:{i}", dimension_order="XYCZT", type="float",
+						size_x=W, size_y=H, size_z=1, size_c=CC, size_t=1,
+						channels=[Channel(id=f"Channel:{i}:{c}", name=f"Channel_{c}") for c in range(CC)],
+						planes=[Plane(the_c=c, the_z=0, the_t=0) for c in range(CC)],
+						tiff_data_blocks=[TiffData(ifd=ifd_counter + c, plane_count=1) for c in range(CC)]
+					)
+				)
+				ifd_counter += CC
+			ome.images.append(image_block)
+
+		xml_metadata = ome.to_xml()
+
+		# 3. Write TIFF
+		with tifffile.TiffWriter(output_file, bigtiff=True) as tif:
+			for c, level_img in enumerate(pyramid_data):
+				if is_rgb:
+					description = xml_metadata if c == 0 else None
+					# OpenCV resize (H, W, 3) float32
 					tif.write(
 						level_img,
-						subfiletype=1,
-						tile=tile_size,
-						compression='zstd',
+						description=description,
 						photometric='rgb',
+						metadata={'axes': 'YXC'},
+						compression="zlib"
 					)
-			else:
-				# (H, W, C) → (C, H, W) for multi-channel OME layout
-				tif.write(
-					pyramid_data[0].transpose(2, 0, 1),
-					subifds=levels - 1,
-					tile=tile_size,
-					compression='zstd',
-					photometric='minisblack',
-					metadata={'axes': 'CYX'},
-				)
-				for level_img in pyramid_data[1:]:
-					tif.write(
-						level_img.transpose(2, 0, 1),
-						subfiletype=1,
-						tile=tile_size,
-						compression='zstd',
-						photometric='minisblack',
-					)
+				else:
+					# Write each channel slice separately as minisblack
+					for ch_idx in range(C):
+						ch_img = level_img[:, :, ch_idx]
+						description = xml_metadata if c == 0 and ch_idx == 0 else None
+						tif.write(
+							ch_img,
+							description=description,
+							photometric='minisblack',
+							metadata={'axes': 'YX'},
+							compression="zlib"
+						)
 
 		return output_file
 
