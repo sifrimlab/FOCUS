@@ -151,15 +151,21 @@ class MicroscopyImage(BaseSample):
 		is_rgb = (C == 3)
 		tile_size = (512, 512)
 
+		# Convert float32 [0, 1] → uint8 [0, 255].
+		# Storing as uint8 is the standard OME-TIFF convention for display images and
+		# ensures that any TIFF reader (including tifffile's SubIFD path) returns the
+		# correct dtype without relying on implicit float→uint8 interpretation.
+		img_u8 = (img.clip(0.0, 1.0) * 255.0 + 0.5).astype(np.uint8)
+
 		# Generate pyramid levels by progressive downscaling.
 		# cv2.resize squeezes the channel dim on single-channel (H,W,1) inputs,
 		# returning (h, w) instead of (h, w, 1). Re-add the axis when that happens.
-		pyramid_data = [img]
+		pyramid_data = [img_u8]
 		for i in range(1, levels):
 			scale = 0.5 ** i
 			h = max(1, int(H_base * scale))
 			w = max(1, int(W_base * scale))
-			resized = cv2.resize(img, (w, h), interpolation=cv2.INTER_AREA)
+			resized = cv2.resize(img_u8, (w, h), interpolation=cv2.INTER_AREA)
 			if resized.ndim == 2:
 				resized = resized[..., np.newaxis]
 			pyramid_data.append(resized)
