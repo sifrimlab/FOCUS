@@ -22,7 +22,7 @@ from focus.preprocessing.base import BaseSample, BaseDataset
 from focus.preprocessing._registry import ModalityHandler, register_modality
 
 
-@njit
+@njit(cache=True)
 def cluster_unique_mz_chunk(unique_mz, counts, mass_tolerance_ppm):
 	"""
 	Cluster m/z values within a chunk using sliding window clustering and weighted centroids.
@@ -51,26 +51,18 @@ def cluster_unique_mz_chunk(unique_mz, counts, mass_tolerance_ppm):
 	start_idx = 0
 
 	while start_idx < n:
-		cluster_mz = [unique_mz[start_idx]]
-		cluster_counts = [counts[start_idx]]
 		centroid = unique_mz[start_idx]
 		weight_sum = counts[start_idx]
+		weighted_sum = unique_mz[start_idx] * counts[start_idx]
 		end_idx = start_idx + 1
 
 		while end_idx < n:
 			candidate_mz = unique_mz[end_idx]
 			ppm_diff = abs(candidate_mz - centroid) / centroid * 1e6
 			if ppm_diff <= mass_tolerance_ppm:
-				cluster_mz.append(candidate_mz)
-				cluster_counts.append(counts[end_idx])
 				weight_sum += counts[end_idx]
-				# Update weighted centroid incrementally
-				weighted_sum = 0.0
-				total_weight = 0.0
-				for m, w in zip(cluster_mz, cluster_counts):
-					weighted_sum += m * w
-					total_weight += w
-				centroid = weighted_sum / total_weight
+				weighted_sum += candidate_mz * counts[end_idx]
+				centroid = weighted_sum / weight_sum
 				end_idx += 1
 			else:
 				break
@@ -83,6 +75,7 @@ def cluster_unique_mz_chunk(unique_mz, counts, mass_tolerance_ppm):
 	return np.array(consensus_mz), np.array(consensus_weights)
 
 
+@njit(cache=True)
 def merge_chunks(prev_mz, prev_w, curr_mz, curr_w, mass_tolerance_ppm):
 	"""
 	Merge consensus clusters from two adjacent chunks resolving overlaps.
@@ -91,43 +84,49 @@ def merge_chunks(prev_mz, prev_w, curr_mz, curr_w, mass_tolerance_ppm):
 
 	Returns merged consensus m/z and weights arrays.
 	"""
+	max_size = len(prev_mz) + len(curr_mz)
+	merged_mz = np.empty(max_size, dtype=np.float64)
+	merged_w = np.empty(max_size, dtype=np.float64)
+	k = 0
 	i, j = 0, 0
-	merged_mz = []
-	merged_w = []
 
 	while i < len(prev_mz) and j < len(curr_mz):
 		ppm_diff = abs(curr_mz[j] - prev_mz[i]) / ((curr_mz[j] + prev_mz[i]) / 2) * 1e6
 		if ppm_diff <= mass_tolerance_ppm:
 			# Merge clusters by weighted average
 			tot_w = prev_w[i] + curr_w[j]
-			centroid = (prev_mz[i] * prev_w[i] + curr_mz[j] * curr_w[j]) / tot_w
-			merged_mz.append(centroid)
-			merged_w.append(tot_w)
+			merged_mz[k] = (prev_mz[i] * prev_w[i] + curr_mz[j] * curr_w[j]) / tot_w
+			merged_w[k] = tot_w
+			k += 1
 			i += 1
 			j += 1
 		elif prev_mz[i] < curr_mz[j]:
-			merged_mz.append(prev_mz[i])
-			merged_w.append(prev_w[i])
+			merged_mz[k] = prev_mz[i]
+			merged_w[k] = prev_w[i]
+			k += 1
 			i += 1
 		else:
-			merged_mz.append(curr_mz[j])
-			merged_w.append(curr_w[j])
+			merged_mz[k] = curr_mz[j]
+			merged_w[k] = curr_w[j]
+			k += 1
 			j += 1
 
 	# Append remaining
 	while i < len(prev_mz):
-		merged_mz.append(prev_mz[i])
-		merged_w.append(prev_w[i])
+		merged_mz[k] = prev_mz[i]
+		merged_w[k] = prev_w[i]
+		k += 1
 		i += 1
 	while j < len(curr_mz):
-		merged_mz.append(curr_mz[j])
-		merged_w.append(curr_w[j])
+		merged_mz[k] = curr_mz[j]
+		merged_w[k] = curr_w[j]
+		k += 1
 		j += 1
 
-	return np.array(merged_mz), np.array(merged_w)
+	return merged_mz[:k], merged_w[:k]
 
 
-@njit
+@njit(cache=True)
 def interpolate_single(original_mz, original_intensity, reference_mz, mass_tolerance):
 	"""Numba-optimized function to interpolate a single spectrum onto a reference M/Z grid using weighted averaging."""
 	n_ref = len(reference_mz)
@@ -1317,7 +1316,8 @@ class MsiDataset(BaseDataset):
 		# Prepare chunk arrays with overlap
 		chunks = [(unique_mz[start:end], counts[start:end]) for start, end in chunk_indices]
 
-		with concurrent.futures.ProcessPoolExecutor() as executor:
+		n_workers = utils.available_cpus() or 1
+		with concurrent.futures.ProcessPoolExecutor(max_workers=n_workers) as executor:
 			futures = [executor.submit(cluster_unique_mz_chunk, chunk[0], chunk[1], mass_tolerance) for chunk in chunks]
 			results = [f.result() for f in futures]
 
@@ -1333,7 +1333,8 @@ class MsiDataset(BaseDataset):
 
 		return merged_mz[filtered_idx]
 
-	def _interpolate_intensities(self, original_mzs_list: list[np.ndarray], original_intensities_list: list[np.ndarray],
+	@staticmethod
+	def _interpolate_intensities(original_mzs_list: list[np.ndarray], original_intensities_list: list[np.ndarray],
 	                             reference_mz: np.ndarray, mass_tolerance: float) -> np.ndarray:
 		"""
 		Rebin intensities to reference M/Z vector. This method processes a chunk of spectra.
@@ -1770,8 +1771,9 @@ class MsiDataset(BaseDataset):
 					[(i * chunk_size, min((i + 1) * chunk_size, datapoints)) for i in range(num_workers)]
 				]
 
-				# Worker function which partially fixes reference_mz and mass_tolerance
-				worker_func = partial(self._interpolate_intensities,
+				# Worker function which partially fixes reference_mz and mass_tolerance.
+				# Reference via the class (not self) so joblib does not pickle the entire dataset.
+				worker_func = partial(MsiDataset._interpolate_intensities,
 				                      reference_mz=self.reference_mz[mode],
 				                      mass_tolerance=mass_tolerance)
 
