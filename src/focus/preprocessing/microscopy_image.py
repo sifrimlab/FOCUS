@@ -4,7 +4,6 @@ import cv2
 import tifffile
 import czifile
 import skimage.morphology as morphology
-from ome_types.model import OME, Image, Pixels, Channel, TiffData, Plane
 from scipy.ndimage import binary_fill_holes
 
 import focus.utils as utils
@@ -24,7 +23,7 @@ class MicroscopyImage(BaseSample):
 	and prepare it for alignment/registration.
 
 	Input: TIFF (.tiff, .tif, .ome.tiff, .ome.tif) or CZI (.czi)
-	Output: multi-resolution OME-TIFF (float32, zlib-compressed)
+	Output: multi-resolution OME-TIFF (float32, zstd-compressed, tiled)
 	"""
 
 	# Default processing parameters (all configurable via process_image)
@@ -132,7 +131,10 @@ class MicroscopyImage(BaseSample):
 
 	def _save_image_pyramid(self, img: np.ndarray, output_file: str, levels: int = 4) -> str:
 		"""
-		Save an image as a multi-resolution OME-TIFF pyramid (zlib compressed).
+		Save an image as a multi-resolution OME-TIFF pyramid.
+
+		Uses SubIFDs for proper pyramid storage, 512×512 tiles for random-access
+		efficiency, and zstd compression (faster than zlib with comparable ratios).
 
 		Parameters
 		----------
@@ -147,68 +149,55 @@ class MicroscopyImage(BaseSample):
 			img = img[..., np.newaxis]
 		H_base, W_base, C = img.shape
 		is_rgb = (C == 3)
+		tile_size = (512, 512)
 
-		# Generate pyramid levels
+		# Generate pyramid levels by progressive downscaling
 		pyramid_data = [img]
 		for i in range(1, levels):
 			scale = 0.5 ** i
-			h_scaled = max(1, int(H_base * scale))
-			w_scaled = max(1, int(W_base * scale))
-			pyramid_data.append(
-				cv2.resize(img, (w_scaled, h_scaled), interpolation=cv2.INTER_AREA)
-			)
+			h = max(1, int(H_base * scale))
+			w = max(1, int(W_base * scale))
+			pyramid_data.append(cv2.resize(img, (w, h), interpolation=cv2.INTER_AREA))
 
-		# Build OME-XML metadata
-		ome = OME()
-		ifd_counter = 0
-		for i, level_img in enumerate(pyramid_data):
-			H, W = level_img.shape[0], level_img.shape[1]
-			CC = level_img.shape[2] if level_img.ndim == 3 else 1
-
+		# Write standard OME-TIFF pyramid: full resolution declares SubIFD slots,
+		# each subsequent level is stored as a SubIFD (subfiletype=1).
+		# tifffile with ome=True auto-generates correct OME-XML from array shape.
+		with tifffile.TiffWriter(output_file, bigtiff=True, ome=True) as tif:
 			if is_rgb:
-				image_block = Image(
-					id=f"Image:{i}", name=f"ResolutionLevel_{i}",
-					pixels=Pixels(
-						id=f"Pixels:{i}", dimension_order="XYCZT", type="float",
-						size_x=W, size_y=H, size_z=1, size_c=1, size_t=1, interleaved=True,
-						channels=[Channel(id=f"Channel:{i}:0", name="RGB", samples_per_pixel=3)],
-						planes=[Plane(the_c=0, the_z=0, the_t=0)],
-						tiff_data_blocks=[TiffData(ifd=ifd_counter, plane_count=1)]
-					)
+				tif.write(
+					pyramid_data[0],
+					subifds=levels - 1,
+					tile=tile_size,
+					compression='zstd',
+					photometric='rgb',
+					metadata={'axes': 'YXS'},
 				)
-				ifd_counter += 1
+				for level_img in pyramid_data[1:]:
+					tif.write(
+						level_img,
+						subfiletype=1,
+						tile=tile_size,
+						compression='zstd',
+						photometric='rgb',
+					)
 			else:
-				image_block = Image(
-					id=f"Image:{i}", name=f"ResolutionLevel_{i}",
-					pixels=Pixels(
-						id=f"Pixels:{i}", dimension_order="XYCZT", type="float",
-						size_x=W, size_y=H, size_z=1, size_c=CC, size_t=1,
-						channels=[Channel(id=f"Channel:{i}:{c}", name=f"Channel_{c}") for c in range(CC)],
-						planes=[Plane(the_c=c, the_z=0, the_t=0) for c in range(CC)],
-						tiff_data_blocks=[TiffData(ifd=ifd_counter + c, plane_count=1) for c in range(CC)]
-					)
+				# (H, W, C) → (C, H, W) for multi-channel OME layout
+				tif.write(
+					pyramid_data[0].transpose(2, 0, 1),
+					subifds=levels - 1,
+					tile=tile_size,
+					compression='zstd',
+					photometric='minisblack',
+					metadata={'axes': 'CYX'},
 				)
-				ifd_counter += CC
-			ome.images.append(image_block)
-
-		xml_metadata = ome.to_xml()
-
-		# Write TIFF with zlib compression
-		with tifffile.TiffWriter(output_file, bigtiff=True) as tif:
-			for level_idx, level_img in enumerate(pyramid_data):
-				description = xml_metadata if level_idx == 0 else None
-				if is_rgb:
-					tif.write(level_img, description=description, photometric='rgb',
-							metadata={'axes': 'YXC'}, compression="zlib")
-				else:
-					if level_img.ndim == 2:
-						ch_slices = [level_img]
-					else:
-						ch_slices = [level_img[:, :, ch] for ch in range(C)]
-					for ch_idx, ch_img in enumerate(ch_slices):
-						desc = description if ch_idx == 0 else None
-						tif.write(ch_img, description=desc, photometric='minisblack',
-								metadata={'axes': 'YX'}, compression="zlib")
+				for level_img in pyramid_data[1:]:
+					tif.write(
+						level_img.transpose(2, 0, 1),
+						subfiletype=1,
+						tile=tile_size,
+						compression='zstd',
+						photometric='minisblack',
+					)
 
 		return output_file
 
@@ -499,8 +488,7 @@ class MicroscopyImageDataset(BaseDataset):
 		"""
 		reporter = step_reporter or StepReporter()
 		processed_samples = {}
-		for sample in self.samples:
-			print(f"Processing sample: {sample.sample_id}")
+		for sample in reporter.tqdm(self.samples, desc="Processing microscopy images", unit="sample"):
 			sample._step_reporter = reporter
 			try:
 				output_file = sample.process_image(

@@ -48,6 +48,11 @@ export async function pollStatus(): Promise<SampleStatus | null> {
           delay = Math.min(delay * 1.5, 10000); // Exponential back-off capped at 10s
           continue;
         }
+        if (error.response.status === 500) {
+          // Alignment thread error — extract message and re-throw
+          const msg = error.response.data?.error || 'Alignment backend error';
+          throw new Error(msg);
+        }
       }
       throw error;
     }

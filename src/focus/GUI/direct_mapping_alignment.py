@@ -43,6 +43,9 @@ class DirectMappingAlignmentGUI:
         # Aligned coordinates
         self._aligned_target: dict | None = None                     # Aligned target modality data
 
+        # Error state (set by alignment thread on crash)
+        self._error_message: str | None = None
+
         # Reset the events
         self._user_event.clear()
         self._dataset_completed_event.clear()
@@ -62,6 +65,11 @@ class DirectMappingAlignmentGUI:
         self._server = None
         self._register_routes()
 
+    def set_error(self, message: str) -> None:
+        """Signal that the alignment thread encountered an error. Triggers server shutdown."""
+        self._error_message = message
+        self._dataset_completed_event.set()
+
     def _register_routes(self):
         @self.app.route('/')
         def index():
@@ -77,12 +85,15 @@ class DirectMappingAlignmentGUI:
 
         @self.app.route('/status', methods=['GET'])
         def get_status():
+            if self._error_message is not None:
+                return jsonify({"error": self._error_message}), 500
+
             if self._dataset_completed_event.is_set():
                 return jsonify({"message": "No more samples available"}), 404
-            
+
             if self._sample_id is None:
                 return jsonify({"message": "Sample not ready"}), 400
-            
+
             return jsonify({
                 "sample_id": self._sample_id,
                 "sample_index": self._sample_index,

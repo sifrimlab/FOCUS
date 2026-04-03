@@ -1182,8 +1182,8 @@ class MsiSample(BaseSample):
 class MsiDataset(BaseDataset):
 
 	_LEIDEN_RESOLUTION = 0.5
-	_H5AD_COMPRESSION = "gzip"
-	_H5AD_INTERMEDIATE_COMPRESSION = "lzf"
+	_H5AD_COMPRESSION = "lzf"
+	_H5AD_INTERMEDIATE_COMPRESSION = None  # No compression for per-sample files (fastest I/O for concat_on_disk)
 
 	def __init__(self, path: str, samples: list[MsiSample], lipid_annotation_db: str | None = None) -> None:
 		'''

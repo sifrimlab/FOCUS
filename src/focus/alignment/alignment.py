@@ -281,53 +281,59 @@ class DirectMappingAligner:
 	# --- Alignment Thread ---
 
 	def _align_dataset_thread(self, **kwargs) -> None:
-		force_recomputing = kwargs.get("force_recomputing", False)
+		try:
+			force_recomputing = kwargs.get("force_recomputing", False)
 
-		for sample_index, sample_id in enumerate(self._common_samples):
-			# Check cache
-			if not force_recomputing:
-				aligned_target_file = MODALITY_ALIGNMENT(self._path, sample_id, self._target_modality_name, "h5ad")
-				if os.path.exists(aligned_target_file):
-					adata = anndata.read_h5ad(aligned_target_file)
-					if f'{self._reference_modality_name}_spatial' in adata.obsm.keys():
+			for sample_index, sample_id in enumerate(self._common_samples):
+				# Check cache
+				if not force_recomputing:
+					aligned_target_file = MODALITY_ALIGNMENT(self._path, sample_id, self._target_modality_name, "h5ad")
+					if os.path.exists(aligned_target_file):
+						adata = anndata.read_h5ad(aligned_target_file)
+						if f'{self._reference_modality_name}_spatial' in adata.obsm.keys():
+							del adata
+							continue
 						del adata
-						continue
-					del adata
 
-			# Prepare data for both modalities
-			ref_metadata, ref_payload, ref_scale_factors = self._prepare_modality_data(
-				self._reference_modality[sample_id],
-				self._reference_modality_name,
-				self._reference_modality_type
-			)
-			tgt_metadata, tgt_payload, _ = self._prepare_modality_data(
-				self._target_modality[sample_id],
-				self._target_modality_name,
-				self._target_modality_type
-			)
+				# Prepare data for both modalities
+				ref_metadata, ref_payload, ref_scale_factors = self._prepare_modality_data(
+					self._reference_modality[sample_id],
+					self._reference_modality_name,
+					self._reference_modality_type
+				)
+				tgt_metadata, tgt_payload, _ = self._prepare_modality_data(
+					self._target_modality[sample_id],
+					self._target_modality_name,
+					self._target_modality_type
+				)
 
-			# Launch GUI for this sample (blocks until user confirms)
-			alignment_result = self._gui_interface.align_sample(
-				sample_id=sample_id,
-				sample_index=sample_index + 1,
-				reference_metadata=ref_metadata,
-				target_metadata=tgt_metadata,
-				reference_payload=ref_payload,
-				target_payload=tgt_payload
-			)
+				# Launch GUI for this sample (blocks until user confirms)
+				alignment_result = self._gui_interface.align_sample(
+					sample_id=sample_id,
+					sample_index=sample_index + 1,
+					reference_metadata=ref_metadata,
+					target_metadata=tgt_metadata,
+					reference_payload=ref_payload,
+					target_payload=tgt_payload
+				)
 
-			# Parse alignment result
-			aligned_coordinates = self._parse_alignment_result(alignment_result, tgt_payload)
+				# Parse alignment result
+				aligned_coordinates = self._parse_alignment_result(alignment_result, tgt_payload)
 
-			if aligned_coordinates is not None:
-				# Scale coordinates from display resolution to original resolution
-				# aligned_coordinates: (N, 2) where col 0 = x, col 1 = y
-				# ref_scale_factors: [y_scale, x_scale]
-				aligned_coordinates[:, 0] *= ref_scale_factors[1]  # x
-				aligned_coordinates[:, 1] *= ref_scale_factors[0]  # y
-				self._aligned_coordinates[sample_id] = aligned_coordinates.copy()
+				if aligned_coordinates is not None:
+					# Scale coordinates from display resolution to original resolution
+					# aligned_coordinates: (N, 2) where col 0 = x, col 1 = y
+					# ref_scale_factors: [y_scale, x_scale]
+					aligned_coordinates[:, 0] *= ref_scale_factors[1]  # x
+					aligned_coordinates[:, 1] *= ref_scale_factors[0]  # y
+					self._aligned_coordinates[sample_id] = aligned_coordinates.copy()
 
-		self._dataset_completed_event.set()
+		except Exception as e:
+			import traceback
+			print(f"[Alignment] Thread error: {e}\n{traceback.format_exc()}", flush=True)
+			self._gui_interface.set_error(str(e))
+		finally:
+			self._dataset_completed_event.set()
 
 	@staticmethod
 	def _parse_alignment_result(alignment_result: dict, target_payload) -> np.ndarray | None:
