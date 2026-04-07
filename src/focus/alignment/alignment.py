@@ -430,15 +430,25 @@ class DirectMappingAligner:
 		return aligned_samples
 
 	def _save_spot_alignment(self, aligned_samples: dict) -> dict:
-		"""IMAGE→SPOT or SPOT→SPOT: store aligned coords in AnnData, save with compression."""
-		for sample_id, aligned_coords in self._aligned_coordinates.items():
-			processed_target_file = self._target_modality[sample_id]
+		"""IMAGE→SPOT or SPOT→SPOT: store aligned coords in AnnData, save with compression.
 
+		The aligned file accumulates obsm keys across multiple alignment passes (one per
+		modality pair). If an aligned file already exists for this target, it is loaded
+		and updated rather than recreated from scratch, so previously added obsm keys are
+		preserved.
+		"""
+		for sample_id, aligned_coords in self._aligned_coordinates.items():
 			alignment_folder = os.path.join(self._path, sample_id, "alignment")
 			os.makedirs(alignment_folder, exist_ok=True)
 			aligned_file = MODALITY_ALIGNMENT(self._path, sample_id, self._target_modality_name, "h5ad")
 
-			adata = anndata.read_h5ad(processed_target_file)
+			# Load existing aligned file to preserve previously added obsm keys;
+			# fall back to the preprocessed target file on the first pass.
+			if os.path.exists(aligned_file):
+				adata = anndata.read_h5ad(aligned_file)
+			else:
+				adata = anndata.read_h5ad(self._target_modality[sample_id])
+
 			adata.obsm[f'{self._reference_modality_name}_spatial'] = aligned_coords.astype(np.float32)
 			adata.write_h5ad(aligned_file, compression=_H5AD_COMPRESSION)
 			del adata
@@ -471,7 +481,11 @@ class DirectMappingAligner:
 	def uniform_aligned_dataset(self, force_recomputing: bool = False) -> dict[str, str]:
 		"""
 		Produce an aligned dataset without GUI interaction (passthrough alignment).
-		Used when the target modality is already aligned to the reference.
+		Used when the target modality's coordinates are already expressed in the
+		reference modality's coordinate system (e.g. 10x Visium spots on H&E).
+
+		The obsm key for this pair is added to the shared aligned file for the target
+		modality, preserving any obsm keys added by previous alignment passes.
 
 		Returns
 		-------
@@ -479,6 +493,7 @@ class DirectMappingAligner:
 			Maps sample IDs (and "merged") to aligned file paths.
 		"""
 		aligned_samples: dict[str, str] = {}
+		obsm_key = f'{self._reference_modality_name}_spatial'
 
 		for sample_id, processed_target_file in self._target_modality.items():
 			if sample_id == "merged":
@@ -488,9 +503,23 @@ class DirectMappingAligner:
 			os.makedirs(alignment_folder, exist_ok=True)
 			aligned_file = MODALITY_ALIGNMENT(self._path, sample_id, self._target_modality_name, "h5ad")
 
-			if not os.path.exists(aligned_file) or force_recomputing:
-				adata = anndata.read_h5ad(processed_target_file)
-				adata.obsm[f'{self._reference_modality_name}_spatial'] = adata.obsm['spatial'].copy()
+			# Check if this specific obsm key already exists (may have been set by a previous pass)
+			needs_write = force_recomputing
+			if not needs_write:
+				if os.path.exists(aligned_file):
+					tmp = anndata.read_h5ad(aligned_file)
+					needs_write = obsm_key not in tmp.obsm
+					del tmp
+				else:
+					needs_write = True
+
+			if needs_write:
+				# Load existing aligned file to preserve other obsm keys; fall back to preprocessed.
+				if os.path.exists(aligned_file) and not force_recomputing:
+					adata = anndata.read_h5ad(aligned_file)
+				else:
+					adata = anndata.read_h5ad(processed_target_file)
+				adata.obsm[obsm_key] = adata.obsm['spatial'].copy()
 				adata.write_h5ad(aligned_file, compression=_H5AD_COMPRESSION)
 				del adata
 

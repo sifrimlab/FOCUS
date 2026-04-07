@@ -24,3 +24,4 @@ huggingface-hub
 flask
 dask
 igraph
+leidenalg

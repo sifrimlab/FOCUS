@@ -151,12 +151,19 @@ def _has_spot_modalities(config: dict) -> bool:
 
 def _run_alignment(config: dict, modality_files: dict, report) -> dict:
 	"""
-	Align each non-reference modality to the reference modality.
+	Align the reference modality into each non-reference modality's coordinate system.
+
+	The reference modality is the "moving target" and each non-reference modality is the
+	"fixed frame". After alignment, the reference modality's AnnData accumulates one
+	obsm key per non-reference modality: obsm['{mod_name}_spatial'] contains the reference
+	spots expressed in that modality's coordinate system.
 
 	Returns
 	-------
 	dict
-		{modality_name: {sample_id: aligned_file_path}}
+		{non_ref_modality_name: {sample_id: aligned_ref_file_path}}
+		Each value points to the shared aligned reference file for that sample, which
+		contains obsm['{mod_name}_spatial'] needed for registration.
 	"""
 	dataset_path = config[ConfigParameters.DATASET_PATH]
 	modalities = config[ConfigParameters.MODALITIES]
@@ -169,28 +176,30 @@ def _run_alignment(config: dict, modality_files: dict, report) -> dict:
 
 	aligned_files: dict[str, dict[str, str]] = {}
 
-	# The reference modality is not aligned — its preprocessed files are passed through
-	aligned_files[ref_name] = modality_files[ref_name]
-
 	for modality in modalities:
 		mod_name = modality[ModalityParameters.NAME]
 		if mod_name == ref_name:
 			continue
 
+		mod_type = modality[ModalityParameters.TYPE]
+
 		# Force recomputing if: global switch is on, or either modality's preprocessing was forced
 		tgt_proc_force = modality[ModalityParameters.PROCESSING_SETTINGS].get("force_recomputing", False)
 		pair_force = global_force or ref_proc_force or tgt_proc_force
 
-		logger.info(f"Aligning '{mod_name}' to reference '{ref_name}' (force_recomputing={pair_force})")
+		logger.info(f"Aligning reference '{ref_name}' into '{mod_name}' coordinate space (force_recomputing={pair_force})")
 
+		# The non-reference modality is the FIXED frame; the reference is the MOVING target.
+		# This produces obsm['{mod_name}_spatial'] on the reference AnnData — the reference
+		# spots expressed in the non-reference modality's coordinate system.
 		aligner = DirectMappingAligner(
 			path=dataset_path,
-			reference_modality=modality_files[ref_name],
-			target_modality=modality_files[mod_name],
-			reference_modality_name=ref_name,
-			target_modality_name=mod_name,
-			reference_modality_type=ref_type,
-			target_modality_type=modality[ModalityParameters.TYPE]
+			reference_modality=modality_files[mod_name],
+			target_modality=modality_files[ref_name],
+			reference_modality_name=mod_name,
+			target_modality_name=ref_name,
+			reference_modality_type=mod_type,
+			target_modality_type=ref_type,
 		)
 
 		strategy = modality.get(ModalityParameters.ALIGNMENT_STRATEGY, AlignmentStrategy.MANUAL)
@@ -202,11 +211,11 @@ def _run_alignment(config: dict, modality_files: dict, report) -> dict:
 			# Signal that alignment is starting — the GUI should show "Open Alignment Tool"
 			report(state="alignment_waiting", stage="alignment", stage_index=2, total_stages=4,
 				   current_modality=mod_name,
-				   message=f"Waiting for manual alignment of '{mod_name}' to '{ref_name}'...")
+				   message=f"Waiting for alignment of reference '{ref_name}' into '{mod_name}' space...")
 
 			aligned_files[mod_name] = aligner.align_dataset(force_recomputing=pair_force)
 		else:
-			logger.info(f"All samples for '{mod_name}' already aligned — skipping GUI")
+			logger.info(f"Reference '{ref_name}' already aligned into '{mod_name}' space — skipping GUI")
 			aligned_files[mod_name] = aligner.collect_aligned_files()
 
 		report(state="running", stage="alignment", stage_index=2, total_stages=4,
@@ -253,9 +262,12 @@ def _run_registration(config: dict, modality_files: dict, aligned_files: dict) -
 				path=dataset_path,
 				hf_token=config[ConfigParameters.HUGGINGFACE_TOKEN]
 			)
+			# aligned_files[mod_name] contains the aligned reference AnnData, which holds
+			# obsm['{mod_name}_spatial'] — the reference spots in the image's coordinate space.
+			# FeatureExtractorRegistration reads that key to locate where to extract patches.
 			registered_files[mod_name] = engine.register_dataset(
 				image_files=modality_files[mod_name],
-				anchor_files=aligned_files.get(ref_name, modality_files[ref_name]),
+				anchor_files=aligned_files[mod_name],
 				image_name=mod_name,
 				anchor_name=ref_name,
 				min_max_rescale=reg_settings.get("min_max_rescale", True),
@@ -266,9 +278,13 @@ def _run_registration(config: dict, modality_files: dict, aligned_files: dict) -
 
 		elif reg_type == RegistrationType.SPOT_INTERPOLATION:
 			engine = SpotInterpolationRegistration(path=dataset_path)
+			# aligned_files[mod_name] contains the aligned reference AnnData with
+			# obsm['{mod_name}_spatial'] (reference coords in the non-ref modality's space).
+			# modality_files[mod_name] contains the non-ref modality's preprocessed AnnData
+			# with its own obsm['spatial'] and feature matrix X.
 			registered_files[mod_name] = engine.register_dataset(
-				anchor_files=modality_files[ref_name],
-				target_files=aligned_files[mod_name],
+				anchor_files=aligned_files[mod_name],
+				target_files=modality_files[mod_name],
 				anchor_name=ref_name,
 				target_name=mod_name,
 				min_max_rescale=reg_settings.get("min_max_rescale", True),

@@ -181,8 +181,17 @@ class SpotInterpolationRegistration:
 	Register a spot-based modality to the anchor by Gaussian-weighted interpolation.
 
 	For each anchor spot (defined by its center and spot_size), finds all target
-	modality spots whose aligned center falls within the anchor spot's area, then
-	computes a Gaussian-weighted average of their feature vectors.
+	modality spots that fall within the anchor spot's area, then computes a
+	Gaussian-weighted average of their feature vectors.
+
+	Coordinate convention (after alignment swap):
+	- ``anchor_files`` contains the aligned reference AnnData. Its
+	  ``obsm['{target_name}_spatial']`` holds the anchor (reference) spot positions
+	  expressed in the target modality's coordinate system.
+	- ``target_files`` contains the preprocessed non-reference AnnData. Its
+	  ``obsm['spatial']`` holds the target spot positions in their native (same) space.
+	- Both coordinate sets are therefore in the target modality's coordinate system,
+	  so spatial distances are meaningful.
 
 	Parameters
 	----------
@@ -207,11 +216,13 @@ class SpotInterpolationRegistration:
 		Parameters
 		----------
 		anchor_coordinates : np.ndarray
-			(N_anchor, 2) coordinates of anchor spots [x, y].
+			(N_anchor, 2) anchor spot positions expressed in the target modality's
+			coordinate system [x, y].
 		anchor_spot_size : np.ndarray
-			(2,) spot dimensions [sx, sy] in micrometers.
+			(2,) spot dimensions [sx, sy] in the target modality's coordinate units.
 		target_coordinates : np.ndarray
-			(N_target, 2) aligned coordinates of target spots in anchor space [x, y].
+			(N_target, 2) target spot positions in their native coordinate system [x, y].
+			Must be in the same coordinate space as ``anchor_coordinates``.
 		target_features : np.ndarray
 			(N_target, D) feature matrix of the target modality.
 
@@ -292,20 +303,25 @@ class SpotInterpolationRegistration:
 		"""
 		Register a spot-based target modality to the anchor using Gaussian interpolation.
 
-		For each anchor spot, finds aligned target spots within the anchor's spot_size
-		area and computes a Gaussian-weighted average of their features.
+		For each anchor spot, finds target spots within the anchor's spot_size area and
+		computes a Gaussian-weighted average of their features.
 
 		Parameters
 		----------
 		anchor_files : dict[str, str]
-			Preprocessed anchor modality files (spot-based AnnData with obsm['spatial']
-			and uns['spot_size']). {sample_id: h5ad_path}
+			Aligned anchor (reference) modality files. Each AnnData must contain:
+			- ``obsm['{target_name}_spatial']``: anchor spot positions in the target
+			  modality's coordinate system (set during alignment).
+			- ``uns['spot_size']``: anchor spot dimensions defining the neighbourhood.
+			{sample_id: h5ad_path}
 		target_files : dict[str, str]
-			Aligned target modality files (AnnData with obsm['{anchor_name}_spatial']
-			containing target spot positions in anchor coordinate space, and X containing
-			the feature matrix). {sample_id: h5ad_path}
+			Preprocessed target (non-reference) modality files. Each AnnData must contain:
+			- ``obsm['spatial']``: target spot positions in their native coordinate system
+			  (same space as ``obsm['{target_name}_spatial']`` in the anchor).
+			- ``X``: feature matrix to interpolate.
+			{sample_id: h5ad_path}
 		anchor_name : str
-			Name of the anchor modality.
+			Name of the anchor (reference) modality.
 		target_name : str
 			Name of the target modality being registered.
 		min_max_rescale : bool
@@ -335,9 +351,10 @@ class SpotInterpolationRegistration:
 				registered_files[sample_id] = registered_file
 				continue
 
-			# Load anchor modality: coordinates and spot_size
+			# Load anchor (aligned reference): spot_size and anchor coords in target's space.
+			# obsm['{target_name}_spatial'] holds anchor spot positions expressed in the
+			# target modality's coordinate system, set during the alignment step.
 			anchor_adata = anndata.read_h5ad(anchor_files[sample_id])
-			anchor_coords = np.asarray(anchor_adata.obsm['spatial'], dtype=np.float32)
 
 			if 'spot_size' in anchor_adata.uns:
 				spot_size = np.asarray(anchor_adata.uns['spot_size'], dtype=np.float32).flatten()
@@ -347,17 +364,19 @@ class SpotInterpolationRegistration:
 				logger.warning(f"No spot_size in anchor for sample '{sample_id}', using default [1.0, 1.0]")
 				spot_size = np.array([1.0, 1.0], dtype=np.float32)
 
-			# Load aligned target modality: aligned coordinates and features
-			target_adata = anndata.read_h5ad(target_files[sample_id])
-			coord_key = f'{anchor_name}_spatial'
-			if coord_key not in target_adata.obsm:
+			coord_key = f'{target_name}_spatial'
+			if coord_key not in anchor_adata.obsm:
 				logger.error(
-					f"Target '{target_name}' sample '{sample_id}' missing obsm['{coord_key}']. "
+					f"Anchor '{anchor_name}' sample '{sample_id}' missing obsm['{coord_key}']. "
 					f"Ensure alignment was performed. Skipping."
 				)
 				continue
+			anchor_coords = np.asarray(anchor_adata.obsm[coord_key], dtype=np.float32)
 
-			target_coords = np.asarray(target_adata.obsm[coord_key], dtype=np.float32)
+			# Load target modality: native spatial coordinates and feature matrix.
+			# Both anchor_coords and target_coords are in the target modality's coordinate system.
+			target_adata = anndata.read_h5ad(target_files[sample_id])
+			target_coords = np.asarray(target_adata.obsm['spatial'], dtype=np.float32)
 			target_features = target_adata.X
 			if scipy.sparse.issparse(target_features):
 				target_features = np.asarray(target_features.todense())
