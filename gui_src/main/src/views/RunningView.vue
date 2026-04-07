@@ -50,11 +50,11 @@ const stepLinePct = computed(() => {
 </script>
 
 <template>
-  <div class="max-w-3xl mx-auto px-4 py-12">
-    <h1 class="text-2xl font-bold text-center mb-8">Pipeline Execution</h1>
+  <div class="h-full flex flex-col items-center justify-center px-4 py-6">
+  <div class="w-full max-w-2xl flex flex-col gap-5">
 
     <!-- Stage progress -->
-    <div class="mb-10">
+    <div>
       <StageProgress
         :current-stage-index="s.stage_index"
         :total-stages="s.total_stages"
@@ -62,7 +62,7 @@ const stepLinePct = computed(() => {
     </div>
 
     <!-- Main status card -->
-    <div class="bg-white dark:bg-gray-800 rounded-xl shadow border border-gray-200 dark:border-gray-700 overflow-hidden mb-6">
+    <div class="bg-white dark:bg-gray-800 rounded-xl shadow border border-gray-200 dark:border-gray-700 overflow-hidden">
 
       <!-- Card header: stage label + modality badge -->
       <div class="flex items-center justify-between px-5 py-3 bg-gray-50 dark:bg-gray-900 border-b border-gray-200 dark:border-gray-700">
@@ -168,7 +168,7 @@ const stepLinePct = computed(() => {
     <!-- Alignment waiting -->
     <div
       v-if="s.state === 'alignment_waiting'"
-      class="bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-400 dark:border-yellow-700 rounded-lg p-6 mb-6 text-center"
+      class="bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-400 dark:border-yellow-700 rounded-lg p-6 text-center"
     >
       <p class="font-semibold mb-3">Manual alignment required</p>
       <p class="text-sm text-gray-600 dark:text-gray-300 mb-4">
@@ -185,7 +185,7 @@ const stepLinePct = computed(() => {
     <!-- Error state -->
     <div
       v-if="s.state === 'error'"
-      class="bg-red-50 dark:bg-red-900/20 border border-red-400 dark:border-red-700 rounded-lg p-6 mb-6"
+      class="bg-red-50 dark:bg-red-900/20 border border-red-400 dark:border-red-700 rounded-lg p-6"
     >
       <h3 class="font-semibold text-red-700 dark:text-red-400 mb-2">Pipeline Error</h3>
       <p class="text-sm text-red-600 dark:text-red-400 font-mono mb-4">{{ s.error }}</p>
@@ -196,5 +196,7 @@ const stepLinePct = computed(() => {
         Back to Configuration
       </button>
     </div>
+
+  </div>
   </div>
 </template>

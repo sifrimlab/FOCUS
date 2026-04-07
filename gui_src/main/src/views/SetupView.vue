@@ -66,7 +66,7 @@ const goBackFromCorruption = () => {
 </script>
 
 <template>
-  <div class="flex flex-col items-center justify-center min-h-screen px-4">
+  <div class="h-full flex flex-col items-center justify-center px-4">
     <div class="w-full max-w-lg">
 
       <!-- Header -->
@@ -146,7 +146,7 @@ const goBackFromCorruption = () => {
         <div
           v-if="store.samples.length > 0"
           class="border border-gray-200 dark:border-gray-700 rounded-xl overflow-hidden overflow-y-auto mb-5"
-          style="max-height: 220px;"
+          style="max-height: min(220px, 30vh)"
         >
           <div
             v-for="(sample, idx) in store.samples"
