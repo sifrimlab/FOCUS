@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { ref, nextTick } from 'vue';
 import { useMainStore } from '../store/main';
 import ModalityCard from '../components/ModalityCard.vue';
 import ConfigUploader from '../components/ConfigUploader.vue';
@@ -8,6 +9,44 @@ const store = useMainStore();
 const confirmReset = () => {
   if (confirm('Reset all configuration? This cannot be undone.')) {
     store.resetAll();
+  }
+};
+
+// Add modality: name-entry inline form
+const showNameEntry = ref(false);
+const newModalityName = ref('');
+const nameEntryError = ref('');
+const nameInputRef = ref<HTMLInputElement | null>(null);
+
+const openAddModality = async () => {
+  newModalityName.value = '';
+  nameEntryError.value = '';
+  showNameEntry.value = true;
+  await nextTick();
+  nameInputRef.value?.focus();
+};
+
+const confirmAddModality = () => {
+  const name = newModalityName.value.trim();
+  if (!name) {
+    nameEntryError.value = 'Please enter a name.';
+    return;
+  }
+  if (store.modalityNames.includes(name)) {
+    nameEntryError.value = 'A modality with this name already exists.';
+    return;
+  }
+  store.addModality(name);
+  showNameEntry.value = false;
+};
+
+const cancelAddModality = () => {
+  showNameEntry.value = false;
+};
+
+const confirmRemoveAll = () => {
+  if (confirm('Remove all modalities? This cannot be undone.')) {
+    store.removeAllModalities();
   }
 };
 </script>
@@ -107,16 +146,78 @@ const confirmReset = () => {
 
     <!-- Modalities -->
     <div class="mb-6">
-      <h2 class="font-semibold text-lg mb-4">Modalities</h2>
+      <!-- Section header with action buttons -->
+      <div class="flex items-center justify-between mb-4">
+        <h2 class="font-semibold text-lg">Modalities</h2>
+        <div class="flex gap-2">
+          <!-- Add modality (green, +) -->
+          <button
+            @click="openAddModality"
+            title="Add modality"
+            class="w-8 h-8 flex items-center justify-center rounded bg-emerald-500 hover:bg-emerald-600 text-white transition-colors"
+          >
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4" />
+            </svg>
+          </button>
+          <!-- Remove all modalities (red, trash) — only shown when there are modalities -->
+          <button
+            v-if="store.config.modalities.length > 0"
+            @click="confirmRemoveAll"
+            title="Remove all modalities"
+            class="w-8 h-8 flex items-center justify-center rounded bg-red-500 hover:bg-red-600 text-white transition-colors"
+          >
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+            </svg>
+          </button>
+        </div>
+      </div>
+
+      <!-- Inline name-entry form (shown when adding a new modality) -->
+      <div
+        v-if="showNameEntry"
+        class="bg-emerald-50 dark:bg-emerald-900/10 border border-emerald-300 dark:border-emerald-700 rounded-lg px-4 py-3 mb-4"
+      >
+        <p class="text-sm font-medium text-emerald-800 dark:text-emerald-300 mb-2">New modality name</p>
+        <div class="flex gap-2">
+          <input
+            ref="nameInputRef"
+            v-model="newModalityName"
+            @keyup.enter="confirmAddModality"
+            @keyup.escape="cancelAddModality"
+            type="text"
+            placeholder="e.g., Fluorescence"
+            class="flex-1 border border-gray-300 dark:border-gray-600 rounded px-3 py-1.5 text-sm bg-white dark:bg-gray-700 focus:outline-none focus:ring-2 focus:ring-emerald-500"
+          />
+          <button
+            @click="confirmAddModality"
+            class="px-4 py-1.5 bg-emerald-500 hover:bg-emerald-600 text-white text-sm font-semibold rounded transition-colors"
+          >
+            Add
+          </button>
+          <button
+            @click="cancelAddModality"
+            class="px-3 py-1.5 bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 text-sm font-medium rounded transition-colors"
+          >
+            Cancel
+          </button>
+        </div>
+        <p v-if="nameEntryError" class="text-red-500 text-xs mt-1.5">{{ nameEntryError }}</p>
+      </div>
+
+      <!-- Modality cards -->
       <div class="space-y-4">
         <ModalityCard v-for="(_, i) in store.config.modalities" :key="i" :index="i" />
       </div>
-      <button
-        @click="store.addModality()"
-        class="mt-4 w-full py-3 border-2 border-dashed border-gray-300 dark:border-gray-600 rounded-lg text-gray-500 hover:border-blue-500 hover:text-blue-500 font-medium transition-colors"
+
+      <!-- Empty state -->
+      <div
+        v-if="store.config.modalities.length === 0 && !showNameEntry"
+        class="text-center py-8 text-gray-400 dark:text-gray-500 text-sm italic border-2 border-dashed border-gray-200 dark:border-gray-700 rounded-lg"
       >
-        + Add Modality
-      </button>
+        No modalities yet — click + to add one.
+      </div>
     </div>
 
     <!-- Config file upload -->

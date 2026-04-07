@@ -144,30 +144,53 @@ export const useMainStore = defineStore('main', {
       }
     },
 
-    addModality() {
+    addModality(name: string) {
       this.config.modalities.push({
-        name: '',
+        name,
         type: this.schema?.modality_types[0] || '',
         processing_settings: {},
         registration_type: 'none',
         registration_settings: {},
       });
+      // Auto-select reference if none is set
+      if (!this.config.reference_modality && name) {
+        this.config.reference_modality = name;
+      }
       this.triggerAutoSave();
     },
 
     removeModality(index: number) {
       const removed = this.config.modalities[index];
       this.config.modalities.splice(index, 1);
-      // If removed was the reference, clear it
+      // If removed was the reference, pick the next available or clear
       if (removed && removed.name === this.config.reference_modality) {
-        this.config.reference_modality = '';
+        const next = this.config.modalities.find((m: Modality) => m.name);
+        this.config.reference_modality = next ? next.name : '';
       }
+      this.triggerAutoSave();
+    },
+
+    removeAllModalities() {
+      this.config.modalities = [];
+      this.config.reference_modality = '';
       this.triggerAutoSave();
     },
 
     updateModality(index: number, updates: Partial<Modality>) {
       const m = this.config.modalities[index];
-      if (m) Object.assign(m, updates);
+      if (m) {
+        if (updates.name !== undefined) {
+          // Keep reference_modality in sync when name changes
+          if (m.name === this.config.reference_modality) {
+            this.config.reference_modality = updates.name;
+          }
+          // Auto-select reference if none is set
+          if (!this.config.reference_modality && updates.name) {
+            this.config.reference_modality = updates.name;
+          }
+        }
+        Object.assign(m, updates);
+      }
       this.triggerAutoSave();
     },
 
