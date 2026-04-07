@@ -178,6 +178,54 @@ class RamanMetadata:
 		self._pixel_size = value.astype(np.float32)
 
 
+def _zero_variance_spectra(spectra_array: np.ndarray) -> np.ndarray:
+	"""Identify zero-variance spectra (produce numerical errors downstream)."""
+	forward_differences = np.diff(spectra_array, axis=-1)
+	mad = np.median(np.abs(forward_differences - np.median(forward_differences, axis=-1, keepdims=True)), axis=-1)
+	return np.array(mad == 0, dtype=np.bool_).squeeze()
+
+
+def _process_tile_parallel(tile: np.ndarray, wavenumbers: np.ndarray,
+	tile_index: int, slice_index: int,
+	savgol_window: int, savgol_polyorder: int
+) -> tuple[np.ndarray, int, int]:
+	"""Process a single tile with the RamanSPy spectral cleaning pipeline."""
+	with warnings.catch_warnings():
+		warnings.simplefilter("ignore", RuntimeWarning)
+
+		pipeline = rp.preprocessing.Pipeline([
+			rp.preprocessing.despike.WhitakerHayes(),
+			rp.preprocessing.denoise.SavGol(window_length=savgol_window, polyorder=savgol_polyorder),
+			rp.preprocessing.baseline.IASLS(),
+			rp.preprocessing.normalise.MinMax()
+		])
+
+		C, X, Y = tile.shape
+		y_indices, x_indices = np.meshgrid(np.arange(X), np.arange(Y))
+		coordinates = np.stack((x_indices, y_indices), axis=-1)
+
+		reshaped_tile = tile.reshape(C, -1).T  # (Y*X, C)
+		reshaped_coordinates = coordinates.reshape(-1, 2)
+
+		zero_variance_mask = _zero_variance_spectra(reshaped_tile)
+		reshaped_tile = reshaped_tile[~zero_variance_mask]
+		reshaped_coordinates = reshaped_coordinates[~zero_variance_mask]
+
+		if reshaped_tile.shape[0] == 0:
+			return np.zeros_like(tile), tile_index, slice_index
+
+		spectral_image = rp.SpectralImage(reshaped_tile, wavenumbers)
+		processed_tile = pipeline.apply(spectral_image).spectral_data
+
+		restored_tile = np.zeros((C, X, Y), dtype=np.float32)
+		for i in range(processed_tile.shape[0]):
+			x = int(reshaped_coordinates[i, 0])
+			y = int(reshaped_coordinates[i, 1])
+			restored_tile[:, x, y] = processed_tile[i, :]
+
+		return restored_tile, tile_index, slice_index
+
+
 class RamanImage(BaseSample):
 	"""
 	Process Raman Spectral Images. Supports Leica LIF files.
@@ -572,54 +620,7 @@ class RamanImage(BaseSample):
 		raman_wavenumbers = ((1.0 / pump_wavelength) - (1.0 / lambda_stokes)) * 1e7
 		return raman_wavenumbers
 
-	@staticmethod
-	def _zero_variance_spectra(spectra_array: np.ndarray) -> np.ndarray:
-		"""Identify zero-variance spectra (produce numerical errors downstream)."""
-		forward_differences = np.diff(spectra_array, axis=-1)
-		mad = np.median(np.abs(forward_differences - np.median(forward_differences, axis=-1, keepdims=True)), axis=-1)
-		return np.array(mad == 0, dtype=np.bool_).squeeze()
-
 	# --- Processing steps ---
-
-	def _process_tile_parallel(self, tile: np.ndarray, wavenumbers: np.ndarray,
-		tile_index: int, slice_index: int,
-		savgol_window: int, savgol_polyorder: int
-	) -> tuple[np.ndarray, int, int]:
-		"""Process a single tile with the RamanSPy spectral cleaning pipeline."""
-		with warnings.catch_warnings():
-			warnings.simplefilter("ignore", RuntimeWarning)
-
-			pipeline = rp.preprocessing.Pipeline([
-				rp.preprocessing.despike.WhitakerHayes(),
-				rp.preprocessing.denoise.SavGol(window_length=savgol_window, polyorder=savgol_polyorder),
-				rp.preprocessing.baseline.IASLS(),
-				rp.preprocessing.normalise.MinMax()
-			])
-
-			C, X, Y = tile.shape
-			y_indices, x_indices = np.meshgrid(np.arange(X), np.arange(Y))
-			coordinates = np.stack((x_indices, y_indices), axis=-1)
-
-			reshaped_tile = tile.reshape(C, -1).T  # (Y*X, C)
-			reshaped_coordinates = coordinates.reshape(-1, 2)
-
-			zero_variance_mask = self._zero_variance_spectra(reshaped_tile)
-			reshaped_tile = reshaped_tile[~zero_variance_mask]
-			reshaped_coordinates = reshaped_coordinates[~zero_variance_mask]
-
-			if reshaped_tile.shape[0] == 0:
-				return np.zeros_like(tile), tile_index, slice_index
-
-			spectral_image = rp.SpectralImage(reshaped_tile, wavenumbers)
-			processed_tile = pipeline.apply(spectral_image).spectral_data
-
-			restored_tile = np.zeros((C, X, Y), dtype=np.float32)
-			for i in range(processed_tile.shape[0]):
-				x = int(reshaped_coordinates[i, 0])
-				y = int(reshaped_coordinates[i, 1])
-				restored_tile[:, x, y] = processed_tile[i, :]
-
-			return restored_tile, tile_index, slice_index
 
 	def process_raw_tiles(self, wavenumbers: np.ndarray = None, parallel: bool = True,
 		force_recomputing: bool = False,
@@ -668,7 +669,7 @@ class RamanImage(BaseSample):
 				slice_result = list(
 					_reporter.tqdm(
 						Parallel(n_jobs=self._max_workers, return_as="generator")(
-							delayed(self._process_tile_parallel)(*args) for args in units
+							delayed(_process_tile_parallel)(*args) for args in units
 						),
 						desc="4/5 - Cleaning Raman Spectra (Parallel)",
 						total=len(units),
@@ -683,7 +684,7 @@ class RamanImage(BaseSample):
 				_reporter = getattr(self, '_step_reporter', None) or StepReporter()
 				for tile_idx in _reporter.tqdm(range(self._basic_corrected_tiles.shape[0]), desc="4/5 - Cleaning Raman Spectra"):
 					for slice_index, (start_ch, end_ch) in enumerate(self._spectra_slices):
-						processed_tile, _, _ = self._process_tile_parallel(
+						processed_tile, _, _ = _process_tile_parallel(
 							self._basic_corrected_tiles[tile_idx, start_ch:end_ch + 1, :, :],
 							wavenumbers[start_ch:end_ch + 1],
 							tile_idx, slice_index,
@@ -808,7 +809,7 @@ class RamanImage(BaseSample):
 			_, thresh = cv2.threshold(self._quick_mosaic, adjusted_thresh, 255, cv2.THRESH_BINARY)
 			del clipped_img
 
-			mask_clean = morphology.remove_small_objects(thresh.astype(bool), min_size=min_object_size)
+			mask_clean = morphology.remove_small_objects(thresh.astype(bool), max_size=min_object_size)
 			del thresh
 			segmentation_mask = binary_fill_holes(mask_clean)
 			del mask_clean
@@ -886,7 +887,7 @@ class RamanImage(BaseSample):
 				)
 				weights[c, y_start:y_end, x_start:x_end] += tile_weights[ty_start:ty_end, tx_start:tx_end]
 
-		mosaic = np.divide(mosaic, weights, where=weights > 0)
+		mosaic = np.divide(mosaic, weights, out=np.zeros_like(mosaic), where=weights > 0)
 
 		# PCA → grayscale → CLAHE for visualization
 		pca = PCA(n_components=1)
