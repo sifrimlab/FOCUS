@@ -62,6 +62,31 @@ class MainGUI:
 		def get_schema():
 			return jsonify(_build_schema())
 
+		# --- Filesystem browser ---
+
+		@self.app.route('/api/browse', methods=['GET'])
+		def browse_filesystem():
+			path = request.args.get('path', '').strip()
+			if not path:
+				path = os.path.expanduser('~')
+			path = os.path.realpath(path)
+			if not os.path.isdir(path):
+				return jsonify({"error": f"Not a directory: {path}"}), 400
+			parent = os.path.dirname(path)
+			parent = None if parent == path else parent
+			entries = []
+			try:
+				for name in sorted(os.listdir(path), key=str.lower):
+					full = os.path.join(path, name)
+					try:
+						if os.path.isdir(full):
+							entries.append({"name": name})
+					except OSError:
+						pass
+			except PermissionError as e:
+				return jsonify({"error": str(e)}), 403
+			return jsonify({"path": path, "parent": parent, "entries": entries})
+
 		# --- Sample discovery ---
 
 		@self.app.route('/api/samples', methods=['GET'])

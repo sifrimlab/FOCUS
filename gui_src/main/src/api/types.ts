@@ -66,3 +66,9 @@ export interface SamplesResult {
   samples: string[];
   has_existing_config: boolean;
 }
+
+export interface BrowseResult {
+  path: string;
+  parent: string | null;
+  entries: { name: string }[];
+}

@@ -1,5 +1,5 @@
 import axios from 'axios';
-import type { Schema, Config, PipelineStatus, ValidationResult, SamplesResult } from './types';
+import type { Schema, Config, PipelineStatus, ValidationResult, SamplesResult, BrowseResult } from './types';
 
 const apiClient = axios.create({
   baseURL: '',
@@ -14,6 +14,11 @@ export const api = {
 
   async getSamples(path: string): Promise<SamplesResult> {
     const r = await apiClient.get<SamplesResult>('/api/samples', { params: { path } });
+    return r.data;
+  },
+
+  async browse(path: string): Promise<BrowseResult> {
+    const r = await apiClient.get<BrowseResult>('/api/browse', { params: { path } });
     return r.data;
   },
 
