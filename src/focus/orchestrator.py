@@ -4,7 +4,8 @@ import mudata
 
 from focus.constants import (
 	ConfigParameters, ModalityParameters, RegistrationType,
-	ModalityType, MODALITY_FILE_EXTENSION, MULTIMODAL_DATASET
+	ModalityType, MODALITY_FILE_EXTENSION, MULTIMODAL_DATASET,
+	AlignmentStrategy
 )
 from focus.preprocessing import preprocess_modality
 from focus.preprocessing._utils import StepReporter
@@ -192,7 +193,12 @@ def _run_alignment(config: dict, modality_files: dict, report) -> dict:
 			target_modality_type=modality[ModalityParameters.TYPE]
 		)
 
-		if aligner.is_alignment_needed(force_recomputing=pair_force):
+		strategy = modality.get(ModalityParameters.ALIGNMENT_STRATEGY, AlignmentStrategy.MANUAL)
+
+		if strategy == AlignmentStrategy.PRE_ALIGNED:
+			logger.info(f"Pre-aligned strategy for '{mod_name}' — using uniform alignment (no GUI)")
+			aligned_files[mod_name] = aligner.uniform_aligned_dataset(force_recomputing=pair_force)
+		elif aligner.is_alignment_needed(force_recomputing=pair_force):
 			# Signal that alignment is starting — the GUI should show "Open Alignment Tool"
 			report(state="alignment_waiting", stage="alignment", stage_index=2, total_stages=4,
 				   current_modality=mod_name,

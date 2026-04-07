@@ -33,6 +33,7 @@ const onTypeChange = (newType: string) => {
     processing_settings: defaults,
     registration_type: 'none',
     registration_settings: {},
+    alignment_strategy: 'manual',
   });
 };
 
@@ -48,6 +49,18 @@ const onRegistrationTypeChange = (newRegType: string) => {
     registration_type: newRegType,
     registration_settings: defaults,
   });
+};
+
+// Alignment settings visibility: only for non-reference spot modalities when alignment is enabled
+const showAlignmentSettings = computed(() => {
+  if (!store.schema || !store.config.perform_alignment) return false;
+  if (modality.value.name === store.config.reference_modality) return false;
+  const compatible = store.schema.alignment_strategy_compatibility['pre_aligned'];
+  return compatible !== null && compatible !== undefined && compatible.includes(modality.value.type);
+});
+
+const onAlignmentStrategyChange = (newStrategy: string) => {
+  store.updateModality(props.index, { alignment_strategy: newStrategy });
 };
 
 const confirmRemove = () => {
@@ -162,6 +175,33 @@ const cancelEditName = () => {
           />
         </div>
       </details>
+
+      <!-- Alignment settings (only for non-reference spot modalities when alignment is enabled) -->
+      <template v-if="showAlignmentSettings">
+        <!-- Strategy dropdown — inline -->
+        <div class="flex items-center justify-between gap-4">
+          <label class="text-sm font-medium shrink-0">Alignment Strategy</label>
+          <select
+            :value="modality.alignment_strategy"
+            @change="onAlignmentStrategyChange(($event.target as HTMLSelectElement).value)"
+            class="border rounded px-2 py-1.5 text-sm dark:bg-gray-700 dark:border-gray-600 w-48"
+          >
+            <option value="manual">Manual Alignment</option>
+            <option value="pre_aligned">Pre-Aligned</option>
+          </select>
+        </div>
+
+        <!-- Warning for pre_aligned -->
+        <div
+          v-if="modality.alignment_strategy === 'pre_aligned'"
+          class="flex items-start gap-2 px-3 py-2.5 bg-orange-50 dark:bg-orange-900/20 border border-orange-200 dark:border-orange-700 rounded-lg text-sm text-orange-700 dark:text-orange-300"
+        >
+          <svg class="w-4 h-4 shrink-0 mt-0.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M12 9v4m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
+          </svg>
+          <span>The spatial coordinates of this modality are assumed to be already expressed in the reference modality's coordinate system. No interactive alignment will be performed.</span>
+        </div>
+      </template>
 
       <!-- Registration (only when perform_registration is enabled) -->
       <template v-if="store.config.perform_registration">

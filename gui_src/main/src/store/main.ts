@@ -151,6 +151,7 @@ export const useMainStore = defineStore('main', {
         processing_settings: {},
         registration_type: 'none',
         registration_settings: {},
+        alignment_strategy: 'manual',
       });
       // Auto-select reference if none is set
       if (!this.config.reference_modality && name) {

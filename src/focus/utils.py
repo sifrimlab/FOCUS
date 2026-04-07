@@ -6,7 +6,9 @@ import numpy as np
 
 from focus.constants import (
 	ConfigParameters, ModalityParameters, ModalityType,
-	RegistrationType, REGISTRATION_COMPATIBILITY, MsiPreprocessingParams
+	RegistrationType, REGISTRATION_COMPATIBILITY,
+	AlignmentStrategy, ALIGNMENT_STRATEGY_COMPATIBILITY,
+	MsiPreprocessingParams
 )
 from focus.preprocessing._utils import validate_path_readable, discover_sample_ids
 
@@ -130,6 +132,7 @@ def parse_config(config: dict) -> dict:
 		# Apply defaults for optional modality keys
 		modality.setdefault(ModalityParameters.REGISTRATION_TYPE, RegistrationType.NONE)
 		modality.setdefault(ModalityParameters.REGISTRATION_SETTINGS, {})
+		modality.setdefault(ModalityParameters.ALIGNMENT_STRATEGY, AlignmentStrategy.MANUAL)
 
 	# --- Step 5: Unique modality names ---
 	names = [m[ModalityParameters.NAME] for m in config[ConfigParameters.MODALITIES]]
@@ -192,6 +195,29 @@ def parse_config(config: dict) -> dict:
 				raise ValueError(
 					f"Registration type '{reg_type}' is not compatible with modality type '{mod_type}' "
 					f"(modality '{modality[ModalityParameters.NAME]}'). Compatible types: {compatible}"
+				)
+
+	# --- Step 9b: Alignment strategy compatibility ---
+	ref_name = config[ConfigParameters.REFERENCE_MODALITY]
+	for modality in config[ConfigParameters.MODALITIES]:
+		strategy = modality[ModalityParameters.ALIGNMENT_STRATEGY]
+		if strategy not in AlignmentStrategy.list():
+			raise ValueError(
+				f"Unsupported alignment strategy '{strategy}' for modality '{modality[ModalityParameters.NAME]}'. "
+				f"Supported strategies: {AlignmentStrategy.list()}"
+			)
+		if strategy == AlignmentStrategy.PRE_ALIGNED:
+			if modality[ModalityParameters.NAME] == ref_name:
+				raise ValueError(
+					f"Alignment strategy 'pre_aligned' cannot be set on the reference modality "
+					f"'{modality[ModalityParameters.NAME]}'."
+				)
+			compatible = ALIGNMENT_STRATEGY_COMPATIBILITY[AlignmentStrategy.PRE_ALIGNED]
+			mod_type = modality[ModalityParameters.TYPE]
+			if mod_type not in compatible:
+				raise ValueError(
+					f"Alignment strategy 'pre_aligned' is not supported for modality type '{mod_type}' "
+					f"(modality '{modality[ModalityParameters.NAME]}'). Supported types: {compatible}"
 				)
 
 	# --- Step 10: HuggingFace token requirement ---

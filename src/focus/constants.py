@@ -119,12 +119,17 @@ class ModalityParameters(_AbstractEnum):
 	PROCESSING_SETTINGS = "processing_settings"
 	REGISTRATION_TYPE = "registration_type"
 	REGISTRATION_SETTINGS = "registration_settings"
+	ALIGNMENT_STRATEGY = "alignment_strategy"
 
 class RegistrationType(_AbstractEnum):
 	NONE = "none"
 	FEATURE_EXTRACTION = "feature_extraction"
 	SPOT_INTERPOLATION = "spot_interpolation"
-	
+
+class AlignmentStrategy(_AbstractEnum):
+	MANUAL = "manual"
+	PRE_ALIGNED = "pre_aligned"
+
 
 class MicroscopyImageProcessingParams(_AbstractEnum):
 
@@ -192,6 +197,12 @@ REGISTRATION_COMPATIBILITY = {
 	RegistrationType.FEATURE_EXTRACTION: [ModalityType.MICROSCOPY_IMAGE],
 	RegistrationType.SPOT_INTERPOLATION: [ModalityType.MSI, ModalityType.ST, ModalityType.RAMAN],
 	RegistrationType.NONE: None,
+}
+
+# Maps alignment strategy to compatible target modality types (None = all types)
+ALIGNMENT_STRATEGY_COMPATIBILITY = {
+	AlignmentStrategy.MANUAL: None,
+	AlignmentStrategy.PRE_ALIGNED: [ModalityType.MSI, ModalityType.ST],
 }
 
 class TransformationType(_AbstractEnum):

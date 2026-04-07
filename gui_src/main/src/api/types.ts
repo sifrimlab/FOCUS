@@ -9,6 +9,8 @@ export interface Schema {
   modality_types: string[];
   registration_types: string[];
   registration_compatibility: Record<string, string[] | null>;
+  alignment_strategies: string[];
+  alignment_strategy_compatibility: Record<string, string[] | null>;
   intensity_normalization: string[];
   background_color: string[];
   processing_params: Record<string, Record<string, ParamSpec>>;
@@ -21,6 +23,7 @@ export interface Modality {
   processing_settings: Record<string, unknown>;
   registration_type: string;
   registration_settings: Record<string, unknown>;
+  alignment_strategy: string;
 }
 
 export interface Config {

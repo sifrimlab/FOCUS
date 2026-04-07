@@ -6,6 +6,7 @@ from werkzeug.serving import make_server
 from focus.constants import (
 	ConfigParameters, ModalityParameters, ModalityType, RegistrationType,
 	REGISTRATION_COMPATIBILITY,
+	AlignmentStrategy, ALIGNMENT_STRATEGY_COMPATIBILITY,
 	SegmentationBackgroundColor, MsiIntensityNormalization,
 	MicroscopyImageProcessingParams, MsiPreprocessingParams,
 	RamanPreprocessingParams, STPreprocessingParams,
@@ -351,6 +352,11 @@ def _build_schema() -> dict:
 		"registration_compatibility": {
 			rt: (compat if compat is not None else None)
 			for rt, compat in REGISTRATION_COMPATIBILITY.items()
+		},
+		"alignment_strategies": AlignmentStrategy.list(),
+		"alignment_strategy_compatibility": {
+			s: (compat if compat is not None else None)
+			for s, compat in ALIGNMENT_STRATEGY_COMPATIBILITY.items()
 		},
 		"intensity_normalization": MsiIntensityNormalization.list(),
 		"background_color": SegmentationBackgroundColor.list(),
