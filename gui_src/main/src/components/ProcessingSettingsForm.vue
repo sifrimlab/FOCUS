@@ -15,6 +15,18 @@ const paramSpecs = computed<Record<string, ParamSpec>>(() => {
   return store.schema?.processing_params[props.modalityType] || {};
 });
 
+// Order: text inputs (string/int/float) → enum dropdowns → bool toggles; then alphabetical within each group
+const TYPE_ORDER: Record<string, number> = { string: 0, int: 0, float: 0, enum: 1, bool: 2 };
+
+const sortedEntries = computed<[string, ParamSpec][]>(() => {
+  return (Object.entries(paramSpecs.value) as [string, ParamSpec][]).sort(
+    ([keyA, specA], [keyB, specB]) => {
+      const diff = (TYPE_ORDER[specA.type] ?? 0) - (TYPE_ORDER[specB.type] ?? 0);
+      return diff !== 0 ? diff : keyA.localeCompare(keyB);
+    }
+  );
+});
+
 const updateSetting = (key: string, value: unknown) => {
   const updated = { ...props.settings, [key]: value };
   store.updateModality(props.modalityIndex, { processing_settings: updated });
@@ -34,15 +46,15 @@ const formatLabel = (key: string): string => {
 
 <template>
   <div class="space-y-3">
-    <div v-for="(spec, key) in paramSpecs" :key="key" class="flex items-center justify-between gap-4">
-      <label class="text-sm flex-shrink-0 min-w-[180px]">{{ formatLabel(key as string) }}</label>
+    <div v-for="[key, spec] in sortedEntries" :key="key" class="flex items-center justify-between gap-4">
+      <label class="text-sm flex-shrink-0 min-w-[180px]">{{ formatLabel(key) }}</label>
 
       <!-- Bool toggle -->
       <label v-if="spec.type === 'bool'" class="relative inline-flex items-center cursor-pointer">
         <input
           type="checkbox"
-          :checked="Boolean(settings[key as string] ?? spec.default)"
-          @change="updateSetting(key as string, ($event.target as HTMLInputElement).checked)"
+          :checked="Boolean(settings[key] ?? spec.default)"
+          @change="updateSetting(key, ($event.target as HTMLInputElement).checked)"
           class="sr-only peer"
         />
         <div class="w-9 h-5 bg-gray-200 rounded-full peer dark:bg-gray-700 peer-checked:bg-blue-600 after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:after:translate-x-full"></div>
@@ -51,8 +63,8 @@ const formatLabel = (key: string): string => {
       <!-- Enum dropdown -->
       <select
         v-else-if="spec.type === 'enum'"
-        :value="settings[key as string] ?? spec.default"
-        @change="updateSetting(key as string, ($event.target as HTMLSelectElement).value)"
+        :value="settings[key] ?? spec.default"
+        @change="updateSetting(key, ($event.target as HTMLSelectElement).value)"
         class="border rounded px-2 py-1 text-sm dark:bg-gray-700 dark:border-gray-600 w-40"
       >
         <option v-for="opt in spec.options" :key="opt" :value="opt">{{ opt }}</option>
@@ -63,9 +75,9 @@ const formatLabel = (key: string): string => {
         v-else-if="spec.type === 'int'"
         type="number"
         step="1"
-        :value="settings[key as string] ?? spec.default ?? ''"
+        :value="settings[key] ?? spec.default ?? ''"
         :placeholder="spec.nullable ? 'optional' : String(spec.default)"
-        @change="updateSetting(key as string, parseNumeric(spec, ($event.target as HTMLInputElement).value))"
+        @change="updateSetting(key, parseNumeric(spec, ($event.target as HTMLInputElement).value))"
         class="border rounded px-2 py-1 text-sm dark:bg-gray-700 dark:border-gray-600 w-40"
       />
 
@@ -74,9 +86,9 @@ const formatLabel = (key: string): string => {
         v-else-if="spec.type === 'float'"
         type="number"
         step="0.01"
-        :value="settings[key as string] ?? spec.default ?? ''"
+        :value="settings[key] ?? spec.default ?? ''"
         :placeholder="spec.nullable ? 'optional' : String(spec.default)"
-        @change="updateSetting(key as string, parseNumeric(spec, ($event.target as HTMLInputElement).value))"
+        @change="updateSetting(key, parseNumeric(spec, ($event.target as HTMLInputElement).value))"
         class="border rounded px-2 py-1 text-sm dark:bg-gray-700 dark:border-gray-600 w-40"
       />
 
@@ -84,9 +96,9 @@ const formatLabel = (key: string): string => {
       <input
         v-else
         type="text"
-        :value="settings[key as string] ?? spec.default ?? ''"
+        :value="settings[key] ?? spec.default ?? ''"
         :placeholder="spec.nullable ? 'optional' : ''"
-        @change="updateSetting(key as string, ($event.target as HTMLInputElement).value || (spec.nullable ? null : ''))"
+        @change="updateSetting(key, ($event.target as HTMLInputElement).value || (spec.nullable ? null : ''))"
         class="border rounded px-2 py-1 text-sm dark:bg-gray-700 dark:border-gray-600 w-40"
       />
     </div>

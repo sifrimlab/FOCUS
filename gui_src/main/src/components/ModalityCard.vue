@@ -89,9 +89,9 @@ const cancelEditName = () => {
 </script>
 
 <template>
-  <div class="bg-white dark:bg-gray-800 rounded-lg shadow p-5 border border-gray-200 dark:border-gray-700">
-    <!-- Header: name + edit/remove buttons -->
-    <div class="flex items-center justify-between mb-4">
+  <div class="bg-white dark:bg-gray-800 rounded-lg shadow border border-gray-200 dark:border-gray-700">
+    <!-- Card header -->
+    <div class="flex items-center justify-between px-5 py-3 bg-gray-50 dark:bg-gray-900 border-b border-gray-200 dark:border-gray-700 rounded-t-lg">
       <!-- Modality name (display or inline edit) -->
       <div class="flex-1 min-w-0 mr-3">
         <template v-if="isEditingName">
@@ -102,11 +102,11 @@ const cancelEditName = () => {
             @keyup.escape="cancelEditName"
             @blur="saveEditName"
             type="text"
-            class="text-base font-semibold bg-transparent border-b-2 border-blue-500 focus:outline-none text-gray-900 dark:text-gray-100 w-full"
+            class="text-xs font-semibold uppercase tracking-widest bg-transparent border-b border-blue-500 focus:outline-none text-gray-600 dark:text-gray-300 w-full"
           />
         </template>
         <template v-else>
-          <h3 class="font-semibold text-base text-gray-900 dark:text-gray-100 truncate">{{ modality.name }}</h3>
+          <span class="text-xs font-semibold uppercase tracking-widest text-gray-400 dark:text-gray-500 truncate">{{ modality.name }}</span>
         </template>
       </div>
 
@@ -116,66 +116,80 @@ const cancelEditName = () => {
         <button
           @click="startEditName"
           title="Edit name"
-          class="w-7 h-7 flex items-center justify-center rounded bg-blue-500 hover:bg-blue-600 text-white transition-colors"
+          class="w-6 h-6 flex items-center justify-center rounded bg-blue-500 hover:bg-blue-600 text-white transition-colors"
         >
-          <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+          <svg class="w-3 h-3" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
             <path stroke-linecap="round" stroke-linejoin="round" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
           </svg>
         </button>
-        <!-- Remove modality (red, minus symbol) -->
+        <!-- Remove modality (red, minus) -->
         <button
           @click="confirmRemove"
           title="Remove modality"
-          class="w-7 h-7 flex items-center justify-center rounded bg-red-500 hover:bg-red-600 text-white transition-colors"
+          class="w-6 h-6 flex items-center justify-center rounded bg-red-500 hover:bg-red-600 text-white transition-colors"
         >
-          <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="3" viewBox="0 0 24 24">
+          <svg class="w-3 h-3" fill="none" stroke="currentColor" stroke-width="3" viewBox="0 0 24 24">
             <path stroke-linecap="round" stroke-linejoin="round" d="M20 12H4" />
           </svg>
         </button>
       </div>
     </div>
 
-    <!-- Type -->
-    <div class="mb-4">
-      <label class="block text-sm font-medium mb-1">Type</label>
-      <select
-        :value="modality.type"
-        @change="onTypeChange(($event.target as HTMLSelectElement).value)"
-        class="w-full border rounded px-3 py-2 dark:bg-gray-700 dark:border-gray-600"
-      >
-        <option v-for="t in store.schema?.modality_types" :key="t" :value="t">{{ t }}</option>
-      </select>
-    </div>
-
-    <!-- Processing settings -->
-    <details class="mb-4" open>
-      <summary class="text-sm font-semibold cursor-pointer mb-2">Processing Settings</summary>
-      <ProcessingSettingsForm
-        :modality-type="modality.type"
-        :settings="modality.processing_settings"
-        :modality-index="index"
-      />
-    </details>
-
-    <!-- Registration type (only when perform_registration is enabled) -->
-    <template v-if="store.config.perform_registration">
-      <div class="mb-2">
-        <label class="block text-sm font-medium mb-1">Registration Type</label>
+    <!-- Card body -->
+    <div class="px-5 py-4 space-y-4">
+      <!-- Type — inline -->
+      <div class="flex items-center justify-between gap-4">
+        <label class="text-sm font-medium shrink-0">Type</label>
         <select
-          :value="modality.registration_type"
-          @change="onRegistrationTypeChange(($event.target as HTMLSelectElement).value)"
-          class="w-full border rounded px-3 py-2 dark:bg-gray-700 dark:border-gray-600"
+          :value="modality.type"
+          @change="onTypeChange(($event.target as HTMLSelectElement).value)"
+          class="border rounded px-2 py-1.5 text-sm dark:bg-gray-700 dark:border-gray-600 w-48"
         >
-          <option v-for="rt in compatibleRegistrationTypes" :key="rt" :value="rt">{{ rt }}</option>
+          <option v-for="t in store.schema?.modality_types" :key="t" :value="t">{{ t }}</option>
         </select>
       </div>
 
-      <RegistrationSettingsForm
-        v-if="modality.registration_type !== 'none'"
-        :registration-type="modality.registration_type"
-        :settings="modality.registration_settings"
-        :modality-index="index"
-      />
-    </template>
+      <!-- Processing settings -->
+      <details open>
+        <summary class="text-xs font-semibold uppercase tracking-widest text-gray-400 dark:text-gray-500 cursor-pointer select-none">
+          Processing Settings
+        </summary>
+        <div class="mt-3">
+          <ProcessingSettingsForm
+            :modality-type="modality.type"
+            :settings="modality.processing_settings"
+            :modality-index="index"
+          />
+        </div>
+      </details>
+
+      <!-- Registration (only when perform_registration is enabled) -->
+      <template v-if="store.config.perform_registration">
+        <!-- Registration type — inline -->
+        <div class="flex items-center justify-between gap-4">
+          <label class="text-sm font-medium shrink-0">Registration Type</label>
+          <select
+            :value="modality.registration_type"
+            @change="onRegistrationTypeChange(($event.target as HTMLSelectElement).value)"
+            class="border rounded px-2 py-1.5 text-sm dark:bg-gray-700 dark:border-gray-600 w-48"
+          >
+            <option v-for="rt in compatibleRegistrationTypes" :key="rt" :value="rt">{{ rt }}</option>
+          </select>
+        </div>
+
+        <details v-if="modality.registration_type !== 'none'" open>
+          <summary class="text-xs font-semibold uppercase tracking-widest text-gray-400 dark:text-gray-500 cursor-pointer select-none">
+            Registration Settings
+          </summary>
+          <div class="mt-3">
+            <RegistrationSettingsForm
+              :registration-type="modality.registration_type"
+              :settings="modality.registration_settings"
+              :modality-index="index"
+            />
+          </div>
+        </details>
+      </template>
+    </div>
   </div>
 </template>
