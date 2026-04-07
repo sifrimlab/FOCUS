@@ -199,6 +199,11 @@ def parse_config(config: dict) -> dict:
 
 	# --- Step 9b: Alignment strategy compatibility ---
 	ref_name = config[ConfigParameters.REFERENCE_MODALITY]
+	ref_modality = next(
+		m for m in config[ConfigParameters.MODALITIES] if m[ModalityParameters.NAME] == ref_name
+	)
+	ref_type = ref_modality[ModalityParameters.TYPE]
+	pre_aligned_count = 0
 	for modality in config[ConfigParameters.MODALITIES]:
 		strategy = modality[ModalityParameters.ALIGNMENT_STRATEGY]
 		if strategy not in AlignmentStrategy.list():
@@ -212,13 +217,22 @@ def parse_config(config: dict) -> dict:
 					f"Alignment strategy 'pre_aligned' cannot be set on the reference modality "
 					f"'{modality[ModalityParameters.NAME]}'."
 				)
-			compatible = ALIGNMENT_STRATEGY_COMPATIBILITY[AlignmentStrategy.PRE_ALIGNED]
-			mod_type = modality[ModalityParameters.TYPE]
-			if mod_type not in compatible:
+			# Pre-aligned requires the reference to be spot-based (its coordinates must be
+			# expressible in another modality's coordinate system)
+			compatible_ref_types = ALIGNMENT_STRATEGY_COMPATIBILITY[AlignmentStrategy.PRE_ALIGNED]
+			if ref_type not in compatible_ref_types:
 				raise ValueError(
-					f"Alignment strategy 'pre_aligned' is not supported for modality type '{mod_type}' "
-					f"(modality '{modality[ModalityParameters.NAME]}'). Supported types: {compatible}"
+					f"Alignment strategy 'pre_aligned' requires a spot-based reference modality, "
+					f"but reference '{ref_name}' has type '{ref_type}'. "
+					f"Supported reference types: {compatible_ref_types}"
 				)
+			pre_aligned_count += 1
+	if pre_aligned_count > 1:
+		raise ValueError(
+			f"At most one non-reference modality may use the 'pre_aligned' alignment strategy. "
+			f"The reference modality can only be expressed in one coordinate system at a time, "
+			f"but {pre_aligned_count} modalities have 'pre_aligned' set."
+		)
 
 	# --- Step 10: HuggingFace token requirement ---
 	needs_hf_token = any(

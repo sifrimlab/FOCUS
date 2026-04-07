@@ -51,13 +51,26 @@ const onRegistrationTypeChange = (newRegType: string) => {
   });
 };
 
-// Alignment settings visibility: only for non-reference spot modalities when alignment is enabled
+// Alignment settings visibility: shown for non-reference modalities when alignment is enabled
+// AND the reference modality is spot-based (spot-based refs have meaningful spatial coordinates
+// that could already be expressed in another modality's coordinate system).
 const showAlignmentSettings = computed(() => {
   if (!store.schema || !store.config.perform_alignment) return false;
   if (modality.value.name === store.config.reference_modality) return false;
+  const refMod = store.config.modalities.find((m: Modality) => m.name === store.config.reference_modality);
+  if (!refMod) return false;
   const compatible = store.schema.alignment_strategy_compatibility['pre_aligned'];
-  return compatible !== null && compatible !== undefined && compatible.includes(modality.value.type);
+  return compatible !== null && compatible !== undefined && compatible.includes(refMod.type);
 });
+
+// True if another (different) modality already claims the pre_aligned strategy.
+// Since the reference can only be expressed in one coordinate system at a time,
+// only one target modality may use pre_aligned.
+const preAlignedAlreadyUsed = computed(() =>
+  store.config.modalities.some(
+    (m: Modality, i: number) => i !== props.index && m.alignment_strategy === 'pre_aligned'
+  )
+);
 
 const onAlignmentStrategyChange = (newStrategy: string) => {
   store.updateModality(props.index, { alignment_strategy: newStrategy });
@@ -187,8 +200,23 @@ const cancelEditName = () => {
             class="border rounded px-2 py-1.5 text-sm dark:bg-gray-700 dark:border-gray-600 w-48"
           >
             <option value="manual">Manual Alignment</option>
-            <option value="pre_aligned">Pre-Aligned</option>
+            <option
+              value="pre_aligned"
+              :disabled="preAlignedAlreadyUsed"
+              :title="preAlignedAlreadyUsed ? 'Another modality already uses Pre-Aligned. The reference can only be expressed in one coordinate system at a time.' : ''"
+            >Pre-Aligned</option>
           </select>
+        </div>
+
+        <!-- Hint when pre_aligned is blocked by another modality -->
+        <div
+          v-if="preAlignedAlreadyUsed && modality.alignment_strategy !== 'pre_aligned'"
+          class="flex items-start gap-2 px-3 py-2.5 bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-600 rounded-lg text-sm text-gray-500 dark:text-gray-400"
+        >
+          <svg class="w-4 h-4 shrink-0 mt-0.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+          </svg>
+          <span>Pre-Aligned is unavailable: another modality is already using it. The reference modality can only be pre-aligned to one coordinate system at a time.</span>
         </div>
 
         <!-- Warning for pre_aligned -->
@@ -199,7 +227,7 @@ const cancelEditName = () => {
           <svg class="w-4 h-4 shrink-0 mt-0.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
             <path stroke-linecap="round" stroke-linejoin="round" d="M12 9v4m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
           </svg>
-          <span>The spatial coordinates of this modality are assumed to be already expressed in the reference modality's coordinate system. No interactive alignment will be performed.</span>
+          <span>The reference modality's coordinates are assumed to be already expressed in this modality's coordinate system. No interactive alignment will be performed.</span>
         </div>
       </template>
 
