@@ -39,6 +39,8 @@ export interface PipelineStatus {
   stage_index: number;
   total_stages: number;
   current_modality: string | null;
+  current_modality_index: number;
+  total_modalities: number;
   current_sample: string | null;
   current_sample_index: number;
   total_samples: number;

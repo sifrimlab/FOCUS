@@ -1103,8 +1103,9 @@ class RamanDataset(BaseDataset):
 		"""
 		reporter = step_reporter or StepReporter()
 		processed_samples = {}
-		for sample in self.samples:
-			print(f"Processing sample: {sample.sample_id}")
+		total = len(self.samples)
+		for i, sample in enumerate(self.samples):
+			reporter.set_sample(sample.sample_id, i + 1, total)
 			sample._max_workers = max_workers
 			sample._step_reporter = reporter
 

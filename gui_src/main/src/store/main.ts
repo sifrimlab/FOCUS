@@ -21,6 +21,8 @@ function defaultPipelineStatus(): PipelineStatus {
     stage_index: 0,
     total_stages: 4,
     current_modality: null,
+    current_modality_index: 0,
+    total_modalities: 0,
     current_sample: null,
     current_sample_index: 0,
     total_samples: 0,

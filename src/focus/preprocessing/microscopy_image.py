@@ -517,7 +517,9 @@ class MicroscopyImageDataset(BaseDataset):
 		"""
 		reporter = step_reporter or StepReporter()
 		processed_samples = {}
-		for sample in reporter.tqdm(self.samples, desc="Processing microscopy images", unit="sample"):
+		total = len(self.samples)
+		for i, sample in enumerate(self.samples):
+			reporter.set_sample(sample.sample_id, i + 1, total)
 			sample._step_reporter = reporter
 			try:
 				output_file = sample.process_image(

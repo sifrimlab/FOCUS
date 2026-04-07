@@ -291,6 +291,8 @@ def _default_status() -> dict:
 		"stage_index": 0,
 		"total_stages": 4,
 		"current_modality": None,
+		"current_modality_index": 0,
+		"total_modalities": 0,
 		"current_sample": None,
 		"current_sample_index": 0,
 		"total_samples": 0,

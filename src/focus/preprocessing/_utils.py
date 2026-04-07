@@ -78,6 +78,21 @@ class StepReporter:
 			yield item
 			self._update(desc, i + 1, n)
 
+	def set_sample(self, sample_id: str, index: int, total: int) -> None:
+		"""Set the current sample context and reset sub-step fields. Fires callback."""
+		print(f"[{index}/{total}] Processing sample: {sample_id}")
+		if self._callback:
+			self._callback({
+				"current_sample": sample_id,
+				"current_sample_index": index,
+				"total_samples": total,
+				"sub_step": None,
+				"sub_step_index": 0,
+				"sub_step_total": 0,
+				"sub_step_progress": 0,
+				"sub_step_items_total": 0,
+			})
+
 
 def create_output_directories(path: str, sample_ids: list[str], modality_name: str) -> None:
 	"""Create per-sample and merged preprocessing output directories."""

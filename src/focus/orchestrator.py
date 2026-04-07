@@ -55,12 +55,15 @@ def run(config: dict, progress_callback=None) -> list[str]:
 			sub_step_total=0, sub_step_progress=0, sub_step_items_total=0)
 
 	modality_files: dict[str, dict[str, str]] = {}
-	for modality in modalities:
+	total_modalities = len(modalities)
+	for mod_idx, modality in enumerate(modalities, 1):
 		mod_name = modality[ModalityParameters.NAME]
 		mod_type = modality[ModalityParameters.TYPE]
 		logger.info(f"Preprocessing modality '{mod_name}' (type: {mod_type})")
 		_report(state="running", stage="preprocessing", stage_index=1, total_stages=4,
-				current_modality=mod_name, message=f"Preprocessing '{mod_name}'",
+				current_modality=mod_name, current_modality_index=mod_idx, total_modalities=total_modalities,
+				current_sample=None, current_sample_index=0, total_samples=0,
+				message=f"Preprocessing '{mod_name}'",
 				sub_step=None, sub_step_index=0, sub_step_total=0,
 				sub_step_progress=0, sub_step_items_total=0)
 
