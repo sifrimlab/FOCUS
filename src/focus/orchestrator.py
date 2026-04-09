@@ -1,11 +1,13 @@
 import os, logging, anndata
 import numpy as np
+import pandas as pd
 import mudata
 
 from focus.constants import (
 	ConfigParameters, ModalityParameters, RegistrationType,
 	ModalityType, MODALITY_FILE_EXTENSION, MULTIMODAL_DATASET,
-	AlignmentStrategy
+	AlignmentStrategy, AnnotationsParameters, AnnotationFileType,
+	MODALITY_ANNOTATION, MODALITY_ANNOTATION_MERGED,
 )
 from focus.preprocessing import preprocess_modality
 from focus.preprocessing._utils import StepReporter
@@ -41,6 +43,9 @@ def run(config: dict, progress_callback=None) -> list[str]:
 	ref_name = config[ConfigParameters.REFERENCE_MODALITY]
 	output_files: list[str] = []
 
+	ann_enabled = config.get(ConfigParameters.SPATIAL_ANNOTATIONS) is not None
+	n_stages = 5 if ann_enabled else 4
+
 	def _report(**kwargs):
 		if progress_callback:
 			progress_callback(kwargs)
@@ -51,7 +56,7 @@ def run(config: dict, progress_callback=None) -> list[str]:
 	logger.info("=" * 60)
 	logger.info("STAGE 1: Preprocessing")
 	logger.info("=" * 60)
-	_report(state="running", stage="preprocessing", stage_index=1, total_stages=4,
+	_report(state="running", stage="preprocessing", stage_index=1, total_stages=n_stages,
 			message="Starting preprocessing...", sub_step=None, sub_step_index=0,
 			sub_step_total=0, sub_step_progress=0, sub_step_items_total=0)
 
@@ -61,7 +66,7 @@ def run(config: dict, progress_callback=None) -> list[str]:
 		mod_name = modality[ModalityParameters.NAME]
 		mod_type = modality[ModalityParameters.TYPE]
 		logger.info(f"Preprocessing modality '{mod_name}' (type: {mod_type})")
-		_report(state="running", stage="preprocessing", stage_index=1, total_stages=4,
+		_report(state="running", stage="preprocessing", stage_index=1, total_stages=n_stages,
 				current_modality=mod_name, current_modality_index=mod_idx, total_modalities=total_modalities,
 				current_sample=None, current_sample_index=0, total_samples=0,
 				message=f"Preprocessing '{mod_name}'",
@@ -85,7 +90,7 @@ def run(config: dict, progress_callback=None) -> list[str]:
 		logger.info("=" * 60)
 		logger.info("STAGE 2: Alignment")
 		logger.info("=" * 60)
-		_report(state="running", stage="alignment", stage_index=2, total_stages=4,
+		_report(state="running", stage="alignment", stage_index=2, total_stages=n_stages,
 				message="Starting alignment...", sub_step=None, sub_step_index=0,
 				sub_step_total=0, sub_step_progress=0, sub_step_items_total=0)
 		aligned_files = _run_alignment(config, modality_files, _report)
@@ -96,13 +101,30 @@ def run(config: dict, progress_callback=None) -> list[str]:
 	else:
 		logger.info("Skipping alignment (disabled in config).")
 
-	# --- Stage 3: Registration ---
+	# --- Stage 2.5: Annotation Transfer ---
+	annotation_files: dict[str, str] = {}
+	if ann_enabled:
+		logger.info("=" * 60)
+		logger.info("STAGE 2.5: Annotation Transfer")
+		logger.info("=" * 60)
+		_report(state="running", stage="annotation_transfer", stage_index=3, total_stages=n_stages,
+				message="Transferring spatial annotations...", sub_step=None, sub_step_index=0,
+				sub_step_total=0, sub_step_progress=0, sub_step_items_total=0)
+		annotation_files = _run_annotation_transfer(config, modality_files, aligned_files)
+		for path in annotation_files.values():
+			output_files.append(path)
+		logger.info("Annotation transfer complete.")
+
+	stage_reg = 4 if ann_enabled else 3
+	stage_mudata = 5 if ann_enabled else 4
+
+	# --- Stage 3/4: Registration ---
 	registered_files: dict[str, dict[str, str]] = {}
 	if config[ConfigParameters.PERFORM_REGISTRATION]:
 		logger.info("=" * 60)
-		logger.info("STAGE 3: Registration")
+		logger.info(f"STAGE {stage_reg}: Registration")
 		logger.info("=" * 60)
-		_report(state="running", stage="registration", stage_index=3, total_stages=4,
+		_report(state="running", stage="registration", stage_index=stage_reg, total_stages=n_stages,
 				message="Starting registration...", sub_step=None, sub_step_index=0,
 				sub_step_total=0, sub_step_progress=0, sub_step_items_total=0)
 		registered_files = _run_registration(config, modality_files, aligned_files)
@@ -112,15 +134,15 @@ def run(config: dict, progress_callback=None) -> list[str]:
 	else:
 		logger.info("Skipping registration (disabled in config).")
 
-	# --- Stage 4: Compile MuData ---
+	# --- Stage 4/5: Compile MuData ---
 	if config[ConfigParameters.PERFORM_REGISTRATION] and _has_spot_modalities(config):
 		logger.info("=" * 60)
-		logger.info("STAGE 4: Compiling multimodal dataset")
+		logger.info(f"STAGE {stage_mudata}: Compiling multimodal dataset")
 		logger.info("=" * 60)
-		_report(state="running", stage="compiling", stage_index=4, total_stages=4,
+		_report(state="running", stage="compiling", stage_index=stage_mudata, total_stages=n_stages,
 				message="Compiling multimodal dataset...", sub_step=None, sub_step_index=0,
 				sub_step_total=0, sub_step_progress=0, sub_step_items_total=0)
-		mudata_path = _compile_mudata(config, modality_files, registered_files)
+		mudata_path = _compile_mudata(config, modality_files, registered_files, annotation_files)
 		if mudata_path:
 			output_files.append(mudata_path)
 
@@ -128,7 +150,7 @@ def run(config: dict, progress_callback=None) -> list[str]:
 	logger.info("FOCUS pipeline completed successfully.")
 	logger.info("=" * 60)
 
-	_report(state="completed", stage=None, stage_index=4, total_stages=4,
+	_report(state="completed", stage=None, stage_index=n_stages, total_stages=n_stages,
 			message="Pipeline completed successfully.", output_files=output_files)
 
 	return output_files
@@ -227,6 +249,84 @@ def _run_alignment(config: dict, modality_files: dict, report) -> dict:
 	return aligned_files
 
 
+def _run_annotation_transfer(
+	config: dict,
+	modality_files: dict[str, dict[str, str]],
+	aligned_files: dict[str, dict[str, str]],
+) -> dict[str, str]:
+	"""
+	Transfer spatial annotations from the annotation modality to the reference modality spots.
+
+	Produces annotated h5ad files (per-sample + merged) that are copies of the reference
+	modality's preprocessed files with a 'spatial_annotation' categorical obs column added.
+
+	Returns
+	-------
+	dict
+		{sample_id: annotated_file_path, "merged": annotated_merged_path}
+	"""
+	from focus.annotations import transfer_annotations
+
+	dataset_path = config[ConfigParameters.DATASET_PATH]
+	ref_name = config[ConfigParameters.REFERENCE_MODALITY]
+	ann_cfg = config[ConfigParameters.SPATIAL_ANNOTATIONS]
+	ann_mod_name = ann_cfg[AnnotationsParameters.MODALITY_NAME]
+
+	result: dict[str, str] = {}
+
+	# --- Merged file ---
+	ref_merged_path = modality_files[ref_name]["merged"]
+	ref_merged = anndata.read_h5ad(ref_merged_path)
+
+	if ann_mod_name == ref_name:
+		annotation_coords = np.asarray(ref_merged.obsm['spatial'])
+	else:
+		ann_aligned_merged = anndata.read_h5ad(aligned_files[ann_mod_name]["merged"])
+		annotation_coords = np.asarray(ann_aligned_merged.obsm[f'{ann_mod_name}_spatial'])
+
+	sample_ids_arr = np.asarray(ref_merged.obs['sample_id'])
+
+	annotation_paths: dict[str, str] = {}
+	for sid in np.unique(sample_ids_arr):
+		mod_dir = os.path.join(dataset_path, sid, ann_mod_name)
+		geojson_files = [f for f in os.listdir(mod_dir) if f.endswith('.geojson')]
+		annotation_paths[sid] = os.path.join(mod_dir, geojson_files[0])
+
+	ann_labels = transfer_annotations(annotation_coords, sample_ids_arr, annotation_paths)
+	ref_merged.obs['spatial_annotation'] = pd.Categorical(ann_labels)
+
+	merged_out = MODALITY_ANNOTATION_MERGED(dataset_path, ref_name, "h5ad")
+	os.makedirs(os.path.dirname(merged_out), exist_ok=True)
+	ref_merged.write(merged_out)
+	result["merged"] = merged_out
+	logger.info(f"Annotated merged reference saved to {merged_out}")
+
+	# --- Per-sample files ---
+	for sample_id, ref_path in modality_files[ref_name].items():
+		if sample_id == "merged":
+			continue
+
+		ref_sample = anndata.read_h5ad(ref_path)
+
+		if ann_mod_name == ref_name:
+			coords_sample = np.asarray(ref_sample.obsm['spatial'])
+		else:
+			ann_sample = anndata.read_h5ad(aligned_files[ann_mod_name][sample_id])
+			coords_sample = np.asarray(ann_sample.obsm[f'{ann_mod_name}_spatial'])
+
+		sids_sample = np.asarray(ref_sample.obs['sample_id'])
+		ann_labels_sample = transfer_annotations(coords_sample, sids_sample, annotation_paths)
+		ref_sample.obs['spatial_annotation'] = pd.Categorical(ann_labels_sample)
+
+		sample_out = MODALITY_ANNOTATION(dataset_path, sample_id, ref_name, "h5ad")
+		os.makedirs(os.path.dirname(sample_out), exist_ok=True)
+		ref_sample.write(sample_out)
+		result[sample_id] = sample_out
+		logger.debug(f"Annotated sample '{sample_id}' saved to {sample_out}")
+
+	return result
+
+
 def _run_registration(config: dict, modality_files: dict, aligned_files: dict) -> dict:
 	"""
 	Register each non-reference modality that has a registration_type != 'none'.
@@ -304,6 +404,7 @@ def _compile_mudata(
 	config: dict,
 	modality_files: dict,
 	registered_files: dict,
+	annotation_files: dict | None = None,
 ) -> str | None:
 	"""
 	Compile a final MuData object with paired observations across modalities.
@@ -320,8 +421,11 @@ def _compile_mudata(
 		logger.info("Anchor modality is not spot-based; skipping MuData compilation.")
 		return None
 
-	# Load anchor modality's merged preprocessed data
-	anchor_merged = modality_files[ref_name].get("merged")
+	# Load anchor: prefer annotated file (from Stage 2.5) when available
+	if annotation_files and "merged" in annotation_files:
+		anchor_merged = annotation_files["merged"]
+	else:
+		anchor_merged = modality_files[ref_name].get("merged")
 	if anchor_merged is None or not os.path.exists(anchor_merged):
 		logger.warning(f"No merged file for anchor '{ref_name}', skipping MuData compilation.")
 		return None
@@ -388,6 +492,11 @@ def _compile_mudata(
 	mdata.obsm['spatial'] = shared_spatial
 	if shared_spot_size is not None:
 		mdata.uns['spot_size'] = shared_spot_size
+
+	# Propagate spatial annotations (if present) to top-level mdata.obs
+	if 'spatial_annotation' in anchor_adata.obs.columns:
+		mdata.obs['spatial_annotation'] = anchor_adata.obs['spatial_annotation'].values
+		logger.info("Spatial annotation labels promoted to mdata.obs['spatial_annotation']")
 
 	output_path = MULTIMODAL_DATASET(dataset_path, "h5mu")
 	os.makedirs(os.path.dirname(output_path), exist_ok=True)

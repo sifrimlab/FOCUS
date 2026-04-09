@@ -49,6 +49,20 @@ MULTIMODAL_DATASET = lambda base_path, file_type: os.path.join(
 	f"multimodal_dataset.{file_type}"
 )
 
+MODALITY_ANNOTATION = lambda base_path, sample_id, modality_name, file_type: os.path.join(
+	base_path,
+	sample_id,
+	FocusOutputDirectories.ANNOTATIONS,
+	f"{modality_name}_{sample_id}_annotated.{file_type}"
+)
+
+MODALITY_ANNOTATION_MERGED = lambda base_path, modality_name, file_type: os.path.join(
+	base_path,
+	FocusOutputDirectories.MERGED,
+	FocusOutputDirectories.ANNOTATIONS,
+	f"{modality_name}_merged_annotated.{file_type}"
+)
+
 
 class _AbstractEnum():
 	def __init__(self) -> None:
@@ -63,6 +77,7 @@ class FocusOutputDirectories(_AbstractEnum):
 	PREPROCESSING = "preprocessing"
 	ALIGNMENT = "alignment"
 	REGISTRATION = "registration"
+	ANNOTATIONS = "annotations"
 	PLOTS = "plots"
 	RESOURCES = "resources"
 	MERGED = "merged"
@@ -112,6 +127,14 @@ class ConfigParameters(_AbstractEnum):
 	ALIGNMENT_FORCE_RECOMPUTING = "alignment_force_recomputing"
 	PERFORM_REGISTRATION = "perform_registration"
 	HUGGINGFACE_TOKEN = "huggingface_token"
+	SPATIAL_ANNOTATIONS = "spatial_annotations"
+
+class AnnotationsParameters(_AbstractEnum):
+	MODALITY_NAME = "modality_name"
+	FILE_TYPE = "file_type"
+
+class AnnotationFileType(_AbstractEnum):
+	GEOJSON = "geojson"
 
 class ModalityParameters(_AbstractEnum):
 	NAME = "name"

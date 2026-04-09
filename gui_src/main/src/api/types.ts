@@ -13,6 +13,7 @@ export interface Schema {
   alignment_strategy_compatibility: Record<string, string[] | null>;
   intensity_normalization: string[];
   background_color: string[];
+  annotation_file_types: string[];
   processing_params: Record<string, Record<string, ParamSpec>>;
   registration_params: Record<string, Record<string, ParamSpec>>;
 }
@@ -26,6 +27,11 @@ export interface Modality {
   alignment_strategy: string;
 }
 
+export interface SpatialAnnotations {
+  modality_name: string;
+  file_type: string;
+}
+
 export interface Config {
   dataset_path: string;
   reference_modality: string;
@@ -33,6 +39,7 @@ export interface Config {
   alignment_force_recomputing: boolean;
   perform_registration: boolean;
   huggingface_token: string | null;
+  spatial_annotations: SpatialAnnotations | null;
   modalities: Modality[];
 }
 

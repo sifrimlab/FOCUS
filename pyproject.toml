@@ -39,6 +39,7 @@ dependencies = [
     "huggingface-hub",
     "flask",
     "dask",
+    "shapely",
 ]
 
 [project.scripts]

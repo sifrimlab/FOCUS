@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, nextTick } from 'vue';
 import { useMainStore } from '../store/main';
+import type { SpatialAnnotations } from '../api/types';
 import ModalityCard from '../components/ModalityCard.vue';
 import ConfigUploader from '../components/ConfigUploader.vue';
 import { useDialog } from '../composables/useDialog';
@@ -47,6 +48,18 @@ const confirmAddModality = () => {
 
 const cancelAddModality = () => {
   showNameEntry.value = false;
+};
+
+const toggleAnnotations = () => {
+  if (store.config.spatial_annotations === null) {
+    store.config.spatial_annotations = {
+      modality_name: store.modalityNames[0] ?? '',
+      file_type: store.schema?.annotation_file_types[0] ?? 'geojson',
+    } as SpatialAnnotations;
+  } else {
+    store.config.spatial_annotations = null;
+  }
+  store.triggerAutoSave();
 };
 
 const confirmRemoveAll = async () => {
@@ -149,6 +162,64 @@ const confirmRemoveAll = async () => {
             </label>
           </div>
         </div>
+      </div>
+    </div>
+
+    <!-- Spatial Annotations card -->
+    <div class="bg-white dark:bg-gray-800 rounded-lg shadow border border-gray-200 dark:border-gray-700 mb-6">
+      <div class="px-5 py-3 bg-gray-50 dark:bg-gray-900 border-b border-gray-200 dark:border-gray-700 rounded-t-lg">
+        <span class="text-xs font-semibold uppercase tracking-widest text-gray-400 dark:text-gray-500">Spatial Annotations</span>
+      </div>
+
+      <div class="px-5 py-5 space-y-4">
+        <!-- Enable / disable toggle -->
+        <div class="flex items-center gap-3">
+          <label class="text-sm font-medium">Load Spatial Annotations</label>
+          <label class="relative inline-flex items-center cursor-pointer">
+            <input
+              type="checkbox"
+              :checked="store.config.spatial_annotations !== null"
+              @change="toggleAnnotations()"
+              class="sr-only peer"
+            />
+            <div class="w-9 h-5 bg-gray-200 rounded-full peer dark:bg-gray-700 peer-checked:bg-blue-600 after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:after:translate-x-full"></div>
+          </label>
+        </div>
+
+        <!-- Settings (shown only when enabled) -->
+        <template v-if="store.config.spatial_annotations !== null">
+          <!-- Annotation modality -->
+          <div class="flex items-center justify-between gap-4">
+            <label class="text-sm font-medium shrink-0">Annotation Modality</label>
+            <select
+              v-model="store.config.spatial_annotations.modality_name"
+              @change="store.triggerAutoSave()"
+              class="border rounded px-3 py-2 text-sm dark:bg-gray-700 dark:border-gray-600 w-56"
+            >
+              <option value="" disabled>Select modality...</option>
+              <option v-for="name in store.modalityNames" :key="name" :value="name">{{ name }}</option>
+            </select>
+          </div>
+
+          <!-- File type -->
+          <div class="flex items-center justify-between gap-4">
+            <label class="text-sm font-medium shrink-0">Annotation File Type</label>
+            <select
+              v-model="store.config.spatial_annotations.file_type"
+              @change="store.triggerAutoSave()"
+              class="border rounded px-3 py-2 text-sm dark:bg-gray-700 dark:border-gray-600 w-56"
+            >
+              <option v-for="ft in store.schema?.annotation_file_types ?? ['geojson']" :key="ft" :value="ft">
+                {{ ft }}
+              </option>
+            </select>
+          </div>
+
+          <p class="text-xs text-gray-500 dark:text-gray-400">
+            FOCUS expects one annotation file per sample in
+            <code class="bg-gray-100 dark:bg-gray-700 px-1 rounded">{sample_id}/{{ store.config.spatial_annotations.modality_name }}/</code>.
+          </p>
+        </template>
       </div>
     </div>
 

@@ -10,6 +10,7 @@ function emptyConfig(): Config {
     alignment_force_recomputing: false,
     perform_registration: true,
     huggingface_token: null,
+    spatial_annotations: null,
     modalities: [],
   };
 }

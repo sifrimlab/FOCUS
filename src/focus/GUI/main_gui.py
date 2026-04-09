@@ -10,6 +10,7 @@ from focus.constants import (
 	SegmentationBackgroundColor, MsiIntensityNormalization,
 	MicroscopyImageProcessingParams, MsiPreprocessingParams,
 	RamanPreprocessingParams, STPreprocessingParams,
+	AnnotationFileType,
 )
 from focus.preprocessing._utils import discover_sample_ids, validate_path_readable
 
@@ -440,6 +441,7 @@ def _build_schema() -> dict:
 				STPreprocessingParams.FORCE_RECOMPUTING: {"type": "bool", "default": False},
 			},
 		},
+		"annotation_file_types": AnnotationFileType.list(),
 		"registration_params": {
 			RegistrationType.FEATURE_EXTRACTION: {
 				"min_max_rescale": {"type": "bool", "default": True},
