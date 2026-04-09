@@ -15,6 +15,18 @@ function emptyConfig(): Config {
   };
 }
 
+/** Apply defaults for fields that may be missing in configs saved before a feature was added. */
+function normalizeConfig(raw: unknown): Config {
+  const r = raw as Record<string, unknown>;
+  const defaults = emptyConfig();
+  return {
+    ...defaults,
+    ...r,
+    // Ensure nullable fields introduced after initial release default to null, not undefined
+    spatial_annotations: (r.spatial_annotations as Config['spatial_annotations']) ?? null,
+  } as Config;
+}
+
 function defaultPipelineStatus(): PipelineStatus {
   return {
     state: 'idle',
@@ -86,7 +98,7 @@ export const useMainStore = defineStore('main', {
 
         // Restore config and samples
         if (state.config && state.config.dataset_path) {
-          this.config = state.config as Config;
+          this.config = normalizeConfig(state.config);
           this.samples = state.samples;
           this.hasExistingConfig = state.has_existing_config;
         }
@@ -127,7 +139,7 @@ export const useMainStore = defineStore('main', {
       // overwrite the file on disk before we get a chance to read it.
       const result = await api.loadExistingConfig(this.config.dataset_path);
       if (result.valid && result.config) {
-        this.config = result.config as Config;
+        this.config = normalizeConfig(result.config);
         return { success: true };
       }
       return { success: false, corrupted: result.corrupted, errors: result.errors };
@@ -136,7 +148,7 @@ export const useMainStore = defineStore('main', {
     async loadConfigFromFile(content: string) {
       const result = await api.loadConfig({ content });
       if (result.valid && result.config) {
-        this.config = result.config as Config;
+        this.config = normalizeConfig(result.config);
         this.validationErrors = [];
         return true;
       } else {
