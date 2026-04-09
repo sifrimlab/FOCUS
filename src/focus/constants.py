@@ -156,6 +156,7 @@ class MsiPreprocessingParams(_AbstractEnum):
 	RECALIBRATION_REFERENCE = "recalibration_reference"
 	MIN_INTENSITY_THRESHOLD = "min_intensity_threshold"
 	DETECT_BACKGROUND = "detect_background"
+	SAMPLE_TYPE = "sample_type"
 	FORCE_RECOMPUTING = "force_recomputing"
 
 class RamanPreprocessingParams(_AbstractEnum):

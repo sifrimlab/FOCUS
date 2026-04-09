@@ -1,5 +1,5 @@
 import axios from 'axios';
-import type { Schema, Config, PipelineStatus, ValidationResult, SamplesResult, BrowseResult } from './types';
+import type { Schema, Config, PipelineStatus, ValidationResult, SamplesResult, BrowseResult, BrowseFilesResult } from './types';
 
 const apiClient = axios.create({
   baseURL: '',
@@ -19,6 +19,11 @@ export const api = {
 
   async browse(path: string): Promise<BrowseResult> {
     const r = await apiClient.get<BrowseResult>('/api/browse', { params: { path } });
+    return r.data;
+  },
+
+  async browseFiles(path: string): Promise<BrowseFilesResult> {
+    const r = await apiClient.get<BrowseFilesResult>('/api/browse_files', { params: { path } });
     return r.data;
   },
 

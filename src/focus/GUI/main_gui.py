@@ -88,6 +88,30 @@ class MainGUI:
 				return jsonify({"error": str(e)}), 403
 			return jsonify({"path": path, "parent": parent, "entries": entries})
 
+		@self.app.route('/api/browse_files', methods=['GET'])
+		def browse_filesystem_files():
+			"""Like /api/browse but returns both directories and files."""
+			path = request.args.get('path', '').strip()
+			if not path:
+				path = os.path.expanduser('~')
+			path = os.path.realpath(path)
+			if not os.path.isdir(path):
+				return jsonify({"error": f"Not a directory: {path}"}), 400
+			parent = os.path.dirname(path)
+			parent = None if parent == path else parent
+			entries = []
+			try:
+				for name in sorted(os.listdir(path), key=str.lower):
+					full = os.path.join(path, name)
+					try:
+						is_dir = os.path.isdir(full)
+						entries.append({"name": name, "is_dir": is_dir})
+					except OSError:
+						pass
+			except PermissionError as e:
+				return jsonify({"error": str(e)}), 403
+			return jsonify({"path": path, "parent": parent, "entries": entries})
+
 		# --- Sample discovery ---
 
 		@self.app.route('/api/samples', methods=['GET'])
@@ -381,7 +405,7 @@ def _build_schema() -> dict:
 				MicroscopyImageProcessingParams.CONTRAST_SATURATION: {"type": "float", "default": 0.35},
 			},
 			ModalityType.MSI: {
-				MsiPreprocessingParams.LIPID_ANNOTATION_DB: {"type": "string", "default": None, "nullable": True},
+				MsiPreprocessingParams.LIPID_ANNOTATION_DB: {"type": "path", "default": None, "nullable": True},
 				MsiPreprocessingParams.MASS_TOLERANCE: {"type": "float", "default": 10},
 				MsiPreprocessingParams.FREQUENCY_THRESHOLD: {"type": "float", "default": 0.01},
 				MsiPreprocessingParams.INTENSITY_NORMALIZATION: {
@@ -392,6 +416,7 @@ def _build_schema() -> dict:
 				MsiPreprocessingParams.RECALIBRATION_REFERENCE: {"type": "string", "default": None, "nullable": True},
 				MsiPreprocessingParams.MIN_INTENSITY_THRESHOLD: {"type": "float", "default": 1e4},
 				MsiPreprocessingParams.DETECT_BACKGROUND: {"type": "bool", "default": False},
+				MsiPreprocessingParams.SAMPLE_TYPE: {"type": "enum", "options": ["tissue", "microgrid"], "default": "tissue"},
 				MsiPreprocessingParams.FORCE_RECOMPUTING: {"type": "bool", "default": False},
 			},
 			ModalityType.RAMAN: {

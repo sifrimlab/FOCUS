@@ -2,6 +2,7 @@
 import { computed } from 'vue';
 import { useMainStore } from '../store/main';
 import type { ParamSpec } from '../api/types';
+import FilePicker from './FilePicker.vue';
 
 const props = defineProps<{
   modalityType: string;
@@ -15,8 +16,8 @@ const paramSpecs = computed<Record<string, ParamSpec>>(() => {
   return store.schema?.processing_params[props.modalityType] || {};
 });
 
-// Order: text inputs (string/int/float) → enum dropdowns → bool toggles; then alphabetical within each group
-const TYPE_ORDER: Record<string, number> = { string: 0, int: 0, float: 0, enum: 1, bool: 2 };
+// Order: text inputs (string/int/float/path) → enum dropdowns → bool toggles; then alphabetical within each group
+const TYPE_ORDER: Record<string, number> = { string: 0, int: 0, float: 0, path: 0, enum: 1, bool: 2 };
 
 const sortedEntries = computed<[string, ParamSpec][]>(() => {
   return (Object.entries(paramSpecs.value) as [string, ParamSpec][]).sort(
@@ -90,6 +91,14 @@ const formatLabel = (key: string): string => {
         :placeholder="spec.nullable ? 'optional' : String(spec.default)"
         @change="updateSetting(key, parseNumeric(spec, ($event.target as HTMLInputElement).value))"
         class="border rounded px-2 py-1 text-sm dark:bg-gray-700 dark:border-gray-600 w-40"
+      />
+
+      <!-- Path file picker -->
+      <FilePicker
+        v-else-if="spec.type === 'path'"
+        :value="settings[key] ?? spec.default ?? null"
+        :nullable="spec.nullable"
+        @update:value="updateSetting(key, $event)"
       />
 
       <!-- String input -->

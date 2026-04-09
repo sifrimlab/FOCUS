@@ -1,5 +1,5 @@
 export interface ParamSpec {
-  type: 'bool' | 'int' | 'float' | 'string' | 'enum';
+  type: 'bool' | 'int' | 'float' | 'string' | 'enum' | 'path';
   default: unknown;
   nullable?: boolean;
   options?: string[];
@@ -74,4 +74,10 @@ export interface BrowseResult {
   path: string;
   parent: string | null;
   entries: { name: string }[];
+}
+
+export interface BrowseFilesResult {
+  path: string;
+  parent: string | null;
+  entries: { name: string; is_dir: boolean }[];
 }
