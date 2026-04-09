@@ -6,15 +6,26 @@ const props = defineProps<{
   totalStages: number;
 }>();
 
-const stages = [
-  { index: 1, label: 'Preprocessing' },
-  { index: 2, label: 'Alignment' },
-  { index: 3, label: 'Registration' },
-  { index: 4, label: 'Compiling' },
-];
+const stages = computed(() => {
+  if (props.totalStages === 5) {
+    return [
+      { index: 1, label: 'Preprocessing' },
+      { index: 2, label: 'Alignment' },
+      { index: 3, label: 'Annotation Transfer' },
+      { index: 4, label: 'Registration' },
+      { index: 5, label: 'Compiling' },
+    ];
+  }
+  return [
+    { index: 1, label: 'Preprocessing' },
+    { index: 2, label: 'Alignment' },
+    { index: 3, label: 'Registration' },
+    { index: 4, label: 'Compiling' },
+  ];
+});
 
 const stageStatus = computed(() => {
-  return stages.map(s => ({
+  return stages.value.map(s => ({
     ...s,
     completed: s.index < props.currentStageIndex,
     active: s.index === props.currentStageIndex,
