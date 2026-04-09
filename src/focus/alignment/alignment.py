@@ -1,4 +1,4 @@
-import os, tifffile, threading, anndata
+import os, h5py, tifffile, threading, anndata
 import numpy as np
 from PIL import Image
 from sklearn.decomposition import NMF
@@ -319,15 +319,15 @@ class DirectMappingAligner:
 			force_recomputing = kwargs.get("force_recomputing", False)
 
 			for sample_index, sample_id in enumerate(self._common_samples):
-				# Check cache
+				# Check cache (use h5py to avoid loading full AnnData)
 				if not force_recomputing:
 					aligned_target_file = MODALITY_ALIGNMENT(self._path, sample_id, self._target_modality_name, "h5ad")
 					if os.path.exists(aligned_target_file):
-						adata = anndata.read_h5ad(aligned_target_file)
-						if f'{self._reference_modality_name}_spatial' in adata.obsm.keys():
-							del adata
-							continue
-						del adata
+						obsm_key = f'{self._reference_modality_name}_spatial'
+						with h5py.File(aligned_target_file, 'r') as f:
+							obsm = f.get('obsm')
+							if obsm is not None and obsm_key in obsm:
+								continue
 
 				# Prepare data for both modalities
 				ref_metadata, ref_payload, ref_scale_factors = self._prepare_modality_data(
@@ -547,15 +547,15 @@ class DirectMappingAligner:
 		"""Return True if at least one sample still needs to be aligned."""
 		if force_recomputing:
 			return len(self._common_samples) > 0
+		obsm_key = f'{self._reference_modality_name}_spatial'
 		for sample_id in self._common_samples:
 			aligned_target_file = MODALITY_ALIGNMENT(self._path, sample_id, self._target_modality_name, "h5ad")
 			if not os.path.exists(aligned_target_file):
 				return True
-			adata = anndata.read_h5ad(aligned_target_file)
-			has_key = f'{self._reference_modality_name}_spatial' in adata.obsm.keys()
-			del adata
-			if not has_key:
-				return True
+			with h5py.File(aligned_target_file, 'r') as f:
+				obsm = f.get('obsm')
+				if obsm is None or obsm_key not in obsm:
+					return True
 		return False
 
 	def collect_aligned_files(self) -> dict[str, str]:

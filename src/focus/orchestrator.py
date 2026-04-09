@@ -91,8 +91,11 @@ def run(config: dict, progress_callback=None) -> list[str]:
 		logger.info("STAGE 2: Alignment")
 		logger.info("=" * 60)
 		_report(state="running", stage="alignment", stage_index=2, total_stages=n_stages,
-				message="Starting alignment...", sub_step=None, sub_step_index=0,
-				sub_step_total=0, sub_step_progress=0, sub_step_items_total=0)
+				message="Starting alignment...",
+				current_modality=None, current_modality_index=0, total_modalities=0,
+				current_sample=None, current_sample_index=0, total_samples=0,
+				sub_step=None, sub_step_index=0, sub_step_total=0,
+				sub_step_progress=0, sub_step_items_total=0)
 		aligned_files = _run_alignment(config, modality_files, _report, n_stages)
 		for mod_files in aligned_files.values():
 			for path in mod_files.values():
@@ -231,6 +234,12 @@ def _run_alignment(config: dict, modality_files: dict, report, n_stages: int) ->
 
 		if strategy == AlignmentStrategy.PRE_ALIGNED:
 			logger.info(f"Pre-aligned strategy for '{mod_name}' — using uniform alignment (no GUI)")
+			report(state="running", stage="alignment", stage_index=2, total_stages=n_stages,
+				   current_modality=mod_name,
+				   message=f"Applying pre-aligned coordinates for '{mod_name}'...",
+				   current_sample=None, current_sample_index=0, total_samples=0,
+				   sub_step=None, sub_step_index=0, sub_step_total=0,
+				   sub_step_progress=0, sub_step_items_total=0)
 			aligned_files[mod_name] = aligner.uniform_aligned_dataset(force_recomputing=pair_force)
 		elif aligner.is_alignment_needed(force_recomputing=pair_force):
 			# Signal that alignment is starting — the GUI should show "Open Alignment Tool"
@@ -249,7 +258,13 @@ def _run_alignment(config: dict, modality_files: dict, report, n_stages: int) ->
 
 			aligned_files[mod_name] = aligner.align_dataset(force_recomputing=pair_force, on_gui_done=_on_gui_done)
 		else:
-			logger.info(f"Reference '{ref_name}' already aligned into '{mod_name}' space — skipping GUI")
+			logger.info(f"Reference '{ref_name}' already aligned into '{mod_name}' space — loading cached files")
+			report(state="running", stage="alignment", stage_index=2, total_stages=n_stages,
+				   current_modality=mod_name,
+				   message=f"Loading cached alignment for '{mod_name}'...",
+				   current_sample=None, current_sample_index=0, total_samples=0,
+				   sub_step=None, sub_step_index=0, sub_step_total=0,
+				   sub_step_progress=0, sub_step_items_total=0)
 			aligned_files[mod_name] = aligner.collect_aligned_files()
 
 		report(state="running", stage="alignment", stage_index=2, total_stages=n_stages,
