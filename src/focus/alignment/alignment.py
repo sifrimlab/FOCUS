@@ -573,11 +573,20 @@ class DirectMappingAligner:
 				aligned_samples["merged"] = merged_file
 		return aligned_samples
 
-	def align_dataset(self, force_recomputing: bool = False) -> dict[str, str]:
+	def align_dataset(self, force_recomputing: bool = False, on_gui_done=None) -> dict[str, str]:
 		"""
 		Align the target modality to the reference using the interactive GUI.
 
 		Starts the alignment GUI, processes all samples, then saves results.
+
+		Parameters
+		----------
+		force_recomputing : bool
+			If True, re-run alignment even if cached results exist.
+		on_gui_done : callable, optional
+			Called immediately after the alignment GUI server shuts down and
+			before file saving begins.  Use this to emit a progress update so
+			callers know the pipeline is still running while files are written.
 
 		Returns
 		-------
@@ -600,6 +609,10 @@ class DirectMappingAligner:
 
 		# Block until GUI completes
 		self._gui_interface.enable_gui()
+
+		# Notify caller that the GUI is done and file saving is about to start
+		if on_gui_done is not None:
+			on_gui_done()
 
 		# Determine combination and save
 		is_ref_image = self._reference_modality_type in _IMAGE_MODALITIES

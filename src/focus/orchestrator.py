@@ -93,7 +93,7 @@ def run(config: dict, progress_callback=None) -> list[str]:
 		_report(state="running", stage="alignment", stage_index=2, total_stages=n_stages,
 				message="Starting alignment...", sub_step=None, sub_step_index=0,
 				sub_step_total=0, sub_step_progress=0, sub_step_items_total=0)
-		aligned_files = _run_alignment(config, modality_files, _report)
+		aligned_files = _run_alignment(config, modality_files, _report, n_stages)
 		for mod_files in aligned_files.values():
 			for path in mod_files.values():
 				if path not in output_files:
@@ -110,7 +110,10 @@ def run(config: dict, progress_callback=None) -> list[str]:
 		_report(state="running", stage="annotation_transfer", stage_index=3, total_stages=n_stages,
 				message="Transferring spatial annotations...", sub_step=None, sub_step_index=0,
 				sub_step_total=0, sub_step_progress=0, sub_step_items_total=0)
-		annotation_files = _run_annotation_transfer(config, modality_files, aligned_files)
+		annotation_files = _run_annotation_transfer(
+			config, modality_files, aligned_files,
+			report=_report, stage_index=3, n_stages=n_stages,
+		)
 		for path in annotation_files.values():
 			output_files.append(path)
 		logger.info("Annotation transfer complete.")
@@ -171,7 +174,7 @@ def _has_spot_modalities(config: dict) -> bool:
 	return ref_mod[ModalityParameters.TYPE] in _SPOT_MODALITIES
 
 
-def _run_alignment(config: dict, modality_files: dict, report) -> dict:
+def _run_alignment(config: dict, modality_files: dict, report, n_stages: int) -> dict:
 	"""
 	Align the reference modality into each non-reference modality's coordinate system.
 
@@ -231,16 +234,25 @@ def _run_alignment(config: dict, modality_files: dict, report) -> dict:
 			aligned_files[mod_name] = aligner.uniform_aligned_dataset(force_recomputing=pair_force)
 		elif aligner.is_alignment_needed(force_recomputing=pair_force):
 			# Signal that alignment is starting — the GUI should show "Open Alignment Tool"
-			report(state="alignment_waiting", stage="alignment", stage_index=2, total_stages=4,
+			report(state="alignment_waiting", stage="alignment", stage_index=2, total_stages=n_stages,
 				   current_modality=mod_name,
-				   message=f"Waiting for alignment of reference '{ref_name}' into '{mod_name}' space...")
+				   message=f"Waiting for alignment of reference '{ref_name}' into '{mod_name}' space...",
+				   sub_step=None, sub_step_index=0, sub_step_total=0,
+				   sub_step_progress=0, sub_step_items_total=0)
 
-			aligned_files[mod_name] = aligner.align_dataset(force_recomputing=pair_force)
+			def _on_gui_done():
+				report(state="running", stage="alignment", stage_index=2, total_stages=n_stages,
+					   current_modality=mod_name,
+					   message=f"Saving alignment results for '{mod_name}'...",
+					   sub_step=None, sub_step_index=0, sub_step_total=0,
+					   sub_step_progress=0, sub_step_items_total=0)
+
+			aligned_files[mod_name] = aligner.align_dataset(force_recomputing=pair_force, on_gui_done=_on_gui_done)
 		else:
 			logger.info(f"Reference '{ref_name}' already aligned into '{mod_name}' space — skipping GUI")
 			aligned_files[mod_name] = aligner.collect_aligned_files()
 
-		report(state="running", stage="alignment", stage_index=2, total_stages=4,
+		report(state="running", stage="alignment", stage_index=2, total_stages=n_stages,
 			   current_modality=mod_name,
 			   message=f"Alignment complete for '{mod_name}'")
 
@@ -253,6 +265,9 @@ def _run_annotation_transfer(
 	config: dict,
 	modality_files: dict[str, dict[str, str]],
 	aligned_files: dict[str, dict[str, str]],
+	report=None,
+	stage_index: int = 3,
+	n_stages: int = 5,
 ) -> dict[str, str]:
 	"""
 	Transfer spatial annotations from the annotation modality to the reference modality spots.
@@ -274,7 +289,27 @@ def _run_annotation_transfer(
 
 	result: dict[str, str] = {}
 
+	per_sample_ids = [sid for sid in modality_files[ref_name] if sid != "merged"]
+	total_samples = len(per_sample_ids)
+
+	def _report_sample(sample_id, index):
+		if report:
+			report(state="running", stage="annotation_transfer",
+				   stage_index=stage_index, total_stages=n_stages,
+				   current_sample=sample_id, current_sample_index=index, total_samples=total_samples,
+				   message=f"Transferring annotations for sample '{sample_id}'...",
+				   sub_step=None, sub_step_index=0, sub_step_total=0,
+				   sub_step_progress=0, sub_step_items_total=0)
+
 	# --- Merged file ---
+	if report:
+		report(state="running", stage="annotation_transfer",
+			   stage_index=stage_index, total_stages=n_stages,
+			   current_sample="merged", current_sample_index=0, total_samples=total_samples,
+			   message="Transferring annotations for merged dataset...",
+			   sub_step=None, sub_step_index=0, sub_step_total=0,
+			   sub_step_progress=0, sub_step_items_total=0)
+
 	ref_merged_path = modality_files[ref_name]["merged"]
 	ref_merged = anndata.read_h5ad(ref_merged_path)
 
@@ -302,10 +337,10 @@ def _run_annotation_transfer(
 	logger.info(f"Annotated merged reference saved to {merged_out}")
 
 	# --- Per-sample files ---
-	for sample_id, ref_path in modality_files[ref_name].items():
-		if sample_id == "merged":
-			continue
+	for i, sample_id in enumerate(per_sample_ids, 1):
+		_report_sample(sample_id, i)
 
+		ref_path = modality_files[ref_name][sample_id]
 		ref_sample = anndata.read_h5ad(ref_path)
 
 		if ann_mod_name == ref_name:
