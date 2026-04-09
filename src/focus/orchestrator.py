@@ -287,8 +287,10 @@ def _run_annotation_transfer(
 	"""
 	Transfer spatial annotations from the annotation modality to the reference modality spots.
 
-	Produces annotated h5ad files (per-sample + merged) that are copies of the reference
-	modality's preprocessed files with a 'spatial_annotation' categorical obs column added.
+	Annotations are transferred per sample (using per-sample aligned coordinates as the
+	reliable source), then the annotated per-sample files are concatenated into a merged
+	annotated file.  This avoids any dependency on the merged aligned file, which may be
+	absent or incomplete if a previous run was interrupted before its merge step.
 
 	Returns
 	-------
@@ -307,53 +309,23 @@ def _run_annotation_transfer(
 	per_sample_ids = [sid for sid in modality_files[ref_name] if sid != "merged"]
 	total_samples = len(per_sample_ids)
 
-	def _report_sample(sample_id, index):
-		if report:
-			report(state="running", stage="annotation_transfer",
-				   stage_index=stage_index, total_stages=n_stages,
-				   current_sample=sample_id, current_sample_index=index, total_samples=total_samples,
-				   message=f"Transferring annotations for sample '{sample_id}'...",
-				   sub_step=None, sub_step_index=0, sub_step_total=0,
-				   sub_step_progress=0, sub_step_items_total=0)
-
-	# --- Merged file ---
-	if report:
-		report(state="running", stage="annotation_transfer",
-			   stage_index=stage_index, total_stages=n_stages,
-			   current_sample="merged", current_sample_index=0, total_samples=total_samples,
-			   message="Transferring annotations for merged dataset...",
-			   sub_step=None, sub_step_index=0, sub_step_total=0,
-			   sub_step_progress=0, sub_step_items_total=0)
-
-	ref_merged_path = modality_files[ref_name]["merged"]
-	ref_merged = anndata.read_h5ad(ref_merged_path)
-
-	if ann_mod_name == ref_name:
-		annotation_coords = np.asarray(ref_merged.obsm['spatial'])
-	else:
-		ann_aligned_merged = anndata.read_h5ad(aligned_files[ann_mod_name]["merged"])
-		annotation_coords = np.asarray(ann_aligned_merged.obsm[f'{ann_mod_name}_spatial'])
-
-	sample_ids_arr = np.asarray(ref_merged.obs['sample_id'])
-
+	# Build annotation paths once — one GeoJSON per sample in the annotation modality folder
 	annotation_paths: dict[str, str] = {}
-	for sid in np.unique(sample_ids_arr):
+	for sid in per_sample_ids:
 		mod_dir = os.path.join(dataset_path, sid, ann_mod_name)
 		geojson_files = [f for f in os.listdir(mod_dir) if f.endswith('.geojson')]
 		annotation_paths[sid] = os.path.join(mod_dir, geojson_files[0])
 
-	ann_labels = transfer_annotations(annotation_coords, sample_ids_arr, annotation_paths)
-	ref_merged.obs['spatial_annotation'] = pd.Categorical(ann_labels)
-
-	merged_out = MODALITY_ANNOTATION_MERGED(dataset_path, ref_name, "h5ad")
-	os.makedirs(os.path.dirname(merged_out), exist_ok=True)
-	ref_merged.write(merged_out)
-	result["merged"] = merged_out
-	logger.info(f"Annotated merged reference saved to {merged_out}")
-
-	# --- Per-sample files ---
+	# --- Per-sample annotation transfer ---
+	per_sample_annotated: list[str] = []
 	for i, sample_id in enumerate(per_sample_ids, 1):
-		_report_sample(sample_id, i)
+		if report:
+			report(state="running", stage="annotation_transfer",
+				   stage_index=stage_index, total_stages=n_stages,
+				   current_sample=sample_id, current_sample_index=i, total_samples=total_samples,
+				   message=f"Transferring annotations for sample '{sample_id}'...",
+				   sub_step=None, sub_step_index=0, sub_step_total=0,
+				   sub_step_progress=0, sub_step_items_total=0)
 
 		ref_path = modality_files[ref_name][sample_id]
 		ref_sample = anndata.read_h5ad(ref_path)
@@ -365,14 +337,34 @@ def _run_annotation_transfer(
 			coords_sample = np.asarray(ann_sample.obsm[f'{ann_mod_name}_spatial'])
 
 		sids_sample = np.asarray(ref_sample.obs['sample_id'])
-		ann_labels_sample = transfer_annotations(coords_sample, sids_sample, annotation_paths)
-		ref_sample.obs['spatial_annotation'] = pd.Categorical(ann_labels_sample)
+		ann_labels = transfer_annotations(coords_sample, sids_sample, annotation_paths)
+		ref_sample.obs['spatial_annotation'] = pd.Categorical(ann_labels)
 
 		sample_out = MODALITY_ANNOTATION(dataset_path, sample_id, ref_name, "h5ad")
 		os.makedirs(os.path.dirname(sample_out), exist_ok=True)
 		ref_sample.write(sample_out)
 		result[sample_id] = sample_out
+		per_sample_annotated.append(sample_out)
 		logger.debug(f"Annotated sample '{sample_id}' saved to {sample_out}")
+
+	# --- Merge annotated per-sample files ---
+	if per_sample_annotated:
+		if report:
+			report(state="running", stage="annotation_transfer",
+				   stage_index=stage_index, total_stages=n_stages,
+				   current_sample=None, current_sample_index=total_samples, total_samples=total_samples,
+				   message="Merging annotated samples...",
+				   sub_step=None, sub_step_index=0, sub_step_total=0,
+				   sub_step_progress=0, sub_step_items_total=0)
+
+		merged_out = MODALITY_ANNOTATION_MERGED(dataset_path, ref_name, "h5ad")
+		os.makedirs(os.path.dirname(merged_out), exist_ok=True)
+		anndata.experimental.concat_on_disk(
+			per_sample_annotated, merged_out,
+			merge="same", uns_merge="same",
+		)
+		result["merged"] = merged_out
+		logger.info(f"Annotated merged reference saved to {merged_out}")
 
 	return result
 
