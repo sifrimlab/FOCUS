@@ -3,13 +3,18 @@ import { ref, nextTick } from 'vue';
 import { useMainStore } from '../store/main';
 import ModalityCard from '../components/ModalityCard.vue';
 import ConfigUploader from '../components/ConfigUploader.vue';
+import { useDialog } from '../composables/useDialog';
 
 const store = useMainStore();
+const { showConfirm } = useDialog();
 
-const confirmReset = () => {
-  if (confirm('Reset all configuration? This cannot be undone.')) {
-    store.resetAll();
-  }
+const confirmReset = async () => {
+  const ok = await showConfirm({
+    message: 'Reset all configuration? This cannot be undone.',
+    confirmLabel: 'Reset',
+    variant: 'danger',
+  });
+  if (ok) store.resetAll();
 };
 
 // Add modality: name-entry inline form
@@ -44,10 +49,13 @@ const cancelAddModality = () => {
   showNameEntry.value = false;
 };
 
-const confirmRemoveAll = () => {
-  if (confirm('Remove all modalities? This cannot be undone.')) {
-    store.removeAllModalities();
-  }
+const confirmRemoveAll = async () => {
+  const ok = await showConfirm({
+    message: 'Remove all modalities? This cannot be undone.',
+    confirmLabel: 'Remove All',
+    variant: 'danger',
+  });
+  if (ok) store.removeAllModalities();
 };
 </script>
 

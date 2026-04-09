@@ -5,6 +5,7 @@ import SetupView from './views/SetupView.vue';
 import ConfigView from './views/ConfigView.vue';
 import RunningView from './views/RunningView.vue';
 import CompleteView from './views/CompleteView.vue';
+import ConfirmDialog from './components/ConfirmDialog.vue';
 
 const store = useMainStore();
 const isDark = ref(false);
@@ -65,6 +66,9 @@ onMounted(async () => {
       <RunningView v-else-if="store.currentView === 'running'" />
       <CompleteView v-else-if="store.currentView === 'complete'" />
     </template>
+
+    <!-- Global confirm dialog -->
+    <ConfirmDialog />
 
   </div>
 </template>

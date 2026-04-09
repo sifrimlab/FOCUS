@@ -4,9 +4,11 @@ import { useMainStore } from '../store/main';
 import type { Modality } from '../api/types';
 import ProcessingSettingsForm from './ProcessingSettingsForm.vue';
 import RegistrationSettingsForm from './RegistrationSettingsForm.vue';
+import { useDialog } from '../composables/useDialog';
 
 const props = defineProps<{ index: number }>();
 const store = useMainStore();
+const { showConfirm } = useDialog();
 
 const modality = computed(() => store.config.modalities[props.index]!);
 
@@ -76,10 +78,13 @@ const onAlignmentStrategyChange = (newStrategy: string) => {
   store.updateModality(props.index, { alignment_strategy: newStrategy });
 };
 
-const confirmRemove = () => {
-  if (confirm(`Remove modality "${modality.value.name}"?`)) {
-    store.removeModality(props.index);
-  }
+const confirmRemove = async () => {
+  const ok = await showConfirm({
+    message: `Remove modality "${modality.value.name}"?`,
+    confirmLabel: 'Remove',
+    variant: 'danger',
+  });
+  if (ok) store.removeModality(props.index);
 };
 
 // Inline name editing
