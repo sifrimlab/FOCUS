@@ -181,6 +181,12 @@ class SpatialTranscriptomic(BaseSample):
         if max_genes_per_spot is not None:
             sc.pp.filter_cells(adata, max_genes=max_genes_per_spot)
 
+        # Remove genes with zero expression after spot filtering (best practice).
+        # Spot filters may remove all spots where a gene was expressed, leaving
+        # it as an all-zero column. Such genes must be dropped before normalization
+        # so they don't distort cross-sample comparisons.
+        sc.pp.filter_genes(adata, min_cells=1)
+
         # Make observation names unique across samples
         if not all(obs_name.startswith(f"{self.sample_id}_") for obs_name in adata.obs_names):
             adata.obs_names = [f"{self.sample_id}_{obs_name}" for obs_name in adata.obs_names]
@@ -340,12 +346,14 @@ class SpatialTranscriptomicDataset(BaseDataset):
             return processed_samples
 
         reporter.message(f"Concatenating {len(self.samples)} samples...")
-        combined = ad.concat(adata_list)
+        # outer join: samples may have different gene sets after per-sample
+        # gene filtering; missing values are filled with 0 (unexpressed).
+        combined = ad.concat(adata_list, join='outer', fill_value=0)
         del adata_list  # Free per-sample objects
 
-        # Ensure .X is sparse after concatenation
-        if not sp.issparse(combined.X):
-            combined.X = sp.csr_matrix(combined.X)
+        # Ensure CSR format for efficient row-based filter operations.
+        # ad.concat may produce CSC; tocsr() is a no-op if already CSR.
+        combined.X = combined.X.tocsr() if sp.issparse(combined.X) else sp.csr_matrix(combined.X)
 
         # ---- Cross-sample gene filtering ----
         reporter.message(f"{combined.n_vars} genes before filtering")
