@@ -340,18 +340,13 @@ class SpatialTranscriptomicDataset(BaseDataset):
             return processed_samples
 
         reporter.message(f"Concatenating {len(self.samples)} samples...")
-        combined = ad.concat(adata_list, join='inner')
+        # Use outer join to preserve genes when panels differ across samples.
+        # Missing genes are filled with 0 counts.
+        combined = ad.concat(adata_list, join="outer", fill_value=0)
         del adata_list  # Free per-sample objects
 
-        # Ensure CSR format for efficient row-based filter operations.
-        # ad.concat may produce CSC format; tocsr() is a no-op if already CSR.
+        # Ensure .X is sparse CSR for efficient row-based filter operations.
         combined.X = combined.X.tocsr() if sp.issparse(combined.X) else sp.csr_matrix(combined.X)
-
-        # Remove genes with zero expression across the entire combined dataset.
-        # Spot filtering may have eliminated all spots where a gene was expressed,
-        # leaving it as an all-zero column. Removing these before cross-sample
-        # filtering ensures the downstream filters operate on meaningful signal.
-        sc.pp.filter_genes(combined, min_cells=1)
 
         # ---- Cross-sample gene filtering ----
         reporter.message(f"{combined.n_vars} genes before cross-sample filtering")
