@@ -78,6 +78,12 @@ class StepReporter:
 			yield item
 			self._update(desc, i + 1, n)
 
+	def message(self, msg: str) -> None:
+		"""Send a status message to the GUI message log and print to stdout."""
+		print(msg)
+		if self._callback:
+			self._callback({"message": msg})
+
 	def set_sample(self, sample_id: str, index: int, total: int) -> None:
 		"""Set the current sample context and reset sub-step fields. Fires callback."""
 		print(f"[{index}/{total}] Processing sample: {sample_id}")

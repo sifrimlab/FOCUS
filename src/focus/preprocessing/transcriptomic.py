@@ -305,8 +305,9 @@ class SpatialTranscriptomicDataset(BaseDataset):
         adata_list: list[ad.AnnData] = []
         spot_sizes: dict[str, np.ndarray] = {}
 
-        for sample in self.samples:
-            print(f"  Preprocessing sample {sample.sample_id}")
+        total_samples = len(self.samples)
+        for i, sample in enumerate(self.samples):
+            reporter.set_sample(sample.sample_id, i + 1, total_samples)
 
             processed_samples[sample.sample_id] = sample.preprocess_data(
                 min_count_per_spot=min_count_per_spot,
@@ -334,10 +335,11 @@ class SpatialTranscriptomicDataset(BaseDataset):
         merged_file = MODALITY_PREPROCESSING_MERGED(self.dataset_source_path, self.samples[0].modality_name, "h5ad")
 
         if not force_recomputing and os.path.exists(merged_file):
-            print("  Combined dataset already exists. Using cached results.")
+            reporter.message("Combined dataset already exists. Using cached results.")
             processed_samples["merged"] = merged_file
             return processed_samples
 
+        reporter.message(f"Concatenating {len(self.samples)} samples...")
         combined = ad.concat(adata_list)
         del adata_list  # Free per-sample objects
 
@@ -346,23 +348,27 @@ class SpatialTranscriptomicDataset(BaseDataset):
             combined.X = sp.csr_matrix(combined.X)
 
         # ---- Cross-sample gene filtering ----
-        print(f"  Unfiltered genes in combined dataset: {combined.n_vars}")
+        reporter.message(f"{combined.n_vars} genes before filtering")
 
         if min_spots_per_gene is not None:
+            reporter.message(f"Filtering genes by expression frequency (min_spots_per_gene={min_spots_per_gene})...")
             combined = self._filter_genes_by_expression_frequency(combined, min_spots_per_gene)
-            print(f"  Genes after min_spots_per_gene={min_spots_per_gene}: {combined.n_vars}")
+            reporter.message(f"{combined.n_vars} genes after min_spots_per_gene={min_spots_per_gene}")
 
         if min_count_spots_ratio_per_gene is not None:
+            reporter.message(f"Filtering genes by count/spot ratio (min_count_spots_ratio_per_gene={min_count_spots_ratio_per_gene})...")
             combined = self._filter_genes_by_count_ratio(combined, min_count_spots_ratio_per_gene)
-            print(f"  Genes after min_count_spots_ratio_per_gene={min_count_spots_ratio_per_gene}: {combined.n_vars}")
+            reporter.message(f"{combined.n_vars} genes after min_count_spots_ratio_per_gene={min_count_spots_ratio_per_gene}")
 
         # Store raw counts after gene filtering (preserves sparse format)
         combined.layers['raw'] = combined.X.copy()
 
         # ---- Normalize merged dataset ----
         if total_counts_normalize:
+            reporter.message("Normalizing total counts...")
             sc.pp.normalize_total(combined, target_sum=self._NORMALIZE_TARGET_SUM, inplace=True)
         if log1p_transform:
+            reporter.message("Applying log1p transformation...")
             sc.pp.log1p(combined)
 
         # Per-sample Leiden labels are already in .obs["leiden"] from concatenation
@@ -375,6 +381,7 @@ class SpatialTranscriptomicDataset(BaseDataset):
         combined.uns["spot_size"] = {sid: ss.tolist() for sid, ss in spot_sizes.items()}
 
         # Save with compression
+        reporter.message("Saving combined dataset...")
         combined.write_h5ad(merged_file, compression=self._H5AD_COMPRESSION)
         processed_samples["merged"] = merged_file
         return processed_samples
@@ -390,10 +397,11 @@ class SpatialTranscriptomicDataset(BaseDataset):
         gene_preserved_counts = np.zeros(adata.n_vars, dtype=int)
 
         for sid in sample_ids:
-            sample_mask = adata.obs['sample_id'] == sid
+            sample_mask = (adata.obs['sample_id'] == sid).values
             X_sample = adata.X[sample_mask, :]
-            min_cells = int(np.floor(X_sample.shape[0] * min_spots_per_gene))
-            # .sum(axis=0) works on both sparse and dense, returns matrix/array
+            # ceil ensures min_cells >= 1 when min_spots_per_gene > 0,
+            # so genes with zero expression always fail this threshold.
+            min_cells = max(1, int(np.ceil(X_sample.shape[0] * min_spots_per_gene)))
             expressed_per_gene = np.asarray((X_sample > 0).sum(axis=0)).flatten()
             gene_preserved_counts += (expressed_per_gene >= min_cells).astype(int)
 
@@ -403,19 +411,28 @@ class SpatialTranscriptomicDataset(BaseDataset):
     def _filter_genes_by_count_ratio(self, adata: ad.AnnData, min_count_spots_ratio: float) -> ad.AnnData:
         '''
         Filter genes where the ratio of total counts to expressed spots is below the threshold,
-        in a sufficient number of samples.
+        in a sufficient number of samples where the gene is actually expressed.
+        Genes absent from a sample are not counted (neither for nor against).
         Operates on sparse matrices without densification.
         '''
-        num_samples = len(self.samples)
+        sample_ids = adata.obs['sample_id'].unique()
+        num_samples = len(sample_ids)
         gene_preserved_counts = np.zeros(adata.n_vars, dtype=int)
 
-        for sample in self.samples:
-            sample_mask = adata.obs['sample_id'] == sample.sample_id
+        for sid in sample_ids:
+            sample_mask = (adata.obs['sample_id'] == sid).values
             X_sample = adata.X[sample_mask, :]
             expressed_counts = np.asarray((X_sample > 0).sum(axis=0)).flatten()
             total_counts = np.asarray(X_sample.sum(axis=0)).flatten()
-            keep_mask = total_counts >= min_count_spots_ratio * expressed_counts
-            gene_preserved_counts += keep_mask.astype(int)
+            # Only evaluate the ratio where the gene is actually expressed in this sample.
+            # Unexpressed genes (expressed_counts == 0) are neutral: they neither pass
+            # nor fail the ratio test, so they don't inflate gene_preserved_counts.
+            expressed_mask = expressed_counts > 0
+            ratio_ok = np.zeros(adata.n_vars, dtype=bool)
+            ratio_ok[expressed_mask] = (
+                total_counts[expressed_mask] >= min_count_spots_ratio * expressed_counts[expressed_mask]
+            )
+            gene_preserved_counts += ratio_ok.astype(int)
 
         min_samples_required = np.ceil(self._NUM_SAMPLES_FILTER * num_samples)
         return adata[:, gene_preserved_counts >= min_samples_required].copy()
