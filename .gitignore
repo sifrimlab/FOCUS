@@ -208,3 +208,6 @@ gui_src/**/node_modules/
 gui_src/**/.vite/
 gui_src/**/*.tsbuildinfo
 gui_src/**/dist/
+
+# Graphify data
+graphify-out/
