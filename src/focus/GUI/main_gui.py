@@ -1,4 +1,4 @@
-import os, json, threading, traceback
+import os, json, logging, threading, traceback
 
 from flask import Flask, request, jsonify, send_from_directory
 from werkzeug.serving import make_server
@@ -26,11 +26,18 @@ class MainGUI:
 	Runs on localhost:5000.
 	"""
 
-	def __init__(self):
+	def __init__(self, debug: bool = False):
+		self._debug = debug
 		self._config: dict = {}
 		self._pipeline_thread: threading.Thread | None = None
 		self._pipeline_status: dict = _default_status()
 		self._basedir = os.path.join(os.path.dirname(__file__), 'main')
+
+		# Silence werkzeug HTTP request logs unless debug mode is requested.
+		# Must be set here, before the server starts receiving requests.
+		logging.getLogger("werkzeug").setLevel(
+			logging.DEBUG if debug else logging.WARNING
+		)
 
 		self.app = Flask(__name__)
 
@@ -230,7 +237,7 @@ class MainGUI:
 			# Set up logging
 			from focus import utils
 			dataset_path = self._config[ConfigParameters.DATASET_PATH]
-			utils.setup_logging(dataset_path)
+			utils.setup_logging(dataset_path, debug=self._debug)
 
 			# Reset status
 			self._pipeline_status = _default_status()

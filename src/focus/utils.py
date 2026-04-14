@@ -23,10 +23,19 @@ def available_cpus():
 		return multiprocessing.cpu_count()
 
 
-def setup_logging(dataset_path: str) -> logging.Logger:
+def setup_logging(dataset_path: str, debug: bool = False) -> logging.Logger:
 	"""
-	Configure the 'focus' logger with console (INFO) and file (DEBUG) handlers.
+	Configure the 'focus' logger with console and file (DEBUG) handlers.
 	The log file is written to {dataset_path}/focus.log.
+
+	Parameters
+	----------
+	dataset_path : str
+		Directory where focus.log is written.
+	debug : bool
+		If True, the console handler emits DEBUG-level messages and werkzeug
+		HTTP request logs are shown.  If False (default), the console shows
+		INFO and above only, and werkzeug is silenced.
 
 	Returns the configured logger.
 	"""
@@ -38,16 +47,16 @@ def setup_logging(dataset_path: str) -> logging.Logger:
 
 	logger.setLevel(logging.DEBUG)
 
-	# Console handler: INFO level
+	# Console handler: DEBUG in debug mode, INFO otherwise
 	console = logging.StreamHandler()
-	console.setLevel(logging.INFO)
+	console.setLevel(logging.DEBUG if debug else logging.INFO)
 	console.setFormatter(logging.Formatter(
 		"%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 		datefmt="%H:%M:%S"
 	))
 	logger.addHandler(console)
 
-	# File handler: DEBUG level
+	# File handler: always DEBUG
 	log_file = os.path.join(dataset_path, "focus.log")
 	file_handler = logging.FileHandler(log_file, mode='a')
 	file_handler.setLevel(logging.DEBUG)
@@ -55,6 +64,9 @@ def setup_logging(dataset_path: str) -> logging.Logger:
 		"%(asctime)s [%(levelname)s] %(name)s (%(filename)s:%(lineno)d): %(message)s"
 	))
 	logger.addHandler(file_handler)
+
+	# Silence werkzeug HTTP request logs unless in debug mode
+	logging.getLogger("werkzeug").setLevel(logging.DEBUG if debug else logging.WARNING)
 
 	return logger
 

@@ -7,6 +7,8 @@ def main():
 	)
 	parser.add_argument('-c', '--config', type=str, required=False, default=None,
 						help='Absolute path of the JSON config file. If omitted, the GUI starts.')
+	parser.add_argument('--debug', action='store_true', default=False,
+						help='Enable debug logging (shows all log levels including HTTP request logs).')
 	args = parser.parse_args()
 
 	if args.config:
@@ -26,14 +28,14 @@ def main():
 
 		config = utils.parse_config(config)
 
-		logger = utils.setup_logging(config[ConfigParameters.DATASET_PATH])
+		logger = utils.setup_logging(config[ConfigParameters.DATASET_PATH], debug=args.debug)
 		logger.info(f"Config loaded and validated: {config_path}")
 
 		orchestrator.run(config)
 	else:
 		# GUI mode: start web interface
 		from focus.GUI.main_gui import MainGUI
-		gui = MainGUI()
+		gui = MainGUI(debug=args.debug)
 		gui.start()
 
 
