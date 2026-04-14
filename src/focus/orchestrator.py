@@ -158,7 +158,7 @@ def run(config: dict, progress_callback=None) -> dict:
 		_report(state="running", stage="registration", stage_index=stage_reg, total_stages=n_stages,
 				message="Starting registration...", sub_step=None, sub_step_index=0,
 				sub_step_total=0, sub_step_progress=0, sub_step_items_total=0)
-		registered_files = _run_registration(config, modality_files, aligned_files)
+		registered_files = _run_registration(config, modality_files, aligned_files, step_reporter)
 		reg_merged: list[str] = []
 		reg_per_modality: dict[str, list[str]] = {}
 		for mod_name, mod_files in registered_files.items():
@@ -401,7 +401,7 @@ def _run_annotation_transfer(
 	return result
 
 
-def _run_registration(config: dict, modality_files: dict, aligned_files: dict) -> dict:
+def _run_registration(config: dict, modality_files: dict, aligned_files: dict, step_reporter=None) -> dict:
 	"""
 	Register each non-reference modality that has a registration_type != 'none'.
 
@@ -448,6 +448,7 @@ def _run_registration(config: dict, modality_files: dict, aligned_files: dict) -
 				force_recomputing=reg_settings.get("force_recomputing", False),
 				background_color=reg_settings.get("background_color", None),
 				patch_size=reg_settings.get("patch_size", 224),
+				step_reporter=step_reporter,
 			)
 
 		elif reg_type == RegistrationType.SPOT_INTERPOLATION:
@@ -463,6 +464,7 @@ def _run_registration(config: dict, modality_files: dict, aligned_files: dict) -
 				target_name=mod_name,
 				min_max_rescale=reg_settings.get("min_max_rescale", True),
 				force_recomputing=reg_settings.get("force_recomputing", False),
+				step_reporter=step_reporter,
 			)
 
 		else:

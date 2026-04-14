@@ -68,6 +68,10 @@ class StepReporter:
 		"""Update progress count without printing (called during tqdm iteration)."""
 		self._send(desc, current, total)
 
+	def update(self, desc: str, current: int, total: int) -> None:
+		"""Update item-level progress without printing to stdout (e.g. mid-loop updates)."""
+		self._send(desc, current, total)
+
 	def tqdm(self, iterable, desc: str, total: int | None = None, **kwargs):
 		"""tqdm replacement that also reports progress to the GUI."""
 		if total is None and hasattr(iterable, '__len__'):

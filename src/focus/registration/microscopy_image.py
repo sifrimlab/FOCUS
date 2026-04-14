@@ -169,7 +169,7 @@ class MicroscopyImageFeatureExtractor:
 
 		return filtered_patches, filtered_topleft_coordinates, filtered_center_coordinates
 
-	def _extract_patch_embeddings(self, patches: np.ndarray) -> np.ndarray:
+	def _extract_patch_embeddings(self, patches: np.ndarray, step_reporter=None) -> np.ndarray:
 		"""
 		Extract embeddings from the image patches using a pre-trained model.
 
@@ -177,17 +177,17 @@ class MicroscopyImageFeatureExtractor:
 		----------
 		patches : np.ndarray
 			A NumPy array of shape (N, patch_size, patch_size, C) containing the extracted patches.
-		topleft_coordinates : np.ndarray
-			A NumPy array of shape (N, 2) containing the (x, y) coordinates of the top-left corner of each patch
-			in the original image.
+		step_reporter : StepReporter, optional
+			If provided, reports per-patch progress to the GUI.
 
 		Returns
 		----------
 		patch_embeddings : np.ndarray
-			A NumPy array of shape (N, embedding_size) containing the patch embeddings before slide refinement.
+			A NumPy array of shape (N, embedding_size) containing the patch embeddings.
 		"""
+		n_patches = patches.shape[0]
 
-		# Convert patches and coordinates to torch tensors
+		# Convert patches to torch tensors
 		patches_tensor = torch.from_numpy(patches).permute(0, 3, 1, 2).to(self.device)  # shape (N, C, H, W)
 
 		# Apply normalization as defined for this pretrained model
@@ -200,14 +200,22 @@ class MicroscopyImageFeatureExtractor:
 		dataloader = torch.utils.data.DataLoader(dataset, batch_size=32, shuffle=False)
 
 		embeddings: list[np.ndarray] = []
+		processed = 0
 
-		# Extract embeddings for the current level
+		# Initialise GUI sub-step with total patch count before the loop starts
+		if step_reporter:
+			step_reporter.step("Extracting patch embeddings", 0, n_patches)
+
+		# Extract embeddings batch by batch, updating GUI progress after each batch
 		with torch.inference_mode():
-			for batch in tqdm.tqdm(dataloader, desc=f"Extracting patch embeddings", unit="batch"):
-				input_tensor = batch[0].to(self.device)                      			# Shape [B, 3, 224, 224]
-				embeddings.append(self.patch_encoder(input_tensor).cpu().numpy())       # Shape [B, 1536]
+			for batch in tqdm.tqdm(dataloader, desc="Extracting patch embeddings", unit="batch"):
+				input_tensor = batch[0].to(self.device)                           # Shape [B, 3, 224, 224]
+				embeddings.append(self.patch_encoder(input_tensor).cpu().numpy()) # Shape [B, 1536]
+				if step_reporter:
+					processed += input_tensor.shape[0]
+					step_reporter.update("Extracting patch embeddings", processed, n_patches)
 
-		embeddings: np.ndarray = np.concatenate(embeddings, axis=0)  					# Shape [N, 1536]
+		embeddings: np.ndarray = np.concatenate(embeddings, axis=0)  # Shape [N, 1536]
 
 		# Free memory
 		del mean, std, patches_tensor, dataset, dataloader
@@ -221,6 +229,7 @@ class MicroscopyImageFeatureExtractor:
 		patch_centers: np.ndarray | None = None,
 		background_color: SegmentationBackgroundColor = SegmentationBackgroundColor.WHITE,
 		patch_size: int = 224,
+		step_reporter=None,
 	) -> tuple[np.ndarray, np.ndarray]:
 		'''
 		Use the patch extractor to compute patch embeddings for the image.
@@ -284,7 +293,7 @@ class MicroscopyImageFeatureExtractor:
 				return np.zeros((n_patches, dummy_emb.shape[1]), dtype=np.float32), center_coordinates
 
 			# Encode only valid patches (efficiency), then scatter into full-size array.
-			valid_embeddings = self._extract_patch_embeddings(patches[valid_indices])
+			valid_embeddings = self._extract_patch_embeddings(patches[valid_indices], step_reporter=step_reporter)
 			patch_embeddings = np.zeros((n_patches, valid_embeddings.shape[1]), dtype=np.float32)
 			patch_embeddings[valid_indices] = valid_embeddings
 			return patch_embeddings, center_coordinates
@@ -294,5 +303,5 @@ class MicroscopyImageFeatureExtractor:
 			patches, topleft_coordinates, center_coordinates = self._filter_empty_patches(
 				patches, topleft_coordinates, center_coordinates, background_color
 			)
-			patch_embeddings = self._extract_patch_embeddings(patches)
+			patch_embeddings = self._extract_patch_embeddings(patches, step_reporter=step_reporter)
 			return patch_embeddings, center_coordinates

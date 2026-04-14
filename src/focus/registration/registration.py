@@ -59,6 +59,7 @@ class FeatureExtractorRegistration:
 		anchor_name: str,
 		min_max_rescale: bool = True,
 		force_recomputing: bool = False,
+		step_reporter=None,
 		**kwargs,
 	) -> dict[str, str]:
 		"""
@@ -80,6 +81,8 @@ class FeatureExtractorRegistration:
 			Whether to apply min-max rescaling across all samples.
 		force_recomputing : bool
 			Whether to recompute even if cached results exist.
+		step_reporter : StepReporter, optional
+			If provided, reports per-sample and per-patch progress to the GUI.
 
 		Returns
 		-------
@@ -88,17 +91,19 @@ class FeatureExtractorRegistration:
 		"""
 		common_samples = sorted(set(image_files.keys()) & set(anchor_files.keys()) - {"merged"})
 		registered_files: dict[str, str] = {}
+		total_samples = len(common_samples)
 
-		# Determine modality type for feature extractor
-		feature_extractor = MicroscopyImageFeatureExtractor(
-			path=self._path,
-			hf_token=self._hf_token
-		)
+		# Feature extractor is created lazily — only if at least one sample needs (re)encoding.
+		# This avoids loading the pretrained model when all results are already cached.
+		feature_extractor: MicroscopyImageFeatureExtractor | None = None
 
 		all_cached = True  # tracks whether all per-sample files came from valid cache
 
-		for sample_id in common_samples:
+		for sample_idx, sample_id in enumerate(common_samples, 1):
 			logger.info(f"Registering '{image_name}' for sample '{sample_id}'")
+
+			if step_reporter:
+				step_reporter.set_sample(sample_id, sample_idx, total_samples)
 
 			# Output path
 			reg_dir = os.path.join(self._path, sample_id, "registration")
@@ -132,6 +137,14 @@ class FeatureExtractorRegistration:
 
 			all_cached = False
 
+			# Load the model the first time a sample actually needs feature extraction
+			if feature_extractor is None:
+				logger.info("Loading feature extractor model...")
+				feature_extractor = MicroscopyImageFeatureExtractor(
+					path=self._path,
+					hf_token=self._hf_token,
+				)
+
 			# Load image
 			image_data = self._load_ome_tiff(image_files[sample_id])
 
@@ -142,6 +155,7 @@ class FeatureExtractorRegistration:
 				image=image_data,
 				patch_centers=patch_centers,
 				patch_size=patch_size,
+				step_reporter=step_reporter,
 				**({"background_color": background_color} if background_color is not None else {})
 			)
 
@@ -326,6 +340,7 @@ class SpotInterpolationRegistration:
 		target_name: str,
 		min_max_rescale: bool = True,
 		force_recomputing: bool = False,
+		step_reporter=None,
 	) -> dict[str, str]:
 		"""
 		Register a spot-based target modality to the anchor using Gaussian interpolation.
@@ -355,6 +370,8 @@ class SpotInterpolationRegistration:
 			Whether to apply global min-max rescaling across all samples.
 		force_recomputing : bool
 			Whether to recompute even if cached results exist.
+		step_reporter : StepReporter, optional
+			If provided, reports per-sample progress to the GUI.
 
 		Returns
 		-------
@@ -363,11 +380,15 @@ class SpotInterpolationRegistration:
 		"""
 		common_samples = sorted(set(anchor_files.keys()) & set(target_files.keys()) - {"merged"})
 		registered_files: dict[str, str] = {}
+		total_samples = len(common_samples)
 
 		all_cached = True  # tracks whether all per-sample files came from valid cache
 
-		for sample_id in common_samples:
+		for sample_idx, sample_id in enumerate(common_samples, 1):
 			logger.info(f"Registering '{target_name}' for sample '{sample_id}'")
+
+			if step_reporter:
+				step_reporter.set_sample(sample_id, sample_idx, total_samples)
 
 			# Output path
 			reg_dir = os.path.join(self._path, sample_id, "registration")
