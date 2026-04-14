@@ -9,6 +9,10 @@ for arg in "$@"; do
     [[ "$arg" == "--reinstall" ]] && REINSTALL=1
 done
 
+# Global: constraints file used to pin torch + torchvision so that later
+# pip install commands cannot silently overwrite them from PyPI.
+TORCH_CONSTRAINTS=""
+
 # ── Helper: print coloured status messages ────────────────────────────────────
 info()    { echo -e "\033[1;34m[INFO]\033[0m  $*"; }
 success() { echo -e "\033[1;32m[OK]\033[0m    $*"; }
@@ -212,16 +216,34 @@ install_pytorch_packages() {
         [[ -n "$hpc_env" ]] && info "HPC environment (${hpc_env}) confirmed — system CUDA libs will not be overridden."
     fi
 
-    # Step 1: torch from the pytorch.org wheel index.
-    # This always uses --index-url to avoid pulling torch from default PyPI.
-    # PyPI torch unconditionally preloads CUDA libs at import via _preload_cuda_lib,
-    # causing SIGBUS on nodes without GPU hardware (see resolve_torch_index comment).
+    # Step 1: torch + torchvision from the pytorch.org wheel index.
+    #
+    # Both MUST come from the same index because:
+    #   - PyPI torchvision is version-locked to a specific PyPI torch
+    #     (e.g. torchvision 0.26.0 requires torch==2.11.0)
+    #   - timm depends on torchvision; if torchvision is missing, pip fetches
+    #     it from PyPI, which drags in the PyPI torch, overwriting our cu128 wheel
+    local index_url="${torch_index:-https://download.pytorch.org/whl/cpu}"
     conda run --no-capture-output -n "$env_name" \
-        pip install torch --index-url "${torch_index:-https://download.pytorch.org/whl/cpu}"
+        pip install torch torchvision --index-url "$index_url"
 
-    # Step 2: timm and huggingface-hub from default PyPI
+    # Step 2: Create a constraints file that pins torch + torchvision to the
+    # versions we just installed.  Every subsequent `pip install` in this script
+    # uses `-c $TORCH_CONSTRAINTS` so that pip's resolver cannot replace them.
+    TORCH_CONSTRAINTS="$(mktemp "${TMPDIR:-/tmp}/torch-constraints.XXXXXX")"
     conda run --no-capture-output -n "$env_name" \
-        pip install timm huggingface-hub
+        python -c "import torch; print(f'torch=={torch.__version__}')" \
+        >> "$TORCH_CONSTRAINTS"
+    conda run --no-capture-output -n "$env_name" \
+        python -c "import torchvision; print(f'torchvision=={torchvision.__version__}')" \
+        >> "$TORCH_CONSTRAINTS"
+
+    info "Pinned PyTorch constraints:"
+    while IFS= read -r line; do info "  $line"; done < "$TORCH_CONSTRAINTS"
+
+    # Step 3: timm and huggingface-hub from default PyPI (constrained)
+    conda run --no-capture-output -n "$env_name" \
+        pip install timm huggingface-hub -c "$TORCH_CONSTRAINTS"
 }
 
 # ── Helper: create (or skip) a conda env and install from requirements.txt ───
@@ -254,7 +276,8 @@ setup_env() {
 
     if [[ -f "$req_file" ]]; then
         info "Installing dependencies from $(basename "$req_file") into '$env_name'..."
-        conda run --no-capture-output -n "$env_name" pip install -r "$req_file"
+        conda run --no-capture-output -n "$env_name" \
+            pip install -r "$req_file" ${TORCH_CONSTRAINTS:+-c "$TORCH_CONSTRAINTS"}
     else
         warn "No requirements.txt found at $req_file — skipping dependency install."
     fi
@@ -267,7 +290,8 @@ setup_env "FOCUS" "$SCRIPT_DIR/requirements.txt" "3.11" "1"
 # Install the FOCUS package itself as an editable install so that
 # the 'focus' console script entry point is registered.
 info "Installing FOCUS package into 'FOCUS' environment..."
-conda run --no-capture-output -n FOCUS pip install -e "$SCRIPT_DIR"
+conda run --no-capture-output -n FOCUS \
+    pip install -e "$SCRIPT_DIR" ${TORCH_CONSTRAINTS:+-c "$TORCH_CONSTRAINTS"}
 success "FOCUS package installed. You can now run 'focus [--config ...]' after activating the FOCUS env."
 
 # ── 4. Optional tool environments (tools/<Name>/) ─────────────────────────────
@@ -294,6 +318,9 @@ if [[ -d "$TOOLS_DIR" ]]; then
 else
     info "No 'tools/' directory found — skipping tool environments."
 fi
+
+# ── Cleanup ───────────────────────────────────────────────────────────────────
+[[ -n "$TORCH_CONSTRAINTS" && -f "$TORCH_CONSTRAINTS" ]] && rm -f "$TORCH_CONSTRAINTS"
 
 # ── Done ──────────────────────────────────────────────────────────────────────
 echo
