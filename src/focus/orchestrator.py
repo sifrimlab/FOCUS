@@ -89,7 +89,8 @@ def run(config: dict, progress_callback=None) -> dict:
 	for mod_files in modality_files.values():
 		for sid, path in mod_files.items():
 			(pre_merged if sid == "merged" else pre_per_sample).append(path)
-	output_files["preprocessing"] = {"merged": pre_merged, "per_sample": pre_per_sample}
+	if pre_merged or pre_per_sample:
+		output_files["preprocessing"] = {"merged": pre_merged, "per_sample": pre_per_sample}
 
 	# --- Stage 2: Alignment ---
 	aligned_files: dict[str, dict[str, str]] = {}
@@ -108,7 +109,8 @@ def run(config: dict, progress_callback=None) -> dict:
 		for mod_files in aligned_files.values():
 			for sid, path in mod_files.items():
 				(aln_merged if sid == "merged" else aln_per_sample).append(path)
-		output_files["alignment"] = {"merged": aln_merged, "per_sample": aln_per_sample}
+		if aln_merged or aln_per_sample:
+			output_files["alignment"] = {"merged": aln_merged, "per_sample": aln_per_sample}
 	else:
 		logger.info("Skipping alignment (disabled in config).")
 
@@ -127,7 +129,8 @@ def run(config: dict, progress_callback=None) -> dict:
 		)
 		ann_merged = [p for sid, p in annotation_files.items() if sid == "merged"]
 		ann_per_sample = [p for sid, p in annotation_files.items() if sid != "merged"]
-		output_files["annotations"] = {"merged": ann_merged, "per_sample": ann_per_sample}
+		if ann_merged or ann_per_sample:
+			output_files["annotations"] = {"merged": ann_merged, "per_sample": ann_per_sample}
 		logger.info("Annotation transfer complete.")
 
 	stage_reg = 4 if ann_enabled else 3
@@ -147,7 +150,8 @@ def run(config: dict, progress_callback=None) -> dict:
 		for mod_files in registered_files.values():
 			for sid, path in mod_files.items():
 				(reg_merged if sid == "merged" else reg_per_sample).append(path)
-		output_files["registration"] = {"merged": reg_merged, "per_sample": reg_per_sample}
+		if reg_merged or reg_per_sample:
+			output_files["registration"] = {"merged": reg_merged, "per_sample": reg_per_sample}
 	else:
 		logger.info("Skipping registration (disabled in config).")
 

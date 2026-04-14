@@ -20,11 +20,11 @@ function basename(path: string): string {
   <div v-if="Object.keys(files).length > 0" class="flex flex-col gap-3">
     <template v-for="sec in SECTIONS" :key="sec.key">
       <div
-        v-if="files[sec.key]"
+        v-if="files[sec.key] && (files[sec.key]!.merged.length > 0 || files[sec.key]!.per_sample.length > 0)"
         class="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 overflow-hidden"
       >
         <!-- Section header -->
-        <div class="px-4 py-2 bg-gray-50 dark:bg-gray-750 border-b border-gray-200 dark:border-gray-700">
+        <div class="px-4 py-2 bg-gray-50 dark:bg-gray-700 border-b border-gray-200 dark:border-gray-700">
           <span class="text-sm font-semibold text-gray-700 dark:text-gray-300">{{ sec.label }}</span>
         </div>
 
