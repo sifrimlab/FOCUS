@@ -174,20 +174,14 @@ resolve_torch_index() {
     fi
 }
 
-# Install torch, timm, and huggingface-hub into a conda env using the wheel
-# index that matches the system CUDA.  These three packages are handled
-# separately because:
-#   - For CUDA 12.x: torch is installed from pytorch.org's wheel index, which
-#     bundles CUDA inside the wheel and does NOT create separate nvidia-* pip
-#     packages that would conflict with the system CUDA.
-#   - For CUDA 13+: PyTorch ships on default PyPI with CUDA 13 support, so
-#     plain `pip install torch` is correct (no --index-url override needed).
-#   - timm and huggingface-hub are always installed from default PyPI.
+# Install the PyTorch ecosystem (torch, torchvision, timm, huggingface-hub)
+# into a conda env using a CUDA-matched wheel index.
 #
-# IMPORTANT: torch must NOT appear in requirements.txt or pyproject.toml
-# [project.dependencies].  If it does, `pip install -r requirements.txt` or
-# `pip install -e .` will resolve torch against default PyPI and silently
-# overwrite the CUDA-matched wheel installed here.
+# IMPORTANT: none of these packages may appear in requirements.txt or in
+# pyproject.toml [project.dependencies].  If they do, a later `pip install -r`
+# or `pip install -e .` will resolve them against default PyPI and silently
+# overwrite the CUDA-matched wheels installed here (timm → torchvision → torch
+# version-lock chain).  A pip constraints file is used as an additional guard.
 install_pytorch_packages() {
     local env_name="$1"
 
@@ -218,30 +212,63 @@ install_pytorch_packages() {
 
     # Step 1: torch + torchvision from the pytorch.org wheel index.
     #
-    # Both MUST come from the same index because:
-    #   - PyPI torchvision is version-locked to a specific PyPI torch
-    #     (e.g. torchvision 0.26.0 requires torch==2.11.0)
-    #   - timm depends on torchvision; if torchvision is missing, pip fetches
-    #     it from PyPI, which drags in the PyPI torch, overwriting our cu128 wheel
+    # Both MUST come from the same index because PyPI torchvision is
+    # version-locked to a specific PyPI torch (e.g. torchvision 0.26.0
+    # requires torch==2.11.0).
+    #
+    # If the env var TORCH_VERSION is set, pin to that version.  This is the
+    # escape hatch for systems where the latest torch from the index does not
+    # work (e.g. SIGBUS from _preload_cuda_lib on some HPC nodes).
     local index_url="${torch_index:-https://download.pytorch.org/whl/cpu}"
-    conda run --no-capture-output -n "$env_name" \
-        pip install torch torchvision --index-url "$index_url"
+    local torch_spec="torch"
+    if [[ -n "${TORCH_VERSION:-}" ]]; then
+        torch_spec="torch==${TORCH_VERSION}"
+        info "TORCH_VERSION is set — installing ${torch_spec}"
+    fi
 
-    # Step 2: Create a constraints file that pins torch + torchvision to the
-    # versions we just installed.  Every subsequent `pip install` in this script
-    # uses `-c $TORCH_CONSTRAINTS` so that pip's resolver cannot replace them.
+    conda run --no-capture-output -n "$env_name" \
+        pip install "$torch_spec" torchvision --index-url "$index_url"
+
+    # Step 2: Verify that torch actually imports on this system.
+    # Some torch versions crash with SIGBUS at import time on HPC nodes due to
+    # incompatible CUDA library preloading.  Catch this early with a clear
+    # message instead of letting the user discover it at runtime.
+    if ! conda run --no-capture-output -n "$env_name" \
+            python -c "import torch" 2>/dev/null; then
+        local bad_ver
+        bad_ver=$(conda run --no-capture-output -n "$env_name" \
+            pip show torch 2>/dev/null | grep "^Version:" | awk '{print $2}')
+        error "torch ${bad_ver} installed but crashes on import (likely SIGBUS from CUDA preloading)."
+        error "Specify a known-working version and re-run:"
+        error "  TORCH_VERSION=<version> bash install.sh --reinstall"
+        error ""
+        error "To find a working version, test manually in a clean conda env:"
+        error "  pip install torch==<version> --index-url ${index_url}"
+        error "  python -c \"import torch; print(torch.__version__, torch.cuda.is_available())\""
+        exit 1
+    fi
+    success "torch $(conda run --no-capture-output -n "$env_name" python -c "import torch; print(torch.__version__)")"
+
+    # Step 3: Create a constraints file that pins torch + torchvision to the
+    # exact versions just installed.  Every subsequent `pip install` in this
+    # script uses `-c $TORCH_CONSTRAINTS` so pip's resolver cannot replace them
+    # via transitive dependencies (e.g. timm → torchvision → torch from PyPI).
+    #
+    # Uses `pip show` (not `import torch`) so this works even on systems where
+    # the installed torch cannot be imported.
     TORCH_CONSTRAINTS="$(mktemp "${TMPDIR:-/tmp}/torch-constraints.XXXXXX")"
     conda run --no-capture-output -n "$env_name" \
-        python -c "import torch; print(f'torch=={torch.__version__}')" \
+        pip show torch | grep "^Version:" | awk '{print "torch=="$2}' \
         >> "$TORCH_CONSTRAINTS"
     conda run --no-capture-output -n "$env_name" \
-        python -c "import torchvision; print(f'torchvision=={torchvision.__version__}')" \
+        pip show torchvision | grep "^Version:" | awk '{print "torchvision=="$2}' \
         >> "$TORCH_CONSTRAINTS"
 
     info "Pinned PyTorch constraints:"
     while IFS= read -r line; do info "  $line"; done < "$TORCH_CONSTRAINTS"
 
-    # Step 3: timm and huggingface-hub from default PyPI (constrained)
+    # Step 4: timm and huggingface-hub from default PyPI (constrained so pip
+    # cannot pull a different torch/torchvision through timm's dependencies)
     conda run --no-capture-output -n "$env_name" \
         pip install timm huggingface-hub -c "$TORCH_CONSTRAINTS"
 }

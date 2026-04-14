@@ -14,6 +14,7 @@ No programming is required to use FOCUS. The entire pipeline is driven by a JSON
 - [Installation](#installation)
   - [macOS and Linux](#macos-and-linux)
   - [Windows](#windows)
+  - [Troubleshooting PyTorch / CUDA on HPC](#troubleshooting-pytorch--cuda-on-hpc)
 - [Dataset Structure](#dataset-structure)
 - [Usage on the Host Machine](#usage-on-the-host-machine)
   - [GUI Mode](#gui-mode)
@@ -107,6 +108,63 @@ install.bat --reinstall
 ```
 
 > **Tip:** If `conda` is not found, install [Miniconda for Windows](https://docs.conda.io/en/latest/miniconda.html), then open a new **Anaconda Prompt** and retry.
+
+### Troubleshooting PyTorch / CUDA on HPC
+
+The install script automatically detects your system's CUDA version (via `nvcc`, `nvidia-smi`, or environment module variables) and installs a matching PyTorch build. On most systems this works without any intervention. On **HPC clusters**, however, two classes of problems can occur.
+
+#### 1. CUDA not detected (CPU-only fallback)
+
+If the install script prints:
+
+```
+[WARN]  HPC environment detected (SLURM) but no CUDA toolkit found.
+```
+
+it means none of the CUDA detection methods found a version. **Load the CUDA module before running the script:**
+
+```bash
+module load cuda          # use whatever CUDA module your cluster provides
+bash install.sh --reinstall
+```
+
+#### 2. PyTorch crashes on import (Bus error / SIGBUS)
+
+Some PyTorch versions crash with a `Bus error (core dumped)` at import time on certain HPC systems. This happens inside PyTorch's CUDA library preloading (`_preload_cuda_lib`), before any user code runs. Symptoms:
+
+```
+Fatal Python error: Bus error
+  File ".../torch/__init__.py", line 324 in _preload_cuda_lib
+```
+
+The install script verifies that PyTorch imports correctly after installation. If the check fails, you will see:
+
+```
+[ERROR] torch X.Y.Z installed but crashes on import (likely SIGBUS from CUDA preloading).
+[ERROR] Specify a known-working version and re-run:
+[ERROR]   TORCH_VERSION=<version> bash install.sh --reinstall
+```
+
+**To fix this**, find a PyTorch version that works on your cluster and pass it via the `TORCH_VERSION` environment variable:
+
+```bash
+# Step 1: Find a working version.
+# Create a temporary environment and test different versions:
+conda create -y -n torch_test python=3.11
+conda run -n torch_test pip install torch==2.9.0 --index-url https://download.pytorch.org/whl/cu128
+conda run -n torch_test python -c "import torch; print(torch.__version__, torch.cuda.is_available())"
+# Expected output: 2.9.0+cu128 True
+conda env remove -y -n torch_test
+
+# Step 2: Reinstall FOCUS with the working version.
+TORCH_VERSION=2.9.0 bash install.sh --reinstall
+```
+
+> **Note:** Replace `cu128` with the CUDA wheel index that matches your system (e.g. `cu126`, `cu124`, `cu121`, `cu118`). The install script prints which index it selects during installation.
+
+#### Why does this happen?
+
+Recent PyTorch versions (e.g. 2.11+) unconditionally call `_preload_cuda_lib` at import time, which uses `ctypes.CDLL` to load CUDA shared libraries installed as separate pip packages (`nvidia-cuda-runtime-*`, `cuda-bindings`, etc.). On some HPC configurations, the initialization code inside these shared libraries fails when attempting to interface with the CUDA kernel driver, resulting in a SIGBUS signal that terminates the process. Older PyTorch versions (e.g. 2.9.0) use a different loading strategy that does not trigger this behavior.
 
 ---
 

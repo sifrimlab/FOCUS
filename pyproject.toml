@@ -34,8 +34,6 @@ dependencies = [
     "ramanspy",
     "tqdm",
     "psutil",
-    "timm",
-    "huggingface-hub",
     "flask",
     "dask",
     "shapely",
