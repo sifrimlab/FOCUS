@@ -211,3 +211,7 @@ gui_src/**/dist/
 
 # Graphify data
 graphify-out/
+
+# Claude Code
+CLAUDE.md
+.claude/
