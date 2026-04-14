@@ -298,12 +298,10 @@ class SpatialTranscriptomicDataset(BaseDataset):
 
         reporter = step_reporter or StepReporter()
 
-        # ---- Step 1: Process each sample individually ----
+        # ---- Step 1: Preprocess each sample (cache-aware) ----
         reporter.step("1/2 - Processing Spatial Transcriptomic Samples")
 
         processed_samples: dict[str, str] = {}
-        adata_list: list[ad.AnnData] = []
-        spot_sizes: dict[str, np.ndarray] = {}
 
         total_samples = len(self.samples)
         for i, sample in enumerate(self.samples):
@@ -319,25 +317,27 @@ class SpatialTranscriptomicDataset(BaseDataset):
                 force_recomputing=force_recomputing
             )
 
-            # Load the per-sample output for merging
-            adata = sc.read_h5ad(processed_samples[sample.sample_id])
-            spot_sizes[sample.sample_id] = adata.uns.get("spot_size", SpatialTranscriptomic._DEFAULT_SPOT_SIZE.copy())
-
-            # Revert .X to raw counts for proper cross-sample normalization
-            # No copy needed — the loaded object is only used for concatenation
-            adata.X = adata.layers['raw']
-            del adata.layers['raw']
-            adata_list.append(adata)
-
         # ---- Step 2: Merge and cross-sample processing ----
         reporter.step("2/2 - Generating combined Spatial Transcriptomic dataset")
 
         merged_file = MODALITY_PREPROCESSING_MERGED(self.dataset_source_path, self.samples[0].modality_name, "h5ad")
 
+        # Cache check before loading per-sample files into memory
         if not force_recomputing and os.path.exists(merged_file):
             reporter.message("Combined dataset already exists. Using cached results.")
             processed_samples["merged"] = merged_file
             return processed_samples
+
+        # Load per-sample files into memory only when the merged file needs to be built
+        adata_list: list[ad.AnnData] = []
+        spot_sizes: dict[str, np.ndarray] = {}
+        for sample in self.samples:
+            adata = sc.read_h5ad(processed_samples[sample.sample_id])
+            spot_sizes[sample.sample_id] = adata.uns.get("spot_size", SpatialTranscriptomic._DEFAULT_SPOT_SIZE.copy())
+            # Revert .X to raw counts for proper cross-sample normalization
+            adata.X = adata.layers['raw']
+            del adata.layers['raw']
+            adata_list.append(adata)
 
         reporter.message(f"Concatenating {len(self.samples)} samples...")
         # Use outer join to preserve genes when panels differ across samples.
