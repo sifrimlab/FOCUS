@@ -180,8 +180,10 @@ resolve_torch_index() {
 #     plain `pip install torch` is correct (no --index-url override needed).
 #   - timm and huggingface-hub are always installed from default PyPI.
 #
-# When requirements.txt is later installed, pip sees torch already satisfied and
-# skips it, so no conflicting re-download occurs.
+# IMPORTANT: torch must NOT appear in requirements.txt or pyproject.toml
+# [project.dependencies].  If it does, `pip install -r requirements.txt` or
+# `pip install -e .` will resolve torch against default PyPI and silently
+# overwrite the CUDA-matched wheel installed here.
 install_pytorch_packages() {
     local env_name="$1"
 

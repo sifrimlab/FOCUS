@@ -34,7 +34,6 @@ dependencies = [
     "ramanspy",
     "tqdm",
     "psutil",
-    "torch",
     "timm",
     "huggingface-hub",
     "flask",
