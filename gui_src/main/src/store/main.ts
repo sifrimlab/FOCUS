@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia';
 import { api } from '../api/client';
-import type { Schema, Config, PipelineStatus, Modality } from '../api/types';
+import type { Schema, Config, PipelineStatus, Modality, OutputFiles } from '../api/types';
 
 function emptyConfig(): Config {
   return {
@@ -41,7 +41,7 @@ function defaultPipelineStatus(): PipelineStatus {
     total_samples: 0,
     message: '',
     error: null,
-    output_files: [],
+    output_files: {} as OutputFiles,
     alignment_port: 8000,
     sub_step: null,
     sub_step_index: 0,
@@ -275,6 +275,17 @@ export const useMainStore = defineStore('main', {
       if (this.statusPollInterval) {
         clearInterval(this.statusPollInterval);
         this.statusPollInterval = null;
+      }
+    },
+
+    async cleanupFiles() {
+      await api.cleanup();
+      // Clear per_sample arrays locally to update UI immediately
+      const files = this.pipelineStatus.output_files;
+      for (const key of Object.keys(files) as Array<keyof OutputFiles>) {
+        if (key !== 'multimodal' && files[key]) {
+          files[key]!.per_sample = [];
+        }
       }
     },
 

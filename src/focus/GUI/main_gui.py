@@ -269,6 +269,26 @@ class MainGUI:
 				"has_existing_config": has_existing_config,
 			})
 
+		# --- Cleanup temporary files ---
+
+		@self.app.route('/api/cleanup', methods=['POST'])
+		def cleanup_temp_files():
+			files_struct = self._pipeline_status.get("output_files", {})
+			deleted = 0
+			for section_key, section in files_struct.items():
+				if section_key == "multimodal":
+					continue  # Never touch the final merged output
+				per_sample = section.get("per_sample", [])
+				for path in per_sample:
+					try:
+						if os.path.isfile(path):
+							os.remove(path)
+							deleted += 1
+					except OSError:
+						pass
+				section["per_sample"] = []
+			return jsonify({"deleted": deleted})
+
 		# --- Reset ---
 
 		@self.app.route('/api/reset', methods=['POST'])
@@ -349,7 +369,7 @@ def _default_status() -> dict:
 		"total_samples": 0,
 		"message": "",
 		"error": None,
-		"output_files": [],
+		"output_files": {},
 		"alignment_port": 8000,
 		"sub_step": None,
 		"sub_step_index": 0,

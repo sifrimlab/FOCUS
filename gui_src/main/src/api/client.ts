@@ -72,6 +72,11 @@ export const api = {
     return r.data;
   },
 
+  async cleanup(): Promise<{ deleted: number }> {
+    const r = await apiClient.post<{ deleted: number }>('/api/cleanup');
+    return r.data;
+  },
+
   async reset(): Promise<void> {
     await apiClient.post('/api/reset');
   },

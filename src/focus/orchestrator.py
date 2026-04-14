@@ -20,7 +20,7 @@ _IMAGE_MODALITIES = [ModalityType.MICROSCOPY_IMAGE, ModalityType.RAMAN]
 _SPOT_MODALITIES = [ModalityType.MSI, ModalityType.ST]
 
 
-def run(config: dict, progress_callback=None) -> list[str]:
+def run(config: dict, progress_callback=None) -> dict:
 	"""
 	Execute the full FOCUS pipeline: preprocessing, alignment, registration, and MuData compilation.
 
@@ -34,14 +34,16 @@ def run(config: dict, progress_callback=None) -> list[str]:
 
 	Returns
 	-------
-	list[str]
-		List of absolute paths to all generated output files.
+	dict
+		Structured output files grouped by pipeline stage. Each present key maps to a dict
+		with "merged" (list of merged output paths) and "per_sample" (list of per-sample paths).
+		Keys: "preprocessing", "alignment", "annotations", "registration", "multimodal".
 	"""
 
 	dataset_path = config[ConfigParameters.DATASET_PATH]
 	modalities = config[ConfigParameters.MODALITIES]
 	ref_name = config[ConfigParameters.REFERENCE_MODALITY]
-	output_files: list[str] = []
+	output_files: dict = {}
 
 	ann_enabled = config.get(ConfigParameters.SPATIAL_ANNOTATIONS) is not None
 	n_stages = 5 if ann_enabled else 4
@@ -80,9 +82,14 @@ def run(config: dict, progress_callback=None) -> list[str]:
 			preprocessing_settings=modality[ModalityParameters.PROCESSING_SETTINGS],
 			step_reporter=step_reporter
 		)
-		for path in modality_files[mod_name].values():
-			output_files.append(path)
 		logger.info(f"Preprocessing complete for '{mod_name}': {len(modality_files[mod_name])} samples")
+
+	# Collect preprocessing outputs into structured dict
+	pre_merged, pre_per_sample = [], []
+	for mod_files in modality_files.values():
+		for sid, path in mod_files.items():
+			(pre_merged if sid == "merged" else pre_per_sample).append(path)
+	output_files["preprocessing"] = {"merged": pre_merged, "per_sample": pre_per_sample}
 
 	# --- Stage 2: Alignment ---
 	aligned_files: dict[str, dict[str, str]] = {}
@@ -97,10 +104,11 @@ def run(config: dict, progress_callback=None) -> list[str]:
 				sub_step=None, sub_step_index=0, sub_step_total=0,
 				sub_step_progress=0, sub_step_items_total=0)
 		aligned_files = _run_alignment(config, modality_files, _report, n_stages)
+		aln_merged, aln_per_sample = [], []
 		for mod_files in aligned_files.values():
-			for path in mod_files.values():
-				if path not in output_files:
-					output_files.append(path)
+			for sid, path in mod_files.items():
+				(aln_merged if sid == "merged" else aln_per_sample).append(path)
+		output_files["alignment"] = {"merged": aln_merged, "per_sample": aln_per_sample}
 	else:
 		logger.info("Skipping alignment (disabled in config).")
 
@@ -117,8 +125,9 @@ def run(config: dict, progress_callback=None) -> list[str]:
 			config, modality_files, aligned_files,
 			report=_report, stage_index=3, n_stages=n_stages,
 		)
-		for path in annotation_files.values():
-			output_files.append(path)
+		ann_merged = [p for sid, p in annotation_files.items() if sid == "merged"]
+		ann_per_sample = [p for sid, p in annotation_files.items() if sid != "merged"]
+		output_files["annotations"] = {"merged": ann_merged, "per_sample": ann_per_sample}
 		logger.info("Annotation transfer complete.")
 
 	stage_reg = 4 if ann_enabled else 3
@@ -134,9 +143,11 @@ def run(config: dict, progress_callback=None) -> list[str]:
 				message="Starting registration...", sub_step=None, sub_step_index=0,
 				sub_step_total=0, sub_step_progress=0, sub_step_items_total=0)
 		registered_files = _run_registration(config, modality_files, aligned_files)
+		reg_merged, reg_per_sample = [], []
 		for mod_files in registered_files.values():
-			for path in mod_files.values():
-				output_files.append(path)
+			for sid, path in mod_files.items():
+				(reg_merged if sid == "merged" else reg_per_sample).append(path)
+		output_files["registration"] = {"merged": reg_merged, "per_sample": reg_per_sample}
 	else:
 		logger.info("Skipping registration (disabled in config).")
 
@@ -150,7 +161,7 @@ def run(config: dict, progress_callback=None) -> list[str]:
 				sub_step_total=0, sub_step_progress=0, sub_step_items_total=0)
 		mudata_path = _compile_mudata(config, modality_files, registered_files, annotation_files)
 		if mudata_path:
-			output_files.append(mudata_path)
+			output_files["multimodal"] = {"merged": [mudata_path], "per_sample": []}
 
 	logger.info("=" * 60)
 	logger.info("FOCUS pipeline completed successfully.")

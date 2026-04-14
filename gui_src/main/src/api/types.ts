@@ -43,6 +43,19 @@ export interface Config {
   modalities: Modality[];
 }
 
+export interface OutputSection {
+  merged: string[];
+  per_sample: string[];
+}
+
+export interface OutputFiles {
+  preprocessing?: OutputSection;
+  alignment?: OutputSection;
+  annotations?: OutputSection;
+  registration?: OutputSection;
+  multimodal?: OutputSection;
+}
+
 export interface PipelineStatus {
   state: 'idle' | 'running' | 'alignment_waiting' | 'completed' | 'error';
   stage: string | null;
@@ -56,7 +69,7 @@ export interface PipelineStatus {
   total_samples: number;
   message: string;
   error: string | null;
-  output_files: string[];
+  output_files: OutputFiles;
   alignment_port: number;
   sub_step: string | null;
   sub_step_index: number;
