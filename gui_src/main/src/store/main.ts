@@ -280,11 +280,11 @@ export const useMainStore = defineStore('main', {
 
     async cleanupFiles() {
       await api.cleanup();
-      // Clear per_sample arrays locally to update UI immediately
+      // Clear per_modality maps locally to update UI immediately
       const files = this.pipelineStatus.output_files;
       for (const key of Object.keys(files) as Array<keyof OutputFiles>) {
         if (key !== 'multimodal' && files[key]) {
-          files[key]!.per_sample = [];
+          files[key]!.per_modality = {};
         }
       }
     },

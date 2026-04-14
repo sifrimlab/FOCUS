@@ -14,7 +14,8 @@ const totalPerSampleFiles = computed(() => {
   let count = 0;
   for (const key of Object.keys(files) as Array<keyof OutputFiles>) {
     if (key !== 'multimodal') {
-      count += files[key]?.per_sample.length ?? 0;
+      const pm = files[key]?.per_modality ?? {};
+      count += Object.values(pm).reduce((s, arr) => s + arr.length, 0);
     }
   }
   return count;

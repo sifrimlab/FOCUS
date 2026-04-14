@@ -278,15 +278,16 @@ class MainGUI:
 			for section_key, section in files_struct.items():
 				if section_key == "multimodal":
 					continue  # Never touch the final merged output
-				per_sample = section.get("per_sample", [])
-				for path in per_sample:
-					try:
-						if os.path.isfile(path):
-							os.remove(path)
-							deleted += 1
-					except OSError:
-						pass
-				section["per_sample"] = []
+				per_modality = section.get("per_modality", {})
+				for paths in per_modality.values():
+					for path in paths:
+						try:
+							if os.path.isfile(path):
+								os.remove(path)
+								deleted += 1
+						except OSError:
+							pass
+				section["per_modality"] = {}
 			return jsonify({"deleted": deleted})
 
 		# --- Reset ---

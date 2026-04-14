@@ -14,13 +14,21 @@ const SECTIONS: { key: keyof OutputFiles; label: string }[] = [
 function basename(path: string): string {
   return path.split('/').pop() ?? path;
 }
+
+function hasPerModality(section: NonNullable<OutputFiles[keyof OutputFiles]>): boolean {
+  return Object.values(section.per_modality).some(arr => arr.length > 0);
+}
+
+function totalPerModality(section: NonNullable<OutputFiles[keyof OutputFiles]>): number {
+  return Object.values(section.per_modality).reduce((sum, arr) => sum + arr.length, 0);
+}
 </script>
 
 <template>
   <div v-if="Object.keys(files).length > 0" class="flex flex-col gap-3">
     <template v-for="sec in SECTIONS" :key="sec.key">
       <div
-        v-if="files[sec.key] && (files[sec.key]!.merged.length > 0 || files[sec.key]!.per_sample.length > 0)"
+        v-if="files[sec.key] && (files[sec.key]!.merged.length > 0 || hasPerModality(files[sec.key]!))"
         class="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 overflow-hidden"
       >
         <!-- Section header -->
@@ -41,22 +49,29 @@ function basename(path: string): string {
             </div>
           </div>
 
-          <!-- Per-sample outputs (collapsible) -->
+          <!-- Per-modality per-sample outputs (collapsible, grouped by modality) -->
           <details
-            v-if="files[sec.key]!.per_sample.length > 0"
+            v-if="hasPerModality(files[sec.key]!)"
             class="text-xs"
           >
             <summary class="cursor-pointer text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 select-none py-1">
-              Per-sample files ({{ files[sec.key]!.per_sample.length }})
+              Per-sample files ({{ totalPerModality(files[sec.key]!) }})
             </summary>
-            <div class="mt-1 flex flex-col gap-0.5 pl-2 border-l-2 border-gray-200 dark:border-gray-600">
-              <div
-                v-for="f in files[sec.key]!.per_sample"
-                :key="f"
-                class="font-mono text-xs text-gray-600 dark:text-gray-400 py-0.5"
-              >
-                {{ basename(f) }}
-              </div>
+            <div class="mt-1 flex flex-col gap-2">
+              <template v-for="(paths, modName) in files[sec.key]!.per_modality" :key="modName">
+                <div v-if="paths.length > 0">
+                  <p class="text-xs text-gray-400 dark:text-gray-500 font-medium mb-0.5 pl-2">{{ modName }}</p>
+                  <div class="flex flex-col gap-0.5 pl-2 border-l-2 border-gray-200 dark:border-gray-600">
+                    <div
+                      v-for="f in paths"
+                      :key="f"
+                      class="font-mono text-xs text-gray-600 dark:text-gray-400 py-0.5"
+                    >
+                      {{ basename(f) }}
+                    </div>
+                  </div>
+                </div>
+              </template>
             </div>
           </details>
         </div>

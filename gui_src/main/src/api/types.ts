@@ -45,7 +45,7 @@ export interface Config {
 
 export interface OutputSection {
   merged: string[];
-  per_sample: string[];
+  per_modality: Record<string, string[]>;  // modality_name → per-sample paths
 }
 
 export interface OutputFiles {

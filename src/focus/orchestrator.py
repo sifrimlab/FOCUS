@@ -84,13 +84,17 @@ def run(config: dict, progress_callback=None) -> dict:
 		)
 		logger.info(f"Preprocessing complete for '{mod_name}': {len(modality_files[mod_name])} samples")
 
-	# Collect preprocessing outputs into structured dict
-	pre_merged, pre_per_sample = [], []
-	for mod_files in modality_files.values():
+	# Collect preprocessing outputs — per_modality groups per-sample files by modality name
+	pre_merged: list[str] = []
+	pre_per_modality: dict[str, list[str]] = {}
+	for mod_name, mod_files in modality_files.items():
 		for sid, path in mod_files.items():
-			(pre_merged if sid == "merged" else pre_per_sample).append(path)
-	if pre_merged or pre_per_sample:
-		output_files["preprocessing"] = {"merged": pre_merged, "per_sample": pre_per_sample}
+			if sid == "merged":
+				pre_merged.append(path)
+			else:
+				pre_per_modality.setdefault(mod_name, []).append(path)
+	if pre_merged or pre_per_modality:
+		output_files["preprocessing"] = {"merged": pre_merged, "per_modality": pre_per_modality}
 
 	# --- Stage 2: Alignment ---
 	aligned_files: dict[str, dict[str, str]] = {}
@@ -105,12 +109,16 @@ def run(config: dict, progress_callback=None) -> dict:
 				sub_step=None, sub_step_index=0, sub_step_total=0,
 				sub_step_progress=0, sub_step_items_total=0)
 		aligned_files = _run_alignment(config, modality_files, _report, n_stages)
-		aln_merged, aln_per_sample = [], []
-		for mod_files in aligned_files.values():
+		aln_merged: list[str] = []
+		aln_per_modality: dict[str, list[str]] = {}
+		for mod_name, mod_files in aligned_files.items():
 			for sid, path in mod_files.items():
-				(aln_merged if sid == "merged" else aln_per_sample).append(path)
-		if aln_merged or aln_per_sample:
-			output_files["alignment"] = {"merged": aln_merged, "per_sample": aln_per_sample}
+				if sid == "merged":
+					aln_merged.append(path)
+				else:
+					aln_per_modality.setdefault(mod_name, []).append(path)
+		if aln_merged or aln_per_modality:
+			output_files["alignment"] = {"merged": aln_merged, "per_modality": aln_per_modality}
 	else:
 		logger.info("Skipping alignment (disabled in config).")
 
@@ -127,10 +135,15 @@ def run(config: dict, progress_callback=None) -> dict:
 			config, modality_files, aligned_files,
 			report=_report, stage_index=3, n_stages=n_stages,
 		)
-		ann_merged = [p for sid, p in annotation_files.items() if sid == "merged"]
-		ann_per_sample = [p for sid, p in annotation_files.items() if sid != "merged"]
-		if ann_merged or ann_per_sample:
-			output_files["annotations"] = {"merged": ann_merged, "per_sample": ann_per_sample}
+		ann_merged: list[str] = []
+		ann_per_modality: dict[str, list[str]] = {}
+		for sid, path in annotation_files.items():
+			if sid == "merged":
+				ann_merged.append(path)
+			else:
+				ann_per_modality.setdefault("reference", []).append(path)
+		if ann_merged or ann_per_modality:
+			output_files["annotations"] = {"merged": ann_merged, "per_modality": ann_per_modality}
 		logger.info("Annotation transfer complete.")
 
 	stage_reg = 4 if ann_enabled else 3
@@ -146,12 +159,16 @@ def run(config: dict, progress_callback=None) -> dict:
 				message="Starting registration...", sub_step=None, sub_step_index=0,
 				sub_step_total=0, sub_step_progress=0, sub_step_items_total=0)
 		registered_files = _run_registration(config, modality_files, aligned_files)
-		reg_merged, reg_per_sample = [], []
-		for mod_files in registered_files.values():
+		reg_merged: list[str] = []
+		reg_per_modality: dict[str, list[str]] = {}
+		for mod_name, mod_files in registered_files.items():
 			for sid, path in mod_files.items():
-				(reg_merged if sid == "merged" else reg_per_sample).append(path)
-		if reg_merged or reg_per_sample:
-			output_files["registration"] = {"merged": reg_merged, "per_sample": reg_per_sample}
+				if sid == "merged":
+					reg_merged.append(path)
+				else:
+					reg_per_modality.setdefault(mod_name, []).append(path)
+		if reg_merged or reg_per_modality:
+			output_files["registration"] = {"merged": reg_merged, "per_modality": reg_per_modality}
 	else:
 		logger.info("Skipping registration (disabled in config).")
 
@@ -165,7 +182,7 @@ def run(config: dict, progress_callback=None) -> dict:
 				sub_step_total=0, sub_step_progress=0, sub_step_items_total=0)
 		mudata_path = _compile_mudata(config, modality_files, registered_files, annotation_files)
 		if mudata_path:
-			output_files["multimodal"] = {"merged": [mudata_path], "per_sample": []}
+			output_files["multimodal"] = {"merged": [mudata_path], "per_modality": {}}
 
 	logger.info("=" * 60)
 	logger.info("FOCUS pipeline completed successfully.")

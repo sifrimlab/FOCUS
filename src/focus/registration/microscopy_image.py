@@ -224,32 +224,75 @@ class MicroscopyImageFeatureExtractor:
 	) -> tuple[np.ndarray, np.ndarray]:
 		'''
 		Use the patch extractor to compute patch embeddings for the image.
-		
+
+		When ``patch_centers`` is provided (anchor-based registration), the output always
+		contains exactly one row per input center.  Background-only patches receive a zero
+		embedding vector so that the observation count stays aligned with the anchor modality
+		(required for MuData compilation).  Only valid patches are actually forwarded through
+		the neural network for efficiency.
+
+		When ``patch_centers`` is None, non-overlapping patches are extracted across the
+		image foreground and background patches are removed (original behaviour).
+
 		Parameters
 		----------
 		image : np.ndarray
 			The input microscopy image as a NumPy array of shape (H, W, C).
 		patch_centers : np.ndarray, optional
-			A NumPy array of shape (N, 2) containing the (x, y) coordinates of the patch centers to extract.
-			If None, non-overlapping patches are extracted across the entire image foreground.
+			A NumPy array of shape (N, 2) containing the (x, y) coordinates of the patch
+			centers to extract.  If None, non-overlapping patches are extracted across the
+			entire image foreground.
 		background_color : SegmentationBackgroundColor
-			The color used to fill the background after removal. This is usefull to match the requirements of futher processing steps.
+			The color used to identify background pixels.
 		patch_size : int
-			The size of the patches to use for background removal (default is 224).
-		patch_centers : np.ndarray, optional
-			A NumPy array of shape (N, 2) containing the (x, y) coordinates of the patch centers to extract.
-			If None, non-overlapping patches are extracted across the entire image foreground.
+			The size of the patches to extract (default is 224).
 
 		Returns
 		-------
 		patch_embeddings : np.ndarray
-			A NumPy array of shape (N, embedding_size) containing the patch embeddings.
+			Shape (N, embedding_size).  When patch_centers is provided N equals
+			len(patch_centers); background patches have all-zero embeddings.
 		center_coordinates : np.ndarray
-			A NumPy array of shape (N, 2) containing the (x, y) coordinates of the center of each patch in the original image.
+			Shape (N, 2) — actual centre pixel positions for each patch.
 		'''
 
-		# Extract patch embeddings
 		patches, topleft_coordinates, center_coordinates = self._extract_patches(image, patch_size, patch_centers)
-		patches, topleft_coordinates, center_coordinates = self._filter_empty_patches(patches, topleft_coordinates, center_coordinates, background_color)
-		patch_embeddings = self._extract_patch_embeddings(patches)
-		return patch_embeddings, center_coordinates
+		n_patches = patches.shape[0]
+
+		if n_patches == 0:
+			return np.zeros((0, 0), dtype=np.float32), center_coordinates
+
+		if patch_centers is not None:
+			# Anchor-based extraction: preserve one row per anchor spot.
+			# Identify background-only patches to skip during encoding.
+			if background_color == SegmentationBackgroundColor.WHITE:
+				bg_color = np.array([1.0, 1.0, 1.0], dtype=np.float32)
+			elif background_color == SegmentationBackgroundColor.BLACK:
+				bg_color = np.array([0.0, 0.0, 0.0], dtype=np.float32)
+			else:
+				raise ValueError(f"Unsupported background color: {background_color}")
+
+			bg_mask = np.all(np.isclose(patches, bg_color, atol=1e-3), axis=-1)  # (N, H, W)
+			bg_pixel_counts = np.sum(bg_mask, axis=(1, 2))                        # (N,)
+			patch_area = patches.shape[1] * patches.shape[2]
+			valid_indices = np.where(bg_pixel_counts < patch_area * 0.99)[0]
+
+			if len(valid_indices) == 0:
+				# All patches are background — infer embedding size from a single forward pass
+				# then return an all-zero matrix so obs count is preserved.
+				dummy_emb = self._extract_patch_embeddings(patches[:1])
+				return np.zeros((n_patches, dummy_emb.shape[1]), dtype=np.float32), center_coordinates
+
+			# Encode only valid patches (efficiency), then scatter into full-size array.
+			valid_embeddings = self._extract_patch_embeddings(patches[valid_indices])
+			patch_embeddings = np.zeros((n_patches, valid_embeddings.shape[1]), dtype=np.float32)
+			patch_embeddings[valid_indices] = valid_embeddings
+			return patch_embeddings, center_coordinates
+
+		else:
+			# Free-form (non-overlapping) extraction: remove background patches as before.
+			patches, topleft_coordinates, center_coordinates = self._filter_empty_patches(
+				patches, topleft_coordinates, center_coordinates, background_color
+			)
+			patch_embeddings = self._extract_patch_embeddings(patches)
+			return patch_embeddings, center_coordinates
