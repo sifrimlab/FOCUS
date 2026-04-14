@@ -145,7 +145,12 @@ resolve_torch_index() {
 
     # Keep this table in sync with https://download.pytorch.org/whl/
     # Always pick the highest available wheel version that is ≤ system CUDA.
-    if   [[ $major -ge 13 ]] || { [[ $major -eq 12 ]] && [[ $minor -ge 8 ]]; }; then
+    #
+    # CUDA 13+: PyTorch ships on default PyPI with CUDA 13 support — return empty
+    # string so the caller uses plain `pip install torch` (no --index-url).
+    if [[ $major -ge 13 ]]; then
+        echo ""
+    elif { [[ $major -eq 12 ]] && [[ $minor -ge 8 ]]; }; then
         echo "https://download.pytorch.org/whl/cu128"
     elif [[ $major -eq 12 && $minor -ge 6 ]]; then
         echo "https://download.pytorch.org/whl/cu126"
@@ -164,9 +169,12 @@ resolve_torch_index() {
 # Install torch, timm, and huggingface-hub into a conda env using the wheel
 # index that matches the system CUDA.  These three packages are handled
 # separately because:
-#   - torch must come from pytorch.org's index to avoid bundled nvidia-* packages
-#   - timm and huggingface-hub are installed from default PyPI afterward so
-#     they always get the latest version
+#   - For CUDA 12.x: torch is installed from pytorch.org's wheel index, which
+#     bundles CUDA inside the wheel and does NOT create separate nvidia-* pip
+#     packages that would conflict with the system CUDA.
+#   - For CUDA 13+: PyTorch ships on default PyPI with CUDA 13 support, so
+#     plain `pip install torch` is correct (no --index-url override needed).
+#   - timm and huggingface-hub are always installed from default PyPI.
 #
 # When requirements.txt is later installed, pip sees torch already satisfied and
 # skips it, so no conflicting re-download occurs.
@@ -191,6 +199,9 @@ install_pytorch_packages() {
         else
             info "No CUDA detected — installing CPU-only PyTorch."
         fi
+    elif [[ -z "$torch_index" ]]; then
+        info "Detected CUDA ${cuda_ver} — installing PyTorch from default PyPI (CUDA ${cuda_ver} is natively supported)."
+        [[ -n "$hpc_env" ]] && info "HPC environment (${hpc_env}) detected."
     else
         info "Detected CUDA ${cuda_ver} — using PyTorch wheel index: ${torch_index}"
         info "PyTorch wheels from this index bundle CUDA internally and do not install"
@@ -198,9 +209,17 @@ install_pytorch_packages() {
         [[ -n "$hpc_env" ]] && info "HPC environment (${hpc_env}) confirmed — system CUDA libs will not be overridden."
     fi
 
-    # Step 1: torch from the CUDA-matched pytorch.org index
-    conda run --no-capture-output -n "$env_name" \
-        pip install torch --index-url "$torch_index"
+    # Step 1: torch — install method depends on CUDA version.
+    #   CUDA 13+  → default PyPI (torch_index is empty)
+    #   CUDA 12.x → pytorch.org wheel index (avoids separate nvidia-* packages)
+    #   No GPU    → pytorch.org CPU wheel
+    if [[ -z "$torch_index" && -n "$cuda_ver" ]]; then
+        conda run --no-capture-output -n "$env_name" \
+            pip install torch
+    else
+        conda run --no-capture-output -n "$env_name" \
+            pip install torch --index-url "${torch_index:-https://download.pytorch.org/whl/cpu}"
+    fi
 
     # Step 2: timm and huggingface-hub from default PyPI
     conda run --no-capture-output -n "$env_name" \
