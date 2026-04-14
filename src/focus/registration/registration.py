@@ -95,6 +95,8 @@ class FeatureExtractorRegistration:
 			hf_token=self._hf_token
 		)
 
+		all_cached = True  # tracks whether all per-sample files came from valid cache
+
 		for sample_id in common_samples:
 			logger.info(f"Registering '{image_name}' for sample '{sample_id}'")
 
@@ -103,16 +105,7 @@ class FeatureExtractorRegistration:
 			os.makedirs(reg_dir, exist_ok=True)
 			registered_file = MODALITY_REGISTRATION(self._path, sample_id, image_name, "h5ad")
 
-			# Cache check
-			if os.path.exists(registered_file) and not force_recomputing:
-				logger.info(f"Using cached registration for sample '{sample_id}'")
-				registered_files[sample_id] = registered_file
-				continue
-
-			# Load image
-			image_data = self._load_ome_tiff(image_files[sample_id])
-
-			# Load anchor spot coordinates in image space
+			# Load anchor spot coordinates in image space (needed for cache validation and extraction)
 			anchor_adata = anndata.read_h5ad(anchor_files[sample_id])
 			coord_key = f'{image_name}_spatial'
 			if coord_key in anchor_adata.obsm:
@@ -122,7 +115,25 @@ class FeatureExtractorRegistration:
 				patch_centers = np.asarray(anchor_adata.obsm['spatial'], dtype=np.float32)
 			else:
 				logger.error(f"No spatial coordinates found for sample '{sample_id}', skipping.")
+				all_cached = False
 				continue
+
+			# Cache check — validate obs count against anchor to detect stale caches
+			if os.path.exists(registered_file) and not force_recomputing:
+				cached = anndata.read_h5ad(registered_file)
+				if cached.n_obs == len(patch_centers):
+					logger.info(f"Using cached registration for sample '{sample_id}'")
+					registered_files[sample_id] = registered_file
+					continue
+				logger.warning(
+					f"Cached registration for '{sample_id}' has {cached.n_obs} obs but "
+					f"anchor has {len(patch_centers)}; recomputing."
+				)
+
+			all_cached = False
+
+			# Load image
+			image_data = self._load_ome_tiff(image_files[sample_id])
 
 			# Extract features
 			background_color = kwargs.get("background_color", None)
@@ -145,10 +156,20 @@ class FeatureExtractorRegistration:
 			logger.debug(f"Saved {patch_embeddings.shape[0]} patch embeddings for sample '{sample_id}'")
 
 		# Merge across samples
-		registered_files = self._merge_samples(registered_files, image_name, min_max_rescale)
+		registered_files = self._merge_samples(
+			registered_files, image_name, min_max_rescale,
+			force_recomputing=force_recomputing, all_per_sample_cached=all_cached,
+		)
 		return registered_files
 
-	def _merge_samples(self, registered_files: dict[str, str], modality_name: str, min_max_rescale: bool) -> dict[str, str]:
+	def _merge_samples(
+		self,
+		registered_files: dict[str, str],
+		modality_name: str,
+		min_max_rescale: bool,
+		force_recomputing: bool = False,
+		all_per_sample_cached: bool = False,
+	) -> dict[str, str]:
 		"""Merge per-sample registration files and optionally apply min-max rescaling."""
 		sample_files = {k: v for k, v in registered_files.items() if k != "merged"}
 		if not sample_files:
@@ -157,6 +178,12 @@ class FeatureExtractorRegistration:
 		merge_dir = os.path.join(self._path, "merged", "registration")
 		os.makedirs(merge_dir, exist_ok=True)
 		merged_file = MODALITY_REGISTRATION_MERGED(self._path, modality_name, "h5ad")
+
+		# Cache check: if all per-sample files were valid and the merged file already exists, reuse it
+		if os.path.exists(merged_file) and not force_recomputing and all_per_sample_cached:
+			logger.info(f"Using cached merged registration for '{modality_name}'")
+			registered_files["merged"] = merged_file
+			return registered_files
 
 		logger.info(f"Merging registration files for '{modality_name}'")
 		adata_list = []
@@ -337,6 +364,8 @@ class SpotInterpolationRegistration:
 		common_samples = sorted(set(anchor_files.keys()) & set(target_files.keys()) - {"merged"})
 		registered_files: dict[str, str] = {}
 
+		all_cached = True  # tracks whether all per-sample files came from valid cache
+
 		for sample_id in common_samples:
 			logger.info(f"Registering '{target_name}' for sample '{sample_id}'")
 
@@ -345,16 +374,25 @@ class SpotInterpolationRegistration:
 			os.makedirs(reg_dir, exist_ok=True)
 			registered_file = MODALITY_REGISTRATION(self._path, sample_id, target_name, "h5ad")
 
-			# Cache check
-			if os.path.exists(registered_file) and not force_recomputing:
-				logger.info(f"Using cached registration for sample '{sample_id}'")
-				registered_files[sample_id] = registered_file
-				continue
-
 			# Load anchor (aligned reference): spot_size and anchor coords in target's space.
 			# obsm['{target_name}_spatial'] holds anchor spot positions expressed in the
 			# target modality's coordinate system, set during the alignment step.
+			# Also loaded here to validate cache obs count before potentially skipping recomputing.
 			anchor_adata = anndata.read_h5ad(anchor_files[sample_id])
+
+			# Cache check — validate obs count against anchor to detect stale caches
+			if os.path.exists(registered_file) and not force_recomputing:
+				cached = anndata.read_h5ad(registered_file)
+				if cached.n_obs == anchor_adata.n_obs:
+					logger.info(f"Using cached registration for sample '{sample_id}'")
+					registered_files[sample_id] = registered_file
+					continue
+				logger.warning(
+					f"Cached registration for '{sample_id}' has {cached.n_obs} obs but "
+					f"anchor has {anchor_adata.n_obs}; recomputing."
+				)
+
+			all_cached = False
 
 			if 'spot_size' in anchor_adata.uns:
 				spot_size = np.asarray(anchor_adata.uns['spot_size'], dtype=np.float32).flatten()
@@ -414,10 +452,20 @@ class SpotInterpolationRegistration:
 			del anchor_adata, target_adata
 
 		# Merge across samples
-		registered_files = self._merge_samples(registered_files, target_name, min_max_rescale)
+		registered_files = self._merge_samples(
+			registered_files, target_name, min_max_rescale,
+			force_recomputing=force_recomputing, all_per_sample_cached=all_cached,
+		)
 		return registered_files
 
-	def _merge_samples(self, registered_files: dict[str, str], modality_name: str, min_max_rescale: bool) -> dict[str, str]:
+	def _merge_samples(
+		self,
+		registered_files: dict[str, str],
+		modality_name: str,
+		min_max_rescale: bool,
+		force_recomputing: bool = False,
+		all_per_sample_cached: bool = False,
+	) -> dict[str, str]:
 		"""Merge per-sample registration files and optionally apply min-max rescaling."""
 		sample_files = {k: v for k, v in registered_files.items() if k != "merged"}
 		if not sample_files:
@@ -426,6 +474,12 @@ class SpotInterpolationRegistration:
 		merge_dir = os.path.join(self._path, "merged", "registration")
 		os.makedirs(merge_dir, exist_ok=True)
 		merged_file = MODALITY_REGISTRATION_MERGED(self._path, modality_name, "h5ad")
+
+		# Cache check: reuse merged file when all per-sample files came from valid cache
+		if os.path.exists(merged_file) and not force_recomputing and all_per_sample_cached:
+			logger.info(f"Using cached merged registration for '{modality_name}'")
+			registered_files["merged"] = merged_file
+			return registered_files
 
 		logger.info(f"Merging registration files for '{modality_name}'")
 		adata_list = []
