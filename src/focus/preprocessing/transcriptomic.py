@@ -200,7 +200,8 @@ class SpatialTranscriptomic(BaseSample):
             if n_pcs >= 2:
                 sc.pp.pca(adata, n_comps=n_pcs)
                 sc.pp.neighbors(adata)
-                sc.tl.leiden(adata, resolution=self._LEIDEN_RESOLUTION, key_added='leiden')
+                sc.tl.leiden(adata, resolution=self._LEIDEN_RESOLUTION, key_added='leiden',
+                             flavor='igraph', n_iterations=2, directed=False)
             else:
                 adata.obs['leiden'] = '0'
         else:
