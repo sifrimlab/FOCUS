@@ -342,22 +342,22 @@ def enhance_contrast(channel: np.ndarray, saturated_pixels: float = 0.35) -> np.
 		The amount of saturated pixels to add. Default is 0.35%.
 	'''
 
-	# Convert to float32
-	channel = channel.astype(np.float32)
+	if channel.dtype != np.float32:
+		channel = channel.astype(np.float32)
 
 	mask = channel > 0
-	result = np.zeros_like(channel, dtype=np.float32)
 
 	if np.any(mask):
 		# Compute the pixels to saturate
 		p_low, p_high = np.percentile(channel[mask], (saturated_pixels, 100 - saturated_pixels))
 
-		# Stretch the histogram
-		rescaled_channel = np.clip(channel[mask], p_low, p_high)
+		if p_high > p_low:
+			# Stretch the histogram in-place
+			np.clip(channel, p_low, p_high, out=channel)
+			channel -= p_low
+			channel /= (p_high - p_low)
 
-		result[mask] = (rescaled_channel - p_low) / (p_high - p_low)
-
-	return result
+	return channel
 
 def gamma_correction(channel: np.ndarray, gamma: float = 0.45) -> np.ndarray:
 	'''
@@ -371,6 +371,7 @@ def gamma_correction(channel: np.ndarray, gamma: float = 0.45) -> np.ndarray:
 		The gamma value to use. Default is 0.45.
 	'''
 
-	channel = channel.astype(np.float32)
-	channel = np.power(channel, gamma)
+	if channel.dtype != np.float32:
+		channel = channel.astype(np.float32)
+	np.power(channel, gamma, out=channel)
 	return channel
