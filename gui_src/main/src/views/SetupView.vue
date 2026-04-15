@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import { ref } from 'vue';
+import { ref, onMounted } from 'vue';
 import { useMainStore } from '../store/main';
 import { api } from '../api/client';
 
 const store = useMainStore();
-const pathInput = ref(store.config.dataset_path || '');
+const savedPath = localStorage.getItem('focus_last_dataset_path') || '';
+const pathInput = ref(store.config.dataset_path || savedPath || '');
 const pathError = ref('');
 const showSamplesPrompt = ref(false);
 const showExistingPrompt = ref(false);
@@ -12,19 +13,13 @@ const showCorruptedPrompt = ref(false);
 const corruptedErrors = ref<string[]>([]);
 
 // Filesystem browser state
-const showBrowser = ref(false);
 const browserPath = ref('');
 const browserParent = ref<string | null>(null);
 const browserEntries = ref<{ name: string }[]>([]);
 const browserLoading = ref(false);
 const browserError = ref('');
 
-const openBrowser = async () => {
-  showBrowser.value = true;
-  await browseTo(pathInput.value || '');
-};
-
-const browseTo = async (path: string) => {
+const browseTo = async (path: string, updateInput = true) => {
   browserLoading.value = true;
   browserError.value = '';
   try {
@@ -32,18 +27,24 @@ const browseTo = async (path: string) => {
     browserPath.value = result.path;
     browserParent.value = result.parent;
     browserEntries.value = result.entries;
+    if (updateInput) pathInput.value = result.path;
   } catch (e: unknown) {
-    const msg = e instanceof Error ? e.message : 'Could not browse directory';
-    browserError.value = msg;
+    browserError.value = e instanceof Error ? e.message : 'Could not browse directory';
   } finally {
     browserLoading.value = false;
   }
 };
 
-const selectBrowserFolder = () => {
-  pathInput.value = browserPath.value;
-  showBrowser.value = false;
+const onPathInput = async () => {
+  const val = pathInput.value;
+  if (val.endsWith('/')) {
+    await browseTo(val, false);
+  }
 };
+
+onMounted(async () => {
+  await browseTo(pathInput.value || '', false);
+});
 
 const onSetPath = async () => {
   pathError.value = '';
@@ -51,6 +52,7 @@ const onSetPath = async () => {
     pathError.value = 'Please enter a dataset path.';
     return;
   }
+  localStorage.setItem('focus_last_dataset_path', pathInput.value.trim());
   await store.setDatasetPath(pathInput.value.trim());
   if (store.samples.length === 0 && !store.hasExistingConfig) {
     pathError.value = 'No sample directories found at this path. Please check the path.';
@@ -112,7 +114,7 @@ const goBackFromCorruption = () => {
         </p>
       </div>
 
-      <!-- Path input card -->
+      <!-- Unified path input + browser card -->
       <div
         v-if="!showSamplesPrompt && !showExistingPrompt && !showCorruptedPrompt"
         class="bg-white dark:bg-gray-800 rounded-2xl shadow-lg border border-gray-200 dark:border-gray-700 p-8"
@@ -143,22 +145,55 @@ const goBackFromCorruption = () => {
             type="text"
             placeholder="path/to/dataset"
             class="flex-1 bg-transparent text-sm font-mono text-gray-800 dark:text-gray-100 placeholder-gray-400 dark:placeholder-gray-600 focus:outline-none"
+            @input="onPathInput"
             @keyup.enter="onSetPath"
           />
-
-          <!-- Browse button -->
-          <button
-            @click="openBrowser"
-            title="Browse filesystem"
-            class="shrink-0 p-1 rounded-lg text-gray-400 dark:text-gray-500 hover:text-blue-500 dark:hover:text-blue-400 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
-          >
-            <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="1.75" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" d="M21 21l-4.35-4.35M17 11A6 6 0 1 1 5 11a6 6 0 0 1 12 0z" />
-            </svg>
-          </button>
         </div>
 
         <p v-if="pathError" class="text-red-500 text-xs mt-2">{{ pathError }}</p>
+
+        <!-- Filesystem browser (always visible) -->
+        <div class="mt-4 rounded-xl border border-gray-200 dark:border-gray-700 overflow-hidden">
+          <!-- Browser header: current path + up button -->
+          <div class="flex items-center gap-2 px-4 py-3 bg-gray-50 dark:bg-gray-900 border-b border-gray-200 dark:border-gray-700">
+            <button
+              @click="browseTo(browserParent!)"
+              :disabled="browserParent === null || browserLoading"
+              class="shrink-0 p-1.5 rounded-lg transition-colors disabled:opacity-30"
+              :class="browserParent !== null ? 'hover:bg-gray-200 dark:hover:bg-gray-700 text-gray-600 dark:text-gray-300' : 'text-gray-300 dark:text-gray-600'"
+              title="Go up"
+            >
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M5 10l7-7 7 7M12 3v18" />
+              </svg>
+            </button>
+            <span class="flex-1 text-xs font-mono text-gray-500 dark:text-gray-400 truncate" :title="browserPath">
+              {{ browserPath || '…' }}
+            </span>
+          </div>
+
+          <!-- Directory list -->
+          <div class="overflow-y-auto" style="max-height: min(240px, 35vh)">
+            <div v-if="browserLoading" class="flex items-center justify-center py-8 text-gray-400 text-sm">
+              Loading…
+            </div>
+            <div v-else-if="browserError" class="px-4 py-4 text-xs text-red-500 font-mono">{{ browserError }}</div>
+            <div v-else-if="browserEntries.length === 0" class="px-4 py-4 text-xs text-gray-400 italic">
+              No subdirectories
+            </div>
+            <button
+              v-for="entry in browserEntries"
+              :key="entry.name"
+              @click="browseTo(browserPath + '/' + entry.name)"
+              class="w-full flex items-center gap-3 px-4 py-2 text-sm text-left hover:bg-gray-50 dark:hover:bg-gray-700/60 transition-colors"
+            >
+              <svg class="w-4 h-4 text-blue-400 dark:text-blue-500 shrink-0" fill="currentColor" viewBox="0 0 20 20">
+                <path d="M2 6a2 2 0 012-2h4l2 2h6a2 2 0 012 2v6a2 2 0 01-2 2H4a2 2 0 01-2-2V6z" />
+              </svg>
+              <span class="font-mono text-gray-700 dark:text-gray-200 truncate">{{ entry.name }}</span>
+            </button>
+          </div>
+        </div>
 
         <button
           @click="onSetPath"
@@ -166,69 +201,6 @@ const goBackFromCorruption = () => {
         >
           Continue
         </button>
-      </div>
-
-      <!-- Filesystem browser panel -->
-      <div
-        v-if="showBrowser && !showSamplesPrompt && !showExistingPrompt && !showCorruptedPrompt"
-        class="bg-white dark:bg-gray-800 rounded-2xl shadow-lg border border-gray-200 dark:border-gray-700 overflow-hidden"
-      >
-        <!-- Browser header: current path + up button -->
-        <div class="flex items-center gap-2 px-4 py-3 bg-gray-50 dark:bg-gray-900 border-b border-gray-200 dark:border-gray-700">
-          <button
-            @click="browseTo(browserParent!)"
-            :disabled="browserParent === null || browserLoading"
-            class="shrink-0 p-1.5 rounded-lg transition-colors disabled:opacity-30"
-            :class="browserParent !== null ? 'hover:bg-gray-200 dark:hover:bg-gray-700 text-gray-600 dark:text-gray-300' : 'text-gray-300 dark:text-gray-600'"
-            title="Go up"
-          >
-            <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" d="M5 10l7-7 7 7M12 3v18" />
-            </svg>
-          </button>
-          <span class="flex-1 text-xs font-mono text-gray-500 dark:text-gray-400 truncate" :title="browserPath">
-            {{ browserPath || '…' }}
-          </span>
-        </div>
-
-        <!-- Directory list -->
-        <div class="overflow-y-auto" style="max-height: min(240px, 35vh)">
-          <div v-if="browserLoading" class="flex items-center justify-center py-8 text-gray-400 text-sm">
-            Loading…
-          </div>
-          <div v-else-if="browserError" class="px-4 py-4 text-xs text-red-500 font-mono">{{ browserError }}</div>
-          <div v-else-if="browserEntries.length === 0" class="px-4 py-4 text-xs text-gray-400 italic">
-            No subdirectories
-          </div>
-          <button
-            v-for="entry in browserEntries"
-            :key="entry.name"
-            @click="browseTo(browserPath + '/' + entry.name)"
-            class="w-full flex items-center gap-3 px-4 py-2 text-sm text-left hover:bg-gray-50 dark:hover:bg-gray-700/60 transition-colors"
-          >
-            <svg class="w-4 h-4 text-blue-400 dark:text-blue-500 shrink-0" fill="currentColor" viewBox="0 0 20 20">
-              <path d="M2 6a2 2 0 012-2h4l2 2h6a2 2 0 012 2v6a2 2 0 01-2 2H4a2 2 0 01-2-2V6z" />
-            </svg>
-            <span class="font-mono text-gray-700 dark:text-gray-200 truncate">{{ entry.name }}</span>
-          </button>
-        </div>
-
-        <!-- Browser footer: select + cancel -->
-        <div class="flex gap-2 px-4 py-3 border-t border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900">
-          <button
-            @click="selectBrowserFolder"
-            :disabled="!browserPath"
-            class="flex-1 py-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-40 text-white text-sm font-semibold rounded-xl transition-colors"
-          >
-            Select this folder
-          </button>
-          <button
-            @click="showBrowser = false"
-            class="px-4 py-2 bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 text-sm font-medium rounded-xl transition-colors"
-          >
-            Cancel
-          </button>
-        </div>
       </div>
 
       <!-- Samples confirmation -->
