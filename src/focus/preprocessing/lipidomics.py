@@ -1872,6 +1872,7 @@ class MsiDataset(BaseDataset):
 			# Filter to only per-sample files (exclude any "merged" key)
 			sample_files = {k: v for k, v in processed_samples.items() if k != "merged"}
 
+			ad.settings.allow_write_nullable_strings = True
 			ad.experimental.concat_on_disk(
 				sample_files,
 				merged_file,
