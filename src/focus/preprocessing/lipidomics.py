@@ -1776,7 +1776,7 @@ class MsiDataset(BaseDataset):
 			"mz": merged_reference_mz,
 			"mz_mode": pd.Categorical(merged_mode_labels),
 			"lipid_annotation": pd.Categorical(merged_annotations),
-		}, index=[str(i) for i in range(total_cols)])
+		}, index=pd.Index([str(i) for i in range(total_cols)], dtype=object))
 
 		spot_sizes: dict[str, list[float]] = {}
 		write_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
