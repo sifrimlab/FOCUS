@@ -759,8 +759,7 @@ class MsiSample(BaseSample):
 		if database is not None and mass_tolerance is not None:
 			db_subset = database[database["ion_mode"] == ion_mode]
 			if not db_subset.empty:
-				masses = db_subset["ionized_mass"].to_numpy(dtype=np.float64)
-				masses.sort()
+				masses = np.sort(db_subset["ionized_mass"].to_numpy(dtype=np.float64))
 				hit_ratio = np.zeros(n_spots, dtype=np.float64)
 				for i in range(n_spots):
 					if n_peaks[i] == 0:
