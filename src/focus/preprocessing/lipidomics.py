@@ -1817,7 +1817,7 @@ class MsiDataset(BaseDataset):
 
 				# Build obs DataFrame
 				n_obs = rows
-				obs_index = [f"{sample_id}_{i}" for i in range(n_obs)]
+				obs_index = pd.Index([f"{sample_id}_{i}" for i in range(n_obs)], dtype=object)
 
 				obs_df = pd.DataFrame({
 					'sample_id': pd.Categorical([sample_id] * n_obs),
