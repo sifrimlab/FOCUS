@@ -4,6 +4,7 @@ import os, tqdm, psutil
 from focus.preprocessing._utils import StepReporter
 from collections import defaultdict
 from sklearn.linear_model import LinearRegression
+from sklearn.mixture import GaussianMixture
 import anndata as ad
 import pandas as pd
 import xml.etree.ElementTree as ET
@@ -704,14 +705,18 @@ class MsiSample(BaseSample):
 		dominated by uniformly sprayed standards and slide coating). Three parameter-free
 		features capture this: Shannon entropy, number of detected peaks, and log(TIC).
 		An optional annotation DB hit ratio is added as a 4th feature when a database and
-		mass_tolerance are provided. The combined score is thresholded with Otsu's method.
+		mass_tolerance are provided.
 
 		Behavior adapts based on self._sample_type:
-		  "tissue"   -- contiguous tissue section. Applies morphological cleanup (hole
-		               filling + opening) after Otsu to smooth the spatial mask.
+		  "tissue"   -- contiguous tissue section. A 2-component GMM is fit; BIC selects
+		               between 1-component (unimodal → keep all) and 2-component (bimodal →
+		               classify by posterior). This handles class-imbalanced distributions
+		               (e.g. 95 % tissue / 5 % background) where Otsu splits the dominant
+		               tissue mode instead of separating it from background. Morphological
+		               cleanup (hole filling + opening) is applied afterwards.
 		  "microgrid" -- isolated single cells in a grid pattern. Spatial cleanup is
-		               disabled (it would fill gaps and erase real cells). A floor at the
-		               25th-percentile score is used instead to avoid discarding weak cells.
+		               disabled (it would fill gaps and erase real cells). Otsu is used with
+		               a 25th-percentile floor to avoid discarding weak single-cell signals.
 
 		Returns
 		-------
@@ -789,66 +794,81 @@ class MsiSample(BaseSample):
 		score /= len(features)
 
 		# ------------------------------------------------------------------
-		# 4. Otsu threshold (numpy implementation, consistent with cv2 behaviour
-		#    used in raman.py and microscopy_image.py)
+		# 4. Threshold: Otsu (microgrid) or GMM + BIC model selection (tissue)
 		# ------------------------------------------------------------------
 		valid_scores = score[valid]
 		lo, hi = valid_scores.min(), valid_scores.max()
 
-		# Bimodality guard: if distribution is effectively unimodal, treat all spots as tissue
-		if hi - lo < 1e-12:
-			print(f"Tissue detection ({self._sample_type}): unimodal score distribution -- treating all {n_spots} spots as foreground.")
-			return np.where(valid)[0].tolist()
-
-		scaled = ((valid_scores - lo) / (hi - lo) * 255).astype(np.uint8)
-		hist, _ = np.histogram(scaled, bins=256, range=(0, 255))
-		hist = hist.astype(np.float64)
-		total = hist.sum()
-		sum_total = np.dot(np.arange(256, dtype=np.float64), hist)
-
-		sum_bg, w_bg, max_between_var, best_t = 0.0, 0.0, 0.0, 0
-		for t in range(256):
-			w_bg += hist[t]
-			if w_bg == 0:
-				continue
-			w_fg = total - w_bg
-			if w_fg == 0:
-				break
-			sum_bg += t * hist[t]
-			mu_bg = sum_bg / w_bg
-			mu_fg = (sum_total - sum_bg) / w_fg
-			between_var = (w_bg / total) * (w_fg / total) * (mu_bg - mu_fg) ** 2
-			if between_var > max_between_var:
-				max_between_var = between_var
-				best_t = t
-
-		total_var = np.var(scaled.astype(np.float64))
-		bimodality_ratio = max_between_var / (total_var + 1e-12)
-
-		if bimodality_ratio < 0.05:
-			# Effectively unimodal -- no clear tissue/background separation; keep everything
-			print(f"Tissue detection ({self._sample_type}): low bimodality ratio ({bimodality_ratio:.3f}) -- treating all {n_spots} spots as foreground.")
-			return np.where(valid)[0].tolist()
-
-		otsu_threshold = best_t / 255.0 * (hi - lo) + lo
 		tissue_mask = np.zeros(n_spots, dtype=bool)
 
 		if self._sample_type == "microgrid":
-			# Microgrid: enforce a floor at the 25th percentile so at most 75% of spots
-			# are discarded, protecting weak single-cell signals.
+			# Microgrid: mostly background with isolated single cells.  Otsu with a
+			# 25th-percentile floor ensures at most 75 % of spots are discarded,
+			# protecting weak single-cell signals.
+			if hi - lo < 1e-12:
+				print(f"Tissue detection (microgrid): unimodal score distribution -- treating all {n_spots} spots as foreground.")
+				return np.where(valid)[0].tolist()
+
+			scaled = ((valid_scores - lo) / (hi - lo) * 255).astype(np.uint8)
+			hist, _ = np.histogram(scaled, bins=256, range=(0, 255))
+			hist = hist.astype(np.float64)
+			total = hist.sum()
+			sum_total = np.dot(np.arange(256, dtype=np.float64), hist)
+			sum_bg, w_bg, max_between_var, best_t = 0.0, 0.0, 0.0, 0
+			for t in range(256):
+				w_bg += hist[t]
+				if w_bg == 0:
+					continue
+				w_fg = total - w_bg
+				if w_fg == 0:
+					break
+				sum_bg += t * hist[t]
+				mu_bg = sum_bg / w_bg
+				mu_fg = (sum_total - sum_bg) / w_fg
+				between_var = (w_bg / total) * (w_fg / total) * (mu_bg - mu_fg) ** 2
+				if between_var > max_between_var:
+					max_between_var = between_var
+					best_t = t
+			otsu_threshold = best_t / 255.0 * (hi - lo) + lo
 			floor_threshold = float(np.percentile(valid_scores, 25))
 			effective_threshold = min(otsu_threshold, floor_threshold)
 			tissue_mask[valid] = score[valid] >= effective_threshold
+			_log_info = f"otsu_thr={otsu_threshold:.4f}, floor_thr={floor_threshold:.4f}, effective_thr={effective_threshold:.4f}"
+
 		else:
-			# Tissue section: sparse-tissue guard -- if Otsu keeps < 15% of spots, lower
-			# the threshold by 20% to prefer false positives over false negatives
-			# (foreground spots drive the m/z backbone; missing tissue is worse than
-			# including some background).
-			tissue_mask[valid] = score[valid] >= otsu_threshold
-			tissue_fraction = tissue_mask[valid].sum() / valid.sum()
-			if tissue_fraction < 0.15:
-				otsu_threshold *= 0.80
-				tissue_mask[valid] = score[valid] >= otsu_threshold
+			# Tissue section: use GMM + BIC to decide between unimodal (all tissue)
+			# and bimodal (tissue + background).  This handles imbalanced distributions
+			# (e.g. 95 % tissue / 5 % background) where Otsu tends to split the
+			# dominant tissue mode rather than separating it from background.
+			n_valid = valid_scores.shape[0]
+			if n_valid < 4 or hi - lo < 1e-12:
+				print(f"Tissue detection (tissue): degenerate score distribution -- treating all {n_spots} spots as foreground.")
+				return np.where(valid)[0].tolist()
+
+			vs2d = valid_scores.reshape(-1, 1)
+			gmm1 = GaussianMixture(n_components=1, random_state=0).fit(vs2d)
+			gmm2 = GaussianMixture(n_components=2, random_state=0, n_init=3).fit(vs2d)
+			bic1, bic2 = gmm1.bic(vs2d), gmm2.bic(vs2d)
+
+			if bic1 <= bic2:
+				# BIC prefers unimodal model -- keep all valid spots as tissue
+				print(
+					f"Tissue detection (tissue): GMM BIC prefers 1-component "
+					f"(BIC1={bic1:.1f} <= BIC2={bic2:.1f}) -- treating all {n_spots} spots as foreground, "
+					f"n_features={len(features)}, ion_mode={ion_mode}"
+				)
+				return np.where(valid)[0].tolist()
+
+			# 2-component model wins: classify by posterior on the higher-mean component
+			tissue_comp = int(np.argmax(gmm2.means_.ravel()))
+			posteriors = gmm2.predict_proba(vs2d)[:, tissue_comp]
+			tissue_mask[valid] = posteriors >= 0.5
+			mu0, mu1 = gmm2.means_.ravel()
+			pi0, pi1 = gmm2.weights_
+			_log_info = (
+				f"GMM 2-comp (BIC1={bic1:.1f}, BIC2={bic2:.1f}), "
+				f"means=[{mu0:.3f},{mu1:.3f}], weights=[{pi0:.2f},{pi1:.2f}]"
+			)
 
 		# ------------------------------------------------------------------
 		# 5. Spatial morphological cleanup (tissue section only)
@@ -870,8 +890,7 @@ class MsiSample(BaseSample):
 		kept = np.where(tissue_mask)[0]
 		print(
 			f"Tissue detection ({self._sample_type}): kept {kept.size} / {n_spots} spots "
-			f"(bimodality={bimodality_ratio:.3f}, otsu_thr={otsu_threshold:.4f}, "
-			f"n_features={len(features)}, ion_mode={ion_mode})"
+			f"({_log_info}, n_features={len(features)}, ion_mode={ion_mode})"
 		)
 		return kept.tolist()
 
