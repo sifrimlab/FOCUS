@@ -2,7 +2,7 @@ import logging
 import time
 
 import numpy as np
-from shapely import STRtree, points as shapely_points, prepare
+from shapely import STRtree, points as shapely_points, prepare, simplify
 from shapely.geometry import Polygon, MultiPolygon
 
 from focus.annotations.annotations import load_geojson
@@ -65,7 +65,13 @@ def transfer_annotations(
 		logger.info(f"  Polygon stats: {len(polygons)} polygons, {total_vertices} total vertices, areas min={areas.min():.0f} max={areas.max():.0f}")
 
 		t0 = time.perf_counter()
-		polygons_arr = np.asarray(polygons, dtype=object)
+		polygons_arr = simplify(np.asarray(polygons, dtype=object), tolerance=1.0, preserve_topology=True)
+		simplified_vertices = sum(
+			len(g.exterior.coords) if isinstance(g, Polygon)
+			else sum(len(p.exterior.coords) for p in g.geoms)
+			for g in polygons_arr
+		)
+		logger.info(f"  Simplified to {simplified_vertices} vertices ({total_vertices} → {simplified_vertices}) in {time.perf_counter() - t0:.2f}s")
 		prepare(polygons_arr)
 		logger.info(f"  Prepared {len(polygons_arr)} polygons in {time.perf_counter() - t0:.2f}s")
 
