@@ -2,6 +2,7 @@ import os
 import logging
 import multiprocessing
 
+import anndata
 import numpy as np
 import pandas as pd
 
@@ -376,6 +377,11 @@ def gamma_correction(channel: np.ndarray, gamma: float = 0.45) -> np.ndarray:
 		channel = channel.astype(np.float32)
 	np.power(channel, gamma, out=channel)
 	return channel
+
+
+def concat_on_disk_compat(*args, **kwargs) -> None:
+	anndata.settings.allow_write_nullable_strings = True
+	anndata.experimental.concat_on_disk(*args, **kwargs)
 
 
 def write_h5ad_compat(adata, path, **kwargs) -> None:

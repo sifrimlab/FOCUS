@@ -9,7 +9,7 @@ from focus.constants import (
 	AlignmentStrategy, AnnotationsParameters, AnnotationFileType,
 	MODALITY_ANNOTATION, MODALITY_ANNOTATION_MERGED,
 )
-from focus.utils import write_h5ad_compat
+from focus.utils import write_h5ad_compat, concat_on_disk_compat
 from focus.preprocessing import preprocess_modality
 from focus.preprocessing._utils import StepReporter
 from focus.alignment.alignment import DirectMappingAligner
@@ -392,7 +392,7 @@ def _run_annotation_transfer(
 
 		merged_out = MODALITY_ANNOTATION_MERGED(dataset_path, ref_name, "h5ad")
 		os.makedirs(os.path.dirname(merged_out), exist_ok=True)
-		anndata.experimental.concat_on_disk(
+		concat_on_disk_compat(
 			per_sample_annotated, merged_out,
 			merge="same", uns_merge="same",
 		)

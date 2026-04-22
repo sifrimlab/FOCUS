@@ -5,7 +5,7 @@ from sklearn.decomposition import NMF
 
 from focus.constants import MODALITY_ALIGNMENT, MODALITY_ALIGNMENT_MERGED
 from focus.constants import ModalityType
-from focus.utils import write_h5ad_compat
+from focus.utils import write_h5ad_compat, concat_on_disk_compat
 
 from focus.GUI.direct_mapping_alignment import DirectMappingAlignmentGUI
 
@@ -473,7 +473,7 @@ class DirectMappingAligner:
 			os.makedirs(alignment_folder, exist_ok=True)
 			merged_file = MODALITY_ALIGNMENT_MERGED(self._path, self._target_modality_name, "h5ad")
 
-			anndata.experimental.concat_on_disk(
+			concat_on_disk_compat(
 				aligned_files, merged_file,
 				merge="same", uns_merge="same"
 			)
@@ -541,7 +541,7 @@ class DirectMappingAligner:
 		if not os.path.exists(merged_file) or force_recomputing:
 			alignment_folder = os.path.join(self._path, "merged", "alignment")
 			os.makedirs(alignment_folder, exist_ok=True)
-			anndata.experimental.concat_on_disk(
+			concat_on_disk_compat(
 				aligned_files, merged_file,
 				merge="same", uns_merge="same"
 			)

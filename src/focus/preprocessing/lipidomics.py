@@ -1872,7 +1872,7 @@ class MsiDataset(BaseDataset):
 			# Filter to only per-sample files (exclude any "merged" key)
 			sample_files = {k: v for k, v in processed_samples.items() if k != "merged"}
 
-			ad.experimental.concat_on_disk(
+			utils.concat_on_disk_compat(
 				sample_files,
 				merged_file,
 				axis=0,
