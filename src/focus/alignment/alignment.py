@@ -319,11 +319,15 @@ class DirectMappingAligner:
 		try:
 			force_recomputing = kwargs.get("force_recomputing", False)
 
+			is_target_image = self._target_modality_type in _IMAGE_MODALITIES
 			for sample_index, sample_id in enumerate(self._common_samples):
 				# Check cache (use h5py to avoid loading full AnnData)
 				if not force_recomputing:
-					aligned_target_file = MODALITY_ALIGNMENT(self._path, sample_id, self._target_modality_name, "h5ad")
+					file_ext = "ome.tiff" if is_target_image else "h5ad"
+					aligned_target_file = MODALITY_ALIGNMENT(self._path, sample_id, self._target_modality_name, file_ext)
 					if os.path.exists(aligned_target_file):
+						if is_target_image:
+							continue
 						obsm_key = f'{self._reference_modality_name}_spatial'
 						with h5py.File(aligned_target_file, 'r') as f:
 							obsm = f.get('obsm')
@@ -548,15 +552,18 @@ class DirectMappingAligner:
 		"""Return True if at least one sample still needs to be aligned."""
 		if force_recomputing:
 			return len(self._common_samples) > 0
+		is_target_image = self._target_modality_type in _IMAGE_MODALITIES
 		obsm_key = f'{self._reference_modality_name}_spatial'
 		for sample_id in self._common_samples:
-			aligned_target_file = MODALITY_ALIGNMENT(self._path, sample_id, self._target_modality_name, "h5ad")
+			file_ext = "ome.tiff" if is_target_image else "h5ad"
+			aligned_target_file = MODALITY_ALIGNMENT(self._path, sample_id, self._target_modality_name, file_ext)
 			if not os.path.exists(aligned_target_file):
 				return True
-			with h5py.File(aligned_target_file, 'r') as f:
-				obsm = f.get('obsm')
-				if obsm is None or obsm_key not in obsm:
-					return True
+			if not is_target_image:
+				with h5py.File(aligned_target_file, 'r') as f:
+					obsm = f.get('obsm')
+					if obsm is None or obsm_key not in obsm:
+						return True
 		return False
 
 	def collect_aligned_files(self) -> dict[str, str]:

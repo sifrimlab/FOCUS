@@ -379,14 +379,16 @@ def gamma_correction(channel: np.ndarray, gamma: float = 0.45) -> np.ndarray:
 
 
 def write_h5ad_compat(adata, path, **kwargs) -> None:
-	"""Write AnnData to h5ad, converting nullable string columns to object dtype.
+	"""Write AnnData to h5ad, converting nullable string arrays to object dtype.
 
-	Converts pd.StringDtype columns in obs and var to object dtype before writing so
-	that the output files are readable by anndata < 0.11 and downstream tools that
-	do not support the newer nullable-string encoding.
+	Converts pd.StringDtype columns and indices in obs and var to object dtype before
+	writing so that the output files are readable by anndata < 0.11 and downstream
+	tools that do not support the newer nullable-string encoding.
 	"""
 	for df in (adata.obs, adata.var):
 		for col in df.columns:
 			if isinstance(df[col].dtype, pd.StringDtype):
 				df[col] = df[col].astype(object)
+		if isinstance(df.index.dtype, pd.StringDtype):
+			df.index = df.index.astype(object)
 	adata.write_h5ad(path, **kwargs)

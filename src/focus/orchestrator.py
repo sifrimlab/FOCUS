@@ -581,6 +581,8 @@ def _compile_mudata(
 		for _col in _df.columns:
 			if isinstance(_df[_col].dtype, pd.StringDtype):
 				_df[_col] = _df[_col].astype(object)
+		if isinstance(_df.index.dtype, pd.StringDtype):
+			_df.index = _df.index.astype(object)
 	mdata.write(output_path)
 	logger.info(f"MuData saved to {output_path} with {len(mod_dict)} modalities, {n_anchor_obs} observations")
 
