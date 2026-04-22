@@ -566,6 +566,20 @@ class DirectMappingAligner:
 						return True
 		return False
 
+	def needs_merged_build(self) -> bool:
+		"""Return True if per-sample files exist but the merged file is absent."""
+		is_target_image = self._target_modality_type in _IMAGE_MODALITIES
+		if is_target_image:
+			return False
+		merged_file = MODALITY_ALIGNMENT_MERGED(self._path, self._target_modality_name, "h5ad")
+		if os.path.exists(merged_file):
+			return False
+		for sample_id in self._common_samples:
+			aligned_file = MODALITY_ALIGNMENT(self._path, sample_id, self._target_modality_name, "h5ad")
+			if os.path.exists(aligned_file):
+				return True
+		return False
+
 	def collect_aligned_files(self) -> dict[str, str]:
 		"""Return paths to already-aligned files without starting the GUI.
 

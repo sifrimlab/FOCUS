@@ -291,13 +291,25 @@ def _run_alignment(config: dict, modality_files: dict, report, n_stages: int) ->
 
 			aligned_files[mod_name] = aligner.align_dataset(force_recomputing=pair_force, on_gui_done=_on_gui_done)
 		else:
-			logger.info(f"Reference '{ref_name}' already aligned into '{mod_name}' space — loading cached files")
-			report(state="running", stage="alignment", stage_index=2, total_stages=n_stages,
-				   current_modality=mod_name,
-				   message=f"Loading cached alignment for '{mod_name}'...",
-				   current_sample=None, current_sample_index=0, total_samples=0,
-				   sub_step=None, sub_step_index=0, sub_step_total=0,
-				   sub_step_progress=0, sub_step_items_total=0)
+			if aligner.needs_merged_build():
+				logger.info(
+					f"Reference '{ref_name}' already aligned into '{mod_name}' space — "
+					f"per-sample files cached, building merged dataset"
+				)
+				report(state="running", stage="alignment", stage_index=2, total_stages=n_stages,
+					   current_modality=mod_name,
+					   message=f"Per-sample alignment cached — building merged dataset for '{mod_name}'...",
+					   current_sample=None, current_sample_index=0, total_samples=0,
+					   sub_step=None, sub_step_index=0, sub_step_total=0,
+					   sub_step_progress=0, sub_step_items_total=0)
+			else:
+				logger.info(f"Reference '{ref_name}' already aligned into '{mod_name}' space — loading cached files")
+				report(state="running", stage="alignment", stage_index=2, total_stages=n_stages,
+					   current_modality=mod_name,
+					   message=f"Loading cached alignment for '{mod_name}'...",
+					   current_sample=None, current_sample_index=0, total_samples=0,
+					   sub_step=None, sub_step_index=0, sub_step_total=0,
+					   sub_step_progress=0, sub_step_items_total=0)
 			aligned_files[mod_name] = aligner.collect_aligned_files()
 
 		report(state="running", stage="alignment", stage_index=2, total_stages=n_stages,
