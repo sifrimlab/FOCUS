@@ -1,5 +1,5 @@
 import numpy as np
-from shapely import STRtree, points as shapely_points
+from shapely import STRtree, points as shapely_points, prepare
 from shapely.geometry import Polygon, MultiPolygon
 
 from focus.annotations.annotations import load_geojson
@@ -51,7 +51,9 @@ def transfer_annotations(
 		label_names = [lbl for lbl, _ in features]
 		areas = np.array([geom.area for geom in polygons], dtype=float)
 
-		tree = STRtree(polygons)
+		polygons_arr = np.asarray(polygons, dtype=object)
+		prepare(polygons_arr)  # pre-computes vertex-level spatial index for fast covered_by tests
+		tree = STRtree(polygons_arr)
 		pts = shapely_points(sample_coords[:, 0], sample_coords[:, 1])
 
 		# matches[0] = indices into pts, matches[1] = indices into tree polygons
