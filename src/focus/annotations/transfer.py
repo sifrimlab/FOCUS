@@ -2,7 +2,7 @@ import logging
 import time
 
 import numpy as np
-from shapely import STRtree, points as shapely_points, prepare, simplify
+from shapely import contains, points as shapely_points, prepare
 from shapely.geometry import Polygon, MultiPolygon
 
 from focus.annotations.annotations import load_geojson
@@ -65,46 +65,25 @@ def transfer_annotations(
 		logger.info(f"  Polygon stats: {len(polygons)} polygons, {total_vertices} total vertices, areas min={areas.min():.0f} max={areas.max():.0f}")
 
 		t0 = time.perf_counter()
-		polygons_arr = simplify(np.asarray(polygons, dtype=object), tolerance=1.0, preserve_topology=True)
-		simplified_vertices = sum(
-			len(g.exterior.coords) if isinstance(g, Polygon)
-			else sum(len(p.exterior.coords) for p in g.geoms)
-			for g in polygons_arr
-		)
-		logger.info(f"  Simplified to {simplified_vertices} vertices ({total_vertices} → {simplified_vertices}) in {time.perf_counter() - t0:.2f}s")
+		polygons_arr = np.asarray(polygons, dtype=object)
 		prepare(polygons_arr)
 		logger.info(f"  Prepared {len(polygons_arr)} polygons in {time.perf_counter() - t0:.2f}s")
 
-		t0 = time.perf_counter()
-		tree = STRtree(polygons_arr)
-		logger.info(f"  STRtree built in {time.perf_counter() - t0:.2f}s")
-
-		t0 = time.perf_counter()
 		pts = shapely_points(sample_coords[:, 0], sample_coords[:, 1])
-		logger.info(f"  {len(pts)} points created in {time.perf_counter() - t0:.2f}s — running spatial query...")
+		logger.info(f"  Running contains query on {len(pts)} points × {len(polygons_arr)} polygons...")
 
+		# Iterate over polygons in descending area order so that when a point falls
+		# inside multiple polygons the smallest one (processed last) wins.
+		# contains(polygon, pts_array) uses GEOSPreparedContains — the same fast path
+		# that geopandas uses internally — and vectorizes over all points at once.
 		t0 = time.perf_counter()
-		# within dispatches to GEOSPreparedContains on the prepared polygons, which is
-		# the fastest path. covered_by would also catch boundary points but is slower.
-		matches = tree.query(pts, predicate="within")
-		n_matches = matches.shape[1] if matches.ndim == 2 else matches.size // 2
-		logger.info(f"  Spatial query done: {n_matches} (point, polygon) pairs in {time.perf_counter() - t0:.2f}s")
+		labels_sample = np.full(len(pts), None, dtype=object)
+		for j in np.argsort(areas)[::-1]:
+			hit = contains(polygons_arr[j], pts)
+			labels_sample[hit] = label_names[j]
 
-		if matches.size == 0:
-			continue
-
-		pt_idx = matches[0]
-		poly_idx = matches[1]
-
-		# For each point, pick the matching polygon with the smallest area.
-		# Sort by area so that np.unique(return_index=True) gives the first
-		# (smallest-area) occurrence for each point.
-		order = np.argsort(areas[poly_idx])
-		pt_sorted = pt_idx[order]
-		poly_sorted = poly_idx[order]
-
-		_, first_occ = np.unique(pt_sorted, return_index=True)
-		labels[sample_indices[pt_sorted[first_occ]]] = np.array(label_names)[poly_sorted[first_occ]]
-		logger.info(f"  {len(first_occ)}/{len(pts)} spots annotated")
+		labels[sample_indices] = labels_sample
+		n_annotated = int(np.sum(labels_sample != None))  # noqa: E711
+		logger.info(f"  Done: {n_annotated}/{len(pts)} spots annotated in {time.perf_counter() - t0:.2f}s")
 
 	return labels
