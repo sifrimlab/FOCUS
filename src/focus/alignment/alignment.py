@@ -469,14 +469,14 @@ class DirectMappingAligner:
 				aligned_samples[sample_id] = aligned_file
 
 		if aligned_files:
-			alignment_folder = os.path.join(self._path, "merged", "alignment")
-			os.makedirs(alignment_folder, exist_ok=True)
 			merged_file = MODALITY_ALIGNMENT_MERGED(self._path, self._target_modality_name, "h5ad")
-
-			concat_on_disk_compat(
-				aligned_files, merged_file,
-				merge="same", uns_merge="same"
-			)
+			if not os.path.exists(merged_file) or self._aligned_coordinates:
+				alignment_folder = os.path.join(self._path, "merged", "alignment")
+				os.makedirs(alignment_folder, exist_ok=True)
+				concat_on_disk_compat(
+					aligned_files, merged_file,
+					merge="same", uns_merge="same"
+				)
 			aligned_samples["merged"] = merged_file
 
 		return aligned_samples
