@@ -373,13 +373,14 @@ def _run_annotation_transfer(
 				   sub_step_progress=0, sub_step_items_total=0)
 
 		ref_path = modality_files[ref_name][sample_id]
-		ref_sample = anndata.read_h5ad(ref_path)
+		ref_sample = anndata.read_h5ad(ref_path, backed='r')
 
 		if ann_mod_name == ref_name:
 			coords_sample = np.asarray(ref_sample.obsm['spatial'])
 		else:
-			ann_sample = anndata.read_h5ad(aligned_files[ann_mod_name][sample_id])
+			ann_sample = anndata.read_h5ad(aligned_files[ann_mod_name][sample_id], backed='r')
 			coords_sample = np.asarray(ann_sample.obsm[f'{ann_mod_name}_spatial'])
+			ann_sample.file.close()
 
 		sids_sample = np.asarray(ref_sample.obs['sample_id'])
 		ann_labels = transfer_annotations(coords_sample, sids_sample, annotation_paths)
@@ -388,6 +389,7 @@ def _run_annotation_transfer(
 		sample_out = MODALITY_ANNOTATION(dataset_path, sample_id, ref_name, "h5ad")
 		os.makedirs(os.path.dirname(sample_out), exist_ok=True)
 		write_h5ad_compat(ref_sample, sample_out)
+		ref_sample.file.close()
 		result[sample_id] = sample_out
 		per_sample_annotated.append(sample_out)
 		logger.debug(f"Annotated sample '{sample_id}' saved to {sample_out}")
