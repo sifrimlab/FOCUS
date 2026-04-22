@@ -5,6 +5,7 @@ from sklearn.decomposition import NMF
 
 from focus.constants import MODALITY_ALIGNMENT, MODALITY_ALIGNMENT_MERGED
 from focus.constants import ModalityType
+from focus.utils import write_h5ad_compat
 
 from focus.GUI.direct_mapping_alignment import DirectMappingAlignmentGUI
 
@@ -450,7 +451,7 @@ class DirectMappingAligner:
 				adata = anndata.read_h5ad(self._target_modality[sample_id])
 
 			adata.obsm[f'{self._reference_modality_name}_spatial'] = aligned_coords.astype(np.float32)
-			adata.write_h5ad(aligned_file, compression=_H5AD_COMPRESSION)
+			write_h5ad_compat(adata, aligned_file, compression=_H5AD_COMPRESSION)
 			del adata
 
 			aligned_samples[sample_id] = aligned_file
@@ -520,7 +521,7 @@ class DirectMappingAligner:
 				else:
 					adata = anndata.read_h5ad(processed_target_file)
 				adata.obsm[obsm_key] = adata.obsm['spatial'].copy()
-				adata.write_h5ad(aligned_file, compression=_H5AD_COMPRESSION)
+				write_h5ad_compat(adata, aligned_file, compression=_H5AD_COMPRESSION)
 				del adata
 
 		# Build merged dataset

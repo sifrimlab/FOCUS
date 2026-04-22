@@ -9,6 +9,7 @@ from focus.constants import (
 	AlignmentStrategy, AnnotationsParameters, AnnotationFileType,
 	MODALITY_ANNOTATION, MODALITY_ANNOTATION_MERGED,
 )
+from focus.utils import write_h5ad_compat
 from focus.preprocessing import preprocess_modality
 from focus.preprocessing._utils import StepReporter
 from focus.alignment.alignment import DirectMappingAligner
@@ -374,7 +375,7 @@ def _run_annotation_transfer(
 
 		sample_out = MODALITY_ANNOTATION(dataset_path, sample_id, ref_name, "h5ad")
 		os.makedirs(os.path.dirname(sample_out), exist_ok=True)
-		ref_sample.write(sample_out)
+		write_h5ad_compat(ref_sample, sample_out)
 		result[sample_id] = sample_out
 		per_sample_annotated.append(sample_out)
 		logger.debug(f"Annotated sample '{sample_id}' saved to {sample_out}")
@@ -576,6 +577,10 @@ def _compile_mudata(
 
 	output_path = MULTIMODAL_DATASET(dataset_path, "h5mu")
 	os.makedirs(os.path.dirname(output_path), exist_ok=True)
+	for _df in (mdata.obs, mdata.var):
+		for _col in _df.columns:
+			if isinstance(_df[_col].dtype, pd.StringDtype):
+				_df[_col] = _df[_col].astype(object)
 	mdata.write(output_path)
 	logger.info(f"MuData saved to {output_path} with {len(mod_dict)} modalities, {n_anchor_obs} observations")
 

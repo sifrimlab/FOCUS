@@ -6,6 +6,7 @@ import scanpy as sc
 import scipy.sparse as sp
 
 from focus.constants import MODALITY_PREPROCESSING, MODALITY_PREPROCESSING_MERGED, STPreprocessingParams
+from focus.utils import write_h5ad_compat
 from focus.preprocessing._utils import StepReporter
 from focus.preprocessing.base import BaseSample, BaseDataset
 from focus.preprocessing._registry import ModalityHandler, register_modality
@@ -213,7 +214,7 @@ class SpatialTranscriptomic(BaseSample):
         adata.obsm["spatial"] = np.asarray(adata.obsm["spatial"], dtype=np.float32)
 
         # Save with compression
-        adata.write_h5ad(output_file, compression=self._H5AD_COMPRESSION)
+        write_h5ad_compat(adata, output_file, compression=self._H5AD_COMPRESSION)
         return output_file
 
 
@@ -384,7 +385,7 @@ class SpatialTranscriptomicDataset(BaseDataset):
 
         # Save with compression
         reporter.message("Saving combined dataset...")
-        combined.write_h5ad(merged_file, compression=self._H5AD_COMPRESSION)
+        write_h5ad_compat(combined, merged_file, compression=self._H5AD_COMPRESSION)
         processed_samples["merged"] = merged_file
         return processed_samples
 

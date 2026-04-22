@@ -6,6 +6,7 @@ from sklearn.preprocessing import MinMaxScaler
 
 from focus.constants import MODALITY_REGISTRATION, MODALITY_REGISTRATION_MERGED
 from focus.constants import ModalityType
+from focus.utils import write_h5ad_compat
 
 from focus.registration.microscopy_image import MicroscopyImageFeatureExtractor
 
@@ -165,7 +166,7 @@ class FeatureExtractorRegistration:
 				obsm={'spatial': center_coordinates},
 				obs={'sample_id': [sample_id] * center_coordinates.shape[0]}
 			)
-			adata.write_h5ad(registered_file, compression=_H5AD_COMPRESSION)
+			write_h5ad_compat(adata, registered_file, compression=_H5AD_COMPRESSION)
 			registered_files[sample_id] = registered_file
 			logger.debug(f"Saved {patch_embeddings.shape[0]} patch embeddings for sample '{sample_id}'")
 
@@ -212,7 +213,7 @@ class FeatureExtractorRegistration:
 			scaler = MinMaxScaler()
 			merged.X = scaler.fit_transform(merged.X)
 
-		merged.write_h5ad(merged_file, compression=_H5AD_COMPRESSION)
+		write_h5ad_compat(merged, merged_file, compression=_H5AD_COMPRESSION)
 		registered_files["merged"] = merged_file
 		return registered_files
 
@@ -466,7 +467,7 @@ class SpotInterpolationRegistration:
 			if target_adata.var_names is not None and len(target_adata.var_names) == registered_features.shape[1]:
 				adata.var_names = target_adata.var_names.tolist()
 
-			adata.write_h5ad(registered_file, compression=_H5AD_COMPRESSION)
+			write_h5ad_compat(adata, registered_file, compression=_H5AD_COMPRESSION)
 			registered_files[sample_id] = registered_file
 			logger.debug(f"Saved registration for sample '{sample_id}': {registered_features.shape}")
 
@@ -515,6 +516,6 @@ class SpotInterpolationRegistration:
 			scaler = MinMaxScaler()
 			merged.X = scaler.fit_transform(merged.X)
 
-		merged.write_h5ad(merged_file, compression=_H5AD_COMPRESSION)
+		write_h5ad_compat(merged, merged_file, compression=_H5AD_COMPRESSION)
 		registered_files["merged"] = merged_file
 		return registered_files

@@ -1854,7 +1854,7 @@ class MsiDataset(BaseDataset):
 					f.result()
 				write_futures.clear()
 				# Write in background thread so next sample's computation overlaps with I/O
-				write_futures.append(write_executor.submit(adata.write_h5ad, output_file, compression=self._H5AD_INTERMEDIATE_COMPRESSION))
+				write_futures.append(write_executor.submit(utils.write_h5ad_compat, adata, output_file, compression=self._H5AD_INTERMEDIATE_COMPRESSION))
 				processed_samples[sample.sample_id] = output_file
 
 			# Wait for the last write to complete
@@ -1872,7 +1872,6 @@ class MsiDataset(BaseDataset):
 			# Filter to only per-sample files (exclude any "merged" key)
 			sample_files = {k: v for k, v in processed_samples.items() if k != "merged"}
 
-			ad.settings.allow_write_nullable_strings = True
 			ad.experimental.concat_on_disk(
 				sample_files,
 				merged_file,
@@ -1885,7 +1884,7 @@ class MsiDataset(BaseDataset):
 			# Update the merged file's .uns["spot_size"] to be a per-sample dict
 			merged_adata = ad.read_h5ad(merged_file)
 			merged_adata.uns["spot_size"] = spot_sizes
-			merged_adata.write_h5ad(merged_file, compression=self._H5AD_COMPRESSION)
+			utils.write_h5ad_compat(merged_adata, merged_file, compression=self._H5AD_COMPRESSION)
 			del merged_adata
 			gc.collect()
 
