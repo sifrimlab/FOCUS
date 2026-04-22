@@ -56,10 +56,9 @@ def transfer_annotations(
 		tree = STRtree(polygons_arr)
 		pts = shapely_points(sample_coords[:, 0], sample_coords[:, 1])
 
-		# matches[0] = indices into pts, matches[1] = indices into tree polygons
-		# predicate='within': input_geom.within(tree_geom) → point lies inside polygon
-		# predicate='covered_by' would also include points on the boundary
-		matches = tree.query(pts, predicate="covered_by")
+		# within dispatches to GEOSPreparedContains on the prepared polygons, which is
+		# the fastest path. covered_by would also catch boundary points but is slower.
+		matches = tree.query(pts, predicate="within")
 
 		if matches.size == 0:
 			continue
@@ -75,8 +74,6 @@ def transfer_annotations(
 		poly_sorted = poly_idx[order]
 
 		_, first_occ = np.unique(pt_sorted, return_index=True)
-		for k in first_occ:
-			global_idx = sample_indices[pt_sorted[k]]
-			labels[global_idx] = label_names[poly_sorted[k]]
+		labels[sample_indices[pt_sorted[first_occ]]] = np.array(label_names)[poly_sorted[first_occ]]
 
 	return labels
