@@ -567,18 +567,30 @@ class DirectMappingAligner:
 		return False
 
 	def collect_aligned_files(self) -> dict[str, str]:
-		"""Return paths to already-aligned files without starting the GUI."""
+		"""Return paths to already-aligned files without starting the GUI.
+
+		Creates the merged file from per-sample files if it is missing.
+		"""
 		aligned_samples: dict[str, str] = {}
 		is_target_image = self._target_modality_type in _IMAGE_MODALITIES
 		file_ext = "ome.tiff" if is_target_image else "h5ad"
+		aligned_files = []
 		for sample_id in self._common_samples:
 			aligned_file = MODALITY_ALIGNMENT(self._path, sample_id, self._target_modality_name, file_ext)
 			if os.path.exists(aligned_file):
 				aligned_samples[sample_id] = aligned_file
-		if not is_target_image:
+				if not is_target_image:
+					aligned_files.append(aligned_file)
+		if aligned_files:
 			merged_file = MODALITY_ALIGNMENT_MERGED(self._path, self._target_modality_name, "h5ad")
-			if os.path.exists(merged_file):
-				aligned_samples["merged"] = merged_file
+			if not os.path.exists(merged_file):
+				alignment_folder = os.path.join(self._path, "merged", "alignment")
+				os.makedirs(alignment_folder, exist_ok=True)
+				concat_on_disk_compat(
+					aligned_files, merged_file,
+					merge="same", uns_merge="same"
+				)
+			aligned_samples["merged"] = merged_file
 		return aligned_samples
 
 	def align_dataset(self, force_recomputing: bool = False, on_gui_done=None) -> dict[str, str]:
