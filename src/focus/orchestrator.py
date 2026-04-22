@@ -372,8 +372,10 @@ def _run_annotation_transfer(
 				   sub_step=None, sub_step_index=0, sub_step_total=0,
 				   sub_step_progress=0, sub_step_items_total=0)
 
+		logger.info(f"[{i}/{total_samples}] Sample '{sample_id}': reading reference file...")
 		ref_path = modality_files[ref_name][sample_id]
 		ref_sample = anndata.read_h5ad(ref_path, backed='r')
+		logger.info(f"[{i}/{total_samples}] Sample '{sample_id}': {ref_sample.n_obs} obs — extracting coordinates...")
 
 		if ann_mod_name == ref_name:
 			coords_sample = np.asarray(ref_sample.obsm['spatial'])
@@ -383,7 +385,10 @@ def _run_annotation_transfer(
 			ann_sample.file.close()
 
 		sids_sample = np.asarray(ref_sample.obs['sample_id'])
+		logger.info(f"[{i}/{total_samples}] Sample '{sample_id}': running spatial query on {len(coords_sample)} points...")
 		ann_labels = transfer_annotations(coords_sample, sids_sample, annotation_paths)
+		n_annotated = int(np.sum(ann_labels != None))  # noqa: E711
+		logger.info(f"[{i}/{total_samples}] Sample '{sample_id}': {n_annotated}/{len(coords_sample)} spots annotated — writing output...")
 		ref_sample.obs['spatial_annotation'] = pd.Categorical(ann_labels)
 
 		sample_out = MODALITY_ANNOTATION(dataset_path, sample_id, ref_name, "h5ad")
@@ -392,7 +397,7 @@ def _run_annotation_transfer(
 		ref_sample.file.close()
 		result[sample_id] = sample_out
 		per_sample_annotated.append(sample_out)
-		logger.debug(f"Annotated sample '{sample_id}' saved to {sample_out}")
+		logger.info(f"[{i}/{total_samples}] Sample '{sample_id}': done.")
 
 	# --- Merge annotated per-sample files ---
 	if per_sample_annotated:
