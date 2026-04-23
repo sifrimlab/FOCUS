@@ -1,83 +1,119 @@
-# FOCUS Documentation
+# FOCUS — Flexible Omics Curation and Unified Standardization
 
-Welcome to the comprehensive documentation for FOCUS — Flexible Omics Curation and Unified Standardization.
+FOCUS is an end-to-end pipeline for integrating spatial multiomics data from multiple imaging and omics instruments acquired on the same tissue section. It handles preprocessing, spatial alignment, feature registration, and final assembly into a single MuData (`.h5mu`) file ready for downstream analysis in scanpy, squidpy, and AnnData.
 
-## Overview
+---
 
-FOCUS is an end-to-end preprocessing, alignment, and registration pipeline for **spatial multiomics** datasets. It integrates data acquired from different imaging and omics modalities on the same tissue section into a single, analysis-ready multimodal dataset.
+## Who is this for?
 
-**Key Features:**
-- ✅ No programming required — JSON configuration driven
-- ✅ Interactive web-based GUI for configuration and alignment
-- ✅ Supports microscopy, MSI/lipidomics, Raman spectroscopy, and spatial transcriptomics
-- ✅ Outputs MuData (`.h5mu`) compatible with scanpy, squidpy, and AnnData
-- ✅ Cross-platform: Windows, macOS, Linux, and HPC environments
-- ✅ Containerized deployment with Docker, Podman, Singularity/Apptainer
+<div class="grid cards" markdown>
 
-## Documentation Structure
+-   **New users**
 
-```
-docs/
-├── index.md                  # This file
-├── overview.md               # System overview and architecture
-├── installation.md           # Installation instructions
-├── quick_start/
-│   ├── gui_usage.md         # GUI usage guide
-│   └── cli_usage.md          # CLI usage guide
-├── configuration/
-│   ├── config_structure.md   # Configuration file structure
-│   └── config_fields.md      # Detailed field explanations
-├── pipeline/
-│   ├── preprocessing.md      # Preprocessing stage details
-│   ├── alignment.md          # Alignment stage details
-│   ├── registration.md       # Registration stage details
-│   └── compilation.md        # MuData compilation details
-├── modalities/
-│   ├── microscopy.md         # Microscopy image processing
-│   ├── msi.md                # MSI/Lipidomics processing
-│   ├── raman.md              # Raman spectroscopy processing
-│   └── transcriptomics.md    # Spatial transcriptomics processing
-├── deployment/
-│   ├── host_install.md       # Host machine installation
-│   ├── containers.md         # Container deployment
-│   └── hpc.md                # HPC/headless server deployment
-└── api/
-    └── gui_api.md            # GUI API specification
-```
+    ---
 
-## Getting Started
+    Never used FOCUS before? Start with the interactive GUI — no Python required.
 
-- **New users**: Start with the [Quick Start Guide](quick_start/gui_usage.md) to learn how to use the interactive GUI
-- **Advanced users**: Check the [CLI Usage](quick_start/cli_usage.md) for automated pipeline execution
-- **Developers**: Explore the [Configuration Reference](configuration/config_fields.md) for detailed configuration options
-- **System administrators**: See [Deployment Options](deployment/) for installation and container setup
+    [:octicons-arrow-right-24: GUI Walkthrough](quick_start/gui_usage.md)
 
-## Supported Modalities
+-   **CLI / power users**
 
-| Modality | Type Key | Input Format | Output Format |
-|----------|----------|--------------|---------------|
-| Fluorescence/brightfield microscopy | `microscopy_image` | `.tiff`, `.tif`, `.czi` | OME-TIFF pyramid |
-| Mass Spectrometry Imaging (MSI/lipidomics) | `msi` | `.imzML` + `.ibd` | AnnData `.h5ad` |
-| Raman spectroscopy | `raman` | `.lif` | OME-TIFF (hyperspectral) |
-| Spatial transcriptomics | `st` | AnnData `.h5ad` | AnnData `.h5ad` |
+    ---
 
-## Pipeline Overview
+    Running FOCUS in batch mode, on an HPC cluster, or from a script? The CLI reference is your entry point.
 
-```mermaid
-graph TD
-    A[Raw Data] --> B[Preprocessing]
-    B --> C[Alignment]
-    C --> D[Registration]
-    D --> E[MuData Dataset]
+    [:octicons-arrow-right-24: CLI Reference](quick_start/cli_usage.md)
+
+-   **Developers**
+
+    ---
+
+    Integrating FOCUS outputs, extending modality support, or building on top of the Python API?
+
+    [:octicons-arrow-right-24: API Reference](api/data_types.md)
+
+</div>
+
+---
+
+## Key features
+
+- **No programming required** — the entire pipeline is driven by a JSON configuration file or the interactive web GUI
+- **MuData output** — results are written as `.h5mu`, compatible with [scanpy](https://scanpy.readthedocs.io), [squidpy](https://squidpy.readthedocs.io), and [AnnData](https://anndata.readthedocs.io)
+- **Four modalities** — fluorescence/brightfield microscopy, MSI/lipidomics, Raman spectroscopy, and spatial transcriptomics
+- **Cross-platform** — Windows, macOS, Linux, and HPC environments are all supported
+- **Container support** — Docker, Podman, and Singularity/Apptainer images are available for reproducible deployment
+
+---
+
+## Getting started in 3 steps
+
+**1. Install FOCUS**
+
+```bash
+conda create -n focus python=3.11
+conda activate focus
+pip install focus-spatial
 ```
 
-1. **Preprocessing**: Modality-specific quality control, normalization, background removal
-2. **Alignment**: Interactive web GUI for manual landmark registration
-3. **Registration**: Feature-based mapping or interpolation between modalities
-4. **Compilation**: Merge all modalities into final MuData (`.h5mu`) file
+See the full [Installation Guide](installation.md) for container and HPC options.
 
-## Need Help?
+**2. Prepare your data**
 
-- Check the [Troubleshooting Guide](troubleshooting.md) for common issues
-- Review the [FAQ](faq.md) for frequently asked questions
-- Explore the [API Reference](api/) for technical details
+Organize raw files into the standard directory layout:
+
+```
+dataset/
+├── sample_001/
+│   ├── microscopy/   # .tiff or .czi
+│   ├── msi/          # pos/ and/or neg/ with .imzML + .ibd
+│   ├── raman/        # .lif
+│   └── st/           # .h5ad
+└── sample_002/
+    └── ...
+```
+
+See [Directory Structure](overview.md#directory-structure-convention) for the full specification.
+
+**3. Run the pipeline**
+
+=== "GUI"
+
+    ```bash
+    focus-gui
+    ```
+
+    Open `http://localhost:5050` in your browser, load or build a configuration, then press **Run**.
+
+=== "CLI"
+
+    ```bash
+    focus run --config my_config.json
+    ```
+
+    All four pipeline stages run automatically. Results are written to `dataset/merged/multimodal_dataset.h5mu`.
+
+---
+
+## Pipeline at a glance
+
+```
+Raw Data → [1] Preprocessing → [2] Alignment → [3] Registration → [4] Compilation → MuData (.h5mu)
+```
+
+| Stage | What happens |
+|-------|-------------|
+| [Preprocessing](pipeline/preprocessing.md) | Per-modality QC, normalization, format conversion |
+| [Alignment](pipeline/alignment.md) | Interactive landmark-based spatial registration via web GUI |
+| [Registration](pipeline/registration.md) | Patch embeddings (images) or Gaussian interpolation (omics) onto reference coordinates |
+| [Compilation](pipeline/compilation.md) | All modalities merged into a single MuData file |
+
+---
+
+## Further reading
+
+- [System Overview](overview.md) — pipeline architecture, modality table, directory layout
+- [Key Concepts](user_guide/concepts.md) — glossary of FOCUS terminology
+- [Configuration Reference](configuration/config_fields.md) — every JSON field explained
+- [Scientific Background](scientific/overview.md) — motivation and algorithm design
+- [Data Schemas](api/data_types.md) — canonical AnnData / MuData schemas for developers

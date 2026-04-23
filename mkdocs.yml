@@ -1,0 +1,117 @@
+site_name: FOCUS Documentation
+site_description: End-to-end preprocessing, alignment, and registration pipeline for spatial multiomics datasets
+site_author: Lorenzo Venturelli
+repo_url: https://github.com/sifrimlab/FOCUS
+repo_name: sifrimlab/FOCUS
+docs_dir: docs
+
+theme:
+  name: material
+  palette:
+    - scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  features:
+    - navigation.tabs
+    - navigation.tabs.sticky
+    - navigation.sections
+    - navigation.expand
+    - navigation.top
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+    - content.code.annotate
+  icon:
+    repo: fontawesome/brands/github
+
+plugins:
+  - search
+
+markdown_extensions:
+  - admonition
+  - pymdownx.arithmatex:
+      generic: true
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.superfences
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - pymdownx.details
+  - pymdownx.tabbed:
+      alternate_style: true
+  - tables
+  - footnotes
+  - attr_list
+  - md_in_html
+  - toc:
+      permalink: true
+
+extra_javascript:
+  - javascripts/mathjax.js
+  - https://unpkg.com/mathjax@3/es5/tex-mml-chtml.js
+
+extra_css:
+  - stylesheets/extra.css
+
+nav:
+  - Home: index.md
+  - Overview: overview.md
+
+  - User Guide:
+    - Key Concepts: user_guide/concepts.md
+    - Preparing Your Data: user_guide/data_preparation.md
+    - GUI Walkthrough: user_guide/gui_walkthrough.md
+    - CLI Reference: user_guide/cli_reference.md
+    - Configuration File: user_guide/configuration.md
+    - Understanding the Output: user_guide/output_guide.md
+
+  - Modalities:
+    - Microscopy Images: modalities/microscopy.md
+    - Mass Spectrometry Imaging: modalities/msi.md
+    - Raman Spectroscopy: modalities/raman.md
+    - Spatial Transcriptomics: modalities/transcriptomics.md
+
+  - Pipeline:
+    - Preprocessing: pipeline/preprocessing.md
+    - Alignment: pipeline/alignment.md
+    - Registration: pipeline/registration.md
+    - Compilation: pipeline/compilation.md
+
+  - Configuration Reference:
+    - Config Structure: configuration/config_structure.md
+    - Field Reference: configuration/config_fields.md
+
+  - Deployment:
+    - Host Machine Install: deployment/local.md
+    - Containers (Docker / Podman): deployment/containers.md
+    - HPC & Headless Servers: deployment/hpc.md
+
+  - Scientific Methods:
+    - Introduction: scientific/overview.md
+    - MSI Preprocessing: scientific/msi_methods.md
+    - Raman Preprocessing: scientific/raman_methods.md
+    - Microscopy Preprocessing: scientific/microscopy_methods.md
+    - Spatial Transcriptomics Preprocessing: scientific/st_methods.md
+    - Alignment Methods: scientific/alignment_methods.md
+    - Registration Methods: scientific/registration_methods.md
+    - Annotation Transfer: scientific/annotation_transfer.md
+
+  - API Reference:
+    - Overview: api/index.md
+    - Preprocessing: api/preprocessing.md
+    - Alignment: api/alignment.md
+    - Registration: api/registration.md
+    - Annotations: api/annotations.md
+    - Data Types: api/data_types.md
+
+  - Troubleshooting: troubleshooting.md
+  - FAQ: faq.md

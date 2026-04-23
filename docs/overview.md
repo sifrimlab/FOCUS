@@ -1,332 +1,100 @@
-# FOCUS Overview
+# FOCUS System Overview
 
-## System Architecture
+## Problem statement
 
-FOCUS implements a three-stage pipeline for spatial multiomics data integration:
+Spatial multiomics experiments capture complementary biological information from the same tissue section using multiple instruments: fluorescence microscopy reveals morphology and cellular organization, mass spectrometry imaging (MSI) resolves the tissue lipidome, Raman spectroscopy provides label-free biochemical fingerprints, and spatial transcriptomics quantifies gene expression with spatial resolution. Each modality is acquired on a different instrument, producing data in a different coordinate system, at a different spatial resolution, and in a different file format. Jointly analyzing these complementary layers requires co-registering them into a shared spatial coordinate frame — a process that is technically demanding and not yet standardized.
+
+FOCUS addresses this challenge by providing an end-to-end, configuration-driven pipeline that takes raw multi-modal data from a single tissue section and produces a single, analysis-ready MuData object.
+
+---
+
+## The four-stage pipeline
 
 ```
-Raw Data → Preprocessing → Alignment → Registration → Multimodal Dataset
+Raw Data → [1] Preprocessing → [2] Alignment → [3] Registration → [4] Compilation → MuData (.h5mu)
 ```
 
-### High-Level Components
+### Stage 1 — Preprocessing
 
-```mermaid
-classDiagram
-    class MainCLI {
-        +parse_config()
-        +run_pipeline()
-    }
-    
-    class Orchestrator {
-        +run_preprocessing()
-        +run_alignment()
-        +run_registration()
-        +compile_mudata()
-    }
-    
-    class Preprocessing {
-        +preprocess_modality()
-    }
-    
-    class Alignment {
-        +DirectMappingAligner
-        +align_dataset()
-    }
-    
-    class Registration {
-        +FeatureExtractorRegistration
-        +SpotInterpolationRegistration
-        +register_dataset()
-    }
-    
-    class GUI {
-        +MainGUI
-        +DirectMappingAlignmentGUI
-    }
-    
-    MainCLI --> Orchestrator
-    Orchestrator --> Preprocessing
-    Orchestrator --> Alignment
-    Orchestrator --> Registration
-    Orchestrator --> GUI
-```
+Preprocessing converts raw instrument output into a standardized, quality-controlled representation. Each modality is handled by a dedicated processor that applies domain-appropriate algorithms: background subtraction and pyramid tiling for microscopy images, m/z consensus alignment and intensity normalization for MSI, BaSiC illumination correction and ASHLAR tile stitching for Raman, and leiden clustering with mitochondrial-gene filtering for spatial transcriptomics. The output of this stage is either an OME-TIFF pyramid (for image modalities) or an AnnData `.h5ad` file (for omics modalities), stored under `{sample_id}/preprocessing/{modality_name}/`.
 
-### Directory Structure
+### Stage 2 — Alignment
 
-FOCUS expects and produces this standardized directory layout:
+Alignment establishes the spatial correspondence between each non-reference modality and the reference modality. This is performed interactively through a web-based landmark registration GUI that launches automatically during pipeline execution. The user places matching landmark points on side-by-side views of the reference and target modality; FOCUS fits an affine transformation from these correspondences and stores it as additional coordinate keys in the reference modality AnnData (`.obsm['{non_ref_name}_spatial']`). One alignment session is required per sample per non-reference modality. For modalities that are already co-registered, a `pre_aligned` strategy skips the GUI entirely.
+
+### Stage 3 — Registration
+
+Registration uses the alignment transforms computed in Stage 2 to map the feature content of each modality onto the reference coordinate system. Two strategies are available, each suited to a different modality type. **Feature extraction** is used for high-resolution image modalities (microscopy, Raman): patches centered at each reference spot location are extracted from the OME-TIFF and encoded into dense embedding vectors by a pretrained vision model (Prov-GigaPath, 1536-dimensional). **Spot interpolation** is used for sparse omics modalities (MSI, ST): reference spot coordinates are expressed in the target modality's coordinate space (via the alignment transform), and a Gaussian-weighted average of the $k$ nearest target spots is computed, yielding an interpolated feature vector at each reference location. Both strategies produce a per-modality AnnData file with `.obsm['spatial']` aligned to the reference frame.
+
+### Stage 4 — Compilation
+
+Compilation reads all per-modality registered AnnData files and assembles them into a single MuData object (`.h5mu`) stored at `{dataset_path}/merged/multimodal_dataset.h5mu`. Observation indices are harmonized across modalities so that row $i$ in every modality AnnData corresponds to the same reference spot. If spatial annotations (GeoJSON regions) are provided, region labels are transferred to `.obs['spatial_annotation']` at this stage.
+
+---
+
+## Supported modalities
+
+| Modality type key | Input format | Output format | Registration method |
+|-------------------|-------------|--------------|---------------------|
+| `microscopy_image` | `.tiff` / `.tif` / `.czi` | OME-TIFF pyramid | `feature_extraction` (GPU) |
+| `msi` | `.imzML` + `.ibd` | AnnData `.h5ad` | `spot_interpolation` (CPU) |
+| `raman` | `.lif` | OME-TIFF hyperspectral | `spot_interpolation` (CPU) |
+| `st` | AnnData `.h5ad` | AnnData `.h5ad` | `spot_interpolation` (CPU) or `none` |
+
+!!! note "GPU requirement"
+    Feature extraction registration for `microscopy_image` and `raman` modalities requires an NVIDIA GPU with CUDA. All other stages, including spot interpolation, run on CPU.
+
+---
+
+## Reference modality concept
+
+One modality in the pipeline is designated as the **reference modality** via the `reference_modality` field in the configuration. The reference modality provides the canonical spatial coordinate frame: its spot locations (or a regular grid derived from its pixel coordinates) serve as the anchor points to which all other modalities are mapped. The reference is typically chosen as the modality with the highest spatial resolution or the richest landmark content — most commonly the microscopy image. All alignment transforms, registration outputs, and final MuData coordinates are expressed in the reference modality's coordinate system (micrometers).
+
+---
+
+## Directory structure convention
+
+FOCUS expects input data and writes intermediate and final outputs according to a fixed directory layout rooted at `dataset_path`:
 
 ```
 <dataset_path>/
 ├── <sample_id_1>/
-│   ├── <modality_name>/				# Raw input files
-│   ├── preprocessing/<modality>/		# Preprocessed output
-│   ├── alignment/					# Aligned files
-│   └── registration/				# Registered files
+│   ├── <modality_name>/               # Raw input files
+│   │   └── ...
+│   ├── preprocessing/
+│   │   └── <modality_name>/           # Preprocessed OME-TIFF or .h5ad
+│   ├── alignment/                     # Aligned reference .h5ad per sample
+│   └── registration/                  # Registered .h5ad per modality per sample
 ├── <sample_id_2>/
 │   └── ...
 └── merged/
-    ├── preprocessing/				# Combined preprocessing
-    ├── alignment/					# Combined alignment
-    ├── registration/				# Combined registration
-    └── multimodal_dataset.h5mu		# Final output
+    ├── preprocessing/                 # Merged preprocessing outputs
+    ├── alignment/                     # Merged alignment outputs
+    ├── registration/                  # Merged registration outputs
+    └── multimodal_dataset.h5mu        # Final MuData output
 ```
 
-## Dataset Structure Requirements
+!!! warning "Consistent modality names"
+    Modality directory names must **exactly match** (case-sensitive) the `"name"` field in the configuration. Every sample directory must contain every modality defined in the configuration.
 
-### Input Directory Organization
+### Input file requirements by modality
 
-FOCUS requires a specific directory structure for input data:
+| Modality | Required files | Sub-directory |
+|----------|---------------|---------------|
+| `microscopy_image` | One `.tiff`, `.tif`, or `.czi` file | directly in `<modality_name>/` |
+| `msi` (positive mode only) | `data.imzML` + `data.ibd` | `<modality_name>/pos/` |
+| `msi` (dual mode) | 2 × (`.imzML` + `.ibd`) | `<modality_name>/pos/` and `<modality_name>/neg/` |
+| `raman` | One `.lif` file | directly in `<modality_name>/` |
+| `st` | One `.h5ad` file | directly in `<modality_name>/` |
+
+---
+
+## Output structure
+
+The final output is a single MuData file:
 
 ```
-<dataset_path>/
-├── sample_001/
-│   ├── microscopy/				# Must match config modality name
-│   │   └── image.tiff			# Single TIFF/CZI file per sample
-│   ├── msi/					# Must match config modality name
-│   │   ├── pos/				# Positive ion mode (required)
-│   │   │   ├── data.imzML		# imzML metadata
-│   │   │   └── data.ibd		# Binary data
-│   │   └── neg/				# Negative ion mode (optional)
-│   │       ├── data.imzML		# imzML metadata
-│   │       └── data.ibd		# Binary data
-│   ├── raman/				# Must match config modality name
-│   │   └── scan.lif			# Single LIF file per sample
-│   ├── st/					# Must match config modality name
-│   │   └── expression.h5ad		# Single AnnData file per sample
-│   └── microscopy/			# Spatial annotations (if enabled)				
-│       └── annotations.geojson	# GeoJSON annotations
-├── sample_002/
-│   ├── microscopy/				# Must have same modalities as sample_001
-│   ├── msi/					# Must have same modalities as sample_001
-│   ├── raman/					# Must have same modalities as sample_001
-│   ├── st/					# Must have same modalities as sample_001
-│   └── microscopy/			# Spatial annotations (if enabled)				
-│       └── annotations.geojson	# GeoJSON annotations
-└── ...
+<dataset_path>/merged/multimodal_dataset.h5mu
 ```
 
-**Critical Requirements:**
-
-1. **Consistent Modalities**: Once a modality is defined in the configuration, it must be present for **every sample** with the exact same directory name.
-
-2. **File Requirements by Modality**:
-   - **Microscopy**: Exactly **one** TIFF or CZI file per sample
-   - **Raman**: Exactly **one** LIF file per sample
-   - **MSI**: 
-     - **Positive ion mode**: 2 files (`data.imzML` + `data.ibd`) in `pos/` subfolder
-     - **Negative ion mode**: 2 files (`data.imzML` + `data.ibd`) in `neg/` subfolder
-     - **Both modes**: 4 files total (2 in `pos/`, 2 in `neg/`)
-   - **Spatial Transcriptomics**: Exactly **one** AnnData (`.h5ad`) file per sample
-
-3. **Spatial Annotations** (if enabled):
-   - Exactly **one** GeoJSON file per sample
-   - Must be placed in the modality directory it refers to
-   - **All samples must have annotation files** if spatial annotations are enabled in config
-   - File naming: `<sample_id>.geojson` recommended
-
-4. **Naming Constraints**:
-   - Modality directory names must **exactly match** (case-sensitive) the `"name"` field in configuration
-   - Sample directory names become sample identifiers in the output
-   - File extensions determine processing (`.tiff`, `.imzML`, etc.)
-
-## Core Concepts
-
-### Modalities
-
-FOCUS supports four types of spatial omics modalities:
-
-1. **Microscopy Images**: Fluorescence/brightfield microscopy data
-2. **MSI/Lipidomics**: Mass spectrometry imaging data
-3. **Raman Spectroscopy**: Hyperspectral Raman imaging data  
-4. **Spatial Transcriptomics**: Gene expression data with spatial coordinates
-
-### Pipeline Stages
-
-#### 1. Preprocessing
-- **Purpose**: Modality-specific quality control and standardization
-- **Operations**: Normalization, background removal, format conversion
-- **Output**: Standardized files (OME-TIFF for images, AnnData for omics)
-
-#### 2. Alignment
-- **Purpose**: Manual registration between modalities
-- **Method**: Interactive web GUI for landmark-based alignment
-- **Output**: Aligned coordinate systems across modalities
-
-#### 3. Registration
-- **Purpose**: Feature-based mapping between modalities
-- **Methods**:
-  - **Feature Extraction**: Deep learning patch embeddings (GPU required)
-  - **Spot Interpolation**: Gaussian-weighted feature interpolation
-- **Output**: Registered feature matrices in common coordinate space
-
-#### 4. Compilation
-- **Purpose**: Merge all modalities into analysis-ready format
-- **Output**: MuData (`.h5mu`) file compatible with scanpy/squidpy
-
-### Configuration
-
-The entire pipeline is driven by a JSON configuration file with sections for:
-- Dataset paths and sample organization
-- Modality definitions and processing parameters
-- Alignment and registration strategies
-- Output options and quality control settings
-
-### Data Flow
-
-```mermaid
-flowchart TD
-    subgraph Input
-        A1[Raw Microscopy] --> B1[Preprocessing]
-        A2[Raw MSI] --> B2[Preprocessing]  
-        A3[Raw Raman] --> B3[Preprocessing]
-        A4[Raw ST] --> B4[Preprocessing]
-    end
-    
-    subgraph Processing
-        B1 --> C1[Aligned Microscopy]
-        B2 --> C2[Aligned MSI]
-        B3 --> C3[Aligned Raman]
-        B4 --> C4[Aligned ST]
-        
-        C1 --> D1[Registered Features]
-        C2 --> D2[Registered Features]
-        C3 --> D3[Registered Features]
-        C4 --> D4[Registered Features]
-    end
-    
-    D1 & D2 & D3 & D4 --> E[MuData Dataset]
-```
-
-## Technical Specifications
-
-### Supported File Formats
-
-| Stage | Modality | Input Formats | Output Formats |
-|-------|----------|---------------|----------------|
-| Preprocessing | Microscopy | `.tiff`, `.tif`, `.czi` | OME-TIFF pyramid |
-| Preprocessing | MSI | `.imzML` + `.ibd` | AnnData `.h5ad` |
-| Preprocessing | Raman | `.lif` | OME-TIFF hyperspectral |
-| Preprocessing | ST | AnnData `.h5ad` | AnnData `.h5ad` |
-| Alignment | All | Preprocessed files | Aligned coordinates |
-| Registration | All | Aligned files | Registered AnnData |
-| Compilation | All | Registered files | MuData `.h5mu` |
-
-### System Requirements
-
-| Component | Requirement | Notes |
-|-----------|-------------|-------|
-| **Python** | 3.11 | Managed by conda environment |
-| **Conda** | Miniconda/Anaconda | Required for environment management |
-| **GPU** | NVIDIA + CUDA | Optional, required for feature extraction registration |
-| **RAM** | 16GB+ recommended | Depends on dataset size |
-| **Storage** | SSD recommended | Large intermediate files |
-
-### Platform Compatibility
-
-| Feature | Windows | macOS | Linux Desktop | Linux HPC |
-|---------|---------|-------|--------------|----------|
-| Host install | ✅ | ✅ | ✅ | ✅ |
-| GUI mode | ✅ | ✅ | ✅ | SSH tunnel |
-| CLI mode | ✅ | ✅ | ✅ | ✅ |
-| Docker/Podman | ✅ | ✅ | ✅ | ✅ |
-| Singularity/Apptainer | WSL2 | ✅ | ✅ | ✅ |
-| GPU acceleration | ✅ | ❌ | ✅ | ✅ |
-
-## Architecture Details
-
-### Modular Design
-
-FOCUS follows a modular architecture with clear separation of concerns:
-
-- **Preprocessing Module**: Handles modality-specific data cleaning
-- **Alignment Module**: Manages coordinate system registration
-- **Registration Module**: Performs feature mapping between modalities
-- **GUI Module**: Provides interactive configuration and alignment interfaces
-- **Orchestrator**: Coordinates the pipeline execution
-
-### Key Classes
-
-- `MicroscopyImage`, `MsiSample`, `RamanImage`, `SpatialTranscriptomic`: Modality processors
-- `DirectMappingAligner`: Interactive alignment handler
-- `FeatureExtractorRegistration`, `SpotInterpolationRegistration`: Registration engines
-- `MainGUI`, `DirectMappingAlignmentGUI`: User interface components
-
-### Configuration System
-
-The JSON configuration system provides:
-- **Validation**: Schema validation for required fields
-- **Flexibility**: Per-modality parameter tuning
-- **Reusability**: Save and load configurations for reproducible workflows
-- **Versioning**: Configuration files are versioned with the dataset
-
-## Performance Considerations
-
-### Processing Time
-
-- **Preprocessing**: Minutes to hours per modality (I/O bound)
-- **Alignment**: Interactive, user-dependent time
-- **Registration**: Minutes to hours (CPU/GPU bound)
-- **Compilation**: Minutes (I/O bound)
-
-### Optimization Strategies
-
-1. **Caching**: Intermediate results are cached to avoid recomputation
-2. **Parallelization**: Multi-core processing for independent samples
-3. **GPU Acceleration**: Optional for feature extraction registration
-4. **Memory Management**: Streaming for large datasets
-
-### Scalability
-
-- **Sample-level parallelism**: Process multiple samples concurrently
-- **Modality independence**: Modalities can be processed in any order
-- **Incremental processing**: Resume from any stage
-
-## Security and Data Handling
-
-### Data Privacy
-
-- All processing occurs locally on your machine
-- No data is transmitted to external servers
-- Configuration files contain only metadata, not raw data
-
-### Authentication
-
-- HuggingFace token required only for feature extraction registration
-- Token is used solely for model download (cached locally)
-- No persistent authentication storage
-
-### Container Security
-
-- Containers run with minimal privileges
-- Data mounted read-only where possible
-- No network access required for core functionality
-
-## Roadmap and Future Development
-
-### Planned Features
-
-- Additional modality support (e.g., proteomics, metabolomics)
-- Enhanced GUI with more visualization options
-- Automated quality control metrics
-- Cloud deployment options
-- Expanded API for programmatic integration
-
-### Community Contributions
-
-FOCUS welcomes contributions in areas such as:
-- New modality processors
-- Performance optimizations
-- Documentation improvements
-- Bug fixes and testing
-- GUI enhancements
-
-## Getting Help
-
-- **Documentation**: Comprehensive guides and API reference
-- **Examples**: Sample configurations and datasets
-- **Community**: GitHub issues and discussions
-- **Support**: Contact maintainers for assistance
-
-## License
-
-FOCUS is released under the [MIT License](https://opensource.org/licenses/MIT), allowing free use, modification, and distribution for both academic and commercial purposes.
+This file contains one AnnData per modality (`.mod['{modality_name}']`), shared observation indices aligned to the reference coordinate frame, and shared `.obs['sample_id']` and `.obs['spatial_annotation']` columns. See [Data Schemas](api/data_types.md) for the complete attribute reference.
