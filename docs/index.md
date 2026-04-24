@@ -1,6 +1,6 @@
 # FOCUS — Flexible Omics Curation and Unified Standardization
 
-FOCUS is an end-to-end pipeline for integrating spatial multiomics data from multiple imaging and omics instruments acquired on the same tissue section. It handles preprocessing, spatial alignment, feature registration, and final assembly into a single MuData (`.h5mu`) file ready for downstream analysis in scanpy, squidpy, and AnnData.
+FOCUS is an end-to-end pipeline for integrating spatial multiomics data from multiple imaging and omics instruments acquired on the same tissue section. It handles preprocessing, spatial alignment, and optional feature registration. When a spot-based modality is used as reference and registration is enabled, FOCUS assembles outputs into a single MuData (`.h5mu`) file ready for downstream analysis in scanpy, squidpy, and AnnData. Alignment-only workflows produce merged AnnData files per modality.
 
 ---
 
@@ -40,7 +40,7 @@ FOCUS is an end-to-end pipeline for integrating spatial multiomics data from mul
 
 - **No programming required** — the entire pipeline is driven by a JSON configuration file or the interactive web GUI
 - **MuData output** — results are written as `.h5mu`, compatible with [scanpy](https://scanpy.readthedocs.io), [squidpy](https://squidpy.readthedocs.io), and [AnnData](https://anndata.readthedocs.io)
-- **Four modalities** — fluorescence/brightfield microscopy, MSI/lipidomics, Raman spectroscopy, and spatial transcriptomics
+- **Four modalities** — fluorescence/brightfield microscopy, MSI/lipidomics, Raman spectroscopy imaging, and spatial transcriptomics
 - **Cross-platform** — Windows, macOS, Linux, and HPC environments are all supported
 - **Container support** — Docker, Podman, and Singularity/Apptainer images are available for reproducible deployment
 
@@ -104,7 +104,7 @@ Raw Data → [1] Preprocessing → [2] Alignment → [3] Registration → [4] Co
 | Stage | What happens |
 |-------|-------------|
 | [Preprocessing](pipeline/preprocessing.md) | Per-modality QC, normalization, format conversion |
-| [Alignment](pipeline/alignment.md) | Interactive landmark-based spatial registration via web GUI |
+| [Alignment](pipeline/alignment.md) | Interactive visual alignment via web GUI |
 | [Registration](pipeline/registration.md) | Patch embeddings (images) or Gaussian interpolation (omics) onto reference coordinates |
 | [Compilation](pipeline/compilation.md) | All modalities merged into a single MuData file |
 

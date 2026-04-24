@@ -108,7 +108,7 @@ Each modality in the `modalities` array has the following structure:
 |----------|-------------|------------------------|
 | `microscopy_image` | Fluorescence/brightfield microscopy | `microscopy` |
 | `msi` | Mass spectrometry imaging | `msi` |
-| `raman` | Raman spectroscopy | `raman` |
+| `raman` | Raman spectroscopy imaging | `raman` |
 | `st` | Spatial transcriptomics | `st` |
 
 ## Modality-Specific Processing Settings
@@ -321,31 +321,41 @@ Each modality in the `modalities` array has the following structure:
 ```json
 {
   "dataset_path": "/data/my_project",
-  "reference_modality": "microscopy",
+  "reference_modality": "msi",
   "perform_alignment": false,
+  "alignment_force_recomputing": false,
   "perform_registration": false,
+  "huggingface_token": null,
+  "spatial_annotations": null,
   "modalities": [
     {
-      "name": "microscopy",
-      "type": "microscopy_image",
-      "processing_settings": {
-        "color_enhancement": true,
-        "background_removal": true,
-        "crop_to_tissue": true
-      },
       "alignment_strategy": "manual",
-      "registration_type": "none"
+      "name": "msi",
+      "processing_settings": {
+        "mass_tolerance": 10,
+        "intensity_normalization": "tic",
+        "min_intensity_threshold": 10000,
+        "detect_background": true,
+        "force_recomputing": false
+      },
+      "registration_settings": {},
+      "registration_type": "none",
+      "type": "msi"
     },
     {
-      "name": "msi",
-      "type": "msi",
-      "processing_settings": {
-        "ion_mode": "positive",
-        "mass_range": [100, 1000],
-        "intensity_normalization": "tic"
-      },
       "alignment_strategy": "manual",
-      "registration_type": "none"
+      "name": "microscopy",
+      "processing_settings": {
+        "color_enhancement": true,
+        "remove_background": true,
+        "crop_to_tissue": true,
+        "gamma": 0.45,
+        "pyramid_levels": 4,
+        "force_recomputing": false
+      },
+      "registration_settings": {},
+      "registration_type": "none",
+      "type": "microscopy_image"
     }
   ]
 }
@@ -356,73 +366,68 @@ Each modality in the `modalities` array has the following structure:
 ```json
 {
   "dataset_path": "/data/complex_project",
-  "reference_modality": "microscopy",
+  "reference_modality": "st",
   "perform_alignment": true,
+  "alignment_force_recomputing": false,
   "perform_registration": true,
   "huggingface_token": "hf_xxxxxx",
-  "logging_level": "INFO",
-  "max_cpu_cores": 8,
+  "spatial_annotations": {
+    "file_type": "geojson",
+    "modality_name": "microscopy"
+  },
   "modalities": [
     {
-      "name": "microscopy",
-      "type": "microscopy_image",
-      "processing_settings": {
-        "color_enhancement": true,
-        "background_removal": true,
-        "crop_to_tissue": true,
-        "resolution_level": 0,
-        "gamma": 1.2,
-        "contrast_stretch": 1.5
-      },
       "alignment_strategy": "manual",
-      "registration_type": "feature_extraction",
-      "registration_settings": {
-        "patch_size": 224,
-        "background_color": "white",
-        "min_max_rescale": true,
-        "batch_size": 16
-      }
-    },
-    {
-      "name": "msi",
-      "type": "msi",
-      "processing_settings": {
-        "ion_mode": "both",
-        "mass_range": [50, 1200],
-        "intensity_normalization": "tic",
-        "background_detection": true,
-        "recalibration": true,
-        "lipid_annotation": true,
-        "ppm_tolerance": 5.0
-      },
-      "alignment_strategy": "manual",
-      "registration_type": "spot_interpolation",
-      "registration_settings": {
-        "k_neighbors": 5,
-        "max_distance": 75.0,
-        "weighting": "distance"
-      }
-    },
-    {
       "name": "st",
-      "type": "st",
       "processing_settings": {
-        "qc_mito_threshold": 0.1,
+        "min_count_per_spot": 200,
+        "max_count_per_spot": null,
         "min_genes_per_spot": 250,
         "max_genes_per_spot": 6000,
-        "normalization": "total_counts",
-        "log_transform": true,
-        "n_hvgs": 3000
+        "min_spots_per_gene": null,
+        "min_count_spots_ratio_per_gene": null,
+        "total_counts_normalize": true,
+        "log1p_transform": true,
+        "force_recomputing": false
       },
-      "alignment_strategy": "pre_aligned",
-      "registration_type": "none"
+      "registration_settings": {},
+      "registration_type": "none",
+      "type": "st"
+    },
+    {
+      "alignment_strategy": "manual",
+      "name": "msi",
+      "processing_settings": {
+        "mass_tolerance": 10,
+        "intensity_normalization": "tic",
+        "min_intensity_threshold": 10000,
+        "detect_background": true,
+        "force_recomputing": false
+      },
+      "registration_settings": {},
+      "registration_type": "spot_interpolation",
+      "type": "msi"
+    },
+    {
+      "alignment_strategy": "manual",
+      "name": "microscopy",
+      "processing_settings": {
+        "color_enhancement": true,
+        "remove_background": true,
+        "crop_to_tissue": true,
+        "gamma": 0.45,
+        "pyramid_levels": 4,
+        "force_recomputing": false
+      },
+      "registration_settings": {
+        "patch_size": 224,
+        "min_max_rescale": true,
+        "force_recomputing": false
+      },
+      "registration_type": "feature_extraction",
+      "type": "microscopy_image"
     }
-  ],
-  "spatial_annotations": {
-    "modality_name": "microscopy",
-    "annotation_type": "geojson",
-    "force_recomputing": false
-  }
+  ]
 }
 ```
 
@@ -495,31 +500,45 @@ Create reusable templates for common workflows:
 ```json
 {
   "dataset_path": "REPLACE_ME",
-  "reference_modality": "microscopy",
+  "reference_modality": "msi",
   "perform_alignment": true,
+  "alignment_force_recomputing": false,
   "perform_registration": true,
+  "huggingface_token": "REPLACE_ME",
+  "spatial_annotations": null,
   "modalities": [
     {
-      "name": "microscopy",
-      "type": "microscopy_image",
-      "processing_settings": {
-        "color_enhancement": true,
-        "background_removal": true,
-        "crop_to_tissue": true
-      },
       "alignment_strategy": "manual",
-      "registration_type": "feature_extraction"
+      "name": "msi",
+      "processing_settings": {
+        "mass_tolerance": 10,
+        "intensity_normalization": "tic",
+        "min_intensity_threshold": 10000,
+        "detect_background": true,
+        "force_recomputing": false
+      },
+      "registration_settings": {},
+      "registration_type": "none",
+      "type": "msi"
     },
     {
-      "name": "msi",
-      "type": "msi",
-      "processing_settings": {
-        "ion_mode": "positive",
-        "mass_range": [100, 1000],
-        "intensity_normalization": "tic"
-      },
       "alignment_strategy": "manual",
-      "registration_type": "spot_interpolation"
+      "name": "microscopy",
+      "processing_settings": {
+        "color_enhancement": true,
+        "remove_background": true,
+        "crop_to_tissue": true,
+        "gamma": 0.45,
+        "pyramid_levels": 4,
+        "force_recomputing": false
+      },
+      "registration_settings": {
+        "patch_size": 224,
+        "min_max_rescale": true,
+        "force_recomputing": false
+      },
+      "registration_type": "feature_extraction",
+      "type": "microscopy_image"
     }
   ]
 }
@@ -530,30 +549,41 @@ Create reusable templates for common workflows:
 ```json
 {
   "dataset_path": "REPLACE_ME",
-  "reference_modality": "microscopy",
+  "reference_modality": "msi",
   "perform_alignment": false,
+  "alignment_force_recomputing": false,
   "perform_registration": false,
+  "huggingface_token": null,
+  "spatial_annotations": null,
   "modalities": [
     {
-      "name": "microscopy",
-      "type": "microscopy_image",
-      "processing_settings": {
-        "color_enhancement": true,
-        "background_removal": true,
-        "crop_to_tissue": true
-      },
       "alignment_strategy": "manual",
-      "registration_type": "none"
+      "name": "msi",
+      "processing_settings": {
+        "mass_tolerance": 10,
+        "intensity_normalization": "tic",
+        "min_intensity_threshold": 10000,
+        "detect_background": true,
+        "force_recomputing": false
+      },
+      "registration_settings": {},
+      "registration_type": "none",
+      "type": "msi"
     },
     {
-      "name": "msi",
-      "type": "msi",
-      "processing_settings": {
-        "ion_mode": "positive",
-        "mass_range": [100, 1000]
-      },
       "alignment_strategy": "manual",
-      "registration_type": "none"
+      "name": "microscopy",
+      "processing_settings": {
+        "color_enhancement": true,
+        "remove_background": false,
+        "crop_to_tissue": false,
+        "gamma": 0.45,
+        "pyramid_levels": 4,
+        "force_recomputing": false
+      },
+      "registration_settings": {},
+      "registration_type": "none",
+      "type": "microscopy_image"
     }
   ]
 }

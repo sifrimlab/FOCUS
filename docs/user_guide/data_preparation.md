@@ -64,14 +64,15 @@ FOCUS supports two acquisition modes:
 
 === "Single ion mode"
 
-    Place the `.imzML` and `.ibd` files directly inside the modality directory. Any base name is accepted.
+    Place the `.imzML` and `.ibd` files inside the `pos/` subdirectory. Any base name is accepted.
 
     ```
     <dataset_path>/
     └── sample_001/
         └── msi/
-            ├── data.imzML
-            └── data.ibd
+            └── pos/
+                ├── data.imzML
+                └── data.ibd
     ```
 
 === "Dual ion mode (positive + negative)"
@@ -97,7 +98,7 @@ FOCUS supports two acquisition modes:
 
 ---
 
-### Raman Spectroscopy (`raman`)
+### Raman Spectroscopy Imaging (`raman`)
 
 Place exactly one `.lif` (Leica Image Format) file per sample inside the modality directory.
 
@@ -144,7 +145,7 @@ Place exactly one AnnData file (`.h5ad`) per sample inside the modality director
 
 | Slot | Description |
 |------|-------------|
-| `.uns['spot_size']` | Physical spot diameter in µm: scalar, list `[w, h]`, or 1-D array. If absent, defaults to `[1.0, 1.0]` µm. |
+| `.uns['spot_size']` | Physical spot diameter in µm: scalar, list `[w, h]`, or 1-D array. **Required field**. If absent, FOCUS applies default `[1.0, 1.0]` µm. This field is automatically extracted by FOCUS during preprocessing and used during registration. |
 
 If `.X` is a dense array, FOCUS will convert it to sparse CSR automatically during loading.
 
@@ -186,7 +187,7 @@ The annotation modality and file type are declared in the config under the `spat
     The modality directory name and the `name` field in the config are compared case-sensitively. A directory named `Microscopy` will **not** match a config entry with `"name": "microscopy"`. Use exactly the same casing in both places.
 
 !!! warning "All samples must have all modalities"
-    FOCUS validates the full directory structure before running any processing. If one sample is missing a modality directory that is declared in the config, the pipeline will raise a `FileNotFoundError` immediately. Either add the missing directory (even if empty) or remove the modality from the config.
+    FOCUS validates the full directory structure before running any processing. If one sample is missing a modality directory that is declared in the config, the pipeline will raise a `FileNotFoundError` immediately. FOCUS does not support missing modalities (support for this is planned for a future release). To resolve this: either exclude that sample from your dataset, or remove the modality from your configuration and process only the other modalities.
 
 !!! warning "Do not place output files in input directories"
     FOCUS writes output into `preprocessing/`, `alignment/`, and `registration/` subdirectories it creates itself. Do not place your raw input files in those paths, or name your input directories with those names, as they will conflict with the pipeline's output.

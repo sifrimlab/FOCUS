@@ -4,7 +4,7 @@
 
 The alignment stage maps the reference modality's spot positions into the coordinate system of every non-reference (target) modality. After alignment, each reference spot has a known location in each target modality's space, enabling the subsequent registration stage to extract features at those locations.
 
-Alignment is the only pipeline stage that requires human input: the user specifies matching anatomical landmarks through an interactive browser GUI. This design choice makes FOCUS robust to heterogeneous tissue appearance and instrument-specific coordinate distortions that defeat automated feature-detection methods.
+Alignment is the only pipeline stage that requires human input: the user visually aligns the reference modality to each target modality through an interactive browser GUI using drag controls. This design choice makes FOCUS robust to heterogeneous tissue appearance and instrument-specific coordinate distortions that defeat automated feature-detection methods.
 
 !!! abstract "Scientific background"
     For a rigorous description of the coordinate mathematics, scale recovery, and direct-mapping approach, see [Alignment Methods](../scientific/alignment_methods.md).
@@ -39,7 +39,7 @@ Samples that are present in the reference but not in target $T$ (or vice versa) 
 
 ### `manual` (default)
 
-The interactive alignment GUI is launched in the browser. The user places corresponding landmarks or repositions spots until the two modalities are visually aligned, then clicks **Confirm**. The GUI advances automatically to the next sample.
+The interactive alignment GUI is launched in the browser. The user drags the reference modality or its individual spots to align them visually with the target modality, then clicks **Confirm**. The GUI advances automatically to the next sample.
 
 **Use when:** the two modalities were acquired on different instruments or at different times, i.e., they have independent coordinate systems. This is the typical case for MSI + microscopy, Raman + MSI, or any cross-instrument combination.
 
@@ -64,30 +64,44 @@ The GUI shuts down automatically once all samples for the current modality pair 
 
 ### Interface layout
 
-The GUI shows two panels side by side:
+The alignment GUI is organized into three main sections:
 
-- **Left panel (fixed):** the reference modality — either a downsampled image or coloured spots.
-- **Right panel (target):** the non-reference modality — either a downsampled image or coloured spots.
+**Left Panel: Modality Display**
+- Shows both the reference and target modalities overlaid together
+- The reference modality is overlaid on top of the target modality
+- Reference can be moved (via transformation controls); target is fixed and defines the coordinate space
+- For image modalities, the lowest-resolution pyramid level is loaded for responsive rendering
+- For spot modalities, spots are colour-coded by Leiden cluster to help identify tissue regions
 
-For image modalities, the lowest-resolution pyramid level is loaded for responsive rendering. Spot modalities are colour-coded by Leiden cluster to help identify tissue regions.
+**Center: Control Mode Selector**
+- Switch between **Camera Control** (pan/zoom to inspect) and **Alignment Control** (transform reference)
+
+**Right Panel: Control Tools**
+- Transformation controls: translation (drag), rotation (around centroid), scale (scroll)
+- Show/hide specific spot clusters (for spot-based modalities)
+- Fine-tune transformation parameters
+- Reset alignment to original state
+- Confirm alignment button to save the transform
 
 ### Alignment modes
 
-**Image-to-Image** (reference is `microscopy_image` or `raman`)
-: Drag the four corner handles of a bounding box on the reference image to define the region that corresponds to the target. The pipeline crops the reference image to this bounding box and saves it as a new OME-TIFF.
+In all modes, the reference modality (left panel) is moved to align with the target modality (right panel, fixed). Transformations are applied only to the reference.
 
-**Image-to-Spot** (reference is an image, target is `msi` or `st`)
-: Drag individual reference spot positions on the right canvas to align them with the reference anatomy visible on the left. Each spot can be repositioned independently.
+**Image-to-Image** (reference is `microscopy_image` or `raman`, target is `microscopy_image` or `raman`)
+: Use translation, rotation, and scaling controls to overlay the reference image onto the target image. The target image defines the coordinate space. After confirmation, the reference image is cropped and registered to match the target's bounds.
 
-**Spot-to-Spot** (both modalities are `msi` or `st`)
-: Drag the reference spots to their correct positions in the target spot coordinate frame.
+**Spot-to-Image** (reference is `msi` or `st`, target is `microscopy_image` or `raman`)
+: Use transformation controls to position the reference spots (as a group) to match the target image anatomy. The target image defines the coordinate space, and anatomical features (vessels, tissue boundaries, cell clusters) serve as visual guides. After confirmation, each reference spot's position in the target image coordinate frame is recorded.
 
-### Landmark selection tips
+**Spot-to-Spot** (reference is `msi` or `st`, target is `msi` or `st`)
+: Use transformation controls to overlay the reference spot grid onto the target spot grid. The target spots define the coordinate space. After confirmation, each reference spot's position in the target spot coordinate frame is recorded.
 
-- Start with the most recognisable tissue structures (large vessels, tissue boundaries, fold edges).
-- Distribute landmarks across the full tissue section — do not cluster them in one region.
-- Zoom in for fine-grained adjustment around each landmark.
-- After repositioning all spots/corners, review the overall distribution before clicking **Confirm**.
+### Alignment tips
+
+- Start with the most recognisable tissue structures (large vessels, tissue boundaries, fold edges) to establish the gross alignment.
+- Distribute your adjustments across the full tissue section — do not cluster corrections in one region.
+- Zoom in for fine-grained adjustment around challenging areas.
+- After repositioning, review the overall distribution before clicking **Confirm**.
 
 ### Submit flow
 

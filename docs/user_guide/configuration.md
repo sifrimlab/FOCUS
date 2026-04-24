@@ -28,19 +28,19 @@ The example below covers all three supported modality types and uses every avail
 ```json
 {
   "dataset_path": "/data/my_tissue_cohort",
-
   "reference_modality": "st",
-
   "perform_alignment": true,
-
+  "alignment_force_recomputing": false,
   "perform_registration": true,
-
   "huggingface_token": "hf_...",
-
+  "spatial_annotations": {
+    "file_type": "geojson",
+    "modality_name": "microscopy"
+  },
   "modalities": [
     {
+      "alignment_strategy": "manual",
       "name": "st",
-      "type": "st",
       "processing_settings": {
         "min_count_per_spot": 200,
         "max_count_per_spot": null,
@@ -52,31 +52,27 @@ The example below covers all three supported modality types and uses every avail
         "log1p_transform": true,
         "force_recomputing": false
       },
-      "alignment_strategy": "manual",
+      "registration_settings": {},
       "registration_type": "none",
-      "registration_settings": {}
+      "type": "st"
     },
     {
+      "alignment_strategy": "manual",
       "name": "msi",
-      "type": "msi",
       "processing_settings": {
         "mass_tolerance": 10,
         "intensity_normalization": "tic",
         "min_intensity_threshold": 10000,
         "detect_background": true,
-        "sample_type": "tissue",
         "force_recomputing": false
       },
-      "alignment_strategy": "manual",
+      "registration_settings": {},
       "registration_type": "spot_interpolation",
-      "registration_settings": {
-        "min_max_rescale": true,
-        "force_recomputing": false
-      }
+      "type": "msi"
     },
     {
+      "alignment_strategy": "manual",
       "name": "microscopy",
-      "type": "microscopy_image",
       "processing_settings": {
         "color_enhancement": true,
         "remove_background": true,
@@ -85,20 +81,15 @@ The example below covers all three supported modality types and uses every avail
         "pyramid_levels": 4,
         "force_recomputing": false
       },
-      "alignment_strategy": "manual",
-      "registration_type": "feature_extraction",
       "registration_settings": {
         "patch_size": 224,
         "min_max_rescale": true,
         "force_recomputing": false
-      }
+      },
+      "registration_type": "feature_extraction",
+      "type": "microscopy_image"
     }
-  ],
-
-  "spatial_annotations": {
-    "modality_name": "microscopy",
-    "file_type": "geojson"
-  }
+  ]
 }
 ```
 
@@ -152,9 +143,6 @@ A valid HuggingFace access token. Required only when at least one modality uses 
 "huggingface_token": "hf_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
 ```
 
-!!! tip "Environment variable alternative"
-    You can provide the token via the `HUGGINGFACE_TOKEN` environment variable instead of writing it in the config file. The environment variable takes precedence if both are set.
-
 ### `spatial_annotations` _(optional, object or `null`, default: `null`)_
 
 Declares that GeoJSON annotation files are present and specifies which modality's coordinate space they are defined in. When set, FOCUS transfers polygon labels from the annotation file onto spots of the registered modalities.
@@ -189,7 +177,7 @@ The modality type. Must be one of:
 |-------|----------|
 | `"microscopy_image"` | Fluorescence or brightfield microscopy |
 | `"msi"` | Mass Spectrometry Imaging |
-| `"raman"` | Raman spectroscopy |
+| `"raman"` | Raman spectroscopy imaging |
 | `"st"` | Spatial transcriptomics |
 
 ### `alignment_strategy` _(optional, string, default: `"manual"`)_
@@ -198,7 +186,7 @@ How the modality's coordinate system is aligned to the reference.
 
 | Value | Behaviour |
 |-------|-----------|
-| `"manual"` | Interactive landmark-based alignment via the alignment GUI. This is the most accurate option and the default. |
+| `"manual"` | Interactive visual alignment via the alignment GUI. This is the most accurate option and the default. |
 | `"pre_aligned"` | Skip alignment for this modality; FOCUS assumes it is already co-registered with the reference. Only valid when the reference modality is spot-based (`st` or `msi`). At most one non-reference modality may use this strategy. |
 
 ### `registration_type` _(optional, string, default: `"none"`)_
@@ -259,7 +247,7 @@ Additional settings for the chosen registration method. May be an empty object w
     | `pyramid_levels` | int | Number of resolution levels in the output OME-TIFF pyramid. |
     | `force_recomputing` | bool | Reprocess even if output already exists. |
 
-=== "Raman Spectroscopy (`raman`)"
+=== "Raman Spectroscopy Imaging (`raman`)"
 
     | Parameter | Type | Description |
     |-----------|------|-------------|

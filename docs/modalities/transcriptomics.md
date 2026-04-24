@@ -17,12 +17,31 @@ The input `.h5ad` file must satisfy the following:
 | `.X` | Yes | Gene expression matrix (sparse CSR recommended; raw integer counts preferred) |
 | `.obsm['spatial']` | Yes | Spot coordinates in µm, shape `(N_spots, 2)` |
 | `.var` | Yes | Gene metadata; gene names must be the index |
-| `.uns['spot_size']` | No | Spot diameter `[x, y]` in µm; defaults to `[1.0, 1.0]` if missing |
+| `.uns['spot_size']` | No | Spot diameter `[x, y]` in µm. **FOCUS reads this field automatically.** If missing, defaults to `[1.0, 1.0]` µm. |
 
 !!! tip "spot_size"
     `spot_size` controls the spatial footprint used during `spot_interpolation` registration.
-    For Visium full-resolution spots the diameter is approximately 65 µm; set this correctly to ensure accurate neighbourhood interpolation.
-    Values are normalised internally: a scalar is broadcast to `[val, val]`, and a 1-element array is treated as isotropic.
+    For Visium full-resolution spots the diameter is approximately 65 µm; set this correctly in your input AnnData to ensure accurate neighbourhood interpolation.
+    FOCUS automatically extracts this value during preprocessing and normalises it: a scalar is broadcast to `[val, val]`, and a 1-element array is treated as isotropic.
+    If your input file is missing `.uns['spot_size']`, FOCUS applies the default `[1.0, 1.0]` µm.
+
+---
+
+## Typical Spot Sizes by Technology
+
+Reference values for common spatial transcriptomics acquisition technologies. These are approximate typical sizes; always verify the exact specifications for your data:
+
+| Technology | Vendor/Platform | Typical Spot Size (µm) | Notes |
+|-----------|-----------------|---------------------|-------|
+| Visium | 10x Genomics | 55 | Full resolution; ~65 µm sometimes quoted including edge padding |
+| Visium HD | 10x Genomics | 2 | High-density capture; 16x higher resolution than standard Visium |
+| Xenium | 10x Genomics | 0.2–1 | Single-cell or sub-cellular resolution; exact size depends on clustering |
+| MERFISH | Various | 0.05–0.2 | Multiplexed error-robust FISH; subcellular spatial resolution |
+| seqFISH | Multiple vendors | 0.05–0.5 | Sequential hybridization; subcellular to near-cellular resolution |
+| Slide-seq | Various | 0.5–1 | High-resolution slide-based capture arrays |
+| HDST | Harvard | 0.01–0.1 | Highly dense spatial transcriptomics; near-diffraction-limited resolution |
+
+Ensure `.uns['spot_size']` in your input AnnData matches your technology's specifications for accurate spatial integration with FOCUS.
 
 ---
 
@@ -108,7 +127,7 @@ reference_modality: visium
 
 ### ST as a non-reference modality
 
-When a microscopy image or another modality is the reference, ST is registered onto it using `spot_interpolation`. FOCUS maps reference anchor positions into ST coordinate space and computes Gaussian-weighted averages of ST expression profiles within each anchor footprint.
+When another spot-based modality (MSI or another ST instance) is the reference, ST is registered onto it using `spot_interpolation`. FOCUS maps reference anchor positions into ST coordinate space and computes Gaussian-weighted averages of ST expression profiles within each anchor footprint. **Note**: FOCUS does not support image-based modalities (microscopy, Raman) as reference when ST is a target. In such cases, ST must be the reference modality.
 
 ---
 
@@ -116,9 +135,9 @@ When a microscopy image or another modality is the reference, ST is registered o
 
 | Scenario | Recommended reference |
 |----------|-----------------------|
-| H&E-guided multi-modal atlas (Visium + microscopy) | Microscopy image (`feature_extraction` registration) |
-| Visium-centric analysis (no high-res image) | Spatial transcriptomics (`none` or `spot_interpolation` for other modalities) |
-| MSI or Raman as primary spatial grid | MSI or Raman (other modalities register via `spot_interpolation`) |
+| Spot-based modalities only (ST + MSI, ST + Raman) | The modality with lowest spatial resolution (coarser spot grid). ST with `spot_interpolation` for targets. |
+| Visium-centric analysis (no high-res image) | Spatial transcriptomics (`none` or `spot_interpolation` for other spot-based modalities) |
+| MSI or Raman as primary spatial grid | MSI or Raman (other spot-based modalities register via `spot_interpolation`) |
 
 The reference modality defines the output coordinate space and the number of observation slots in the final multimodal dataset.
 
@@ -133,7 +152,7 @@ The reference modality defines the output coordinate space and the number of obs
 | `feature_extraction` | No | Not compatible with spot-based modalities |
 
 ```yaml
-# ST as non-reference, registering onto microscopy
+# ST as non-reference, registering onto another spot modality (MSI)
 registration_type: spot_interpolation
 
 # ST as reference (no registration needed)
@@ -191,9 +210,16 @@ Contains all samples concatenated via an outer join on genes (missing genes fill
 === "ST as non-reference"
 
     ```yaml
-    reference_modality: he_image
+    reference_modality: lipidomics
 
     modalities:
+      - name: lipidomics
+        type: msi
+        processing_settings:
+          mass_tolerance: 10
+          intensity_normalization: tic
+        registration_type: none
+        
       - name: visium
         type: st
         processing_settings:

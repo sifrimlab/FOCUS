@@ -2,7 +2,7 @@
 
 ## Overview
 
-FOCUS treats microscopy images as a spatial anchor: a high-resolution, whole-sample image that provides the visual coordinate system to which other modalities can be aligned. Supported tissue imaging types include H&E-stained brightfield sections, multi-channel immunofluorescence, and general brightfield acquisitions.
+Microscopy provides high-resolution, whole-sample spatial context. Supported tissue imaging types include H&E-stained brightfield sections, multi-channel immunofluorescence, and general brightfield acquisitions.
 
 The preprocessing pipeline normalises the pixel data to a uniform `float32 [0, 1]` range, optionally enhances colour and contrast, removes background, crops to the tissue region, and writes the result as a multi-resolution OME-TIFF pyramid for efficient downstream access at any scale.
 

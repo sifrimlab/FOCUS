@@ -1,4 +1,4 @@
-# Raman Spectroscopy Preprocessing Methods
+# Raman Spectroscopy Imaging Preprocessing Methods
 
 Confocal Raman spectral imaging produces spatially resolved hyperspectral data cubes in which each pixel carries a full Raman spectrum. FOCUS implements a complete preprocessing pipeline for Leica LIF-format acquisitions, covering data loading and metadata parsing, wavenumber axis computation, BaSiC illumination correction, background segmentation, per-tile spectral cleaning, and final tile stitching via ASHLAR.
 

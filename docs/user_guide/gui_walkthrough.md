@@ -77,8 +77,18 @@ Key defaults to review:
 
 For each non-reference modality, select the alignment strategy:
 
-- **Manual** (default) — Interactive landmark-based alignment. Requires the alignment GUI (see Stage 3 below).
-- **Pre-aligned** — Skip alignment for this modality; assume it is already co-registered with the reference. Only available when the reference modality is spot-based (`st` or `msi`).
+- **Manual** (default) — Interactive visual alignment via the alignment GUI. Requires the alignment GUI (see Stage 3 below).
+- **Pre-aligned** — Skip the alignment GUI for this modality; assume the reference modality's coordinates are already expressed in the target modality's coordinate frame.
+
+!!! info "When to use Pre-aligned"
+    **Pre-aligned is only applicable when:**
+    - The reference modality is spot-based (`st` or `msi`)
+    - The target modality is image-based (e.g., `microscopy_image`)
+    - The reference spots' coordinates are **already expressed in the target image's pixel coordinates**
+    
+    **Example:** Your reference is a spatial transcriptomics (ST) dataset with spot coordinates that are already in the pixel frame of an H&E microscopy image (not in micrometers). In this case, you can select `alignment_strategy: "pre_aligned"` for the H&E target, and FOCUS will skip the manual alignment step, using the existing coordinates directly for registration.
+    
+    **If your spot coordinates are in micrometers or physical units**, you must use **Manual** alignment to establish the correspondence with the target modality's coordinate system.
 
 ### 5. Registration Settings
 
@@ -99,15 +109,15 @@ If your samples include GeoJSON annotation files, expand this panel and fill in:
 
 Leave this section collapsed if you do not have annotation files.
 
-### 7. Preview and Save
+### 7. Review Configuration
 
-Click **Preview config** to see the generated JSON before saving. This is a good opportunity to check for any unexpected values. Click **Save config** to write `focus_config.json` into `dataset_path`. The file path is shown in the confirmation banner.
+The configuration is automatically saved to `focus_config.json` in `<dataset_path>` every time you make a change. You can review the JSON configuration at any time by opening the file in a text editor, or you can proceed directly to running the pipeline.
 
 ---
 
 ## Stage 3: Running the Pipeline
 
-Click **Run FOCUS** to start the pipeline. A live log panel streams output from the pipeline process in real time. Progress bars show the current stage and per-sample progress.
+Click **Start Processing** to run FOCUS with the current configuration. A live log panel streams output from the pipeline process in real time. Progress bars show the current stage and per-sample progress.
 
 ### Normal Progression
 
@@ -118,47 +128,65 @@ The pipeline advances automatically through:
 3. Registration (all non-reference modalities, all samples)
 4. Compilation (merge into `multimodal_dataset.h5mu`)
 
-### Alignment Stage: Interactive Landmark Placement
+### Alignment Stage: Visual Overlay
 
-When the pipeline reaches the alignment stage, processing pauses and a prompt appears in the main GUI:
+When the pipeline reaches the alignment stage, processing pauses and a banner appears in the main GUI:
 
-> **Alignment required.** Open the alignment tool at [http://localhost:8000](http://localhost:8000) in a new tab, complete alignment for all samples, then click "Alignment complete" below.
+> **Manual alignment required.** Click the button below to open the alignment tool.
 
-Open [http://localhost:8000](http://localhost:8000) in a new browser tab. The alignment GUI shows two image panels side by side:
+**Step 1: Open the alignment GUI**
 
-- **Left panel** — the reference modality for the current sample
-- **Right panel** — the non-reference modality to align
+Click the **Open Alignment Tool** button in the banner. This opens the alignment GUI in a new browser tab at `localhost:8000`. You do not need to manually navigate to this URL—the button opens it automatically. The button remains in the banner while alignment is in progress.
+
+**Step 2: Perform alignment**
+
+The alignment GUI displays the reference and target modalities side by side in the left section, with transformation controls in the right panel.
 
 **For each sample and each non-reference modality:**
 
-1. Click corresponding landmark points on the left panel (reference) and the right panel (target). Landmarks must be placed in matched pairs.
-2. Use scroll to zoom and click-drag to pan both panels independently.
-3. Use the flip, rotate, and scale controls if the target image needs coarse reorientation before fine landmark placement.
-4. Place a minimum of 4 landmark pairs. 8–12 pairs are typical for good accuracy.
-5. Click **Submit** to record the alignment transform for this sample/modality pair.
-6. The GUI advances to the next sample or the next modality automatically.
+1. **Switch to Alignment Control Mode**: Select "Alignment Control" from the center controls to enable transformation tools.
 
-Once all samples and modalities are submitted, return to the main GUI at localhost:5050 and click **Alignment complete**. The pipeline resumes automatically.
+2. **Move the Reference Modality**: The left panel shows the reference modality overlaid on the target modality (right panel, fixed). Use the transformation controls to align them:
+   - **Translate**: Click and drag the reference modality to move it across the target
+   - **Rotate**: Use the rotation control to rotate the reference around its centroid
+   - **Scale**: Scroll the mouse wheel to scale the reference relative to the target
 
-!!! tip "Choosing good landmarks"
-    Select anatomically distinctive and unique points: tissue edges, blood vessels, branching structures, distinctive cell clusters, or staining artefacts. Avoid points that appear identical at multiple locations in the tissue (e.g., centres of uniformly distributed cells). Landmarks distributed across the full tissue area give more accurate transforms than landmarks clustered in one region.
+3. **Fine-Tune the Alignment**:
+   - Use the Camera Control mode to zoom and pan for detailed inspection
+   - Show/hide spot clusters (for spot-based modalities) to verify correspondence
+   - Reset the alignment at any time to start over
 
-!!! warning "Keep the alignment tab open"
-    Do not close the alignment tab (localhost:8000) until you have submitted all samples. The main pipeline waits indefinitely for alignment to complete. Closing the tab will not cancel the wait, but you will lose any unsaved landmark placements.
+4. **Verify Coverage**: Ensure the alignment is accurate across the entire tissue area, not just in one region.
 
-!!! warning "Complete all samples before clicking Alignment complete"
-    Clicking **Alignment complete** before all samples are submitted will cause the pipeline to proceed with incomplete transforms, producing incorrect registration results for the missed samples. The alignment GUI shows a progress indicator listing which samples still need to be submitted.
+5. **Confirm**: Click **Confirm Alignment** in the right control panel to save the transform and advance to the next sample or modality.
+
+**Step 3: Complete alignment**
+
+Once all samples and modalities have been submitted, a **green message** appears in the alignment tab indicating that alignment is complete. You can now close the alignment tab. The main GUI automatically resumes processing—no action is needed.
+
+!!! tip "Getting accurate alignment"
+    Use anatomically distinctive features as visual references: tissue edges, blood vessels, branching structures, distinctive cell clusters, or staining artefacts. Make adjustments distributed across the full tissue area rather than clustering them in one region. This distributed approach produces more accurate transforms than concentrated adjustments.
 
 ---
 
 ## Stage 4: Complete
 
-When the full pipeline finishes, the GUI displays a completion summary:
+When the full pipeline finishes, the GUI displays a completion summary organized by category:
 
-- A list of all output files with their sizes
-- A direct link to `merged/multimodal_dataset.h5mu`
-- An option to open the output directory in your system's file manager
-- A link to download `focus.log` for the full run record
+- **Preprocessing**: Output files from each modality's preprocessing step
+- **Alignment**: Aligned output files (if alignment was performed)
+- **Registration**: Registered feature matrices (if registration was performed)
+- **Final Output**: The merged MuData file (if applicable) and other final results
+
+The summary includes all output files created during processing.
+
+### Action buttons
+
+**Start New Run**
+: Returns to the dataset path selection screen (Stage 1) to configure and run a new pipeline on the same or different dataset.
+
+**Delete Temporary Files**
+: Removes per-sample output files from each processing stage (preprocessing, alignment, registration). This reduces disk storage while preserving the final merged results. Useful for cleanup after confirming outputs are correct and acceptable quality.
 
 The pipeline can be re-run from the same config at any time. With `force_recomputing: false` (the default), stages whose outputs already exist will be skipped, making re-runs fast when only a subset of settings have changed.
 
@@ -167,10 +195,10 @@ The pipeline can be re-run from the same config at any time. With `force_recompu
 ## Tips and Troubleshooting
 
 !!! tip "Running GUI and CLI together"
-    If you have already built and saved a config via the GUI, you can run the exact same config non-interactively from the command line. This is useful for reprocessing on an HPC node without a display, provided you use `alignment_strategy: "pre_aligned"` or already have aligned outputs.
+    After configuring FOCUS in the GUI, the config is automatically saved as `focus_config.json`. You can then run the same config non-interactively from the command line. This is useful for reprocessing on an HPC node without a display, provided you use `alignment_strategy: "pre_aligned"` or already have aligned outputs.
 
-!!! tip "Saving multiple configs"
-    You can save multiple config files in the same `dataset_path` with different names (e.g., `focus_config_st_only.json`, `focus_config_full.json`) and choose which one to load on the Setup screen. Only `focus_config.json` is auto-saved by the GUI; any other name must be specified manually.
+!!! tip "Using alternative config file names"
+    The GUI auto-saves to `focus_config.json`. If you want to keep multiple configurations, manually copy `focus_config.json` to different names (e.g., `focus_config_st_only.json`, `focus_config_full.json`) and then load the desired config from the Setup screen using `--config` flag in CLI mode.
 
 !!! warning "Do not run two FOCUS processes on the same dataset_path simultaneously"
     Concurrent writes to the same output files will corrupt results. Run one FOCUS process at a time per dataset.

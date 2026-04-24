@@ -4,7 +4,48 @@ This page describes every file and directory that FOCUS produces, explains the s
 
 ---
 
-## Complete Output Directory Structure
+## Output Scenarios
+
+The final output structure depends on your pipeline configuration:
+
+### Scenario 1: Full Pipeline (Reference is Spot-Based + Registration Active)
+
+**Conditions:**
+- Reference modality is `msi` or `st` (spot-based)
+- At least one non-reference modality has registration enabled
+
+**Final Output:**
+- **Primary:** `merged/multimodal_dataset.h5mu` — a single MuData file containing all registered modalities
+- Per-sample files in `sample_*/preprocessing/`, `sample_*/alignment/`, and `sample_*/registration/`
+- Merged stage files: `merged/preprocessing/`, `merged/alignment/`, `merged/registration/`
+
+### Scenario 2: Alignment Only (Registration Inactive)
+
+**Conditions:**
+- All non-reference modalities have `registration_type: "none"`
+
+**Final Output:**
+- **Primary:** Merged aligned files in `merged/alignment/`
+- If annotation transfer is enabled: `merged/annotation/`
+- **No MuData file is created**
+- Per-sample preprocessing and alignment files available
+
+### Scenario 3: Image-Based Reference
+
+**Conditions:**
+- Reference modality is `microscopy_image` or `raman` (image-based)
+- Currently, all non-reference modalities must also be image-based
+
+**Final Output:**
+- Per-sample cropped images in `sample_*/alignment/`
+- For spot-based targets: spot coordinates expressed in reference frame
+- Per-sample and merged preprocessed files available
+- **No MuData file is created** (mixed image/spot references not yet supported)
+- If spot-based targets are present: merged results available in `merged/alignment/`
+
+---
+
+## Complete Output Directory Structure (Full Pipeline Scenario)
 
 FOCUS writes all outputs back into `dataset_path`. Nothing is written outside of this tree. The layout mirrors the pipeline stages:
 
@@ -64,7 +105,14 @@ FOCUS writes all outputs back into `dataset_path`. Nothing is written outside of
 
 ## The Final Output: `multimodal_dataset.h5mu`
 
-The file `merged/multimodal_dataset.h5mu` is the primary output of the FOCUS pipeline. It is a [MuData](https://mudata.readthedocs.io/) HDF5 file that holds all registered modalities in a single container, ready for downstream analysis with scanpy, squidpy, or any AnnData-compatible tool.
+!!! note "Conditional Output"
+    The file `merged/multimodal_dataset.h5mu` is only created when **both** conditions are met:
+    - The reference modality is spot-based (`msi` or `st`)
+    - At least one non-reference modality has registration enabled
+    
+    See [Output Scenarios](#output-scenarios) above to understand which outputs are created for your pipeline configuration.
+
+The file `merged/multimodal_dataset.h5mu` is the primary output of the FOCUS pipeline when conditions are met. It is a [MuData](https://mudata.readthedocs.io/) HDF5 file that holds all registered modalities in a single container, ready for downstream analysis with scanpy, squidy, or any AnnData-compatible tool.
 
 ### Loading and Inspecting
 
@@ -97,7 +145,7 @@ After registration, each AnnData modality in the MuData contains:
 | `.obs` | Spot/pixel metadata, including `sample_id` and spatial annotation labels (if enabled) |
 | `.var` | Feature metadata (gene names, m/z values, etc.) |
 | `.obsm['spatial']` | (n_obs × 2) array of spatial coordinates in the reference modality's coordinate space |
-| `.uns['spot_size']` | Physical spot/pixel size in µm (1-D float32 array of length 2) |
+| `.uns['spot_size']` | Physical spot/pixel size in µm (1-D float32 array of length 2). For spot-based modalities (MSI, Raman, ST), this is automatically extracted during preprocessing from input metadata; defaults to `[1.0, 1.0]` if unavailable. Not used for microscopy_image modalities. |
 
 ### Example: Spatial Plotting with squidpy
 

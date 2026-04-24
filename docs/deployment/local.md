@@ -59,7 +59,7 @@ cd FOCUS
 2. Detects your system's CUDA version (via `nvcc`, `nvidia-smi`, or Lmod environment variables) and selects the matching PyTorch wheel index from `download.pytorch.org/whl/`.
 3. Creates a `FOCUS` conda environment with Python 3.11 and installs all dependencies from `requirements.txt`.
 4. Installs the `focus` package in editable mode, registering the `focus` CLI command so you can run it from any directory after activating the environment.
-5. Scans the `tools/` directory and creates optional tool environments (e.g. `FOCUS_BaSiCpy`, `FOCUS_ASHLAR`) for Raman spectroscopy preprocessing.
+5. Scans the `tools/` directory and creates optional tool environments (e.g. `FOCUS_BaSiCpy`, `FOCUS_ASHLAR`) for Raman spectroscopy imaging preprocessing.
 
 !!! note "Why not `pip install torch` directly?"
     The install script installs PyTorch from PyTorch's own wheel index (not default PyPI). PyTorch wheels from `download.pytorch.org/whl/` bundle CUDA internally and do **not** create separate `nvidia-*` pip packages, which avoids version conflicts with the system CUDA on HPC nodes. See [Troubleshooting PyTorch / CUDA on HPC](#troubleshooting-pytorch-cuda-on-hpc) for details.
@@ -116,18 +116,22 @@ python -c "import torch; print(torch.cuda.is_available())"
 # Expected: True
 ```
 
-A HuggingFace token is required the first time `feature_extraction` is used, to download the Prov-GigaPath model weights. Set it as an environment variable before running:
+A HuggingFace token is required the first time `feature_extraction` is used, to download the Prov-GigaPath model weights. Provide the token in your FOCUS configuration file:
 
-```bash
-export HUGGINGFACE_TOKEN=hf_...
-focus --config /path/to/focus_config.json
+```json
+{
+  "huggingface_token": "hf_...",
+  "modalities": [ ... ]
+}
 ```
+
+Or set it interactively in the GUI configuration panel (a token field appears automatically when `feature_extraction` registration is selected for any modality).
 
 ---
 
 ## Raman Environments (Optional)
 
-The `FOCUS_BaSiCpy` and `FOCUS_ASHLAR` environments are only needed if your dataset contains Raman spectroscopy data (`.lif` files). They are created automatically by the install script when a `tools/BaSiCpy/` or `tools/ASHLAR/` directory is present in the repository.
+The `FOCUS_BaSiCpy` and `FOCUS_ASHLAR` environments are only needed if your dataset contains Raman spectroscopy imaging data (`.lif` files). They are created automatically by the install script when a `tools/BaSiCpy/` or `tools/ASHLAR/` directory is present in the repository.
 
 To install them explicitly on a clean checkout:
 

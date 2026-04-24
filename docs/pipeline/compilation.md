@@ -2,7 +2,13 @@
 
 ## Overview
 
-The compilation stage is the final step in the FOCUS pipeline, where all processed, aligned, and registered modalities are merged into a single MuData object. This creates an analysis-ready, multi-modal dataset that can be used with standard single-cell and spatial omics tools like scanpy and squidpy.
+The compilation stage is the optional final step in the FOCUS pipeline. It only executes when **both** of the following conditions are met:
+1. The reference modality is spot-based (`msi` or `st`)
+2. At least one non-reference modality has registration enabled (i.e., `registration_type` is not `"none"`)
+
+When compilation runs, it assembles all registered modalities into a single MuData object. This creates an analysis-ready, multi-modal dataset that can be used with standard single-cell and spatial omics tools like scanpy and squidpy.
+
+If compilation does not run, the final outputs are instead the merged preprocessed/aligned/annotated files stored in their respective directories (e.g., `merged/alignment/`, `merged/annotation/`).
 
 ## Compilation Workflow
 
@@ -32,14 +38,21 @@ MuData Object
 └── uns: Global metadata
 ```
 
-### Compilation Requirements
+### When Compilation Runs
+
+Compilation only proceeds if:
+
+1. **Spot-Based Reference**: Reference modality must be spot-based (MSI or ST)
+2. **Registration Active**: At least one non-reference modality has `registration_type` other than `"none"`
+
+### Compilation Requirements (when conditions are met)
 
 For successful compilation, FOCUS requires:
 
-1. **Spot-Based Reference**: Reference modality must be spot-based (MSI or ST)
-2. **Completed Registration**: All target modalities must be registered
-3. **Consistent Observations**: Same number of spots across modalities
-4. **Valid Coordinates**: Unified spatial coordinate system
+1. **Consistent Observations**: Same number of spots across all registered modalities
+2. **Valid Coordinates**: Unified spatial coordinate system from alignment
+3. **File Availability**: All merged registered AnnData files exist
+4. **Format Validation**: AnnData structure must be valid
 
 ### Supported Output Formats
 

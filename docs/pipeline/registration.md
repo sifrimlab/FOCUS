@@ -22,14 +22,14 @@ FOCUS supports two primary registration methods:
 
 ### 1. Feature Extraction Registration
 
-**Use Case**: Mapping image-based modalities (microscopy, Raman) to spot-based reference
+**Use Case**: Mapping microscopy images to spot-based reference
 
 **Method**: Deep learning patch embeddings using Prov-GigaPath model
 
 **Requirements**:
 - NVIDIA GPU with CUDA
 - HuggingFace token (for model download)
-- Image modality as target
+- Microscopy image modality as target
 
 **Process**:
 1. Extract patches at reference spot locations

@@ -250,7 +250,7 @@ class MsiSample(BaseSample):
 **Key properties**
 
 - `ion_modes` — list of `MsiIonMode` values available in this sample
-- `foreground_mask` — boolean array indicating tissue vs. background spots
+- `foreground` — boolean array indicating tissue vs. background spots
 - `recalibration_reference` — reference m/z vector(s) for mass recalibration
 - `min_intensity_threshold` — intensity threshold for recalibration
 

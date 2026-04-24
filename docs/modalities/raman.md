@@ -1,4 +1,4 @@
-# Raman Spectroscopy
+# Raman Spectroscopy Imaging
 
 ## Overview
 
@@ -102,14 +102,20 @@ dataset_root/
 
 ## Registration
 
-!!! warning "Only `spot_interpolation` is compatible"
-    Raman is treated as a pixel image for preprocessing but outputs spectral data that is registered using spot-based interpolation. `feature_extraction` is **not** compatible.
+!!! warning "Only `spot_interpolation` is supported (sub-optimal)"
+    At the moment, Raman registration uses `spot_interpolation`, which is not ideal for image-based modalities. This approach treats the continuous spectral image as discrete spot data and aggregates spectral channels via Gaussian-weighted averaging around anchor spot locations. The result is information loss: the rich spatial context available in the hyperspectral image is reduced to simple weighted averages.
 
-`spot_interpolation` maps anchor spots from the reference modality onto the Raman coordinate space and computes Gaussian-weighted averages of the spectral channels falling within each anchor spot's footprint.
+    **Why spot_interpolation is currently used**: There is currently no specialized feature extraction technique tailored for Raman spectroscopy imaging. Unlike microscopy, which benefits from general-purpose vision models (e.g., Prov-GigaPath), Raman spectral data requires dedicated domain-specific models to extract meaningful embeddings.
+
+    **Future direction**: As specialized feature extraction methods for Raman spectroscopy become available, FOCUS will adopt a dedicated `feature_extraction` process for Raman registration, similar to microscopy images. This will enable richer, more information-preserving registration.
+
+For now, use:
 
 ```yaml
 registration_type: spot_interpolation
 ```
+
+This will map anchor spots from the reference modality onto the Raman coordinate space and compute Gaussian-weighted averages of the spectral channels within each anchor spot's footprint.
 
 ---
 
@@ -128,8 +134,9 @@ The ASHLAR stitching step produces a multi-resolution OME-TIFF per sample at:
 | Compression | zlib |
 | Pixel metadata | Physical size in µm per axis embedded in OME-XML |
 | Pyramid | Multi-resolution levels for efficient viewer access |
+| Spot size | **Automatically extracted from LIF metadata** (pixel size in µm). If unavailable, defaults to `[1.0, 1.0]` µm. Used during `spot_interpolation` registration. |
 
-Channel names in the OME-XML correspond to the wavenumber array computed from the LIF metadata, enabling direct spectral axis access in downstream viewers.
+Channel names in the OME-XML correspond to the wavenumber array computed from the LIF metadata, enabling direct spectral axis access in downstream viewers. The physical pixel size (stored as `PhysicalSizeX` and `PhysicalSizeY` in OME-XML) is automatically extracted and used as the `spot_size` during registration.
 
 ---
 

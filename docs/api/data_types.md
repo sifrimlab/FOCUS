@@ -31,13 +31,19 @@ The full-resolution level is at index `0`; higher indices are progressively down
 |-----------|------|-------|-------------|
 | `.X` | sparse CSR float32 | $(n_\text{spots},\ n_\text{mz})$ | Ion intensities after normalization |
 | `.obsm['spatial']` | float32 ndarray | $(n_\text{spots},\ 2)$ | Physical coordinates in µm $(x, y)$ |
+| `.obsm['raster_coordinates']` | int32 ndarray | $(n_\text{spots},\ 2,\ 2)$ | Pixel bounding boxes $[[x_\text{tl}, y_\text{tl}], [x_\text{br}, y_\text{br}]]$ in µm |
 | `.obs['sample_id']` | categorical | $(n_\text{spots},)$ | Sample identifier (directory name) |
-| `.obs['ion_mode']` | categorical | $(n_\text{spots},)$ | `'pos'` or `'neg'`; present only in dual-mode datasets |
-| `.var_names` | Index | $(n_\text{mz},)$ | Consensus m/z values (float, formatted as strings) |
-| `.uns['spot_size']` | float32 ndarray | $(2,)$ | Spot diameter $[x,\ y]$ in µm |
+| `.obs['foreground']` | bool | $(n_\text{spots},)$ | Boolean mask identifying tissue vs. background spots |
+| `.var['mz']` | float32 ndarray | $(n_\text{mz},)$ | Consensus m/z values |
+| `.var['mz_mode']` | categorical | $(n_\text{mz},)$ | Ion mode for each m/z (`'pos'` or `'neg'`) |
+| `.var['lipid_annotation']` | categorical | $(n_\text{mz},)$ | Lipid annotation string (if database provided) |
+| `.uns['spot_size']` | float32 ndarray | $(2,)$ | Spot diameter $[x,\ y]$ in µm. **Automatically extracted from `.imzML` metadata.** If unavailable, defaults to `[1.0, 1.0]` µm. |
 
 !!! note "Dual ion mode"
-    When both positive and negative ion mode acquisitions are present, spots from both modes are concatenated along `obs`. The two sub-populations are identified by `.obs['ion_mode']`.
+    When both positive and negative ion mode acquisitions are present, spots from both modes are concatenated along `obs`. The two sub-populations are identified by `.var['mz_mode']`.
+
+!!! note "spot_size"
+    For MSI, `spot_size` is automatically read from the Bruker instrument metadata (stored in the `.imzML` file). If metadata is unavailable, the default `[1.0, 1.0]` µm is applied. This value is used during `spot_interpolation` registration to determine the Gaussian kernel width.
 
 #### Spatial transcriptomics (ST)
 
@@ -48,8 +54,11 @@ The full-resolution level is at index `0`; higher indices are progressively down
 | `.obsm['spatial']` | float32 ndarray | $(n_\text{spots},\ 2)$ | Spot coordinates in µm $(x, y)$ |
 | `.obs['sample_id']` | categorical | $(n_\text{spots},)$ | Sample identifier |
 | `.obs['leiden']` | categorical | $(n_\text{spots},)$ | Leiden cluster label (computed during preprocessing) |
-| `.uns['spot_size']` | float32 ndarray | $(2,)$ | Spot diameter $[x,\ y]$ in µm |
+| `.uns['spot_size']` | float32 ndarray | $(2,)$ | Spot diameter $[x,\ y]$ in µm. **Automatically extracted from input AnnData's `.uns['spot_size']`.** If unavailable, defaults to `[1.0, 1.0]` µm. |
 | `.var['mt']` | bool | $(n_\text{genes},)$ | `True` for mitochondrial genes (prefix `MT-` / `mt-`) |
+
+!!! note "spot_size"
+    For ST modalities, `spot_size` is read from the input AnnData file's `.uns['spot_size']` field during preprocessing. If this field is absent, FOCUS applies the default `[1.0, 1.0]` µm. This value is critical for accurate spot interpolation during registration; ensure your input ST AnnData has the correct spot diameter.
 
 ---
 

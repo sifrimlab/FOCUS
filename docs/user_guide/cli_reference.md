@@ -38,7 +38,7 @@ focus --help                             # Show help and exit
 
     - Build or edit a configuration interactively
     - Run the pipeline with a visual progress monitor
-    - Perform interactive landmark alignment via the alignment tool at `localhost:8000`
+    - Perform interactive visual alignment via the alignment tool at `localhost:8000`
 
 === "CLI mode (`--config`)"
 
@@ -54,10 +54,65 @@ focus --help                             # Show help and exit
     - Reprocessing with an existing config that does not require interactive alignment
 
     !!! note "Interactive alignment in CLI mode"
-        CLI mode does not start the Flask web server and therefore cannot present the interactive alignment GUI. To run CLI mode on data that requires alignment, either:
-
-        1. Set `"alignment_strategy": "pre_aligned"` on the relevant modalities (for already co-registered data), or
-        2. Run GUI mode once to complete alignment and save the alignment outputs, then re-run in CLI mode with `force_recomputing: false` to skip the alignment stage.
+        If your config requires manual alignment (at least one modality with `"alignment_strategy": "manual"` when `perform_alignment` or `perform_registration` is active), FOCUS will launch the interactive alignment GUI at `http://localhost:8000` and wait for you to complete the alignment before resuming the pipeline.
+        
+        For truly automated/headless operation without manual alignment, use one of these approaches:
+        
+        1. **Skip alignment and registration entirely**: Set `"perform_alignment": false` and `"perform_registration": false`. The pipeline will only run preprocessing.
+        
+        2. **Use pre-aligned modalities**: Set `"alignment_strategy": "pre_aligned"` on all non-reference modalities.
+        
+            This requires:
+            
+            - Your data is already co-registered (reference coordinates are expressed in each target modality's coordinate system)
+            - You have exactly 2 modalities (one reference, one target)
+            - With 3 or more modalities, at least one non-reference modality will require manual alignment
+        
+        3. **Split processing steps**: Run the pipeline in multiple passes with different stage settings. This allows you to complete alignment interactively without blocking headless processing:
+        
+            **Pass 1 (headless preprocessing)**:
+            ```json
+            {
+              "perform_alignment": false,
+              "perform_registration": false
+            }
+            ```
+            
+            **Pass 2 (GUI alignment)**:
+            ```json
+            {
+              "perform_alignment": true,
+              "perform_registration": false,
+              "modalities": [
+                {
+                  "processing_settings": {
+                    "force_recomputing": false
+                  }
+                }
+              ]
+            }
+            ```
+            Run in GUI mode to complete manual alignment. All preprocessing outputs are reused.
+            
+            **Pass 3 (headless registration)**:
+            ```json
+            {
+              "perform_alignment": true,
+              "perform_registration": true,
+              "alignment_force_recomputing": false,
+              "modalities": [
+                {
+                  "processing_settings": {
+                    "force_recomputing": false
+                  },
+                  "registration_settings": {
+                    "force_recomputing": false
+                  }
+                }
+              ]
+            }
+            ```
+            Run in CLI mode (headless). Alignment is already cached, so the registration stage will not block waiting for user input.
 
 ---
 
@@ -83,11 +138,6 @@ focus --config config.json --debug
 
 ---
 
-## Environment Variables
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `HUGGINGFACE_TOKEN` | — | HuggingFace access token. Overrides `huggingface_token` in the config file when set. Required only if any modality uses `feature_extraction` registration. |
 
 ---
 
@@ -97,12 +147,26 @@ CLI mode requires no display or browser. It is fully compatible with headless Li
 
 ### Option 1: Pre-aligned data (no alignment needed)
 
-If your modalities are already co-registered, set `alignment_strategy: "pre_aligned"` on all non-reference modalities in the config. The pipeline will skip the alignment stage entirely and can run without any user interaction.
+If your reference modality's coordinates are already expressed in each target modality's coordinate system (for example, a 10x Visium dataset where the H&E image is co-registered by the instrument software), set `alignment_strategy: "pre_aligned"` on all non-reference modalities. The pipeline will skip the alignment stage and run without any user interaction.
+
+!!! warning "Pre-aligned constraints"
+    `pre_aligned` only works when:
+    - You have exactly **2 modalities** (one reference, one target)
+    - The reference coordinates are **already expressed** in the target modality's coordinate frame
+    
+    With **3 or more modalities**, at least one target will require manual alignment, so `pre_aligned` cannot be used for all of them.
 
 ```json
 {
   "modalities": [
-    { "name": "msi", "type": "msi", "alignment_strategy": "pre_aligned", ... }
+    {
+      "alignment_strategy": "pre_aligned",
+      "name": "msi",
+      "processing_settings": { ... },
+      "registration_settings": {},
+      "registration_type": "none",
+      "type": "msi"
+    }
   ]
 }
 ```

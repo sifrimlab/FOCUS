@@ -147,15 +147,10 @@
 - Use environment variables for better security
 
 **Best Practices**:
-- Store token securely
+- Store token securely in the config file
 - Use read-only tokens when possible
 - Remove from version control
-
-**Environment Variable Alternative**:
-```bash
-export HUGGINGFACE_TOKEN="hf_xxxxxx"
-focus --config /path/to/config.json
-```
+- Use the GUI configuration panel for interactive setup (token field appears when `feature_extraction` is selected)
 
 ---
 
@@ -373,8 +368,9 @@ focus --config /path/to/config.json
 dataset_path/
 └── sample_001/
     └── msi/		# Must match "name" field
-        ├── data.imzML
-        └── data.ibd
+        └── pos/	# Files must be in pos/ or neg/ subdirectories
+            ├── data.imzML
+            └── data.ibd
 ```
 
 **Best Practices**:
@@ -397,7 +393,7 @@ dataset_path/
 **Supported Values**:
 - `"microscopy_image"`: Fluorescence/brightfield microscopy
 - `"msi"`: Mass spectrometry imaging
-- `"raman"`: Raman spectroscopy
+- `"raman"`: Raman spectroscopy imaging
 - `"st"`: Spatial transcriptomics
 
 **Example**:
@@ -1385,28 +1381,39 @@ dataset_path/
   "dataset_path": "/data/preprocessing_project",
   "reference_modality": "microscopy",
   "perform_alignment": false,
+  "alignment_force_recomputing": false,
   "perform_registration": false,
+  "huggingface_token": null,
+  "spatial_annotations": null,
   "modalities": [
     {
+      "alignment_strategy": "manual",
       "name": "microscopy",
-      "type": "microscopy_image",
       "processing_settings": {
         "color_enhancement": true,
-        "background_removal": true,
-        "crop_to_tissue": true
+        "remove_background": true,
+        "crop_to_tissue": true,
+        "gamma": 0.45,
+        "pyramid_levels": 4,
+        "force_recomputing": false
       },
-      "alignment_strategy": "manual",
-      "registration_type": "none"
+      "registration_settings": {},
+      "registration_type": "none",
+      "type": "microscopy_image"
     },
     {
-      "name": "msi",
-      "type": "msi",
-      "processing_settings": {
-        "ion_mode": "positive",
-        "mass_range": [100, 1000]
-      },
       "alignment_strategy": "manual",
-      "registration_type": "none"
+      "name": "msi",
+      "processing_settings": {
+        "mass_tolerance": 10,
+        "intensity_normalization": "tic",
+        "min_intensity_threshold": 10000,
+        "detect_background": true,
+        "force_recomputing": false
+      },
+      "registration_settings": {},
+      "registration_type": "none",
+      "type": "msi"
     }
   ]
 }
@@ -1426,40 +1433,45 @@ dataset_path/
 ```json
 {
   "dataset_path": "/data/multi_modal_project",
-  "reference_modality": "microscopy",
+  "reference_modality": "msi",
   "perform_alignment": true,
+  "alignment_force_recomputing": false,
   "perform_registration": true,
   "huggingface_token": "hf_xxxxxx",
+  "spatial_annotations": null,
   "modalities": [
     {
-      "name": "microscopy",
-      "type": "microscopy_image",
-      "processing_settings": {
-        "color_enhancement": true,
-        "background_removal": true,
-        "crop_to_tissue": true
-      },
       "alignment_strategy": "manual",
-      "registration_type": "feature_extraction",
-      "registration_settings": {
-        "patch_size": 224,
-        "batch_size": 16
-      }
+      "name": "msi",
+      "processing_settings": {
+        "mass_tolerance": 10,
+        "intensity_normalization": "tic",
+        "min_intensity_threshold": 10000,
+        "detect_background": true,
+        "force_recomputing": false
+      },
+      "registration_settings": {},
+      "registration_type": "none",
+      "type": "msi"
     },
     {
-      "name": "msi",
-      "type": "msi",
-      "processing_settings": {
-        "ion_mode": "positive",
-        "mass_range": [50, 1200],
-        "background_detection": true
-      },
       "alignment_strategy": "manual",
-      "registration_type": "spot_interpolation",
+      "name": "microscopy",
+      "processing_settings": {
+        "color_enhancement": true,
+        "remove_background": true,
+        "crop_to_tissue": true,
+        "gamma": 0.45,
+        "pyramid_levels": 4,
+        "force_recomputing": false
+      },
       "registration_settings": {
-        "k_neighbors": 5,
-        "max_distance": 75.0
-      }
+        "patch_size": 224,
+        "min_max_rescale": true,
+        "force_recomputing": false
+      },
+      "registration_type": "feature_extraction",
+      "type": "microscopy_image"
     }
   ]
 }
@@ -1467,102 +1479,124 @@ dataset_path/
 
 **Key Points**:
 - Full pipeline enabled
+- MSI as reference modality
 - Feature extraction for microscopy (GPU)
-- Spot interpolation for MSI (CPU)
 - Comprehensive processing settings
 
 ---
 
-### Use Case 3: High-Throughput Screening
+### Use Case 3: Preprocessing and Alignment Only
 
-**Scenario**: Process many samples quickly with minimal interaction
+**Scenario**: Prepare and align data without registration
 
 ```json
 {
-  "dataset_path": "/data/high_throughput",
-  "reference_modality": "microscopy",
+  "dataset_path": "/data/preprocessing_alignment_project",
+  "reference_modality": "st",
   "perform_alignment": true,
+  "alignment_force_recomputing": false,
   "perform_registration": false,
-  "max_cpu_cores": 16,
+  "huggingface_token": null,
+  "spatial_annotations": null,
   "modalities": [
     {
-      "name": "microscopy",
-      "type": "microscopy_image",
+      "alignment_strategy": "manual",
+      "name": "st",
       "processing_settings": {
-        "color_enhancement": true,
-        "background_removal": true,
-        "crop_to_tissue": true,
-        "resolution_level": 1
+        "min_count_per_spot": null,
+        "max_count_per_spot": null,
+        "min_genes_per_spot": 50,
+        "max_genes_per_spot": null,
+        "min_spots_per_gene": null,
+        "min_count_spots_ratio_per_gene": null,
+        "total_counts_normalize": true,
+        "log1p_transform": true,
+        "force_recomputing": false
       },
-      "alignment_strategy": "uniform",
-      "registration_type": "none"
+      "registration_settings": {},
+      "registration_type": "none",
+      "type": "st"
     },
     {
-      "name": "st",
-      "type": "st",
+      "alignment_strategy": "manual",
+      "name": "microscopy",
       "processing_settings": {
-        "qc_mito_threshold": 0.2,
-        "min_genes_per_spot": 200,
-        "normalization": "total_counts"
+        "color_enhancement": true,
+        "remove_background": false,
+        "crop_to_tissue": false,
+        "gamma": 0.45,
+        "pyramid_levels": 4,
+        "force_recomputing": false
       },
-      "alignment_strategy": "pre_aligned",
-      "registration_type": "none"
+      "registration_settings": {},
+      "registration_type": "none",
+      "type": "microscopy_image"
     }
   ]
 }
 ```
 
 **Key Points**:
-- Uniform alignment (no GUI)
-- Pre-aligned ST data
-- Higher resolution level for speed
-- Maximum CPU cores
+- Preprocessing and alignment enabled
+- Registration disabled (alignment outputs only)
+- Manual alignment required
+- Pre-aligned ST reference with microscopy target
 
 ---
 
-### Use Case 4: Raman + MSI Integration
+### Use Case 4: MSI Reference with Raman Target
 
-**Scenario**: Combine Raman spectroscopy and MSI for metabolomics
+**Scenario**: Combine MSI and Raman spectroscopy imaging for comprehensive analysis
 
 ```json
 {
-  "dataset_path": "/data/raman_msi_project",
-  "reference_modality": "raman",
+  "dataset_path": "/data/msi_raman_project",
+  "reference_modality": "msi",
   "perform_alignment": true,
+  "alignment_force_recomputing": false,
   "perform_registration": true,
+  "huggingface_token": null,
+  "spatial_annotations": null,
   "modalities": [
     {
-      "name": "raman",
-      "type": "raman",
-      "processing_settings": {
-        "wavenumber_range": [400, 1800],
-        "basic_correction": true,
-        "background_removal": true,
-        "ashlar_stitching": true
-      },
       "alignment_strategy": "manual",
-      "registration_type": "none"
+      "name": "msi",
+      "processing_settings": {
+        "mass_tolerance": 10,
+        "intensity_normalization": "tic",
+        "min_intensity_threshold": 10000,
+        "detect_background": true,
+        "force_recomputing": false
+      },
+      "registration_settings": {},
+      "registration_type": "none",
+      "type": "msi"
     },
     {
-      "name": "msi",
-      "type": "msi",
-      "processing_settings": {
-        "ion_mode": "both",
-        "mass_range": [50, 1000],
-        "lipid_annotation": true
-      },
       "alignment_strategy": "manual",
-      "registration_type": "spot_interpolation"
+      "name": "raman",
+      "processing_settings": {
+        "max_workers": 8,
+        "savgol_window": 11,
+        "savgol_polyorder": 3,
+        "bg_min_area_fraction": 0.1,
+        "otsu_threshold_factor": 1.0,
+        "min_object_size": 100,
+        "force_recomputing": false
+      },
+      "registration_settings": {},
+      "registration_type": "spot_interpolation",
+      "type": "raman"
     }
   ]
 }
 ```
 
 **Key Points**:
-- Raman as reference modality
-- Both ion modes for MSI
-- Comprehensive Raman processing
-- Spot interpolation for MSI registration
+- MSI as reference modality (spot-based)
+- Raman as target modality
+- Raman uses spot interpolation for registration (sub-optimal but currently necessary)
+- Manual alignment required for both modalities
 
 ---
 

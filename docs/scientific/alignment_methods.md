@@ -4,7 +4,7 @@
 
 Spatial multiomics datasets are acquired on multiple instruments, each with its own independent coordinate system. A mass spectrometry imaging (MSI) raster, a Raman hyperspectral map, and an H&E microscopy scan of the same tissue section are expressed in incommensurable pixel- or physical-coordinate frames. Before features from different modalities can be compared at the same spatial location, corresponding positions across modalities must be identified.
 
-FOCUS adopts a **direct-mapping** paradigm: rather than attempting automated feature detection — which is unreliable on heterogeneous tissue — the user specifies matching landmarks by eye through an interactive browser-based GUI. This expert-guided approach is robust to staining artefacts, tissue deformation, and the highly heterogeneous appearance of different modality images.
+FOCUS adopts a **direct-mapping** paradigm: rather than attempting automated feature detection — which is unreliable on heterogeneous tissue — the user visually aligns the reference modality to each target modality through an interactive browser-based GUI using drag controls. This expert-guided approach is robust to staining artefacts, tissue deformation, and the highly heterogeneous appearance of different modality images.
 
 !!! note "Terminology"
     Throughout FOCUS, the modality whose spot grid defines the canonical observation index is called the **reference** (or **anchor**) modality. Every other modality is a **target** modality. Alignment maps the reference spots into each target's coordinate space; the converse is not computed.
@@ -17,9 +17,12 @@ FOCUS supports two strategies, configured per non-reference modality via the `al
 
 ### 2.1 Manual (default)
 
-The user specifies $N \geq 1$ landmark correspondences through the interactive GUI. Landmarks are selected by clicking on matching anatomical or morphological features visible in both the reference and target panels. One GUI session is required per sample per non-reference modality.
+The user visually aligns the reference modality to the target through the interactive GUI using transformation controls. The alignment method depends on modality types (see Section 3.2 below):
+- **Image-to-Image:** use translation, rotation, and scaling controls to overlay the reference image onto the target.
+- **Spot-to-Image:** use transformation controls to position reference spots to match target image anatomy.
+- **Spot-to-Spot:** use transformation controls to overlay reference spots onto target spots.
 
-This is the only strategy supported for image-type targets (`microscopy_image`, `raman`). For spot-type targets (`msi`, `st`), spot positions are dragged to their correct positions within the target coordinate frame.
+A single alignment GUI session is launched when needed, and all samples for all non-reference modalities are presented in sequence within that session. The main pipeline pauses until the user closes the alignment tab, then automatically resumes without requiring any further user interaction.
 
 ### 2.2 Pre-aligned
 
@@ -36,25 +39,39 @@ The alignment GUI is a Flask web application served on `http://localhost:8000`. 
 
 ### 3.1 Display and interaction
 
-The GUI presents a **dual-canvas** layout:
+The GUI is organized into three main sections:
 
-- **Left canvas (fixed):** the reference modality for the current sample.
-- **Right canvas (target):** the non-reference modality for the current sample.
+**Left Panel: Modality Overlay**
+- Displays both the reference and target modalities overlaid together
+- Reference modality is overlaid on top of the target modality (which is fixed)
+- The reference modality can be moved via transformation controls in the right panel
+
+**Center: Control Mode Selector**
+- Switch between **Camera Control** (pan/zoom for inspection) and **Alignment Control** (transform reference)
+
+**Right Panel: Transformation and Control Tools**
+- Translation, rotation, and scaling controls for the reference modality
+- Show/hide specific spot clusters (for spot-based modalities)
+- Fine-tune transformation parameters
+- Reset alignment to original state
+- Confirm alignment button
 
 For image modalities (`microscopy_image`, `raman`), the GUI loads the **lowest pyramid level** of the OME-TIFF for responsive rendering. Multi-channel images are converted to a 3-channel RGB representation: grayscale images are triplicated; two-channel images are zero-padded to three channels; images with four or more channels undergo NMF dimensionality reduction to three components.
 
-For spot modalities (`msi`, `st`), each spot is rendered as a coloured point. Colour is derived from Leiden cluster membership, providing anatomical context to guide landmark selection.
+For spot modalities (`msi`, `st`), each spot is rendered as a coloured point. Colour is derived from Leiden cluster membership, providing anatomical context to guide alignment decisions.
 
 ### 3.2 Alignment modes
 
+In all alignment modes, the reference modality is overlaid on the target modality and can be moved using transformation controls. The target modality is fixed and defines the coordinate space.
+
 | Reference type | Target type | Mode | User action |
 |----------------|-------------|------|-------------|
-| IMAGE | IMAGE | Image-to-Image | Drag four corner handles of a bounding box on the reference image to define the crop region corresponding to the target |
-| IMAGE | SPOT | Image-to-Spot | Drag individual spot positions on the right canvas to align with reference anatomy |
-| SPOT | SPOT | Spot-to-Spot | Drag individual spot positions on the right canvas to align with reference spot positions |
+| IMAGE | IMAGE | Image-to-Image | Use translation, rotation, and scaling controls to overlay the reference image onto the target. Scroll to scale, drag to translate, rotate around centroid. |
+| SPOT | IMAGE | Spot-to-Image | Use transformation controls to position the reference spots (as a group) to match anatomical features in the target image. |
+| SPOT | SPOT | Spot-to-Spot | Use transformation controls to overlay the reference spot grid onto the target spot grid, matching spot correspondences. |
 
 !!! note
-    SPOT → IMAGE alignment (reference is spot-based, target is image) is not currently implemented.
+    IMAGE → SPOT alignment (reference is image-based, target is spot-based) is not supported by FOCUS. If you need to map spot data to image context, the spot modality must be the reference.
 
 ### 3.3 Session flow
 
@@ -72,7 +89,7 @@ For spot modalities (`msi`, `st`), each spot is rendered as a coloured point. Co
 
 **Image-to-Image:** the GUI returns `corner_pixels` — a set of four $(x, y)$ pixel coordinates in the reference image at the lowest pyramid level, defining the bounding box of the region of interest. These coordinates are used to crop the full-resolution reference image to the portion that overlaps with the target.
 
-**Spot targets (Image-to-Spot, Spot-to-Spot):** the GUI returns a list of `spots`, each containing `pixel_x` and `pixel_y` — the repositioned $(x, y)$ coordinates of each reference spot, expressed in the display (downsampled) coordinate system of the reference modality.
+**Spot-to-Image and Spot-to-Spot:** the GUI returns a list of `spots`, each containing `pixel_x` and `pixel_y` — the repositioned $(x, y)$ coordinates of each reference spot, expressed in the display (downsampled) coordinate system of the reference modality.
 
 ### 4.2 Scale recovery
 

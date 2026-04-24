@@ -9,7 +9,7 @@ This page defines the terminology used throughout the FOCUS documentation and pi
 
 ## Modality
 
-A **modality** is a data type produced by a single instrument or measurement technology. Examples include a fluorescence microscopy scan, an MSI acquisition, a Raman spectroscopy run, or a spatial transcriptomics library. In FOCUS, each modality is identified by a user-chosen name (e.g., `"microscopy"`, `"msi"`, `"st"`) and a type key (e.g., `"microscopy_image"`, `"msi"`, `"raman"`, `"st"`) that tells FOCUS which processing algorithms to apply.
+A **modality** is a data type produced by a single instrument or measurement technology. Examples include a fluorescence microscopy scan, an MSI acquisition, a Raman spectroscopy imaging acquisition, or a spatial transcriptomics library. In FOCUS, each modality is identified by a user-chosen name (e.g., `"microscopy"`, `"msi"`, `"st"`) and a type key (e.g., `"microscopy_image"`, `"msi"`, `"raman"`, `"st"`) that tells FOCUS which processing algorithms to apply.
 
 ---
 
@@ -35,7 +35,7 @@ In the pipeline, spots from non-reference modalities are interpolated onto the r
 
 The **reference modality** is the modality whose coordinate system is used as the common spatial frame for the entire dataset. All other modalities are warped into the reference coordinate system during the Alignment and Registration stages. The reference modality is specified by the `reference_modality` field in the pipeline configuration.
 
-The reference modality is typically chosen as the modality with the highest spatial resolution or the richest morphological landmark content — most often the microscopy image — because accurate landmark placement during alignment is easiest when clear tissue structures are visible.
+The reference modality is typically chosen as the modality with the lowest spatial resolution (coarser spot grid), since higher-resolution modalities can be reliably aggregated down to match it, but reliable upscaling is not possible. When multiple modalities have similar resolution, the one with the richest morphological landmark content is preferred — most often the microscopy image — because accurate landmark placement during alignment is easiest when clear tissue structures are visible.
 
 !!! note
     The reference modality itself is never transformed; it defines the target coordinate space. Only non-reference modalities are aligned and registered.
@@ -50,7 +50,7 @@ The reference modality is typically chosen as the modality with the highest spat
 
 ## Alignment
 
-**Alignment** is the process of establishing spatial correspondence between two modalities by identifying matching landmark points in both coordinate systems. In FOCUS, alignment is performed interactively using a web-based GUI that displays the reference and target modality side by side. The user places matching point pairs on clearly identifiable tissue landmarks (e.g., tissue edges, blood vessels, fiducials). FOCUS fits an affine transformation from these correspondences:
+**Alignment** is the process of establishing spatial correspondence between two modalities by visually overlaying the reference modality onto the target. In FOCUS, alignment is performed interactively using a web-based GUI that displays the reference and target modality side by side. The user adjusts the reference modality's position, rotation, and scale (via drag controls) until it aligns with the target. FOCUS records the transformation, enabling the registration stage to compute the spatial mapping:
 
 $$
 \begin{pmatrix} x' \\ y' \end{pmatrix} = A \begin{pmatrix} x \\ y \end{pmatrix} + \mathbf{b}
@@ -113,7 +113,7 @@ FOCUS converts all image modalities (microscopy and Raman) to OME-TIFF pyramids 
 FOCUS supports:
 
 - **Single ion mode** — only `pos/` or only `neg/` data per sample
-- **Dual ion mode** — both `pos/` and `neg/` data per sample; spot records carry an `.obs['ion_mode']` column (`'pos'` or `'neg'`) to distinguish them after merging
+- **Dual ion mode** — both `pos/` and `neg/` data per sample; features (m/z values) are identified by mode via `.var['mz_mode']` column (`'pos'` or `'neg'`), allowing the same spot to have measurements from both ion modes
 
 ---
 
@@ -124,4 +124,11 @@ FOCUS supports:
 - Stored in `.uns['spot_size']` of every omics AnnData file as a `float32` array of shape `(2,)`
 - Used during spot interpolation registration to set the radius of the Gaussian kernel: a larger `spot_size` includes more neighboring spots in the weighted average
 - Carried forward to the final MuData `.uns['spot_size']`, where it reflects the reference modality's spot dimensions
-- Set automatically from instrument metadata during preprocessing for MSI and spatial transcriptomics; for other modalities it can be specified in the configuration
+
+**Automatic vs. manual specification:**
+- **MSI**: Read automatically from instrument metadata (`.imzML` file)
+- **Raman**: Read automatically from instrument metadata (`.lif` file headers)
+- **Spatial Transcriptomics (ST)**: Read from the input AnnData's `.uns['spot_size']` field; if absent, defaults to `[1.0, 1.0]` µm
+- **Microscopy (microscopy_image)**: **Not used** — microscopy is an image modality and does not have discrete spots with a size parameter
+
+If instrument metadata is missing for MSI or Raman, the default value `[1.0, 1.0]` µm is applied.

@@ -54,6 +54,85 @@ When `double_ion_mode` is enabled, FOCUS expects both `pos/` and `neg/` subdirec
 
 ---
 
+## Reserved Directories
+
+Within `<dataset_path>`, certain directory names are reserved and treated specially by FOCUS:
+
+| Directory | Purpose |
+|-----------|---------|
+| `merged/` | Stores merged outputs from all pipeline stages (preprocessing, alignment, registration, compilation). FOCUS creates and manages this directory automatically. |
+| `resources/` | User-controlled directory for storing additional resources and reference files needed for this dataset (e.g., lipid annotation databases, custom scripts, supplementary data). FOCUS ignores this directory when discovering samples. |
+| `plots/` | User-controlled directory for storing plots and visualizations generated during downstream analysis. FOCUS ignores this directory when discovering samples. |
+
+All other directories at `<dataset_path>/` are treated as sample directories, with the directory name becoming the `sample_id` in all outputs.
+
+---
+
+## Lipid Annotation Database
+
+### Format
+
+The lipid annotation database should be a JSON file with the following structure:
+
+```json
+{
+  "pos": {
+    "Phosphatidylcholine(32:0)": 734.569,
+    "Phosphatidylcholine(34:1)": 760.584,
+    "Sphingomyelin(d18:1/16:0)": 703.598,
+    ...
+  },
+  "neg": {
+    "Phosphatidylethanolamine(36:2)": 764.536,
+    "Phosphatidylserine(38:4)": 834.525,
+    "Cardiolipin(72:8)": 1445.987,
+    ...
+  }
+}
+```
+
+Each ion mode (`pos` or `neg`) is a dictionary where:
+- **Keys** are lipid names or identifiers (string)
+- **Values** are theoretical m/z values (float)
+
+### Location
+
+The annotation database can be stored:
+
+1. **In the dataset's `resources/` folder** (recommended for convenience):
+   ```
+   dataset_root/
+   ├── resources/
+   │   └── lipid_annotation_db.json
+   ├── sample_A/
+   │   └── lipidomics/
+   │       ├── pos/
+   │       │   ├── data.imzML
+   │       │   └── data.ibd
+   │       └── neg/
+   │           ├── data.imzML
+   │           └── data.ibd
+   ```
+
+2. **At any system path**: Configure the full path in the `lipid_annotation_db` field of your FOCUS config.
+
+### Configuration
+
+In your FOCUS configuration file, specify the database location via the `lipid_annotation_db` parameter:
+
+```yaml
+modalities:
+  - name: lipidomics
+    type: msi
+    processing_settings:
+      lipid_annotation_db: resources/lipid_annotation_db.json  # Path relative to dataset_root
+      # ... other settings
+```
+
+If the database is omitted or set to `None`, FOCUS will process the data without annotation.
+
+---
+
 ## Preprocessing Steps
 
 1. **Parse imzML metadata** — the imzML XML is parsed to extract pixel grid coordinates, physical stage coordinates (µm), raster size, per-spectrum binary offsets, and data types (`float32` or `float64`). Physical coordinates are read from `3DPositionX/Y` user parameters when present; pixel indices are used as fallback.
@@ -119,13 +198,14 @@ Path: `<sample_id>/preprocessing/<modality_name>/<modality_name>_<sample_id>_pro
 | Slot | Content |
 |------|---------|
 | `.X` | Interpolated intensity matrix `(N_spots, N_mz)`, sparse or dense `float32`/`float64` |
-| `.var_names` | Consensus m/z values (float, formatted as string) |
-| `.var['ion_mode']` | Ion mode for each m/z (`"pos"` or `"neg"`) |
-| `.var['annotation']` | Lipid annotation string (`;`-separated hits, or `"Unannotated"`) |
+| `.var['mz']` | Consensus m/z values (float32) |
+| `.var['mz_mode']` | Ion mode for each m/z (`"pos"` or `"neg"`) |
+| `.var['lipid_annotation']` | Lipid annotation string (`;`-separated hits, or `"Unannotated"`) |
 | `.obsm['spatial']` | Physical spot coordinates in µm, shape `(N_spots, 2)`, `float32` |
+| `.obsm['raster_coordinates']` | Raster pixel bounding boxes, shape `(N_spots, 2, 2)`, `int32` |
 | `.obs['sample_id']` | Sample identifier |
-| `.uns['spot_size']` | Raster pixel size `[x_µm, y_µm]` |
-| `.uns['foreground_mask']` | Boolean mask identifying tissue spots |
+| `.obs['foreground']` | Boolean mask identifying tissue vs. background spots |
+| `.uns['spot_size']` | Raster pixel size `[x_µm, y_µm]`. **Automatically read from `.imzML` metadata.** If metadata is unavailable, defaults to `[1.0, 1.0]` µm. |
 
 ### Merged dataset
 

@@ -70,7 +70,7 @@ graph LR
 2. Select modality type from dropdown:
    - Microscopy Image
    - MSI (Mass Spectrometry Imaging)
-   - Raman Spectroscopy
+   - Raman Spectroscopy Imaging
    - Spatial Transcriptomics
 3. Enter modality name (must match directory names)
 4. Configure modality-specific settings
@@ -92,7 +92,7 @@ graph LR
 - **Recalibration**: Enable/disable m/z recalibration
 - **Lipid Annotation**: Enable/disable lipid database matching
 
-**Raman Spectroscopy:**
+**Raman Spectroscopy Imaging:**
 - **Wavenumber Range**: Range to process
 - **BaSiC Correction**: Enable/disable
 - **Background Removal**: Enable/disable
@@ -142,8 +142,8 @@ graph LR
 1. Configure all desired modalities
 2. Set processing options
 3. Review advanced settings
-4. Click **Save Config** to save configuration file
-5. Click **Start Pipeline** to begin processing
+4. Configuration is automatically saved as `focus_config.json`
+5. Click **Start Processing** to run FOCUS with the current configuration
 
 ### Stage 3: Running
 
@@ -167,7 +167,7 @@ graph LR
 #### Alignment Stage
 1. **Manual Alignment Required**: When alignment button appears
 2. Click **Open Alignment Tool** to launch alignment GUI
-3. Perform manual landmark alignment (see [Alignment Guide](../pipeline/alignment.md))
+3. Perform visual alignment (see [Alignment Guide](../pipeline/alignment.md))
 4. Close alignment tool when complete
 5. Pipeline continues automatically
 
@@ -218,7 +218,7 @@ graph LR
 
 ### Overview
 
-The alignment tool is a separate web interface for manual landmark-based registration between modalities.
+The alignment tool is a separate web interface for interactive visual alignment between modalities.
 
 ### Starting the Tool
 
@@ -228,63 +228,95 @@ The alignment tool is a separate web interface for manual landmark-based registr
 
 ### Interface Layout
 
-```
-+---------------------------------------------------+
-| Reference Modality | Target Modality             |
-| +-----------------+ | +-----------------+        |
-| |   Image/Spots   | | |   Image/Spots   |        |
-| |                 | | |                 |        |
-| |    (Fixed)      | | |    (Moving)     |        |
-| +-----------------+ | +-----------------+        |
-|                                                   |
-| Controls:                                         |
-| [Alignment Mode] [Zoom] [Pan] [Reset]            |
-|                                                   |
-| Status: Current sample (1/5)                      |
-+---------------------------------------------------+
-```
+The alignment tool is divided into three main sections:
+
+**Left Panel: Modality Display**
+- Shows both reference and target modalities side by side
+- Reference modality is overlaid on top of the target modality
+- Reference modality can be moved; target modality is fixed
+
+**Center Controls: Camera vs. Alignment Mode**
+- **Camera Control**: Move the point of view (pan and zoom)
+- **Alignment Control**: Move the reference modality using transformation tools:
+  - **Translation**: Click and drag to move the reference modality across the x-y plane
+  - **Rotation**: Rotate the reference modality around its centroid
+  - **Scaling**: Scroll with mouse wheel to scale the reference modality up or down
+
+**Right Panel: Control Tools**
+- Show/hide specific spot clusters (for spot-based modalities)
+- Fine-tune transformation parameters
+- Reset all transformations to return to original state
+- **Confirm Alignment**: Click when satisfied with the overlay position
 
 ### Alignment Modes
 
+The alignment tool automatically adapts to your modality types. In all modes, **transformations are applied only to the reference modality**. The target modality remains fixed. FOCUS will then use the computed reference-to-target alignment transform to locate reference spots/pixels in the target modality's coordinate space during the registration step.
+
 #### Image-to-Image Alignment
 
-1. **Reference Image**: Fixed image (target coordinate system)
-2. **Target Image**: Moving image (to be aligned)
-3. **Controls**:
-   - Click and drag corners of target image to match reference
-   - Use zoom/pan for precise alignment
-   - Reset to original position
-4. **Confirmation**: Click **Confirm Alignment** when satisfied
+Aligning a reference image modality to a target image modality.
 
-#### Image-to-Spot Alignment
-
-1. **Reference Image**: Fixed image
-2. **Target Spots**: Moving spots displayed as colored points
+1. **Left panel**: Reference image (can be moved)
+2. **Right panel**: Target image (fixed, defines the coordinate space)
 3. **Controls**:
-   - Drag individual spots to correct positions
-   - Select multiple spots for group movement
-   - Use grid overlay for guidance
-4. **Spot Size**: Adjust spot size to match image scale
-5. **Confirmation**: Click **Confirm Alignment** when satisfied
+   - Click and drag to translate the reference image
+   - Use rotation control to rotate reference around its center
+   - Scroll to scale the reference image up or down
+   - Use zoom/pan camera controls to inspect details
+   - Reset button returns reference to original position
+4. **Confirmation**: Click **Confirm Alignment** when the overlays match
+
+#### Spot-to-Image Alignment
+
+Aligning a reference spot-based modality to a target image modality.
+
+1. **Left panel**: Reference spots (can be moved as a group)
+2. **Right panel**: Target image (fixed, defines the coordinate space)
+3. **Controls**:
+   - Click and drag to translate reference spots across the target image
+   - Use rotation control to rotate reference spots around their centroid
+   - Scroll to scale the reference spots relative to the target
+   - Show/hide individual spot clusters in the right panel to verify alignment
+   - Use zoom/pan camera controls for precise positioning
+   - Reset button returns reference to original position
+4. **Confirmation**: Click **Confirm Alignment** when spots are correctly positioned
 
 #### Spot-to-Spot Alignment
 
-1. **Reference Spots**: Fixed spots (target coordinate system)
-2. **Target Spots**: Moving spots (to be aligned)
+Aligning a reference spot-based modality to a target spot-based modality.
+
+1. **Left panel**: Reference spots (can be moved)
+2. **Right panel**: Target spots (fixed, define the coordinate space)
 3. **Controls**:
-   - Drag target spots to match reference spots
-   - Use distance metrics for guidance
-   - Toggle spot classes/colors
-4. **Confirmation**: Click **Confirm Alignment** when satisfied
+   - Click and drag to translate reference spots to match target spots
+   - Use rotation control to align reference spot patterns with target pattern
+   - Scroll to scale reference spots if spatial resolution differs
+   - Show/hide specific spot clusters to verify correspondence
+   - Use zoom/pan camera controls for detailed inspection
+   - Reset button returns reference to original position
+4. **Confirmation**: Click **Confirm Alignment** when reference spots overlay target spots correctly
 
-### Navigation Controls
+### Control Panel Tools
 
-- **Zoom**: Mouse wheel or +/- buttons
-- **Pan**: Click and drag background
-- **Reset View**: Double-click or reset button
-- **Toggle Overlay**: Show/hide reference or target
-- **Opacity**: Adjust overlay transparency
-- **Measurement**: Distance measurement tool
+The right control panel contains tools to fine-tune your alignment:
+
+**Transformation Controls**
+- **Translation**: Click and drag the reference modality to move it across the x-y plane
+- **Rotation**: Rotate the reference modality around its centroid
+- **Scale**: Scroll with the mouse wheel to scale the reference modality relative to the target
+
+**Camera Controls** (for precise viewing)
+- **Pan**: Click and drag the background to move your view
+- **Zoom**: Scroll to zoom in/out, or use camera control mode for finer control
+- **Reset View**: Return to the default zoom level and pan position
+
+**Cluster/Feature Controls** (for spot-based modalities)
+- **Show/Hide Clusters**: Toggle visibility of specific spot clusters to verify alignment
+- **Toggle Spot Classes**: Show/hide different classes or colors of spots
+
+**Reset and Confirm**
+- **Reset Alignment**: Returns the reference modality to its original position (undo all transformations)
+- **Confirm Alignment**: Saves the alignment transform and advances to the next sample/modality
 
 ### Workflow
 
@@ -296,32 +328,31 @@ The alignment tool is a separate web interface for manual landmark-based registr
 
 ### Tips for Accurate Alignment
 
-1. **Use Landmarks**: Identify distinctive features present in both modalities
-2. **Multiple Points**: Use at least 4-6 well-distributed landmarks
-3. **Zoom In**: Use high zoom for precise landmark placement
+1. **Visual Reference**: Identify distinctive features present in both modalities
+2. **Distributed Adjustments**: Make adjustments distributed across the tissue area
+3. **Zoom In**: Use high zoom for precise alignment
 4. **Check Coverage**: Ensure entire tissue area is covered
 5. **Symmetry**: Use symmetrical features for verification
 6. **Iterative**: Make small adjustments and verify frequently
 
 ## Configuration Management
 
-### Saving Configurations
+### Automatic Configuration Saving
 
-1. In **Configuration** stage, click **Save Config**
-2. Configuration saved as `focus_config.json` in dataset directory
-3. File includes all settings and parameters
+The configuration is automatically saved as `focus_config.json` in the dataset directory every time you make a change. You do not need to click a save button—changes are saved immediately.
 
 ### Loading Configurations
 
 1. In **Setup** stage, click **Load Config**
-2. Browse to existing `focus_config.json` file
+2. Browse to existing `focus_config.json` file or another named config file
 3. All settings loaded and ready for execution
 
 ### Modifying Configurations
 
-1. Load existing configuration
+1. Load existing configuration in the GUI
 2. Make desired changes in **Configuration** stage
-3. Click **Save Config** to overwrite or **Save As** for new file
+3. Changes are automatically saved to `focus_config.json`
+4. To keep multiple configs, manually copy `focus_config.json` to different filenames (e.g., `focus_config_v1.json`, `focus_config_v2.json`) and load them as needed
 
 ### Configuration File Structure
 
@@ -330,39 +361,41 @@ The JSON configuration file contains:
 ```json
 {
   "dataset_path": "/path/to/dataset",
-  "reference_modality": "microscopy",
+  "reference_modality": "msi",
   "perform_alignment": true,
+  "alignment_force_recomputing": false,
   "perform_registration": true,
-  "huggingface_token": "your_token_here",
+  "huggingface_token": null,
+  "spatial_annotations": null,
   "modalities": [
     {
-      "name": "microscopy",
-      "type": "microscopy_image",
-      "processing_settings": {
-        "color_enhancement": true,
-        "background_removal": true,
-        "crop_to_tissue": true,
-        "resolution_level": 0
-      },
       "alignment_strategy": "manual",
-      "registration_type": "none"
+      "name": "msi",
+      "processing_settings": {
+        "mass_tolerance": 10,
+        "intensity_normalization": "tic",
+        "min_intensity_threshold": 10000,
+        "detect_background": true,
+        "force_recomputing": false
+      },
+      "registration_settings": {},
+      "registration_type": "none",
+      "type": "msi"
     },
     {
-      "name": "msi",
-      "type": "msi",
-      "processing_settings": {
-        "ion_mode": "positive",
-        "mass_range": [100, 1000],
-        "normalization": "tic",
-        "background_detection": true
-      },
       "alignment_strategy": "manual",
-      "registration_type": "spot_interpolation",
-      "registration_settings": {
-        "k_neighbors": 5,
-        "max_distance": 100,
-        "weighting": "distance"
-      }
+      "name": "microscopy",
+      "processing_settings": {
+        "color_enhancement": true,
+        "remove_background": true,
+        "crop_to_tissue": true,
+        "gamma": 0.45,
+        "pyramid_levels": 4,
+        "force_recomputing": false
+      },
+      "registration_settings": {},
+      "registration_type": "feature_extraction",
+      "type": "microscopy_image"
     }
   ]
 }
@@ -443,7 +476,7 @@ See [Configuration Reference](../configuration/config_fields.md) for detailed fi
 1. **Start Simple**: Begin with default settings
 2. **Test Small**: Test with small subset first
 3. **Incremental Changes**: Modify one setting at a time
-4. **Save Frequently**: Save configuration often
+4. **Auto-saved**: Configuration is automatically saved as you make changes
 
 ### Execution
 
@@ -454,8 +487,8 @@ See [Configuration Reference](../configuration/config_fields.md) for detailed fi
 
 ### Alignment
 
-1. **Use High-Quality Reference**: Choose modality with clear landmarks
-2. **Multiple Landmarks**: Use 6+ well-distributed points
+1. **Use High-Quality Reference**: Choose modality with rich morphological features
+2. **Distributed Adjustments**: Make adjustments across the tissue area
 3. **Zoom for Precision**: Use maximum zoom for critical areas
 4. **Verify Coverage**: Ensure entire tissue is aligned
 
@@ -463,15 +496,16 @@ See [Configuration Reference](../configuration/config_fields.md) for detailed fi
 
 | Shortcut | Action |
 |----------|--------|
-| `Ctrl+S` | Save configuration |
 | `Ctrl+O` | Load configuration |
 | `Ctrl+N` | New configuration |
-| `Ctrl+R` | Start pipeline |
+| `Ctrl+R` | Start pipeline (same as **Start Processing** button) |
 | `Ctrl+Q` | Quit GUI |
 | `Ctrl+F` | Search in logs |
 | `Ctrl++` | Zoom in |
 | `Ctrl+-` | Zoom out |
 | `Ctrl+0` | Reset zoom |
+
+*Note: Configuration is automatically saved as you make changes; no manual save action is required.*
 
 ## Browser Compatibility
 

@@ -2,789 +2,505 @@
 
 ## Overview
 
-The preprocessing stage is the first step in the FOCUS pipeline, where raw data from each modality is cleaned, normalized, and converted to standardized formats. This stage ensures that all modalities are in a consistent state for subsequent alignment and registration.
+The preprocessing stage is the first step in the FOCUS pipeline, where raw data from each modality is cleaned, normalized, and converted to standardized formats for subsequent alignment and registration.
 
-## Preprocessing Workflow
-
-```mermaid
-graph TD
-    A[Raw Data Input] --> B[Modality-Specific Processing]
-    B --> C[Quality Control]
-    C --> D[Normalization]
-    D --> E[Background Removal]
-    E --> F[Format Conversion]
-    F --> G[Standardized Output]
-```
+For each modality defined in the configuration, FOCUS discovers all sample subdirectories, creates the output directory structure, and dispatches to the modality-specific processing pipeline. Preprocessing can be skipped for any modality if the output file already exists and `force_recomputing` is not set.
 
 ## Modality-Specific Preprocessing
 
 Each modality undergoes specialized processing tailored to its data characteristics:
 
+---
+
 ### 1. Microscopy Image Preprocessing
 
-**Input Formats**: `.tiff`, `.tif`, `.czi`
-**Output Format**: OME-TIFF pyramid
+**Input Formats**: `.ome.tiff`, `.ome.tif`, `.tiff`, `.tif`, `.czi` (searched in this priority order)  
+**Output Format**: Multi-resolution OME-TIFF (float32, zlib-compressed)
 
 **Processing Steps**:
 
-1. **File Loading and Validation**
-   - Detect file format (TIFF vs CZI)
-   - Validate image dimensions and channels
-   - Convert to float32 [0,1] range
+1. **File Loading and Normalization**
+   - Detect file format (TIFF/OME-TIFF vs CZI)
+   - For CZI: squeeze extra dimensions, use first scene only if multiple scenes are present
+   - Move channel axis to last position using a shape heuristic
+   - Convert to float32 in [0, 1] range (using dtype maximum or image maximum)
+   - Clip to at most 3 channels
 
-2. **Color Enhancement** (optional)
-   - Gamma correction: `I_corrected = I_original^gamma`
-   - Contrast stretching: Linear stretch to use full dynamic range
-   - Applied per-channel for multi-channel images
+2. **Color Enhancement** (optional, `color_enhancement=True`)
+   - Gamma correction: `I = I^gamma` (default γ=0.45, which brightens the image)
+   - Contrast stretching using percentile-based saturation (default: saturate 0.35% of pixels)
 
-3. **Background Removal** (optional)
-   - Otsu thresholding for binary mask
-   - Morphological opening (erosion + dilation)
-   - Remove small objects (< 1000 pixels)
-   - Fill holes in tissue mask
+3. **Background Removal** (optional, `remove_background=True`)
+   - Replace pure-black pixels with white to avoid thresholding artifacts
+   - Convert to grayscale and invert (white background becomes dark)
+   - Clip at `clip_percentile` (default: 99th percentile) then apply Gaussian blur (kernel default: 251 px)
+   - Compute Otsu threshold on the blurred image, apply to unblurred grayscale
+   - Remove small connected components (default: < 500 pixels)
+   - Fill holes in the binary tissue mask
+   - Refine by contour area: keep only contours covering ≥ `min_object_coverage` fraction of image area (default: 1%)
+   - Apply mask: tissue pixels are kept, background is filled with the background color
 
-4. **Tissue Cropping** (optional)
-   - Compute tissue bounding box
-   - Add margin (default: 250 pixels)
-   - Crop image to tissue region
+4. **Tissue Cropping** (optional, `crop_to_tissue=True`)
+   - Identify non-background pixels from the filled background color
+   - Compute bounding box of tissue region
+   - Add `crop_margin` pixels on all sides (default: 250 px), clamped to image boundaries
 
-5. **Pyramid Construction**
-   - Create multi-resolution OME-TIFF
-   - Levels: 0 (full), 1 (1/2), 2 (1/4), etc.
-   - Each level: 2× downsampling
-   - OME-XML metadata generation
+5. **Pyramid Construction and Saving**
+   - Build `pyramid_levels` resolution levels (default: 4) by successive 2× downsampling
+   - Write as multi-image BigTIFF OME-TIFF with zlib compression
+   - RGB images: interleaved `YXC` layout; single/multi-channel: separate planes per channel
 
 **Parameters**:
-- `color_enhancement`: Enable/disable (default: true)
-- `gamma`: Gamma value (default: 1.0, range: 0.1-3.0)
-- `contrast_stretch`: Stretch factor (default: 1.0, range: 0.1-5.0)
-- `background_removal`: Enable/disable (default: true)
-- `background_threshold`: Otsu sensitivity (default: 0.1, range: 0.0-1.0)
-- `crop_to_tissue`: Enable/disable (default: true)
-- `tissue_margin`: Additional margin in pixels (default: 250, range: 0-1000)
-- `resolution_level`: Pyramid level to use (default: 0, range: 0-5)
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `color_enhancement` | `true` | Apply gamma correction and contrast stretching |
+| `gamma` | `0.45` | Gamma exponent (< 1 brightens, > 1 darkens) |
+| `contrast_saturation` | `0.35` | Percentage of pixels to saturate when stretching contrast |
+| `remove_background` | `true` | Remove background using Otsu thresholding |
+| `background_color` | `"white"` | Color to fill removed background (`"white"` or `"black"`) |
+| `gaussian_blur_kernel_size` | `251` | Kernel size for pre-thresholding Gaussian blur (must be odd) |
+| `clip_percentile` | `99` | Intensity percentile for clipping before blur |
+| `min_object_size` | `500` | Minimum connected component size in pixels to keep |
+| `min_object_coverage` | `0.01` | Minimum tissue area fraction (0–1) for contour filtering |
+| `crop_to_tissue` | `true` | Crop image to tissue bounding box |
+| `crop_margin` | `250` | Pixel margin added around the tissue bounding box |
+| `pyramid_levels` | `4` | Number of resolution levels in the output OME-TIFF |
+| `force_recomputing` | `false` | Reprocess even if output already exists |
 
 **Output Files**:
 ```
-<dataset_path>/<sample_id>/preprocessing/microscopy/
-├── <sample_id>_processed.ome.tiff	# Multi-resolution pyramid
-└── <sample_id>_processed_thumbnail.png	# Preview image
+<dataset_path>/<sample_id>/preprocessing/<modality_name>/
+└── <modality_name>_<sample_id>_processed.ome.tiff
 ```
-
-**Quality Metrics**:
-- Tissue area (pixels and µm²)
-- Background percentage
-- Dynamic range (min/max intensity)
-- Channel statistics (mean/std per channel)
 
 ---
 
 ### 2. MSI (Mass Spectrometry Imaging) Preprocessing
 
-**Input Formats**: `.imzML` + `.ibd`
-**Output Format**: AnnData (`.h5ad`)
+**Input Formats**: `.imzML` + `.ibd` pairs inside `pos/` and/or `neg/` subdirectories  
+**Output Format**: AnnData (`.h5ad`) — one per sample and one merged across all samples
+
+The MSI pipeline operates at the **dataset level**: all samples are processed together to compute a shared reference m/z backbone, ensuring consistent feature alignment across samples.
 
 **Processing Steps**:
 
-1. **Metadata Parsing**
-   - Parse imzML XML for instrument parameters
-   - Extract m/z range, ion mode, spatial dimensions
-   - Validate file integrity
+1. **Initialization and Metadata Parsing** (per sample)
+   - Detect ion modes from subdirectory presence (`pos/`, `neg/`, or both)
+   - Parse imzML XML: extract data types, raster size (µm), pixel coordinates, and physical coordinates
+   - Correct rotation error in physical coordinates via linear regression on the densest pixel column
+   - If double ion mode: filter unpaired spots (experimental artifacts), compute affine alignment between positive and negative physical coordinates, and average the two coordinate sets
+   - Normalize physical coordinates to origin; shift to raster center
+   - Compute raster bounding-box coordinates for each spot (in µm)
 
-2. **Binary Data Loading**
-   - Read IBD file for intensity values
-   - Handle continuous vs processed mode
-   - Memory-mapped reading for large files
+2. **Background Detection** (optional, `detect_background=True`)
+   - For each spot, compute three spectral complexity features: Shannon entropy of the normalized intensity distribution, number of detected peaks, and log(1 + TIC)
+   - If a lipid annotation database is provided: add a 4th feature (fraction of peaks matching the DB at the configured mass tolerance)
+   - Min-max normalize each feature and average into a composite score
+   - **Tissue sections** (`sample_type="tissue"`): fit a 1-component and a 2-component Gaussian Mixture Model; use BIC to select between them. If the 2-component model wins, classify spots with posterior ≥ 0.5 on the higher-mean component as tissue. Apply morphological cleanup (hole filling + binary opening) on the pixel grid.
+   - **Microgrid samples** (`sample_type="microgrid"`): use Otsu thresholding with a 25th-percentile floor to protect weak single-cell signals; no spatial cleanup.
+   - The foreground classification is stored as `obs["foreground"]`; all spots (including background) are included in the output and can be filtered downstream.
 
-3. **Dual Ion Mode Handling** (if applicable)
-   - Separate positive and negative ion data
-   - Align coordinates between modes
-   - Create separate AnnData objects
+3. **Recalibration Reference Selection**
+   - Randomly subsample 30% of spectra per sample to estimate representative m/z values
+   - For each ion mode, greedily select the 5 highest-scoring candidate m/z values (scored by global frequency × sample coverage) that collectively cover all samples
+   - Alternatively, a user-supplied `recalibration_reference` dictionary can be passed directly
 
-4. **Intensity Normalization**
-   - **TIC**: Total Ion Current normalization
-   - **Max**: Normalize to maximum intensity
-   - **None**: Raw intensities
+4. **Per-Row m/z Recalibration** (per sample)
+   - For each reference m/z peak, find the highest-intensity peak within `mass_tolerance` in each spectrum
+   - Compute per-column (spatial row) mean offset between observed and reference m/z values
+   - Apply the row-wise offset to all m/z values in that row
 
-5. **Background Detection** (optional)
-   - Gaussian Mixture Model (GMM) on intensity distribution
-   - Two components: foreground vs background
-   - Probability threshold for classification
+5. **Per-Sample m/z Backbone Computation**
+   - Pool all (recalibrated) m/z values from foreground spots of a sample
+   - Cluster nearby values using adaptive sliding-window clustering with weighted centroids (parallel, chunked)
+   - Filter clusters by frequency: keep only those appearing in ≥ `frequency_threshold` fraction of the maximum cluster weight
 
-6. **m/z Recalibration** (optional)
-   - Identify reference peaks (known lipids)
-   - Compute mass accuracy correction
-   - Apply linear correction to all m/z values
+6. **Global Reference m/z Backbone**
+   - Concatenate all per-sample backbone m/z vectors and apply a final clustering pass (no frequency filter)
+   - This single reference grid is used to align all samples
 
-7. **Lipid Annotation** (optional)
-   - Match m/z to lipid database
-   - Apply ppm tolerance filter
-   - Add annotation to feature metadata
+7. **Lipid Annotation** (optional, requires `lipid_annotation_db`)
+   - Match each reference m/z to the database within `mass_tolerance` ppm
+   - Store semicolon-separated matching `db_name` entries in `var["lipid_annotation"]` (or `"Unannotated"`)
 
-8. **Intensity Interpolation**
-   - Create reference m/z grid
-   - Interpolate intensities to grid
-   - Handle missing values
+8. **Intensity Interpolation** (per sample, parallel)
+   - Rebin all spectra (including background spots) onto the global reference m/z grid
+   - Each original peak distributes its intensity to reference bins within `mass_tolerance` ppm using inverse-distance weighting
+   - Produces a dense (N_spots × N_features) float32 matrix
 
-9. **Clustering**
-   - Leiden clustering on interpolated data
-   - Add cluster labels to observations
+9. **Intensity Normalization**
+   - `"tic"`: divide each spectrum by its total ion count
+   - `"log"`: apply log(1 + x) transform
+   - `"none"`: keep raw interpolated intensities
+
+10. **Per-Sample Leiden Clustering**
+    - PCA → neighbor graph → Leiden (resolution=0.5) on the normalized matrix
+    - Labels stored in `obs["leiden"]`
+
+11. **Save Per-Sample AnnData and Merge**
+    - Each sample saved separately with no compression (fast I/O)
+    - All samples concatenated on disk into a single merged h5ad (inner join on features, lzf compression)
+    - Merged file's `uns["spot_size"]` updated to a per-sample dict
 
 **Parameters**:
-- `ion_mode`: "positive", "negative", or "both" (default: "positive")
-- `mass_range`: [min_mz, max_mz] (default: [100, 1000])
-- `intensity_normalization`: "tic", "max", or "none" (default: "tic")
-- `background_detection`: Enable/disable (default: true)
-- `recalibration`: Enable/disable (default: true)
-- `lipid_annotation`: Enable/disable (default: true)
-- `ppm_tolerance`: Mass accuracy tolerance (default: 10.0, range: 1-50)
-- `min_intensity`: Minimum intensity threshold (default: 0.0)
-- `max_intensity`: Maximum intensity threshold (default: 1e6)
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `mass_tolerance` | `10` | Mass tolerance in ppm for m/z clustering, recalibration, and annotation |
+| `frequency_threshold` | `0.01` | Minimum fraction of max cluster weight for backbone m/z inclusion |
+| `intensity_normalization` | `"none"` | Normalization method: `"tic"`, `"log"`, or `"none"` |
+| `recalibration_reference` | `null` | User-supplied reference m/z dict per ion mode; auto-computed if null |
+| `min_intensity_threshold` | `10000.0` | Minimum intensity for a peak to be used in recalibration offset estimation |
+| `detect_background` | `false` | Run background detection to classify tissue vs background spots |
+| `sample_type` | `"tissue"` | Sample type for background detection: `"tissue"` or `"microgrid"` |
+| `lipid_annotation_db` | `null` | Path to lipid annotation database (CSV or JSON with `db_name`, `ionized_mass`, `ion_mode` columns) |
+| `force_recomputing` | `false` | Reprocess even if output already exists |
 
 **Output Files**:
 ```
-<dataset_path>/<sample_id>/preprocessing/msi/
-├── <sample_id>_processed.h5ad		# AnnData object
-├── <sample_id>_positive.h5ad		# If dual ion mode
-└── <sample_id>_negative.h5ad		# If dual ion mode
+<dataset_path>/<sample_id>/preprocessing/<modality_name>/
+└── <modality_name>_<sample_id>_processed.h5ad
+
+<dataset_path>/merged/preprocessing/
+└── <modality_name>_merged_processed.h5ad
 ```
 
-**AnnData Structure**:
-- `X`: Raw interpolated intensities (spots × m/z features)
-- `layers["X_tic"]`: TIC-normalized intensities
-- `layers["X_max"]`: Max-normalized intensities
-- `obsm["spatial"]`: Physical coordinates (µm)
-- `obsm["raster_coordinates"]`: Pixel coordinates
-- `obs["foreground"]`: Background detection mask
-- `obs["leiden"]`: Cluster labels
-- `var["mz"]`: m/z values
-- `var["mz_mode"]`: Ion mode
-- `var["lipid_annotation"]`: Lipid class
-- `uns["raster_size"]`: Raster dimensions
-- `uns["instrument"]`: Instrument parameters
+**AnnData Structure** (per-sample):
 
-**Quality Metrics**:
-- Number of detected features
-- Background spot percentage
-- Mass accuracy (before/after recalibration)
-- Annotation rate (if lipid annotation enabled)
-- Cluster quality metrics
+| Slot | Description |
+|------|-------------|
+| `.X` | Normalized interpolated intensities (sparse CSR, spots × m/z features) |
+| `.layers["raw"]` | Raw interpolated intensities before normalization (sparse CSR) |
+| `.obs["sample_id"]` | Categorical sample identifier |
+| `.obs["foreground"]` | Boolean: tissue (True) vs background (False) |
+| `.obs["leiden"]` | Categorical Leiden cluster labels |
+| `.obsm["spatial"]` | Physical spot center coordinates in µm, shape (N, 2), float32 |
+| `.obsm["raster_coordinates"]` | Raster bounding boxes in µm, shape (N, 2, 2): [[x1,y1],[x2,y2]] |
+| `.var["mz"]` | Consensus reference m/z values (float32) |
+| `.var["mz_mode"]` | Ion mode for each m/z: `"pos"` or `"neg"` |
+| `.var["lipid_annotation"]` | Lipid annotation string (if DB provided, else `"Unannotated"`) |
+| `.uns["spot_size"]` | Raster pixel size [width, height] in µm (per-sample: list; merged: dict keyed by sample_id) |
 
 ---
 
-### 3. Raman Spectroscopy Preprocessing
+### 3. Raman Spectroscopy Imaging Preprocessing
 
-**Input Formats**: `.lif` (Leica format)
-**Output Format**: OME-TIFF (hyperspectral)
+**Input Formats**: `.lif` (Leica Image File format)  
+**Output Format**: Multi-channel OME-TIFF (hyperspectral, uint8, zlib-compressed)
+
+The pipeline has five labeled steps. All steps are always executed; none can be individually disabled via configuration — only the per-step parameters are tunable. Intermediate results are cached as `.npy` files and deleted after the final OME-TIFF is produced.
 
 **Processing Steps**:
 
-1. **File Parsing**
-   - Parse LIF XML metadata
-   - Extract scan parameters (wavenumber range, resolution)
-   - Validate tile information
+1. **LIF File Loading and Metadata Parsing**
+   - Scan the input directory for the first `.lif` file
+   - Parse LIF XML metadata: scan dimensions (width, height), spectral parameters (wavenumber range, number of steps, laser pump wavelength), tile count, tile coordinates (µm), and pixel size (µm)
+   - Only tiled acquisitions (tile count ≥ 2) are processed; single-field images are skipped
+   - Extract raw tile data as float32 array of shape (T, C, Y, X) where T = tiles, C = spectral channels
+   - If multiple spectral scans are present in the LIF: concatenate along the channel axis and resolve wavenumber overlaps (re-scanned spectral regions are trimmed at the overlap boundary)
+   - Normalize to [0, 1] (divides by 255 or 65535 depending on data range)
+   - Compute wavenumber array from laser excitation range and Stokes shift
 
-2. **Data Extraction**
-   - Handle tiled acquisitions
-   - Extract hyperspectral cubes
-   - Manage wavenumber overlaps
+2. **BaSiC Illumination Correction**
+   - Requires the `FOCUS_BaSiCpy` conda environment
+   - Each spectral channel is processed independently via a subprocess call to the BaSiCpy tool
+   - Channels are processed in parallel using a thread pool (up to `max_workers` threads)
+   - Output is globally normalized to [0, 1] across all channels and tiles
 
-3. **BaSiC Correction** (optional)
-   - Background and shading correction
-   - Uses external FOCUS_BaSiCpy environment
-   - Subprocess call for each spectral channel
+3. **Background Removal**
+   - Quick-stitch BaSiC-corrected tiles into a mosaic using weighted blending (distance-transform weights)
+   - Reduce the hyperspectral mosaic to a single grayscale image via PCA (1 component)
+   - Apply CLAHE for local contrast enhancement
+   - Compute Otsu threshold, scaled by `otsu_threshold_factor` (default: 0.7, lowers threshold to be more inclusive)
+   - Remove small objects (< `min_object_size` pixels, default: 500)
+   - Fill holes in the binary mask
+   - Filter by contour area: keep contours covering ≥ `bg_min_area_fraction` of image area (default: 5%)
+   - Back-project the mosaic mask onto individual tiles to generate per-tile segmentation masks
+   - Zero out background regions in the BaSiC-corrected tiles
 
-4. **Background Removal** (optional)
-   - Quick-stitch tiles for preview
-   - Otsu thresholding on stitched mosaic
-   - Back-project mask to individual tiles
+4. **Spectral Cleaning** (per tile, parallel)
+   - Skip zero-variance spectra (constant signal that causes numerical errors)
+   - Apply RamanSPy pipeline to each non-zero spectrum:
+     1. **Despiking**: Whitaker-Hayes cosmic ray removal
+     2. **Denoising**: Savitzky-Golay filter (default: window=7, polyorder=3)
+     3. **Baseline correction**: IASLS algorithm
+     4. **Normalization**: MinMax per-spectrum
+   - Tiles processed in parallel (up to `max_workers` workers)
+   - Results cached to disk (`raman_corrected_tiles.npy`)
 
-5. **Spectral Cleaning** (optional)
-   - **Despiking**: Cosmic ray removal
-   - **Denoising**: Wavelet-based denoising
-   - **Baseline**: Polynomial baseline correction
-   - **Normalization**: Area normalization
-
-6. **ASHLAR Stitching** (optional)
-   - Tile stitching using ASHLAR
-   - Uses external FOCUS_ASHLAR environment
-   - Corrects stitching artifacts
-
-7. **OME-TIFF Construction**
-   - Create hyperspectral OME-TIFF
-   - Store wavenumber information in metadata
-   - Multi-resolution pyramid
+5. **ASHLAR Stitching**
+   - Requires the `FOCUS_ASHLAR` conda environment
+   - Flip y-axis of tile coordinates (Leica → OME-TIFF convention)
+   - Select the highest mean-intensity spectral channel within the first scan as the alignment reference
+   - Write per-cycle OME-TIFF input files with embedded physical coordinates and pixel size metadata
+   - Run ASHLAR via subprocess to stitch tiles with sub-pixel alignment
+   - Rename output to `<modality_name>_<sample_id>_processed.ome.tiff`
 
 **Parameters**:
-- `wavenumber_range`: [min_cm⁻¹, max_cm⁻¹] (default: [400, 1800])
-- `basic_correction`: Enable/disable (default: true)
-- `background_removal`: Enable/disable (default: true)
-- `ashlar_stitching`: Enable/disable (default: true)
-- `despike`: Enable/disable (default: true)
-- `denoise`: Enable/disable (default: true)
-- `baseline_correction`: Enable/disable (default: true)
-- `normalization`: Enable/disable (default: true)
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `max_workers` | `8` | Maximum parallel workers for BaSiC correction and spectral cleaning |
+| `savgol_window` | `7` | Savitzky-Golay filter window length for denoising |
+| `savgol_polyorder` | `3` | Savitzky-Golay filter polynomial order |
+| `bg_min_area_fraction` | `0.05` | Minimum contour area as fraction of mosaic area for background removal |
+| `otsu_threshold_factor` | `0.7` | Multiplicative factor applied to the Otsu threshold before background segmentation |
+| `min_object_size` | `500` | Minimum connected component size in pixels for morphological cleanup |
+| `force_recomputing` | `false` | Reprocess even if output already exists |
 
 **Output Files**:
 ```
-<dataset_path>/<sample_id>/preprocessing/raman/
-├── <sample_id>_processed.ome.tiff	# Hyperspectral OME-TIFF
-└── <sample_id>_processed_metadata.json	# Scan parameters
+<dataset_path>/<sample_id>/preprocessing/<modality_name>/
+└── <modality_name>_<sample_id>_processed.ome.tiff
 ```
-
-**Quality Metrics**:
-- Signal-to-noise ratio
-- Background removal effectiveness
-- Stitching quality metrics
-- Spectral range coverage
 
 ---
 
 ### 4. Spatial Transcriptomics Preprocessing
 
-**Input Formats**: AnnData (`.h5ad`)
-**Output Format**: AnnData (`.h5ad`)
+**Input Formats**: AnnData (`.h5ad`) — the first `.h5ad` file found in the sample directory  
+**Output Format**: AnnData (`.h5ad`) — one per sample and one merged
 
-**Processing Steps**:
+Supports any spot-based or cell-based spatial transcriptomics technology (Visium, Xenium, MERFISH, etc.) as long as the input AnnData has raw gene counts in `.X` and spatial coordinates in `.obsm["spatial"]`.
 
-1. **File Discovery**
-   - Find first `.h5ad` file in sample directory
-   - Validate AnnData structure
-   - Check required fields (`X`, `obs`, `var`)
+**Per-Sample Processing Steps**:
 
-2. **Quality Control**
-   - Calculate mitochondrial gene percentage
-   - Filter cells by gene count thresholds
-   - Remove low-quality cells
+1. **Loading and Validation**
+   - Load the first `.h5ad` file found in the sample directory
+   - Validate that `.obsm["spatial"]` exists (spatial coordinates are required)
+   - Convert spatial coordinates to float32
+   - Normalize `uns["spot_size"]` to a float32 array of shape (2,): `[width, height]`; defaults to `[1.0, 1.0]` if not present
+   - Convert `.X` to sparse CSR format
 
-3. **Gene Filtering**
-   - Filter genes by expression frequency
-   - Remove rarely expressed genes
-   - Filter by count/spots ratio
+2. **QC Metrics Computation**
+   - Flag mitochondrial genes: genes whose names start with `MT-` (case-insensitive uppercase comparison)
+   - Compute per-spot QC metrics via `scanpy.pp.calculate_qc_metrics` (adds `n_genes_by_counts`, `total_counts`, `pct_counts_mt`, etc. to `.obs`)
 
-4. **Normalization**
-   - Total counts normalization
-   - Log1p transformation
-   - Scale to median total counts
+3. **Spot Filtering** (all filters optional)
+   - `min_count_per_spot` / `max_count_per_spot`: filter by total UMI count
+   - `min_genes_per_spot` / `max_genes_per_spot`: filter by number of detected genes
+   - All thresholds default to `null` (no filtering)
 
-5. **Highly Variable Gene Selection**
-   - Compute mean-variance relationship
-   - Select top N variable genes
-   - Add HVG information to `var`
+4. **Observation Name Prefixing**
+   - Prefix all observation names with `<sample_id>_` if not already prefixed, ensuring uniqueness when samples are merged
 
-6. **Metadata Enhancement**
-   - Add processing timestamps
-   - Store QC metrics
-   - Add FOCUS version information
+5. **Raw Count Preservation**
+   - Store the filtered (but unnormalized) count matrix in `.layers["raw"]`
+
+6. **Normalization** (both optional, default off)
+   - Total count normalization: scale each spot to `target_sum = 10,000`
+   - log(1 + x) transformation
+
+7. **Per-Sample Leiden Clustering**
+   - Requires ≥ 2 spots and ≥ 2 PCA components
+   - PCA (up to 50 components) → neighbor graph → Leiden clustering (resolution=0.5, igraph flavor)
+   - Result stored in `obs["leiden"]`
+
+**Dataset-Level (Merged) Processing**:
+
+After per-sample preprocessing, all samples are merged:
+
+1. Reload per-sample files; revert `.X` to raw counts from `.layers["raw"]`
+2. Concatenate with **outer join**: genes absent from a sample are filled with 0 counts
+3. **Cross-sample gene filtering** (both optional):
+   - `min_spots_per_gene`: a gene must be expressed in ≥ this fraction of spots in ≥ 5% of samples
+   - `min_count_spots_ratio_per_gene`: a gene's (total counts / expressed spots) ratio must exceed this value in ≥ 5% of samples; samples where the gene is absent are excluded from the denominator
+4. Store post-filter raw counts in `.layers["raw"]`
+5. Normalize merged `.X` (same `total_counts_normalize` and `log1p_transform` flags)
+6. Per-sample Leiden labels from individual processing are preserved in `.obs["leiden"]`
 
 **Parameters**:
-- `qc_mito_threshold`: Mitochondrial gene % (default: 0.2, range: 0.0-1.0)
-- `min_genes_per_spot`: Minimum genes (default: 200, range: 50-10000)
-- `max_genes_per_spot`: Maximum genes (default: 5000, range: >min_genes)
-- `min_cells_per_gene`: Minimum cells per gene (default: 3, range: 1-100)
-- `normalization`: "total_counts" or "none" (default: "total_counts")
-- `log_transform`: Enable/disable (default: true)
-- `n_hvgs`: Number of HVGs (default: 2000, range: 100-10000)
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `min_count_per_spot` | `null` | Minimum total UMI counts per spot to retain |
+| `max_count_per_spot` | `null` | Maximum total UMI counts per spot to retain |
+| `min_genes_per_spot` | `null` | Minimum detected genes per spot to retain |
+| `max_genes_per_spot` | `null` | Maximum detected genes per spot to retain |
+| `min_spots_per_gene` | `null` | Minimum fraction of spots per sample expressing a gene (0–1) |
+| `min_count_spots_ratio_per_gene` | `null` | Minimum ratio of total counts to expressed spots per gene |
+| `total_counts_normalize` | `false` | Normalize total counts per spot to 10,000 |
+| `log1p_transform` | `false` | Apply log(1 + x) transformation |
+| `force_recomputing` | `false` | Reprocess even if output already exists |
 
 **Output Files**:
 ```
-<dataset_path>/<sample_id>/preprocessing/st/
-└── <sample_id>_processed.h5ad		# Processed AnnData
+<dataset_path>/<sample_id>/preprocessing/<modality_name>/
+└── <modality_name>_<sample_id>_processed.h5ad
+
+<dataset_path>/merged/preprocessing/
+└── <modality_name>_merged_processed.h5ad
 ```
 
-**AnnData Structure**:
-- `X`: Normalized, log-transformed counts
-- `raw.X`: Raw counts (if not overwritten)
-- `obs["n_genes"]`: Number of genes per spot
-- `obs["percent_mito"]`: Mitochondrial gene percentage
-- `obs["total_counts"]`: Total counts per spot
-- `var["n_cells"]`: Number of cells per gene
-- `var["highly_variable"]`: HVG boolean
-- `var["means"]`: Mean expression
-- `var["dispersions"]`: Dispersion values
-- `uns["focus_version"]`: Processing version
-- `uns["qc_metrics"]`: Quality control metrics
+**AnnData Structure** (per-sample):
 
-**Quality Metrics**:
-- Median genes per spot
-- Median counts per spot
-- Percentage mitochondrial genes
-- Number of HVGs selected
-- Cells filtered by QC
+| Slot | Description |
+|------|-------------|
+| `.X` | Normalized counts (sparse CSR); raw counts if no normalization applied |
+| `.layers["raw"]` | Filtered raw counts before normalization (sparse CSR) |
+| `.obs["sample_id"]` | Categorical sample identifier |
+| `.obs["leiden"]` | Categorical per-sample Leiden cluster labels |
+| `.obs` (QC columns) | `n_genes_by_counts`, `total_counts`, `pct_counts_mt`, etc. from `calculate_qc_metrics` |
+| `.obsm["spatial"]` | float32 spatial coordinates, shape (N, 2) |
+| `.uns["spot_size"]` | float32 array [width, height] in µm (or [1.0, 1.0] if not provided); dict keyed by sample_id in merged file |
 
 ---
 
-## Cross-Modality Processing
+## File Naming Convention
 
-### Sample Discovery
-
-FOCUS automatically discovers samples by:
-
-1. **Scanning Dataset Directory**: List subdirectories of `dataset_path`
-2. **Sample Identification**: Each subdirectory = one sample
-3. **Modality Matching**: Look for directories matching modality names
-4. **File Discovery**: Find appropriate files for each modality
-
-**Directory Structure**:
-```
-<dataset_path>/
-├── sample_001/			# Sample 1
-│   ├── microscopy/		# Modality directory
-│   │   ├── image1.tiff	# Input files
-│   │   └── image2.tiff
-│   └── msi/			# Modality directory
-│       ├── data.imzML
-│       └── data.ibd
-├── sample_002/			# Sample 2
-│   ├── microscopy/
-│   └── msi/
-└── ...
-```
-
-**IMPORTANT CORRECTION**: The above directory structure example is incorrect. Here are the **correct** file requirements:
-
-```
-<dataset_path>/
-├── sample_001/
-│   ├── microscopy/			# Must match config modality name
-│   │   └── image.tiff			# Single TIFF/CZI file per sample
-│   ├── msi/					# Must match config modality name
-│   │   ├── pos/				# Positive ion mode (required)
-│   │   │   ├── data.imzML		# imzML metadata
-│   │   │   └── data.ibd		# Binary data
-│   │   └── neg/				# Negative ion mode (optional)
-│   │       ├── data.imzML		# imzML metadata
-│   │       └── data.ibd		# Binary data
-│   ├── raman/				# Must match config modality name
-│   │   └── scan.lif			# Single LIF file per sample
-│   ├── st/					# Must match config modality name
-│   │   └── expression.h5ad		# Single AnnData file per sample
-│   └── microscopy/			# Spatial annotations (if enabled)				
-│       └── annotations.geojson	# GeoJSON annotations
-├── sample_002/
-│   ├── microscopy/			# Must have same modalities as sample_001
-│   ├── msi/					# Must have same modalities as sample_001
-│   ├── raman/					# Must have same modalities as sample_001
-│   ├── st/					# Must have same modalities as sample_001
-│   └── microscopy/			# Spatial annotations (if enabled)				
-│       └── annotations.geojson	# GeoJSON annotations
-└── ...
-```
-
-**File Requirements by Modality**:
-
-- **Microscopy**: Exactly **one** TIFF or CZI file per sample
-- **Raman**: Exactly **one** LIF file per sample  
-- **MSI**:
-  - Positive ion mode: 2 files (`data.imzML` + `data.ibd`) in `pos/` subfolder
-  - Negative ion mode: 2 files (`data.imzML` + `data.ibd`) in `neg/` subfolder
-  - Both modes: 4 files total
-- **Spatial Transcriptomics**: Exactly **one** AnnData (`.h5ad`) file per sample
-- **Spatial Annotations** (if enabled): Exactly **one** GeoJSON file per sample
-
-**Critical Requirements**:
-
-1. **Consistency**: Once a modality is defined in configuration, it must be present for **every sample**
-2. **Naming**: Modality directory names must exactly match (case-sensitive) the config `"name"` field
-3. **Annotations**: If spatial annotations enabled, all samples must have annotation files
-
-### Parallel Processing
-
-FOCUS processes samples in parallel:
-
-1. **Sample-Level Parallelism**: Each sample processed independently
-2. **Modality Parallelism**: Modalities within sample processed sequentially
-3. **CPU Core Management**: Respects `max_cpu_cores` setting
-
-**Parallelization Strategy**:
-- Preprocessing stage: Sample-parallel
-- Alignment stage: Sample-sequential (GUI interaction)
-- Registration stage: Sample-parallel
-- Compilation stage: Single-threaded
-
-### Caching Mechanism
-
-FOCUS implements intelligent caching:
-
-1. **Cache Key Generation**:
-   - Source file paths
-   - Processing parameters
-   - FOCUS version
-   - Timestamp of source files
-
-2. **Cache Validation**:
-   - Check if cache key matches current run
-   - Verify output files exist and are complete
-   - Validate file checksums
-
-3. **Cache Bypass**:
-   - `force_recomputing: true` in config
-   - `force_recomputing: true` in modality settings
-   - Manual cache deletion
-
-**Cache Locations**:
-- Default: `~/.focus/cache/`
-- Configurable via `cache_dir` parameter
-- Organized by dataset and modality
-
----
-
-## Data Flow and File Naming
-
-### Output Directory Structure
-
-```
-<dataset_path>/
-├── sample_001/
-│   ├── preprocessing/
-│   │   ├── microscopy/
-│   │   │   ├── sample_001_processed.ome.tiff
-│   │   │   └── sample_001_processed_thumbnail.png
-│   │   ├── msi/
-│   │   │   └── sample_001_processed.h5ad
-│   │   └── ...
-│   └── ...
-├── sample_002/
-│   └── preprocessing/
-│       └── ...
-└── merged/
-    └── preprocessing/
-        ├── microscopy/
-        │   ├── microscopy_merged_processed.ome.tiff
-        │   └── microscopy_merged_processed_thumbnail.png
-        ├── msi/
-        │   └── msi_merged_processed.h5ad
-        └── ...
-```
-
-### File Naming Convention
-
-FOCUS uses consistent naming patterns:
+FOCUS uses a consistent naming pattern for all preprocessed outputs.
 
 **Per-Sample Files**:
-- `<modality>_<sample_id>_processed.<ext>`
-- Example: `microscopy_sample_001_processed.ome.tiff`
+```
+<modality_name>_<sample_id>_processed.<ext>
+```
 
-**Merged Files**:
-- `<modality>_merged_processed.<ext>`
-- Example: `msi_merged_processed.h5ad`
+**Merged Files** (omics modalities only — microscopy and Raman produce no merged output):
+```
+<modality_name>_merged_processed.<ext>
+```
 
 **Extension Mapping**:
-- Microscopy: `.ome.tiff`
-- MSI: `.h5ad`
-- Raman: `.ome.tiff`
-- ST: `.h5ad`
+- Microscopy: `.ome.tiff` (per-sample only)
+- Raman: `.ome.tiff` (per-sample only)
+- MSI: `.h5ad` (per-sample and merged)
+- ST: `.h5ad` (per-sample and merged)
 
 ---
 
-## Quality Control and Validation
+## Caching
 
-### Automated Quality Checks
+Each modality checks whether its output file already exists at the start of processing. If the file is found and `force_recomputing` is not set, the step is skipped and the cached path is returned. There is no hash- or timestamp-based validation: deleting the output file or setting `force_recomputing: true` is the only way to trigger reprocessing.
 
-FOCUS performs automatic validation:
-
-1. **File Integrity**:
-   - Check file sizes > 0
-   - Validate file formats
-   - Verify required metadata
-
-2. **Data Consistency**:
-   - Spatial dimensions match expectations
-   - Coordinate systems are valid
-   - Intensity ranges are reasonable
-
-3. **Processing Success**:
-   - Output files created successfully
-   - No NaN/inf values in data
-   - Metadata complete
-
-### Quality Metrics Reporting
-
-FOCUS generates quality metrics for each sample:
-
-**Common Metrics**:
-- Processing time per sample
-- Input/output file sizes
-- Memory usage peaks
-- CPU utilization
-
-**Modality-Specific Metrics**:
-- Microscopy: Tissue area, background %, dynamic range
-- MSI: Features detected, background spots, mass accuracy
-- Raman: SNR, stitching quality, spectral range
-- ST: Median genes, % mitochondrial, HVGs selected
-
-**Reporting**:
-- Logged to pipeline log files
-- Stored in AnnData `uns` where applicable
-- Available in final MuData object
+The Raman pipeline has intermediate caches (`basic_corrected_tiles.npy`, `segmented_tiles.npy`, `raman_corrected_tiles.npy`) that are checked independently at each step, allowing partial resume within a single sample. These intermediate files are deleted after the final OME-TIFF is produced.
 
 ---
 
-## Performance Optimization
+## Parallelism and Performance
 
-### Memory Management
+### Execution model
 
-1. **Streaming Processing**:
-   - Large files processed in chunks
-   - Memory-mapped file access
-   - Out-of-core computation where possible
+Modalities are processed one at a time, and within each modality samples are processed sequentially. This is intentional: loading even a single MSI or Raman dataset can consume tens of gigabytes of RAM, and parallel sample processing would cause out-of-memory failures on most workstations.
 
-2. **Garbage Collection**:
-   - Explicit `gc.collect()` calls
-   - Memory cleanup between samples
-   - Monitor memory usage in logs
+Parallelism is exploited **within** a single sample's processing steps, where the data is already loaded into memory:
 
-3. **Batch Processing**:
-   - Configurable batch sizes
-   - Memory limits respected
-   - Automatic batch size adjustment
+| Modality | Intra-sample parallelism |
+|----------|--------------------------|
+| Microscopy | Single-threaded (image ops are already vectorized) |
+| MSI | m/z backbone clustering runs on a `ProcessPoolExecutor` across CPU cores; intensity interpolation uses `joblib` parallel workers (one chunk per core) |
+| Raman | BaSiC correction parallelizes spectral channels via a `ThreadPoolExecutor`; spectral cleaning parallelizes tiles via `joblib` |
+| ST | Single-threaded (scanpy and scipy operations are internally vectorized) |
 
-### CPU Utilization
+### Memory management
 
-1. **Parallel Processing**:
-   - Multi-threading for independent operations
-   - Respects `max_cpu_cores` setting
-   - Efficient thread pooling
+The entire stack is built on natively compiled, memory-efficient libraries (NumPy, SciPy, pandas, numba/Numba JIT) that operate on contiguous arrays and avoid Python-level loops wherever possible. Key design decisions:
 
-2. **Load Balancing**:
-   - Even distribution across samples
-   - Dynamic workload adjustment
-   - Prevents CPU starvation
+- **MSI**: spectra are read directly from the binary IBD file with `np.fromfile` (zero-copy memory mapping). Intensity matrices are kept as sparse CSR throughout. After each processing step the intermediate dense arrays are explicitly deleted and `gc.collect()` is called. The merge step uses an on-disk concatenation routine to avoid loading all samples simultaneously.
+- **Raman**: tiles are stored as a single contiguous `(T, C, Y, X)` float32 array. Intermediate `.npy` caches are written to disk and deleted from memory between pipeline stages to keep the working set small.
+- **MSI m/z clustering**: memory per chunk is estimated from available RAM at runtime (`psutil.virtual_memory().available`) before the job is dispatched, so the chunk count scales to the machine.
+- **ST**: sparse CSR matrices are used end-to-end; concatenation uses an outer join to avoid densifying the gene matrix.
 
-3. **I/O Optimization**:
-   - Buffered file operations
-   - Minimized disk seeks
-   - Efficient file caching
+### GPU
 
-### GPU Acceleration
-
-Note: GPU is not used in preprocessing stage (only in registration)
+FOCUS does not use GPU acceleration in the preprocessing stage. GPU resources are reserved for the registration stage (PyTorch/CUDA-based deformable registration). All preprocessing computations run on CPU.
 
 ---
 
-## Error Handling and Recovery
+## Quality Control
 
-### Common Preprocessing Errors
+FOCUS does not perform automatic quality control during preprocessing. The outputs should be manually inspected before proceeding to alignment.
 
-| Error | Cause | Solution |
-|-------|-------|----------|
-| "File not found" | Missing input file | Verify file paths and permissions |
-| "Invalid format" | Corrupt or wrong format | Check file integrity |
-| "Memory error" | Insufficient RAM | Reduce batch size or samples |
-| "Disk full" | Insufficient storage | Free up disk space |
-| "Permission denied" | Access rights | Check directory permissions |
+### Spatial Transcriptomics
 
-### Recovery Strategies
+ST is the only modality where QC metrics are computed automatically: `scanpy.pp.calculate_qc_metrics` populates `obs["n_genes_by_counts"]`, `obs["total_counts"]`, and `obs["pct_counts_mt"]` for every spot. Review these before choosing spot-filtering thresholds.
 
-1. **Resume Processing**:
-   - FOCUS automatically resumes from last successful sample
-   - Failed samples are retried
-   - Progress tracked in log files
-
-2. **Selective Reprocessing**:
-   - Use `force_recomputing: true` for specific modalities
-   - Delete output files for failed samples
-   - Rerun pipeline
-
-3. **Debug Mode**:
-   - Set `logging_level: "DEBUG"`
-   - Detailed error information
-   - Stack traces for troubleshooting
-
----
-
-## Best Practices
-
-### Configuration
-
-1. **Start Conservative**: Begin with default parameters
-2. **Test Small**: Process 1-2 samples first
-3. **Validate Outputs**: Check intermediate files
-4. **Iterate**: Adjust parameters based on results
-
-### Data Organization
-
-1. **Consistent Structure**: Follow exact directory layout
-2. **Clear Naming**: Use descriptive sample/modality names
-3. **Backup**: Keep originals of raw data
-4. **Document**: Record processing parameters used
-
-### Performance
-
-1. **Monitor Resources**: Watch CPU/RAM/disk usage
-2. **Optimize Batch Sizes**: Balance speed vs memory
-3. **Use Caching**: Enable for repeated runs
-4. **SSD Storage**: Recommended for large datasets
-
-### Quality Control
-
-1. **Review Logs**: Check for warnings/errors
-2. **Inspect Outputs**: Validate intermediate files
-3. **Check Metrics**: Review quality metrics
-4. **Visual Inspection**: Spot-check processed data
-
----
-
-## Troubleshooting
-
-### Microscopy Issues
-
-**Problem**: Poor background removal
-- **Solution**: Adjust `background_threshold` (0.05-0.2 range)
-- **Check**: Visual inspection of tissue mask
-
-**Problem**: Over-cropping
-- **Solution**: Increase `tissue_margin` (try 300-500)
-- **Check**: Compare original vs cropped images
-
-**Problem**: Color artifacts
-- **Solution**: Disable `color_enhancement` or adjust `gamma`
-- **Check**: Process with/without enhancement
-
-### MSI Issues
-
-**Problem**: No features detected
-- **Solution**: Check `mass_range` and `ion_mode`
-- **Check**: Validate against raw data parameters
-
-**Problem**: High background
-- **Solution**: Enable `background_detection`, adjust thresholds
-- **Check**: Review background spot percentage
-
-**Problem**: Poor annotation
-- **Solution**: Adjust `ppm_tolerance`, verify ion mode
-- **Check**: Check mass accuracy metrics
-
-### Raman Issues
-
-**Problem**: Stitching artifacts
-- **Solution**: Ensure `ashlar_stitching` enabled
-- **Check**: Visual inspection of stitched image
-
-**Problem**: High noise
-- **Solution**: Enable `denoise`, check acquisition parameters
-- **Check**: Compare raw vs processed spectra
-
-**Problem**: BaSiC failure
-- **Solution**: Verify FOCUS_BaSiCpy environment
-- **Check**: Test BaSiC correction separately
-
-### ST Issues
-
-**Problem**: Too many cells filtered
-- **Solution**: Adjust `qc_mito_threshold` and gene count limits
-- **Check**: Review QC metrics before/after filtering
-
-**Problem**: No HVGs selected
-- **Solution**: Increase `n_hvgs`, check data quality
-- **Check**: Examine gene expression distribution
-
----
-
-## Advanced Topics
-
-### Custom Processing
-
-FOCUS can be extended with custom processing:
+Suggested checks:
 
 ```python
-from focus.preprocessing import preprocess_modality
+import scanpy as sc
+adata = sc.read_h5ad("path/to/<modality>_<sample>_processed.h5ad")
 
-# Custom processing function
-def custom_microscopy_processing(path, settings):
-    # Your custom logic here
-    result = preprocess_modality(
-        path=path,
-        modality_name="microscopy",
-        modality_type="microscopy_image",
-        preprocessing_settings=settings
-    )
-    # Additional post-processing
-    return result
+# Violin plots of QC metrics
+sc.pl.violin(adata, ["n_genes_by_counts", "total_counts", "pct_counts_mt"], jitter=0.4)
+
+# Spatial plot of total counts
+sc.pl.spatial(adata, color="total_counts", spot_size=adata.uns["spot_size"][0])
+
+# UMAP colored by cluster
+sc.pp.neighbors(adata)
+sc.tl.umap(adata)
+sc.pl.umap(adata, color="leiden")
 ```
 
-### Programmatic Access
+### MSI
 
-Access preprocessing programmatically:
+After preprocessing, inspect the foreground classification and the quality of the m/z alignment:
 
 ```python
-from focus.preprocessing import preprocess_modality
+import anndata as ad
+import matplotlib.pyplot as plt
 
-result = preprocess_modality(
-    path="/data/my_project",
-    modality_name="microscopy",
-    modality_type="microscopy_image",
-    preprocessing_settings={
-        "color_enhancement": True,
-        "background_removal": True
-    }
-)
+adata = ad.read_h5ad("path/to/<modality>_<sample>_processed.h5ad")
 
-print(f"Processed files: {result}")
+# Spatial map of foreground mask
+coords = adata.obsm["spatial"]
+fg = adata.obs["foreground"].astype(bool)
+plt.scatter(coords[~fg, 0], coords[~fg, 1], c="lightgray", s=1, label="background")
+plt.scatter(coords[fg, 0], coords[fg, 1], c="steelblue", s=1, label="foreground")
+plt.legend(); plt.axis("equal"); plt.show()
+
+# Spatial map of a known lipid (if annotated)
+import numpy as np
+hits = np.where(adata.var["lipid_annotation"] != "Unannotated")[0]
+if hits.size:
+    sc.pl.spatial equivalent or plt scatter with adata.X[:, hits[0]].toarray().ravel()
+
+# Leiden clusters in embedding space
+import scanpy as sc
+sc.pp.neighbors(adata)
+sc.tl.umap(adata)
+sc.pl.umap(adata, color=["leiden", "foreground"])
 ```
 
-### Batch Processing
+### Raman
 
-Process multiple datasets:
+The output OME-TIFF contains one channel per wavenumber bin. Useful checks:
 
-```bash
-for dataset in dataset1 dataset2 dataset3; do
-  focus --config ${dataset}/preprocessing_config.json
-done
-```
-
-### Parameter Optimization
-
-Optimize parameters systematically:
+- Open in QuPath, Napari, or FIJI and inspect individual spectral channels for stitching artifacts or residual background.
+- Sum-project all channels to produce a pseudo-brightfield image and verify tissue coverage and tile alignment.
+- Load a subset of channels corresponding to known Raman bands (e.g., ~1004 cm⁻¹ phenylalanine, ~2850 cm⁻¹ lipids) and check spatial signal distribution.
 
 ```python
-import json
-from focus.orchestrator import run
-from focus.utils import parse_config
+import tifffile, numpy as np, matplotlib.pyplot as plt
 
-# Base configuration
-base_config = {
-    "dataset_path": "/data/test",
-    "reference_modality": "microscopy",
-    "perform_alignment": False,
-    "perform_registration": False,
-    "modalities": [{
-        "name": "microscopy",
-        "type": "microscopy_image",
-        "processing_settings": {},
-        "alignment_strategy": "manual",
-        "registration_type": "none"
-    }]
-}
+img = tifffile.imread("path/to/<modality>_<sample>_processed.ome.tiff")
+# img shape: (C, H, W) or (H, W, C) depending on how ASHLAR wrote it
 
-# Test different background thresholds
-for threshold in [0.05, 0.1, 0.15, 0.2]:
-    config = base_config.copy()
-    config["modalities"][0]["processing_settings"]["background_threshold"] = threshold
-    
-    # Run preprocessing
-    parsed_config = parse_config(config)
-    output_files = run(parsed_config)
-    
-    # Evaluate results
-    print(f"Threshold {threshold}: {output_files}")
+# Sum projection
+plt.imshow(img.sum(axis=0) if img.ndim == 3 else img.sum(axis=-1), cmap="gray")
+plt.title("Sum projection"); plt.colorbar(); plt.show()
 ```
+
+### Microscopy
+
+Visually inspect the output OME-TIFF:
+
+- Open in QuPath, Napari, or FIJI and verify that background removal did not erase tissue regions.
+- Check that the tissue is not over-cropped (increase `crop_margin` if needed).
+- If color enhancement produced over-saturation, reduce `contrast_saturation` or set `color_enhancement: false`.
 
 ---
 
 ## Next Steps
 
-After preprocessing:
+After inspecting preprocessed outputs:
 
-1. **Review Outputs**: Check processed files in `<dataset_path>/preprocessing/`
-2. **Validate Quality**: Review quality metrics and logs
-3. **Proceed to Alignment**: If satisfied, continue to [Alignment Stage](alignment.md)
-4. **Troubleshoot**: Address any warnings/errors before proceeding
+1. **Adjust parameters** if any modality shows poor output quality, then rerun with `force_recomputing: true` for that modality.
+2. **Proceed to Alignment**: once satisfied, continue to the [Alignment Stage](alignment.md).
 
 ## Additional Resources
 
 - [Alignment Documentation](alignment.md) - Next pipeline stage
 - [Configuration Reference](../configuration/config_fields.md) - Preprocessing parameters
-- [Troubleshooting Guide](../troubleshooting.md) - Common issues
-- [FAQ](../faq.md) - Frequently asked questions
+- [API Reference: Preprocessing](../api/preprocessing.md) - Programmatic access

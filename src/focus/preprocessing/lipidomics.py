@@ -1379,7 +1379,7 @@ class MsiDataset(BaseDataset):
 		Scan the dataset to select the M/Z values to use as reference for recalibration.
 		Each ion mode is processed separately. For each ion mode, the M/Z values from all samples are concatenated,
 		and the top 'number_of_references' most frequent M/Z values are selected as reference.
-		To reduce memory usage, only a random subset (10%) of the M/Z values from each sample is used.
+		To reduce memory usage, only a random subset (30%) of the M/Z values from each sample is used.
 
 		Parameters
 		----------
@@ -1404,13 +1404,13 @@ class MsiDataset(BaseDataset):
 
 		rng = np.random.default_rng()
 
-		# Downsample each sample and collect per-sample mz per mode. Evaluate only 10% of the spectra to reduce memory usage
+		# Downsample each sample and collect per-sample mz per mode. Evaluate only 30% of the spectra to reduce memory usage
 		for sample_mz in mz_vectors:
 			for mode, spectra in sample_mz.items():
 				n = len(spectra)
 				if n == 0:
 					continue
-				subset_idx = rng.choice(n, size=max(1, n // 10), replace=False)
+				subset_idx = rng.choice(n, size=max(1, n * 3 // 10), replace=False)
 				sample_mode_mz = np.concatenate([spectra[i] for i in subset_idx]).astype(np.float64)
 				sample_mode_mz = np.round(sample_mode_mz, decimals=6)
 				per_sample_mz[mode].append(sample_mode_mz)
