@@ -42,7 +42,7 @@ The first screen asks where your data lives.
 
 ## Stage 2: Configuration
 
-The configuration stage is divided into panels. Work through them top to bottom. Changes are not saved until you click **Save config** at the bottom of the page.
+The configuration stage is divided into panels. Work through them top to bottom. Changes are saved in real-time as you make them.
 
 ### 1. Modality Definitions
 

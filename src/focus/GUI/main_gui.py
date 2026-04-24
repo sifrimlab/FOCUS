@@ -192,6 +192,10 @@ class MainGUI:
 			Accepts an optional 'dataset_path' in the request body; falls back to
 			the in-memory config if not provided.  Never writes to disk — callers
 			must not call PUT /api/config before this endpoint.
+
+			Always stores the loaded config so the user can edit it.  Validation
+			errors are returned alongside the config so the frontend can display
+			them immediately without blocking the user from fixing them.
 			"""
 			data = request.get_json() or {}
 			dataset_path = data.get('dataset_path') or self._config.get(ConfigParameters.DATASET_PATH, '')
@@ -210,8 +214,11 @@ class MainGUI:
 				# frontend can ask the user before overwriting it.
 				return jsonify({"valid": False, "corrupted": True, "errors": [str(e)]})
 
+			# Store the config regardless of validation outcome so the user can
+			# see and fix it in the editor without restarting the backend.
 			self._config = loaded
-			return jsonify({"valid": True, "config": loaded})
+			errors = _validate_config_safe(loaded)
+			return jsonify({"valid": len(errors) == 0, "config": loaded, "errors": errors})
 
 		# --- Validation ---
 

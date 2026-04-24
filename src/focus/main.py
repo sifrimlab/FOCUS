@@ -1,4 +1,4 @@
-import os, json, argparse
+import os, sys, json, argparse, logging
 
 
 def main():
@@ -16,19 +16,30 @@ def main():
 		from focus.constants import ConfigParameters
 		from focus import utils, orchestrator
 
+		# Phase 1: console-only logging so validation errors are formatted
+		utils.setup_logging(debug=args.debug)
+		logger = logging.getLogger("focus")
+
 		config_path = args.config
 		if not os.path.exists(config_path):
-			raise FileNotFoundError(f"Config file not found: {config_path}")
+			logger.error(f"Config file not found: {config_path}")
+			sys.exit(1)
 
 		try:
 			with open(config_path, 'r') as f:
 				config = json.load(f)
 		except json.JSONDecodeError as e:
-			raise ValueError(f"Invalid JSON in config file: {e}")
+			logger.error(f"Invalid JSON in config file '{config_path}': {e}")
+			sys.exit(1)
 
-		config = utils.parse_config(config)
+		try:
+			config = utils.parse_config(config)
+		except (TypeError, KeyError, ValueError, FileNotFoundError, PermissionError) as e:
+			logger.error(f"Config validation failed: {e}")
+			sys.exit(1)
 
-		logger = utils.setup_logging(config[ConfigParameters.DATASET_PATH], debug=args.debug)
+		# Phase 2: full logging — adds the file handler now that dataset_path is known
+		utils.setup_logging(config[ConfigParameters.DATASET_PATH], debug=args.debug)
 		logger.info(f"Config loaded and validated: {config_path}")
 
 		orchestrator.run(config)

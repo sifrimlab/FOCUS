@@ -138,8 +138,10 @@ export const useMainStore = defineStore('main', {
       // Pass dataset_path directly — do NOT call putConfig first, which would
       // overwrite the file on disk before we get a chance to read it.
       const result = await api.loadExistingConfig(this.config.dataset_path);
-      if (result.valid && result.config) {
+      if (result.config) {
+        // Config was loaded (it may still have validation errors the user needs to fix)
         this.config = normalizeConfig(result.config);
+        this.validationErrors = (!result.valid && result.errors?.length) ? result.errors : [];
         return { success: true };
       }
       return { success: false, corrupted: result.corrupted, errors: result.errors };
