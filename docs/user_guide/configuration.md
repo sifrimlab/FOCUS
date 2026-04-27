@@ -187,7 +187,7 @@ How the modality's coordinate system is aligned to the reference.
 | Value | Behaviour |
 |-------|-----------|
 | `"manual"` | Interactive visual alignment via the alignment GUI. This is the most accurate option and the default. |
-| `"pre_aligned"` | Skip alignment for this modality; FOCUS assumes it is already co-registered with the reference. Only valid when the reference modality is spot-based (`st` or `msi`). At most one non-reference modality may use this strategy. |
+| `"pre_aligned"` | Skip alignment for this modality; FOCUS assumes its reference's spot coordinates are already expressed in this modality's coordinate space. Requires the reference to be spot-based (`st` or `msi`). The target can be any modality type. At most one non-reference modality may use this strategy per pipeline run. |
 
 ### `registration_type` _(optional, string, default: `"none"`)_
 

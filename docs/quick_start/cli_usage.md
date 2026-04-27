@@ -296,20 +296,9 @@ export FOCUS_THREADS=8
 focus --config /path/to/config.json
 ```
 
-### Memory Management
-
-For large datasets:
-
-```json
-{
-  "memory_limit_gb": 32,
-  "batch_size": 1000
-}
-```
-
 ### GPU Acceleration
 
-For feature extraction registration:
+For feature extraction registration, FOCUS automatically uses the first available CUDA GPU. No additional config fields are needed:
 
 ```json
 {
@@ -318,8 +307,8 @@ For feature extraction registration:
       "name": "microscopy",
       "registration_type": "feature_extraction",
       "registration_settings": {
-        "gpu_device": 0,
-        "batch_size": 32
+        "min_max_rescale": true,
+        "force_recomputing": false
       }
     }
   ]
@@ -564,12 +553,10 @@ Solution: Reinstall FOCUS
 bash install.sh --reinstall
 ```
 
-**Issue: Out of memory**
+**Issue: Out of memory during feature extraction**
 ```
-Solution: Reduce batch size or use smaller dataset
-# In config.json
-"batch_size": 500,
-"max_cpu_cores": 4
+Solution: Close other GPU processes to free VRAM.
+If the problem persists, the GPU does not have enough VRAM for feature_extraction.
 ```
 
 ### Debugging Techniques

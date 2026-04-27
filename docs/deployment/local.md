@@ -11,7 +11,7 @@ Install FOCUS directly on your machine using conda. This is the recommended appr
 | OS | Windows 10, macOS 12, Ubuntu 20.04 | Latest stable |
 | Python | 3.11 (managed by conda) | 3.11 |
 | Conda | Any (Miniconda or Anaconda) | Miniconda 3 |
-| RAM | 8 GB | 16 GB+ |
+| RAM | 64 GB | 100 GB+ for large tissue samples |
 | Disk space | 20 GB free | 50 GB+ (for large datasets) |
 | GPU | Not required | NVIDIA + CUDA 11.8+ (for `feature_extraction`) |
 

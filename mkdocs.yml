@@ -68,6 +68,11 @@ extra_css:
 nav:
   - Home: index.md
   - Overview: overview.md
+  - Installation: installation.md
+
+  - Quick Start:
+    - GUI Usage: quick_start/gui_usage.md
+    - CLI Usage: quick_start/cli_usage.md
 
   - User Guide:
     - Key Concepts: user_guide/concepts.md
@@ -111,9 +116,6 @@ nav:
   - API Reference:
     - Overview: api/index.md
     - Preprocessing: api/preprocessing.md
-    - Alignment: api/alignment.md
-    - Registration: api/registration.md
-    - Annotations: api/annotations.md
     - Data Types: api/data_types.md
 
   - Troubleshooting: troubleshooting.md

@@ -368,7 +368,6 @@ Compatible modality type: `microscopy_image`.
 | `patch_size` | int | `224` |
 | `min_max_rescale` | bool | `true` |
 | `background_color` | string | `"white"` |
-| `batch_size` | int | `32` |
 | `force_recomputing` | bool | `false` |
 
 Example:
@@ -378,7 +377,6 @@ Example:
   "patch_size": 224,
   "min_max_rescale": true,
   "background_color": "white",
-  "batch_size": 32,
   "force_recomputing": false
 }
 ```
@@ -496,7 +494,6 @@ Example:
         "patch_size": 224,
         "min_max_rescale": true,
         "background_color": "white",
-        "batch_size": 32,
         "force_recomputing": false
       }
     }

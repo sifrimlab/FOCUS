@@ -72,7 +72,6 @@ Reference Spots × Patch Embeddings → Feature Matrix
   "registration_settings": {
     "patch_size": 224,
     "min_max_rescale": false,
-    "batch_size": 32,
     "force_recomputing": false
   }
 }
@@ -82,10 +81,9 @@ Reference Spots × Patch Embeddings → Feature Matrix
 
 | Parameter | Type | Default | Range | Description                         |
 |-----------|------|---------|-------|-------------------------------------|
-| `patch_size` | int | 224 | 64-512 | Size of extracted patches           |
-| `min_max_rescale` | bool | true | - | Normalize output feature embeddings |
-| `batch_size` | int | 32 | 1-128 | Patches per batch                   |
-| `force_recomputing` | bool | false | - | Bypass cache                        |
+| `patch_size` | int | 224 | — | Size of extracted patches (must be 224 for Prov-GigaPath) |
+| `min_max_rescale` | bool | true | — | Normalize output feature embeddings |
+| `force_recomputing` | bool | false | — | Bypass cache                        |
 
 ### Processing Steps
 
@@ -126,34 +124,30 @@ Reference Spots × Patch Embeddings → Feature Matrix
 ### Performance Considerations
 
 **GPU Requirements**:
-- **VRAM**: ~8GB for batch_size=32
+- **VRAM**: ~8GB minimum
 - **CUDA**: 11.8+
 - **Drivers**: Latest NVIDIA drivers
 
 **Processing Time**:
 - ~1-5 seconds per patch
-- Batch processing parallelization
 - Depends on GPU capabilities
 
 **Memory Usage**:
-- GPU memory: Scales with batch_size
+- GPU memory: ~8GB required
 - CPU memory: Minimal
 - Disk: ~1GB per 1000 patches
 
 ### Error Handling
 
 **Common Issues**:
-- **GPU not available**: Fallback to CPU (slow)
-- **Out of memory**: Reduce batch_size
+- **GPU not available**: Verify CUDA installation and run `nvidia-smi`
+- **Out of memory**: Close other GPU processes; if still failing, the GPU does not have enough VRAM for `feature_extraction`
 - **Model download failed**: Check HuggingFace token
 - **Invalid coordinates**: Verify alignment stage
 
 **Recovery**:
 ```bash
-# Reduce batch size
-jq '.registration_settings.batch_size = 16' config.json > config_fixed.json
-
-# Force recompute
+# Force recompute after fixing an issue
 jq '.registration_settings.force_recomputing = true' config.json > config_fixed.json
 ```
 
@@ -304,8 +298,7 @@ graph LR
       "registration_type": "feature_extraction",
       "registration_settings": {
         "patch_size": 224,
-        "batch_size": 16,
-         "force_recomputing": true
+        "force_recomputing": true
       }
     },
     {
@@ -352,8 +345,7 @@ MuData Structure:
 
 **Feature Extraction**:
 - Start with default parameters
-- Adjust batch_size based on GPU memory
-- patch_size=224 for standard model
+- patch_size must be 224 (required by the Prov-GigaPath model)
 - min_max_rescale=false (unless downstream AI methods require features to be [0, 1])
 
 **Spot Interpolation**:
@@ -369,8 +361,8 @@ No manual parameters required.
 - **Solution**: Install CUDA toolkit
 
 **Problem**: Out of GPU memory
-- **Check**: Batch size and image size
-- **Solution**: Reduce batch_size (try 8 or 16)
+- **Check**: Other processes consuming VRAM (`nvidia-smi`)
+- **Solution**: Close other GPU processes; if VRAM is still insufficient, the GPU does not meet the minimum requirement for `feature_extraction`
 
 **Problem**: Model download failed
 - **Check**: HuggingFace token

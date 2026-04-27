@@ -8,7 +8,7 @@
 |-----------|-------------|-------|
 | **Operating System** | Windows 10/11, macOS 10.15+, Linux (Ubuntu 20.04+, CentOS 7+) | |
 | **CPU** | x86_64 or ARM64 | Apple Silicon supported |
-| **RAM** | 8GB minimum, 16GB+ recommended | Depends on dataset size |
+| **RAM** | 64 GB recommended; up to 100 GB for large tissue samples | Peak usage scales with a single sample, not the full dataset |
 | **Storage** | 20GB free space | For conda environments and data |
 | **Python** | 3.11 | Automatically installed |
 | **Conda** | Miniconda or Anaconda | Required for environment management |
@@ -268,7 +268,7 @@ For **feature extraction registration**, you need a HuggingFace token:
 
 ### Data Directory Structure
 
-Prepare your data directory following the [expected structure](overview.md#directory-structure):
+Prepare your data directory following the [expected structure](overview.md#directory-structure-convention):
 
 ```
 dataset_path/
@@ -391,4 +391,4 @@ If you encounter issues:
 
 ## License
 
-FOCUS is released under the MIT License. See [LICENSE](../LICENSE) for details.
+FOCUS is released under the MIT License. See the [LICENSE](https://github.com/sifrimlab/FOCUS/blob/main/LICENSE) on GitHub for details.

@@ -182,7 +182,6 @@ This page documents the **canonical structure** and the set of config fields tha
   "patch_size": 224,
   "min_max_rescale": true,
   "background_color": "white",
-  "batch_size": 32,
   "force_recomputing": false
 }
 ```
@@ -292,7 +291,6 @@ This page documents the **canonical structure** and the set of config fields tha
         "patch_size": 224,
         "min_max_rescale": true,
         "background_color": "white",
-        "batch_size": 32,
         "force_recomputing": false
       }
     }

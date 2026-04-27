@@ -35,7 +35,7 @@ In the pipeline, spots from non-reference modalities are interpolated onto the r
 
 The **reference modality** is the modality whose coordinate system is used as the common spatial frame for the entire dataset. All other modalities are warped into the reference coordinate system during the Alignment and Registration stages. The reference modality is specified by the `reference_modality` field in the pipeline configuration.
 
-The reference modality is typically chosen as the modality with the lowest spatial resolution (coarser spot grid), since higher-resolution modalities can be reliably aggregated down to match it, but reliable upscaling is not possible. When multiple modalities have similar resolution, the one with the richest morphological landmark content is preferred — most often the microscopy image — because accurate landmark placement during alignment is easiest when clear tissue structures are visible.
+The reference modality is typically chosen as the modality with the lowest spatial resolution (coarser spot grid), since higher-resolution modalities can be reliably aggregated down to match it, but reliable upscaling is not possible. When multiple modalities have similar resolution, the one with the clearest visible tissue structure is preferred — most often the microscopy image — because it is easiest to visually overlap with the other modalities during the alignment step.
 
 !!! note
     The reference modality itself is never transformed; it defines the target coordinate space. Only non-reference modalities are aligned and registered.

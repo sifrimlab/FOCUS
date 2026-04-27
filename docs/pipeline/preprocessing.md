@@ -381,7 +381,7 @@ The Raman pipeline has intermediate caches (`basic_corrected_tiles.npy`, `segmen
 
 ### Execution model
 
-Modalities are processed one at a time, and within each modality samples are processed sequentially. This is intentional: loading even a single MSI or Raman dataset can consume tens of gigabytes of RAM, and parallel sample processing would cause out-of-memory failures on most workstations.
+Modalities are processed one at a time, and within each modality samples are processed sequentially. This is intentional: peak RAM usage scales with a single sample — typical tissue sections require 40–50 GB, and large samples can require up to 100 GB. Loading multiple samples concurrently would multiply this requirement and cause out-of-memory failures.
 
 Parallelism is exploited **within** a single sample's processing steps, where the data is already loaded into memory:
 
