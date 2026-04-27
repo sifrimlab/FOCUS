@@ -1,9 +1,24 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue';
+import { ref, computed, onMounted, onUnmounted } from 'vue';
 import { useMainStore } from '../store/main';
 import { api } from '../api/client';
+import logoMark from '../assets/logo-mark.svg';
+import logoMarkDark from '../assets/logo-mark-dark.svg';
 
 const store = useMainStore();
+
+// Track dark mode to switch the logo mark variant
+const isDark = ref(document.documentElement.classList.contains('dark'));
+let themeObserver: MutationObserver | null = null;
+onMounted(() => {
+  themeObserver = new MutationObserver(() => {
+    isDark.value = document.documentElement.classList.contains('dark');
+  });
+  themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['class'] });
+});
+onUnmounted(() => { themeObserver?.disconnect(); });
+const markSrc = computed(() => isDark.value ? logoMarkDark : logoMark);
+
 const savedPath = localStorage.getItem('focus_last_dataset_path') || '';
 const pathInput = ref(store.config.dataset_path || savedPath || '');
 const pathError = ref('');
@@ -108,7 +123,13 @@ const goBackFromCorruption = () => {
 
       <!-- Header -->
       <div class="text-center mb-12">
-        <h1 class="text-5xl font-bold tracking-tight mb-3">FOCUS</h1>
+        <div class="flex items-center justify-center gap-3 mb-3">
+          <img :src="markSrc" alt="" width="48" height="48" class="shrink-0" />
+          <span
+            class="text-5xl font-bold text-slate-900 dark:text-slate-100"
+            style="letter-spacing: -0.02em; line-height: 1;"
+          >FOCUS</span>
+        </div>
         <p class="text-gray-500 dark:text-gray-400 text-sm">
           Flexible Multiomics data preprocessing and alignment pipeline
         </p>

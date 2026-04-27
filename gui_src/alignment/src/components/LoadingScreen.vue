@@ -30,15 +30,15 @@ const subMessage = computed(() => {
 </script>
 
 <template>
-  <div class="fixed inset-0 z-40 flex flex-col items-center justify-center bg-gray-900 text-white">
+  <div class="fixed inset-0 z-40 flex flex-col items-center justify-center bg-gray-50 dark:bg-gray-900 text-gray-900 dark:text-white">
     <div class="animate-spin rounded-full h-16 w-16 border-t-4 border-b-4 border-blue-500 mb-6"></div>
-    
+
     <h2 class="text-xl font-semibold mb-2">{{ message }}</h2>
-    <p v-if="subMessage" class="text-gray-400 mb-4">{{ subMessage }}</p>
-    
-    <div v-if="hasInfo" class="w-80 bg-gray-700 rounded-full h-4 overflow-hidden">
-      <div 
-        class="bg-blue-500 h-full rounded-full transition-all duration-500 ease-out" 
+    <p v-if="subMessage" class="text-gray-500 dark:text-gray-400 mb-4 font-mono" style="font-feature-settings: 'zero'">{{ subMessage }}</p>
+
+    <div v-if="hasInfo" class="w-80 bg-gray-200 dark:bg-gray-700 rounded-full h-4 overflow-hidden">
+      <div
+        class="bg-blue-500 h-full rounded-full transition-all duration-500 ease-out"
         :style="{ width: `${progress}%` }"
       ></div>
     </div>

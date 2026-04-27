@@ -42,7 +42,7 @@ function cancelCleanup() {
       <!-- Success banner -->
       <div class="bg-green-50 dark:bg-green-900/20 border border-green-400 dark:border-green-700 rounded-lg p-8 text-center">
         <div class="text-5xl mb-4">&#10003;</div>
-        <h1 class="text-2xl font-bold text-green-700 dark:text-green-400 mb-2">Pipeline Completed</h1>
+        <h1 class="text-2xl font-semibold text-green-700 dark:text-green-400 mb-2">Pipeline Completed</h1>
         <p class="text-gray-600 dark:text-gray-300">All processing stages have finished successfully.</p>
       </div>
 

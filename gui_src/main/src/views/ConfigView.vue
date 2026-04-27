@@ -76,10 +76,10 @@ const confirmRemoveAll = async () => {
   <div class="max-w-4xl mx-auto px-4 py-8">
     <!-- Header -->
     <div class="mb-8">
-      <h1 class="text-2xl font-bold">Configuration Builder</h1>
+      <h1 class="text-2xl font-semibold">Configuration Builder</h1>
       <p class="text-sm text-gray-500 dark:text-gray-400 mt-1">
-        Dataset: <code class="bg-gray-100 dark:bg-gray-800 px-1 rounded">{{ store.config.dataset_path }}</code>
-        &mdash; {{ store.samples.length }} sample(s) found
+        Dataset: <code class="bg-gray-100 dark:bg-gray-800 px-1 rounded" style="font-feature-settings: 'zero'">{{ store.config.dataset_path }}</code>
+        &mdash; <span class="font-mono" style="font-feature-settings: 'zero'">{{ store.samples.length }}</span> sample(s) found
       </p>
     </div>
 

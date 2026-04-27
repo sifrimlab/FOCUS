@@ -75,7 +75,7 @@ const stepLinePct = computed(() => {
         >
           <span class="w-1.5 h-1.5 rounded-full bg-blue-500 animate-pulse" />
           {{ s.current_modality }}
-          <span v-if="s.total_modalities > 0" class="font-normal opacity-60">
+          <span v-if="s.total_modalities > 0" class="font-normal font-mono opacity-60" style="font-feature-settings: 'zero'">
             {{ s.current_modality_index }}/{{ s.total_modalities }}
           </span>
         </span>
@@ -90,11 +90,11 @@ const stepLinePct = computed(() => {
               <span class="text-xs font-semibold uppercase tracking-wide text-gray-400 dark:text-gray-500 shrink-0">
                 Sample
               </span>
-              <span class="font-medium text-gray-800 dark:text-gray-100 truncate">
+              <span class="font-medium font-mono text-gray-800 dark:text-gray-100 truncate" style="font-feature-settings: 'zero'">
                 {{ s.current_sample }}
               </span>
             </div>
-            <span class="text-xs font-mono text-gray-400 dark:text-gray-500 shrink-0 ml-3">
+            <span class="text-xs font-mono text-gray-400 dark:text-gray-500 shrink-0 ml-3" style="font-feature-settings: 'zero'">
               {{ s.current_sample_index }} / {{ s.total_samples }}
             </span>
           </div>
@@ -141,7 +141,7 @@ const stepLinePct = computed(() => {
             <p class="text-sm font-medium text-gray-700 dark:text-gray-200 truncate pr-2">
               {{ stepDescription || s.sub_step }}
             </p>
-            <p v-if="hasItemProgress" class="text-xs text-gray-400 dark:text-gray-500 shrink-0 font-mono">
+            <p v-if="hasItemProgress" class="text-xs text-gray-400 dark:text-gray-500 shrink-0 font-mono" style="font-feature-settings: 'zero'">
               {{ s.sub_step_progress }} / {{ s.sub_step_items_total }}
             </p>
           </div>
