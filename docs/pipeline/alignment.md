@@ -39,18 +39,20 @@ Samples that are present in the reference but not in target $T$ (or vice versa) 
 
 ### `manual` (default)
 
-The interactive alignment GUI is launched in the browser. The user drags the reference modality or its individual spots to align them visually with the target modality, then clicks **Confirm**. The GUI advances automatically to the next sample.
+The interactive alignment GUI is launched in the browser. The user drags the reference modality (as a whole) to align it visually with the target modality, then clicks **Confirm**. The GUI advances automatically to the next sample. Note: the transformation is rigid, so the reference modality can be translated, rotated, or scaled as a whole, but individual spots cannot be moved independently.
 
 **Use when:** the two modalities were acquired on different instruments or at different times, i.e., they have independent coordinate systems. This is the typical case for MSI + microscopy, Raman + MSI, or any cross-instrument combination.
 
 ### `pre_aligned`
 
-No GUI is launched. The pipeline copies `obsm['spatial']` from the target AnnData directly into `obsm['{ref_name}_spatial']`, recording that the two modalities share a coordinate system.
+No GUI is launched. The pipeline copies `obsm['spatial']` from the **reference** AnnData into `obsm['{target_name}_spatial']` in the same reference AnnData, recording that the reference spots are already expressed in the target's coordinate frame. This is appropriate when the reference modality is spot-based and its spot coordinates are already in the target modality's coordinate system — for example, Visium ST spots whose coordinates are already in H&E microscopy image pixel coordinates.
 
-**Use when:** the target modality's coordinates are already expressed in the same frame as the reference — for example, a 10x Visium dataset where the ST spots and the H&E image are co-registered by the instrument software.
+**Use when:** the reference modality is spot-based (`msi` or `st`) and its `obsm['spatial']` coordinates are already expressed in one target modality's coordinate frame.
+
+**Limitation:** only one target modality can use `pre_aligned`, since the reference spots can be expressed in only one coordinate system at a time. If there are two or more targets, all but one must use `manual` alignment.
 
 !!! warning
-    `pre_aligned` is only valid for spot-type targets (`msi`, `st`). Using it for image modalities will produce incorrect registration results.
+    Pre-Alignment can only be used for spot-based modalities; it is not supported for image-based modalities.
 
 ---
 
@@ -64,50 +66,22 @@ The GUI shuts down automatically once all samples for the current modality pair 
 
 ### Interface layout
 
-The alignment GUI is organized into three main sections:
+The alignment GUI is organized into two main sections:
 
-**Left Panel: Modality Display**
-- Shows both the reference and target modalities overlaid together
+**Left Section: Modality Display**
+- Shows both the reference and target modalities overlaid, one on top of the other
 - The reference modality is overlaid on top of the target modality
 - Reference can be moved (via transformation controls); target is fixed and defines the coordinate space
 - For image modalities, the lowest-resolution pyramid level is loaded for responsive rendering
-- For spot modalities, spots are colour-coded by Leiden cluster to help identify tissue regions
-
-**Center: Control Mode Selector**
-- Switch between **Camera Control** (pan/zoom to inspect) and **Alignment Control** (transform reference)
+- For spot modalities, spots are colour‑coded by Leiden cluster to help identify tissue regions
 
 **Right Panel: Control Tools**
-- Transformation controls: translation (drag), rotation (around centroid), scale (scroll)
-- Show/hide specific spot clusters (for spot-based modalities)
-- Fine-tune transformation parameters
-- Reset alignment to original state
+- Switch between **Camera Control** (pan/zoom the view) and **Transformation Control** (translate, rotate, or scale the reference)
+- In Camera mode the mouse moves the point‑of‑view without affecting the transformation
+- In Transformation mode the mouse drags translate the reference; the mouse wheel changes the scaling component
+- Reset the transformation to its original state
+- Show/hide specific spot clusters (for spot‑based modalities)
 - Confirm alignment button to save the transform
-
-### Alignment modes
-
-In all modes, the reference modality (left panel) is moved to align with the target modality (right panel, fixed). Transformations are applied only to the reference.
-
-**Image-to-Image** (reference is `microscopy_image` or `raman`, target is `microscopy_image` or `raman`)
-: Use translation, rotation, and scaling controls to overlay the reference image onto the target image. The target image defines the coordinate space. After confirmation, the reference image is cropped and registered to match the target's bounds.
-
-**Spot-to-Image** (reference is `msi` or `st`, target is `microscopy_image` or `raman`)
-: Use transformation controls to position the reference spots (as a group) to match the target image anatomy. The target image defines the coordinate space, and anatomical features (vessels, tissue boundaries, cell clusters) serve as visual guides. After confirmation, each reference spot's position in the target image coordinate frame is recorded.
-
-**Spot-to-Spot** (reference is `msi` or `st`, target is `msi` or `st`)
-: Use transformation controls to overlay the reference spot grid onto the target spot grid. The target spots define the coordinate space. After confirmation, each reference spot's position in the target spot coordinate frame is recorded.
-
-### Alignment tips
-
-- Start with the most recognisable tissue structures (large vessels, tissue boundaries, fold edges) to establish the gross alignment.
-- Distribute your adjustments across the full tissue section — do not cluster corrections in one region.
-- Zoom in for fine-grained adjustment around challenging areas.
-- After repositioning, review the overall distribution before clicking **Confirm**.
-
-### Submit flow
-
-Click **Confirm** to record the current alignment for the displayed sample. The GUI immediately loads the next sample. Once all samples are processed, the GUI closes and the pipeline resumes saving results.
-
----
 
 ## Output
 
@@ -171,7 +145,7 @@ modalities:
 
 ## Skipping Alignment
 
-Set `perform_alignment: false` to skip the stage entirely. In this case, the registration stage will not receive aligned coordinate files and will fall back to using `obsm['spatial']` from the preprocessed files. Only do this if all non-reference modalities are pre-aligned (share the reference coordinate system), or if you are only running preprocessing.
+Set `perform_alignment: false` to skip the alignment stage entirely. Skipping alignment means that no aligned coordinate files are produced, so the subsequent registration stage will not execute because it depends on those aligned coordinates. You should only skip alignment if the registration stage can run without them, for example when all non‑reference modalities already share a common coordinate system or when you are performing only preprocessing.
 
 ---
 

@@ -1,161 +1,147 @@
 # Registration Methods
 
-## 1. Motivation
+## 1. Objective
 
-After alignment, each reference spot $i$ has a known position $\mathbf{r}_i^{(T)}$ in the coordinate frame of every target modality $T$. Registration is the process of **extracting a feature representation at that position from $T$** — thereby constructing a feature matrix whose rows are indexed by the reference spot grid and whose columns are the features of modality $T$.
+Given aligned reference coordinates in target space, registration builds a target-modality feature matrix indexed by reference observations.
 
-This operation is what makes cross-modality comparison possible: every row of the final MuData corresponds to the same physical tissue location across all modalities.
-
-FOCUS implements two fundamentally different strategies depending on whether the target modality is a continuous image or a discrete spot measurement.
+For target modality \(T\), output has shape \(N_R \times D_T\), where rows correspond one-to-one with reference observations.
 
 ---
 
-## 2. Feature Extraction Registration (`feature_extraction`)
+## 2. Feature Extraction (`feature_extraction`)
 
-**Applicable to:** `microscopy_image` only.  
-**Hardware requirement:** NVIDIA GPU with CUDA.
+Applicable modality type: `microscopy_image`.
 
-### 2.1 Algorithm overview
+### 2.1 Method
 
-For each reference spot at position $\mathbf{r}_i = (r_x, r_y)$ (in image pixel coordinates, as stored in `obsm['{image_name}_spatial']`):
+For each aligned reference location \((x_i, y_i)\) in image coordinates:
 
-1. **Patch extraction.** A square patch of side length $p$ pixels (default $p = 224$) is extracted from the full-resolution OME-TIFF, centred at $(r_x, r_y)$:
+1. Extract square patch of side `patch_size` (default 224 px).
+2. Clamp top-left patch origin to image bounds.
+3. Zero-pad only if edge extraction yields smaller patch.
+4. Detect background-only patches (>=99% pixels near configured background color).
+5. Encode non-background patches with Prov-GigaPath.
+6. Insert zero vectors for background-only patches so row count remains \(N_R\).
 
-$$\text{patch}_i = \text{img}\!\left[r_y - \tfrac{p}{2} : r_y + \tfrac{p}{2},\; r_x - \tfrac{p}{2} : r_x + \tfrac{p}{2},\; :\right]$$
+This preserves strict alignment between reference rows and registered rows.
 
-2. **Border handling.** If the centre is within $p/2$ pixels of an image boundary, the top-left corner is clamped to the nearest valid position (i.e., the centre shifts slightly). Patches that land outside the image extent are zero-padded to $p \times p$.
+### 2.2 Encoder normalization and model
 
-3. **Background detection.** A patch is classified as background if $\geq 99\%$ of its pixels match the background colour (white or black, as configured). Background patches are skipped during encoding but receive an all-zero embedding vector in the output, preserving the observation count.
+Input tensor normalization:
 
-4. **Patch normalisation.** Non-background patches are normalised with ImageNet statistics before passing through the encoder:
+\[
+\hat{x}_{c} = \frac{x_c-\mu_c}{\sigma_c}
+\]
 
-$$\hat{x}_{chw} = \frac{x_{chw} - \mu_c}{\sigma_c}, \qquad \boldsymbol{\mu} = (0.485, 0.456, 0.406),\quad \boldsymbol{\sigma} = (0.229, 0.224, 0.225)$$
+with ImageNet statistics
 
-5. **Encoding.** Patches are forwarded through **Prov-GigaPath** in batches of 32:
+\[
+\mu=(0.485,0.456,0.406),\quad \sigma=(0.229,0.224,0.225)
+\]
 
-$$\mathbf{e}_i = f_\theta(\hat{x}_i) \in \mathbb{R}^{1536}$$
+Model: `hf_hub:prov-gigapath/prov-gigapath` via `timm`, run in `torch.inference_mode()`.
 
-6. **Output.** The result is an AnnData with $\mathbf{X} \in \mathbb{R}^{N_\text{ref} \times 1536}$.
+Batch size is fixed to 32 in current implementation.
 
-### 2.2 Prov-GigaPath model
+### 2.3 Outputs
 
-Prov-GigaPath (Ma et al., 2024, *Nature*) is a vision transformer (ViT-g/14) pre-trained on 1.3 billion 256 × 256 µm tissue image tiles from over 170,000 whole-slide images spanning 31 major tissue types. It uses DINOv2 self-supervised training and achieves state-of-the-art performance on a wide range of computational pathology benchmarks.
+Per-sample AnnData:
 
-The model is loaded via the `timm` library directly from the HuggingFace Hub (`prov-gigapath/prov-gigapath`) and requires a valid HuggingFace access token. A CUDA-capable GPU is required for practical throughput; the model is loaded in inference mode with `torch.inference_mode()`.
+- `.X`: embeddings, shape `(N_ref, 1536)`
+- `.obsm['spatial']`: anchor centers used for extraction
+- `.obs['sample_id']`
 
-**Reference:** Xu et al. (2024). "A whole-slide foundation model for digital pathology from real-world data." *Nature*, 630, 181–188.
+### 2.4 Optional scaling
 
-!!! note "Embedding dimension"
-    The Prov-GigaPath patch encoder outputs 1536-dimensional vectors. This is reflected in the `n_vars = 1536` of the registered AnnData.
+If `min_max_rescale: true`, merged matrix is transformed per feature dimension with `MinMaxScaler`:
 
-### 2.3 Min-max rescaling
+\[
+\tilde{x}_{i,d}=\frac{x_{i,d}-\min_j x_{j,d}}{\max_j x_{j,d}-\min_j x_{j,d}}
+\]
 
-When `min_max_rescale: true` (default), after all per-sample embeddings are concatenated into the merged AnnData, global min-max normalisation is applied across the full dataset using `sklearn.preprocessing.MinMaxScaler`:
+### 2.5 Parameters reflected in code path
 
-$$\tilde{e}_{i,d} = \frac{e_{i,d} - \min_j e_{j,d}}{\max_j e_{j,d} - \min_j e_{j,d}}$$
-
-This ensures that embedding dimensions are on a comparable scale across samples.
-
-### 2.4 Registration settings
-
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| `patch_size` | `224` | Patch side length in pixels; must match the model's expected input |
-| `background_color` | `"white"` | Background colour for empty-patch detection (`"white"` or `"black"`) |
-| `min_max_rescale` | `true` | Apply global min-max normalisation after merging all samples |
-| `force_recomputing` | `false` | Reprocess even if a valid cached file exists |
-
----
-
-## 3. Spot Interpolation Registration (`spot_interpolation`)
-
-**Applicable to:** `msi`, `raman`, `st`.  
-**Hardware requirement:** CPU only, no GPU required.
-
-### 3.1 Problem statement
-
-After alignment, each reference spot $i$ has a position $\mathbf{r}_i = (r_x, r_y)$ expressed in the target modality's coordinate system. The target modality contains $M$ spots at positions $\{\mathbf{t}_j\}_{j=1}^M$, each with a feature vector $\mathbf{f}_j \in \mathbb{R}^D$. Because the two spot grids are generally non-overlapping and non-coincident — they come from different instruments with different spatial resolutions — a reference spot typically does not coincide with any target spot.
-
-The goal is to estimate the feature vector $\tilde{\mathbf{f}}_i$ that the target modality would have measured at position $\mathbf{r}_i$, given the measurements at the surrounding target spots.
-
-### 3.2 Candidate search
-
-The search neighbourhood for reference spot $i$ is a rectangle aligned with the coordinate axes:
-
-$$\mathcal{N}_i = \left\{j \;\middle|\; |r_x - t_{j,x}| \leq \frac{s_x}{2} \;\text{ and }\; |r_y - t_{j,y}| \leq \frac{s_y}{2}\right\}$$
-
-where $(s_x, s_y)$ is the reference spot size in µm (stored in `uns['spot_size']`). The rectangle captures all target spots whose centres fall within the area of the reference spot.
-
-In practice, candidates are first identified using a `scipy.spatial.cKDTree` ball query with radius $\sqrt{(s_x/2)^2 + (s_y/2)^2}$ (the diagonal of the rectangle) for efficiency, then filtered to the exact rectangle.
-
-### 3.3 Gaussian kernel weights
-
-For each candidate target spot $j \in \mathcal{N}_i$, a Gaussian weight is computed based on its Euclidean distance from the reference spot centre:
-
-$$w_{ij} = \exp\!\left(-\frac{(r_x - t_{j,x})^2 + (r_y - t_{j,y})^2}{2\sigma^2}\right)$$
-
-where the bandwidth $\sigma$ is set proportional to the geometric mean of the spot dimensions:
-
-$$\sigma = \frac{\sqrt{s_x \cdot s_y}}{2}$$
-
-This makes the kernel scale-invariant: for a 50 µm × 50 µm spot, $\sigma = 25\,\mu\text{m}$; for a 100 µm × 50 µm spot, $\sigma \approx 35.4\,\mu\text{m}$.
-
-### 3.4 Weighted interpolation
-
-The interpolated feature vector at reference spot $i$ is the normalised Gaussian-weighted sum:
-
-$$\tilde{\mathbf{f}}_i = \frac{\displaystyle\sum_{j \in \mathcal{N}_i} w_{ij}\, \mathbf{f}_j}{\displaystyle\sum_{j \in \mathcal{N}_i} w_{ij}}$$
-
-If $\mathcal{N}_i = \emptyset$ (no target spots within the search rectangle), then $\tilde{\mathbf{f}}_i = \mathbf{0}$.
-
-### 3.5 Optional min-max rescaling
-
-When `min_max_rescale: true` (default), after all per-sample interpolated matrices are concatenated, global min-max normalisation is applied:
-
-$$\tilde{f}_{i,d}^\text{scaled} = \frac{\tilde{f}_{i,d} - \min_j \tilde{f}_{j,d}}{\max_j \tilde{f}_{j,d} - \min_j \tilde{f}_{j,d}}$$
-
-Applied globally across all samples, this corrects for inter-sample intensity differences and places all features on $[0, 1]$.
-
-### 3.6 Registration settings
-
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| `min_max_rescale` | `true` | Apply global min-max normalisation after merging all samples |
-| `force_recomputing` | `false` | Reprocess even if a valid cached file exists |
+- `patch_size` (default 224)
+- `background_color` (`white`/`black`)
+- `min_max_rescale` (default true)
+- `force_recomputing` (default false)
 
 ---
 
-## 4. Output Schema
+## 3. Spot Interpolation (`spot_interpolation`)
 
-Both registration strategies produce per-sample AnnData files that are merged into a single cross-sample AnnData. The output schema is identical regardless of strategy:
+Applicable modality types: `msi`, `st`, `raman`.
 
-| Attribute | Shape | Description |
-|-----------|-------|-------------|
-| `.X` | $(N_\text{ref}, D)$ | Feature matrix at reference spot locations |
-| `.obsm['spatial']` | $(N_\text{ref}, 2)$ | Reference spot coordinates in the target modality's space |
-| `.obs['sample_id']` | $(N_\text{ref},)$ | Sample identifier string |
-| `.var_names` | $(D,)$ | Feature names (embedding index for image; m/z values or gene names for omics) |
+### 3.1 Geometric setup
 
-The merged file for modality $T$ is written to:
+For each anchor coordinate \(r_i=(r_x,r_y)\), with anchor spot size \((s_x,s_y)\):
 
-```
-{dataset_path}/merged/registration/{T}_merged_processed_aligned_registered.h5ad
+1. Query target points in a circular pre-neighborhood with radius
+\[
+r=\sqrt{(s_x/2)^2+(s_y/2)^2}
+\]
+using `cKDTree.query_ball_point`.
+
+2. Keep only points inside axis-aligned rectangle:
+\[
+|t_{j,x}-r_x|\le s_x/2,\qquad |t_{j,y}-r_y|\le s_y/2
+\]
+
+### 3.2 Kernel and interpolation
+
+Bandwidth:
+\[
+\sigma=\frac{\sqrt{s_x s_y}}{2}
+\]
+
+Weights:
+\[
+w_{ij}=\exp\!\left(-\frac{\|t_j-r_i\|^2}{2\sigma^2}\right)
+\]
+
+Normalized weighted average:
+\[
+\hat{f}(r_i)=\frac{\sum_{j\in\mathcal{N}_i} w_{ij} f(t_j)}{\sum_{j\in\mathcal{N}_i} w_{ij}}
+\]
+
+If \(\mathcal{N}_i=\varnothing\), row \(i\) is left at zeros.
+
+### 3.3 Output semantics
+
+Per-sample output AnnData has:
+
+- `.X`: interpolated target features at anchor rows
+- `.obsm['spatial']`: anchor coordinates in target frame
+- target `.var` and `.var_names` propagated when available
+
+### 3.4 Optional scaling and parameters
+
+- `min_max_rescale` (default true, merged-level)
+- `force_recomputing` (default false)
+
+---
+
+## 4. Merge and cache behavior
+
+Both registration engines:
+
+- validate per-sample cache by checking `n_obs` against anchor row count
+- recompute on mismatch
+- merge per-sample files into
+
+```text
+{dataset_path}/merged/registration/{modality}_merged_processed_aligned_registered.h5ad
 ```
 
-### Cache invalidation
-
-The cache is considered valid if the registered file exists and its observation count equals the number of reference spots in the aligned anchor file. A mismatch (e.g., from rerunning preprocessing with a different spot filter) triggers automatic recomputation.
-
 ---
 
-## 5. Modality Compatibility Matrix
+## 5. Compatibility matrix
 
 | Modality type | `feature_extraction` | `spot_interpolation` | `none` |
-|---------------|:--------------------:|:--------------------:|:------:|
-| `microscopy_image` | ✅ | ❌ | ✅ |
-| `msi` | ❌ | ✅ | ✅ |
-| `raman` | ❌ | ✅ | ✅ |
-| `st` | ❌ | ✅ | ✅ |
+|---|---:|---:|---:|
+| `microscopy_image` | yes | no | yes |
+| `msi` | no | yes | yes |
+| `raman` | no | yes | yes |
+| `st` | no | yes | yes |
 
-!!! warning "Reference modality"
-    The reference modality is never registered — it defines the observation index and its feature matrix is included in the MuData as-is (after annotation transfer, if applicable).
+Reference modality itself is not registered; it defines the row index used by all registered targets.

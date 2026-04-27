@@ -2,19 +2,7 @@
 
 ## Overview
 
-The registration stage in FOCUS performs feature-based mapping between aligned modalities, enabling comprehensive multi-modal analysis. This stage creates a common feature space where data from different modalities can be directly compared and analyzed together.
-
-## Registration Workflow
-
-```mermaid
-graph TD
-    A[Aligned Data] --> B[Registration Method Selection]
-    B --> C[Feature Extraction]
-    C --> D[Coordinate Mapping]
-    D --> E[Feature Matrix Construction]
-    E --> F[Normalization]
-    F --> G[Registered Data Output]
-```
+The registration stage in FOCUS performs feature-based mapping between aligned modalities, enabling comprehensive multi-modal analysis. This stage aligns spatial coordinates and adjusts resolution by merging target modality spots to match the reference's spatial resolution, allowing each modality to retain its own feature space while enabling spatial alignment for integrated analysis.
 
 ## Registration Methods
 
@@ -83,9 +71,7 @@ Reference Spots × Patch Embeddings → Feature Matrix
   "registration_type": "feature_extraction",
   "registration_settings": {
     "patch_size": 224,
-    "background_color": "white",
-    "min_max_rescale": true,
-    "gpu_device": 0,
+    "min_max_rescale": false,
     "batch_size": 32,
     "force_recomputing": false
   }
@@ -94,14 +80,12 @@ Reference Spots × Patch Embeddings → Feature Matrix
 
 **Parameter Details**:
 
-| Parameter | Type | Default | Range | Description |
-|-----------|------|---------|-------|-------------|
-| `patch_size` | int | 224 | 64-512 | Size of extracted patches |
-| `background_color` | str | "white" | white/black | Background handling |
-| `min_max_rescale` | bool | true | - | Normalize patch intensities |
-| `gpu_device` | int | 0 | 0,1,2,... | GPU device ID |
-| `batch_size` | int | 32 | 1-128 | Patches per batch |
-| `force_recomputing` | bool | false | - | Bypass cache |
+| Parameter | Type | Default | Range | Description                         |
+|-----------|------|---------|-------|-------------------------------------|
+| `patch_size` | int | 224 | 64-512 | Size of extracted patches           |
+| `min_max_rescale` | bool | true | - | Normalize output feature embeddings |
+| `batch_size` | int | 32 | 1-128 | Patches per batch                   |
+| `force_recomputing` | bool | false | - | Bypass cache                        |
 
 ### Processing Steps
 
@@ -127,25 +111,17 @@ Reference Spots × Patch Embeddings → Feature Matrix
 
 5. **Normalization**
    - Min-max scaling (if enabled)
-   - Z-score normalization
-   - Store raw and normalized features
+   - Store features (with optional scaling)
 
 ### Output Structure
 
 ```
-<dataset_path>/<sample_id>/registration/microscopy_to_msi/
-├── sample_001_registered.h5ad		# Registered features
-├── patch_embeddings.npy			# Raw embeddings
-└── registration_metadata.json		# Processing info
+<dataset_path>/<sample_id>/registration/<target_mod>/
+└── <sample_id>_processed_aligned_registered.h5ad	# Registered features
 ```
 
 **AnnData Structure**:
-- `X`: Normalized feature matrix (Spots × 1536)
-- `layers["X_raw"]`: Raw embeddings
-- `obs["patch_quality"]`: Background filter scores
-- `var["feature_type"]`: "patch_embedding"
-- `uns["registration_method"]`: "feature_extraction"
-- `uns["model_info"]`: Model version and parameters
+- `X`: Feature matrix (Spots × 1536)
 
 ### Performance Considerations
 
@@ -205,9 +181,6 @@ feature_j = Σ (weight_i * target_feature_i) / Σ weight_i
 {
   "registration_type": "spot_interpolation",
   "registration_settings": {
-    "k_neighbors": 5,
-    "max_distance": 100.0,
-    "weighting": "distance",
     "force_recomputing": false
   }
 }
@@ -217,9 +190,6 @@ feature_j = Σ (weight_i * target_feature_i) / Σ weight_i
 
 | Parameter | Type | Default | Range | Description |
 |-----------|------|---------|-------|-------------|
-| `k_neighbors` | int | 5 | 1-20 | Number of neighbors |
-| `max_distance` | float | 100.0 | >0 | Maximum search radius (µm) |
-| `weighting` | str | "distance" | distance/uniform | Weighting method |
 | `force_recomputing` | bool | false | - | Bypass cache |
 
 ### Processing Steps
@@ -231,45 +201,32 @@ feature_j = Σ (weight_i * target_feature_i) / Σ weight_i
 
 2. **Neighbor Search**
    - Build KD-tree from target coordinates
-   - Query k-nearest neighbors for each reference spot
-   - Apply distance filter
+   - For each reference spot select all the target spots whose center is within the reference spot size.
 
 3. **Feature Interpolation**
    - Compute distance weights
    - Apply weighting function
    - Interpolate features
 
-4. **Quality Control**
-   - Compute interpolation confidence
-   - Flag low-confidence spots
-   - Handle edge cases
-
-5. **Feature Matrix Construction**
+4. **Feature Matrix Construction**
    - Create matrix: Reference Spots × Target Features
    - Store interpolation metadata
 
 ### Output Structure
 
 ```
-<dataset_path>/<sample_id>/registration/msi_to_st/
-├── sample_001_registered.h5ad		# Registered features
-└── registration_metadata.json		# Processing info
+<dataset_path>/<sample_id>/registration/<target_mod>/
+└── <sample_id>_processed_aligned_registered.h5ad	# Registered features
 ```
 
 **AnnData Structure**:
 - `X`: Interpolated feature matrix
-- `layers["X_raw"]`: Original target features
-- `obs["interpolation_confidence"]`: Quality scores
-- `obs["n_neighbors_used"]`: Neighbors per spot
-- `var["feature_type"]`: "interpolated"
-- `uns["registration_method"]`: "spot_interpolation"
-- `uns["interpolation_params"]`: k, max_distance, etc.
 
 ### Performance Considerations
 
 **CPU Requirements**:
 - Multi-threaded implementation
-- Scales with k_neighbors
+- Scales with resolution difference between target and reference
 - Memory-efficient
 
 **Processing Time**:
@@ -281,23 +238,6 @@ feature_j = Σ (weight_i * target_feature_i) / Σ weight_i
 - Scales with dataset size
 - KD-tree construction: O(n)
 - Query memory: O(k)
-
-### Error Handling
-
-**Common Issues**:
-- **No neighbors found**: Increase max_distance or k
-- **Low confidence**: Check coordinate alignment
-- **Memory error**: Process in smaller batches
-- **Coordinate mismatch**: Verify alignment stage
-
-**Recovery**:
-```bash
-# Increase search radius
-jq '.registration_settings.max_distance = 200' config.json > config_fixed.json
-
-# Use uniform weighting
-jq '.registration_settings.weighting = "uniform"' config.json > config_fixed.json
-```
 
 ## Registration Data Flow
 
@@ -323,29 +263,23 @@ For registration to work, FOCUS requires:
 - **IMAGE**: Microscopy, Raman
 - **SPOT**: MSI, Spatial Transcriptomics
 
+!!! warning "Raman modality handling"
+    In the current FOCUS release, Raman data are treated as a **SPOT** modality for registration, so the `spot_interpolation` method is used. Future releases will add dedicated `feature_extraction` support for hyperspectral Raman images.
+
 ### Output Files
 
 ```
-<dataset_path>/<sample_id>/registration/
-├── microscopy_to_msi/		# Reference → Target
-│   ├── sample_001_registered.h5ad	# Registered features
-│   ├── patch_embeddings.npy		# If feature extraction
-│   └── registration_metadata.json	# Processing metadata
-├── msi_to_st/				# If multiple registrations
-│   └── ...
-└── ...
+<dataset_path>/<sample_id>/registration/<target_modality>/
+└── <sample_id>_processed_aligned_registered.h5ad	# Registered features
 ```
 
 ### Merged Registration Files
 
-After all samples processed:
+After all samples for a target modality are processed, the per-sample files are merged:
 
 ```
-<dataset_path>/merged/registration/
-├── microscopy_to_msi/
-│   ├── merged_registered.h5ad		# Combined features
-│   └── registration_metadata.json	# Aggregate metadata
-└── ...
+<dataset_path>/merged/registration/<target_modality>/
+└── <target_modality>_merged_processed_aligned_registered.h5ad	# Combined features
 ```
 
 ## Multi-Modal Registration
@@ -370,7 +304,8 @@ graph LR
       "registration_type": "feature_extraction",
       "registration_settings": {
         "patch_size": 224,
-        "batch_size": 16
+        "batch_size": 16,
+         "force_recomputing": true
       }
     },
     {
@@ -378,8 +313,7 @@ graph LR
       "type": "msi",
       "registration_type": "spot_interpolation",
       "registration_settings": {
-        "k_neighbors": 5,
-        "max_distance": 75.0
+        "force_recomputing": true
       }
     }
   ]
@@ -397,55 +331,6 @@ MuData Structure:
 ├── st: [Spots × M gene features]
 └── obs: [Spots × metadata]
 ```
-
-## Quality Control and Validation
-
-### Registration Quality Metrics
-
-FOCUS computes comprehensive quality metrics:
-
-**Feature Extraction**:
-- Patch extraction success rate
-- Background filtering percentage
-- Embedding variance
-- Batch processing statistics
-
-**Spot Interpolation**:
-- Mean neighbors per spot
-- Interpolation confidence scores
-- Distance distribution
-- Coverage percentage
-
-### Visual Validation
-
-**Feature Distribution**:
-- PCA/t-SNE of registered features
-- UMAP visualization
-- Cluster analysis
-
-**Spatial Patterns**:
-- Feature heatmaps
-- Spatial autocorrelation
-- Neighborhood analysis
-
-**Integration Quality**:
-- Cross-modality correlation
-- Feature similarity
-- Dimensionality reduction
-
-### Quantitative Validation
-
-**Metrics Calculated**:
-- Feature variance explained
-- Cross-modality correlation
-- Spatial consistency
-- Batch effects
-
-**Acceptance Criteria**:
-- >80% variance explained (typical)
-- Consistent spatial patterns
-- Biological plausibility
-- No obvious artifacts
 
 ## Configuration Best Practices
 
@@ -469,27 +354,11 @@ FOCUS computes comprehensive quality metrics:
 - Start with default parameters
 - Adjust batch_size based on GPU memory
 - patch_size=224 for standard model
-- min_max_rescale=true for consistency
+- min_max_rescale=false (unless downstream AI methods require features to be [0, 1])
 
 **Spot Interpolation**:
-- k_neighbors=5 good starting point
-- max_distance based on spot density
-- weighting="distance" for most cases
-- Increase k for smoother results
 
-### Performance Tuning
-
-**GPU Optimization**:
-- Monitor GPU utilization
-- Adjust batch_size for memory
-- Use multiple GPUs if available
-- Enable CUDA optimizations
-
-**CPU Optimization**:
-- Set max_cpu_cores appropriately
-- Use parallel processing
-- Monitor memory usage
-- Optimize neighbor search
+No manual parameters required.
 
 ## Troubleshooting Registration Issues
 
@@ -498,27 +367,19 @@ FOCUS computes comprehensive quality metrics:
 **Problem**: GPU not detected
 - **Check**: CUDA drivers and nvidia-smi
 - **Solution**: Install CUDA toolkit
-- **Alternative**: Use spot interpolation
 
 **Problem**: Out of GPU memory
 - **Check**: Batch size and image size
 - **Solution**: Reduce batch_size (try 8 or 16)
-- **Alternative**: Use smaller patch_size
 
 **Problem**: Model download failed
 - **Check**: HuggingFace token
 - **Solution**: Verify token and network
-- **Alternative**: Manual model download
 
 **Problem**: No features registered
 - **Check**: Alignment completion
 - **Solution**: Verify alignment output files
 - **Alternative**: Rerun alignment stage
-
-**Problem**: Low interpolation confidence
-- **Check**: Coordinate alignment
-- **Solution**: Review alignment quality
-- **Alternative**: Increase max_distance
 
 ### Debugging Techniques
 
@@ -560,8 +421,6 @@ result = registrar.register_dataset(
     target_files={"sample_001": "msi_processed.h5ad"},
     anchor_name="microscopy",
     target_name="msi",
-    k_neighbors=5,
-    max_distance=100.0
 )
 ```
 
@@ -584,30 +443,6 @@ class CustomFeatureExtractor(FeatureExtractorRegistration):
 registrar = CustomFeatureExtractor("/data/project", hf_token="...")
 ```
 
-### Multi-Modal Feature Fusion
-
-Combine features from multiple registrations:
-
-```python
-import anndata
-import numpy as np
-
-# Load registered data
-microscopy_features = anndata.read_h5ad("microscopy_registered.h5ad")
-msi_features = anndata.read_h5ad("msi_registered.h5ad")
-
-# Concatenate features
-combined_X = np.hstack([
-    microscopy_features.X,
-    msi_features.X
-])
-
-# Create combined AnnData
-combined = anndata.AnnData(combined_X)
-combined.obs = microscopy_features.obs.copy()
-combined.var["feature_source"] = ["microscopy"]*1536 + ["msi"]*msi_features.n_vars
-```
-
 ### Dimensionality Reduction
 
 Apply dimensionality reduction to registered features:
@@ -628,68 +463,6 @@ sc.tl.umap(registered)
 # Visualize
 sc.pl.umap(registered, color=["feature_1", "feature_2"])
 ```
-
-## Best Practices
-
-### Workflow Optimization
-
-1. **Registration Planning**:
-   - Determine required registrations
-   - Plan registration order
-   - Estimate resource requirements
-   - Document registration strategy
-
-2. **Quality Assurance**:
-   - Validate each registration
-   - Check feature distributions
-   - Verify spatial patterns
-   - Document quality metrics
-
-3. **Resource Management**:
-   - Monitor GPU/CPU usage
-   - Manage memory constraints
-   - Optimize batch sizes
-   - Plan for large datasets
-
-### Data Integration
-
-1. **Feature Harmonization**:
-   - Normalize feature scales
-   - Handle missing values
-   - Standardize feature names
-   - Document feature sources
-
-2. **Metadata Preservation**:
-   - Retain original metadata
-   - Track processing history
-   - Store registration parameters
-   - Document quality metrics
-
-3. **Validation Strategy**:
-   - Biological validation
-   - Technical validation
-   - Statistical validation
-   - Visual validation
-
-### Performance Monitoring
-
-1. **Resource Tracking**:
-   - Monitor GPU memory
-   - Track CPU utilization
-   - Watch disk I/O
-   - Log performance metrics
-
-2. **Progress Monitoring**:
-   - Review log files
-   - Check intermediate outputs
-   - Validate partial results
-   - Estimate completion time
-
-3. **Optimization**:
-   - Adjust batch sizes
-   - Tune parallelization
-   - Optimize memory usage
-   - Balance speed vs quality
 
 ## Next Steps
 

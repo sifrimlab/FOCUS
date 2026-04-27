@@ -1,143 +1,94 @@
-# Microscopy Image Preprocessing Methods
+# Microscopy Preprocessing Methods
 
-Bright-field and fluorescence microscopy images provide the morphological context essential for interpreting spatial omics data. FOCUS implements a uniform preprocessing pipeline that normalises pixel values, optionally enhances image contrast, removes background, crops to tissue, and exports a multi-resolution OME-TIFF pyramid for downstream co-registration and visualisation.
+## 1. Input normalization
 
----
+Supported inputs: `.ome.tiff`, `.ome.tif`, `.tiff`, `.tif`, `.czi`.
 
-## 1. Data Formats
+Loading behavior:
 
-FOCUS supports two input formats, resolved in priority order:
-
-**TIFF / OME-TIFF** (`.ome.tiff`, `.ome.tif`, `.tiff`, `.tif`): standard raster format at arbitrary bit depth (8-bit, 16-bit, 32-bit) and channel count. OME-TIFF files carry embedded OME-XML metadata; FOCUS reads only the pixel array and normalises it independently of the metadata. Multi-channel images with more than three channels are clipped to the first three.
-
-**CZI** (Carl Zeiss Image, `.czi`): proprietary format from the Zeiss Zen acquisition software. CZI files may encode multiple scenes, timepoints, and z-planes. FOCUS uses `czifile` to load the raw array and selects the first scene and first timepoint by iteratively squeezing leading singleton dimensions until a 3D $(C \times H \times W)$ or 2D $(H \times W)$ array is obtained. A warning is emitted when the CZI contains multiple scenes.
-
-After loading, the pixel array is transposed to channels-last layout $(H \times W \times C)$ by moving the minimum-size axis to position 2.
+- CZI: extra leading dimensions are squeezed iteratively; if multiple scenes exist, first scene is used.
+- Channel axis is moved to last position using a smallest-dimension heuristic.
+- Arrays are converted to float32 and scaled to `[0, 1]`.
+- Channel count is clipped to at most 3.
 
 ---
 
-## 2. Normalisation
+## 2. Color enhancement (`color_enhancement`)
 
-All images are converted to float32 in $[0, 1]$ after loading. The normalisation rule depends on the input dtype:
+Two operations in sequence:
 
-- **Integer types** (uint8, uint16, uint32): divide by the dtype maximum $I_\text{max}$ (e.g. 255 for uint8, 65535 for uint16):
+1. Gamma correction (`utils.gamma_correction`):
+\[
+I' = I^{\gamma}
+\]
+(default `gamma=0.45`, which brightens for `I in (0,1)`).
 
-$$I' = \frac{I}{I_\text{max}}$$
-
-- **Float types already in $[0, 1]$**: retained as-is.
-- **Float types exceeding 1.0**: min-max normalised using the image maximum as the divisor.
-
-This ensures that all downstream operations receive a consistently scaled input regardless of acquisition depth.
-
----
-
-## 3. Color Enhancement (Optional)
-
-Two sequential contrast transforms are applied when `color_enhancement=True`. Both are applied per-pixel independently of spatial context.
-
-### 3.1 Gamma Correction
-
-Gamma correction applies a power-law transform to the normalised pixel values:
-
-$$I' = I^{1/\gamma}$$
-
-with default $\gamma = 0.45$. Since $1/\gamma > 1$ for $\gamma < 1$, values in $(0, 1)$ are mapped to larger values, brightening underexposed images. Conversely, $\gamma > 1$ darkens bright images. The transform is applied in-place using `numpy.power`.
-
-### 3.2 Contrast Stretching
-
-Contrast stretching (histogram clipping and rescaling) is applied after gamma correction. The implementation operates only on non-zero pixels (background zeroes are excluded from percentile estimation to prevent them from anchoring the histogram):
-
-1. Compute the saturation percentiles on the non-zero subset:
-
-$$p_\text{low} = s / 2, \quad p_\text{high} = 100 - s / 2$$
-
-where $s$ is `contrast_saturation` (default 0.35, interpreted as a percentage). Thus the bottom 0.175% and top 0.175% of non-zero pixels are clipped by default.
-
-2. Clip all pixel values to $[q_{p_\text{low}},\, q_{p_\text{high}}]$, then rescale to $[0, 1]$:
-
-$$I'' = \frac{\min(I', q_{p_\text{high}}) - q_{p_\text{low}}}{q_{p_\text{high}} - q_{p_\text{low}}}$$
-
-clipped to $[0, 1]$.
-
-If $q_{p_\text{high}} \leq q_{p_\text{low}}$ (degenerate histogram), the operation is skipped.
+2. Contrast stretching (`utils.enhance_contrast`) on non-zero pixels with symmetric saturation parameter `contrast_saturation` (default `0.35`).
 
 ---
 
-## 4. Background Removal (Optional)
+## 3. Background removal (`remove_background`)
 
-The background removal step (`remove_background=True`) produces a binary foreground mask and fills non-tissue pixels with a uniform colour. The mask is estimated on a blurred version of the image to suppress tissue texture.
+Implemented in `_remove_background`:
 
-**Pipeline** (`MicroscopyImage._remove_background`):
+1. Convert to uint8 and replace pure-black pixels by white (artifact guard).
+2. Convert to grayscale and invert.
+3. Clip intensities at `clip_percentile` (default 99).
+4. Apply Gaussian blur (`gaussian_blur_kernel_size`, default 251; coerced to odd).
+5. Compute Otsu threshold on blurred image; apply threshold to original inverted grayscale.
+6. Remove small connected components and fill holes.
+7. Contour area filtering using `min_object_coverage` fraction of image area.
+8. Fill background with selected `background_color` (`white` or `black`).
 
-1. **Convert to uint8**: the float32 image is scaled to $[0, 255]$. Purely black pixels (all channels zero) are replaced with white $(255, 255, 255)$ to prevent them from being misclassified as foreground after inversion.
-
-2. **Grayscale conversion and inversion**: the uint8 image is converted to grayscale using the standard luminance formula (OpenCV `COLOR_RGB2GRAY`), then bitwise-inverted so that a white background becomes black ($I_\text{inv} = 255 - I_\text{gray}$).
-
-3. **Intensity clipping**: the inverted grayscale is clipped at the `clip_percentile`-th percentile (default 99th) to reduce the influence of bright outliers on the subsequent blur:
-
-$$I_\text{clipped}(x, y) = \min\!\left(I_\text{inv}(x, y),\; P_\text{clip}(I_\text{inv})\right)$$
-
-4. **Gaussian blur**: a Gaussian kernel of size $k \times k$ (default $251 \times 251$, $\sigma = 0$ for automatic scale) is applied to $I_\text{clipped}$ to suppress fine-scale tissue texture and preserve only the large-scale tissue outline:
-
-$$G = I_\text{clipped} * g_k$$
-
-5. **Otsu threshold on blurred image**: Otsu's method is applied to $G$ to compute the binary threshold $\tau_\text{Otsu}$, maximising between-class variance. The threshold is then applied to the original inverted grayscale $I_\text{inv}$ (not the blurred image), preserving the sharpness of the tissue boundary:
-
-$$\text{mask}(x, y) = [I_\text{inv}(x, y) \geq \tau_\text{Otsu}]$$
-
-6. **Morphological cleanup**:
-    - `skimage.morphology.remove_small_objects`: removes connected components with fewer than `min_object_size` pixels (default 500).
-    - `scipy.ndimage.binary_fill_holes`: fills enclosed holes within the tissue mask.
-
-7. **Contour-based area filtering**: contours are extracted from the binary mask using `cv2.findContours`. Contours with area $< \text{min\_object\_coverage} \times H \times W$ (default 1% of the image area) are discarded, retaining only large coherent tissue regions.
-
-8. **Background replacement**: pixels outside the final tissue mask are replaced with the `background_color` fill value: white $[1.0, 1.0, 1.0]$ or black $[0.0, 0.0, 0.0]$ (float32).
+Note on implementation detail: current code calls `skimage.morphology.remove_small_objects(..., max_size=min_object_size)`; this should be interpreted as connected-component cleanup with threshold parameter `min_object_size` in current dependency versions.
 
 ---
 
-## 5. Tissue Cropping (Optional)
+## 4. Tissue cropping (`crop_to_tissue`)
 
-When `crop_to_tissue=True`, the image is cropped to the axis-aligned bounding box of the foreground region with an additional margin:
+Foreground is defined as pixels different from fill color (tolerance `1e-3`).
 
-1. Identify the foreground region by finding non-background pixels (pixels not equal to the fill colour within tolerance $10^{-3}$).
-2. Compute the bounding box: $[y_\text{min}, y_\text{max}] \times [x_\text{min}, x_\text{max}]$.
-3. Expand by `crop_margin` pixels (default 250) in all directions:
-
-$$y_\text{min}' = \max(0,\, y_\text{min} - m), \quad y_\text{max}' = \min(H-1,\, y_\text{max} + m)$$
-$$x_\text{min}' = \max(0,\, x_\text{min} - m), \quad x_\text{max}' = \min(W-1,\, x_\text{max} + m)$$
-
-The crop margin ensures that downstream co-registration algorithms have sufficient context at the tissue boundary.
+Bounding box is expanded by `crop_margin` (default 250 px) and clamped to image bounds.
 
 ---
 
-## 6. OME-TIFF Pyramid Construction
+## 5. OME-TIFF pyramid output
 
-The processed image is saved as a **multi-resolution OME-TIFF** pyramid for efficient large-image viewing and registration.
+`_save_image_pyramid` writes a BigTIFF with `pyramid_levels` resized levels (default 4), scale factor `0.5^l` at level `l`, using `cv2.INTER_AREA`.
 
-**Pyramid generation**: `pyramid_levels` resolution levels are generated (default 4: full, $\frac{1}{2}$, $\frac{1}{4}$, $\frac{1}{8}$ resolution). Each lower level is downsampled from the original full-resolution image using OpenCV `INTER_AREA` interpolation (anti-aliased area averaging):
+Encoding:
 
-$$I^{(l)}(x, y) = \text{INTER\_AREA}\!\left(I^{(0)},\; \text{scale} = 2^{-l}\right), \quad l = 0, 1, \ldots, L-1$$
+- RGB (`C=3`): `photometric='rgb'`, axes `YXC`
+- otherwise: per-channel `photometric='minisblack'`, axes `YX`
 
-**File format**: the pyramid is written as a BigTIFF (supporting files $> 4$ GB) using `tifffile.TiffWriter`. Each resolution level is a separate top-level IFD. Compression: zlib. Photometric encoding:
-
-- 3-channel images: `'rgb'` with interleaved channels (YXC layout, `samples_per_pixel=3`).
-- Grayscale or multi-channel images: `'minisblack'` with separate planes per channel.
-
-**OME-XML metadata**: a valid OME-XML block is embedded in the first IFD's `ImageDescription` tag, encoding `SizeX`, `SizeY`, `SizeC`, `Type`, `DimensionOrder`, and per-channel `Channel` elements. This ensures compatibility with OME-compliant readers.
-
-The output path follows the FOCUS directory convention: `{source_path}/{sample_id}/preprocessing/{modality_name}/{modality_name}_{sample_id}_processed.ome.tiff`.
+Compression is zlib.
 
 ---
 
-## 7. Parameter Selection Guidance
+## 6. Parameters reflected by implementation
 
-| Parameter | Default | Scientific Effect | Recommended Values |
-|---|---|---|---|
-| `gamma` | 0.45 | Power-law brightening of underexposed images. Values $<1$ brighten; $>1$ darken. | 0.3–0.6 for H&E; 1.0 to disable |
-| `contrast_saturation` | 0.35 | Percentage of pixels saturated at each end of the histogram. Higher values increase contrast but may clip tissue features. | 0.1–1.0%; increase for low-contrast images |
-| `gaussian_blur_kernel_size` | 251 | Spatial scale of the background estimation blur. Larger kernels suppress finer tissue structure. Must be odd. | 101–501; scale with tissue size |
-| `clip_percentile` | 99 | Percentile for intensity clipping before Gaussian blur. Reduces the influence of saturated pixels on the threshold. | 95–99 |
-| `min_object_size` | 500 | Minimum pixel count for foreground object retention after morphological cleanup. | 200–5000; scale with image resolution |
-| `min_object_coverage` | 0.01 | Minimum area fraction for a contour to be retained as tissue. Filters debris and mounting artefacts. | 0.005–0.05 |
-| `crop_margin` | 250 | Pixel margin around the tissue bounding box after cropping. | 100–500; larger for registration tasks |
-| `pyramid_levels` | 4 | Number of resolution levels in the OME-TIFF pyramid. | 3–6; increase for very large images |
+- `color_enhancement` (default true)
+- `remove_background` (default true)
+- `crop_to_tissue` (default true)
+- `background_color` (`white`/`black`, default `white`)
+- `pyramid_levels` (default 4)
+- `min_object_coverage` (default 0.01)
+- `gaussian_blur_kernel_size` (default 251)
+- `min_object_size` (default 500)
+- `clip_percentile` (default 99)
+- `crop_margin` (default 250)
+- `gamma` (default 0.45)
+- `contrast_saturation` (default 0.35)
+- `force_recomputing` (default false)
+
+---
+
+## 7. Outputs
+
+Per sample:
+
+```text
+{dataset_path}/{sample_id}/preprocessing/{modality}/{modality}_{sample_id}_processed.ome.tiff
+```
+
+This file is the image input for downstream alignment and (if configured) feature-extraction registration.
