@@ -353,7 +353,8 @@ class MsiSample(BaseSample):
 			if user_param.attrib['name'] == "3DPositionY":
 				physical_y = float(user_param.attrib['value'])
 
-		# Fallback if the physical coordinates are not provided
+		# Record whether true physical coordinates were present before applying fallback
+		has_physical_coordinates = physical_x is not None and physical_y is not None
 		if physical_x is None:
 			physical_x = float(x)
 		if physical_y is None:
@@ -385,7 +386,7 @@ class MsiSample(BaseSample):
 				}
 
 		return {'pixel_x': x, 'pixel_y': y, 'mzs': mzs, 'intensities': intensities, 'physical_x': physical_x,
-		        'physical_y': physical_y}
+		        'physical_y': physical_y, 'has_physical_coordinates': has_physical_coordinates}
 
 	def _correct_rotation_error(self, physical_coords: np.ndarray[np.float32], pixel_coords: np.ndarray[np.int32]) -> \
 			np.ndarray[np.float32]:
@@ -483,6 +484,11 @@ class MsiSample(BaseSample):
 				if scan_settings.attrib['name'] == "pixel size y":
 					raster_size[1] = int(scan_settings.attrib['value'])
 
+		# If raster size is absent from the file, assume unit spacing so that pixel
+		# coordinates can be used directly as physical coordinates without overlap.
+		if raster_size[0] == 0 or raster_size[1] == 0:
+			raster_size = np.array([1, 1], dtype=np.int16)
+
 		run = root.find(ImzMLFileParser.RUN_KEY)
 		spectrum_list = run.find(ImzMLFileParser.SPECTRUM_LIST_KEY)
 		spectra = spectrum_list.findall(ImzMLFileParser.SPECTRUM_KEY)
@@ -501,6 +507,15 @@ class MsiSample(BaseSample):
 		intensities_binary_metadata = np.array([(metadata["intensities"]["length"],
 		                                         metadata["intensities"]["encoded_length"],
 		                                         metadata["intensities"]["offset"]) for metadata in parsed_spectra])
+
+		# Where physical coordinates were absent, the fallback stored raw pixel indices.
+		# Scale those entries by raster_size so the inter-spot spacing is in micrometers,
+		# consistent with the downstream normalization and raster_size/2 centering shift.
+		has_physical = np.array([m['has_physical_coordinates'] for m in parsed_spectra])
+		if not has_physical.any():
+			physical_coordinates = pixel_coordinates.astype(np.float32) * raster_size
+		elif not has_physical.all():
+			physical_coordinates[~has_physical] = pixel_coordinates[~has_physical].astype(np.float32) * raster_size
 
 		# Align MSI laser grid to the axes using linear regression
 		physical_coordinates = self._correct_rotation_error(physical_coordinates, pixel_coordinates)
