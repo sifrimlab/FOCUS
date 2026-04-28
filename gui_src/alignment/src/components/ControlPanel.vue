@@ -171,6 +171,10 @@ const toggleTgtClass = (cls: number) => {
                 @click="store.setAlignerInteraction('rotate')"
                 :class="['flex-1 py-1 text-xs rounded', store.alignerInteraction === 'rotate' ? 'bg-white dark:bg-gray-600 shadow font-bold' : 'text-gray-500 dark:text-gray-400']"
             >Rotate</button>
+            <button
+                @click="store.setAlignerInteraction('distort')"
+                :class="['flex-1 py-1 text-xs rounded', store.alignerInteraction === 'distort' ? 'bg-white dark:bg-gray-600 shadow font-bold' : 'text-gray-500 dark:text-gray-400']"
+            >Distort</button>
         </div>
       </div>
 

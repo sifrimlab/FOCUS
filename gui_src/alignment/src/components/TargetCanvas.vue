@@ -17,6 +17,14 @@ let isDragging = false;
 let lastX = 0;
 let lastY = 0;
 let cachedLocalCenter: [number, number] | null = null;
+let cachedLocalBBox: { minX: number; minY: number; maxX: number; maxY: number } | null = null;
+let overlayGraphics: Graphics | null = null;
+let activeHandleIndex = -1;
+let distortAxisLock: 'x' | 'y' | null = null;
+let distortAccumX = 0;
+let distortAccumY = 0;
+const AXIS_LOCK_THRESHOLD = 5;
+const HANDLE_HIT_RADIUS = 15;
 
 const calculateFitMatrix = (width: number, height: number) => {
   // Use Base Dimensions
@@ -87,9 +95,79 @@ const getLocalCenter = () => {
   }
 };
 
+const getTargetBBox = () => {
+  if (cachedLocalBBox) return cachedLocalBBox;
+  if (!store.targetMeta) return null;
+  if (store.targetMeta.modality_type === 'IMAGE') {
+    const [h, w] = store.targetMeta.image_shape || [0, 0];
+    cachedLocalBBox = { minX: 0, minY: 0, maxX: w, maxY: h };
+  } else {
+    const data = store.targetData as SpotModalityPayload;
+    if (!data) return null;
+    const [rx, ry] = store.targetSpotSize;
+    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+    for (const s of data) {
+      minX = Math.min(minX, s.spatial[0]); maxX = Math.max(maxX, s.spatial[0]);
+      minY = Math.min(minY, s.spatial[1]); maxY = Math.max(maxY, s.spatial[1]);
+    }
+    cachedLocalBBox = { minX: minX - rx/2, minY: minY - ry/2, maxX: maxX + rx/2, maxY: maxY + ry/2 };
+  }
+  return cachedLocalBBox;
+};
+
+const worldToScreen = (wx: number, wy: number): [number, number] => {
+  if (!app) return [0, 0];
+  const { width, height } = app.screen;
+  const cx = width / 2; const cy = height / 2;
+  return [
+    (wx - (cx - store.viewOffset[0])) * store.globalZoom + cx,
+    (wy - (cy - store.viewOffset[1])) * store.globalZoom + cy,
+  ];
+};
+
+const getHandleScreenPositions = (): [number, number][] => {
+  const bbox = getTargetBBox();
+  if (!bbox) return [];
+  const m = store.targetTransform;
+  const localCorners: [number, number][] = [
+    [bbox.minX, bbox.minY], [bbox.maxX, bbox.minY],
+    [bbox.maxX, bbox.maxY], [bbox.minX, bbox.maxY],
+  ];
+  return localCorners.map(([lx, ly]) => {
+    const wx = lx * m[0] + ly * m[3] + m[6];
+    const wy = lx * m[1] + ly * m[4] + m[7];
+    return worldToScreen(wx, wy);
+  });
+};
+
+const drawDistortOverlay = () => {
+  if (!overlayGraphics) return;
+  overlayGraphics.clear();
+  if (store.controlMode !== 'aligner' || store.alignerInteraction !== 'distort') return;
+
+  const handles = getHandleScreenPositions();
+  if (handles.length !== 4) return;
+  const [h0, h1, h2, h3] = handles as [[number,number],[number,number],[number,number],[number,number]];
+
+  overlayGraphics.setStrokeStyle({ width: 1.5, color: 0xFFD700, alpha: 0.9 });
+  overlayGraphics.moveTo(h0[0], h0[1]);
+  overlayGraphics.lineTo(h1[0], h1[1]);
+  overlayGraphics.lineTo(h2[0], h2[1]);
+  overlayGraphics.lineTo(h3[0], h3[1]);
+  overlayGraphics.lineTo(h0[0], h0[1]);
+  overlayGraphics.stroke();
+
+  [h0, h1, h2, h3].forEach(([hx, hy], i) => {
+    const isActive = activeHandleIndex === i;
+    overlayGraphics!.circle(hx, hy, isActive ? 8 : 6);
+    overlayGraphics!.fill({ color: isActive ? 0xFFFFFF : 0xFFD700, alpha: 0.9 });
+  });
+};
+
 // Reset cache when data changes
 watch(() => store.targetData, () => {
     cachedLocalCenter = null;
+    cachedLocalBBox = null;
     if (app && store.targetData) {
         const { width, height } = app.screen;
         const fitM = calculateFitMatrix(width, height);
@@ -138,9 +216,12 @@ const initPixi = async () => {
   
   viewContainer = new Container();
   app.stage.addChild(viewContainer);
-  
+
   contentContainer = new Container();
   viewContainer.addChild(contentContainer);
+
+  overlayGraphics = new Graphics();
+  app.stage.addChild(overlayGraphics);
   
   render();
   
@@ -167,25 +248,21 @@ const updateViewTransform = () => {
 const updateContentTransform = () => {
     if (!contentContainer || !store.targetTransform) return;
     const m = store.targetTransform;
-    
-    // Manual decomposition to avoid PixiJS version issues with decompose()
-    const a = m[0];
-    const b = m[1];
-    const c = m[3];
-    const d = m[4];
-    const tx = m[6];
-    const ty = m[7];
-    
+
+    const a = m[0]; const b = m[1]; const c = m[3]; const d = m[4];
+    const tx = m[6]; const ty = m[7];
+
+    // Pixi v8 formula: a = cos(rot+skewY)*scaleX, b = sin(rot+skewY)*scaleX
+    //                  c = -sin(rot-skewX)*scaleY, d = cos(rot-skewX)*scaleY
+    // Setting skewY=0 → rotation=atan2(b,a), skewX=atan2(b,a)-atan2(-c,d)
+    const rotationX = Math.atan2(b, a);
+    const rotationY = Math.atan2(-c, d);
+
     contentContainer.position.set(tx, ty);
-    contentContainer.rotation = Math.atan2(b, a);
+    contentContainer.rotation = rotationX;
+    contentContainer.skew.x = rotationX - rotationY;
+    contentContainer.skew.y = 0;
     contentContainer.scale.set(Math.sqrt(a * a + b * b), Math.sqrt(c * c + d * d));
-    
-    // Handle flip (determinant < 0)
-    const det = a * d - b * c;
-    if (det < 0) {
-        contentContainer.scale.y *= -1;
-    }
-    
     contentContainer.alpha = store.targetOpacity;
 };
 
@@ -352,7 +429,33 @@ watch(() => [store.targetClassFilter, store.commonSpotBoost, store.targetSpotSiz
     render();
 }, { deep: true });
 
+watch(
+  () => [store.targetTransform, store.alignerInteraction, store.globalZoom, store.viewOffset, store.controlMode],
+  () => { drawDistortOverlay(); },
+  { deep: true }
+);
+
 const onMouseDown = (e: MouseEvent) => {
+  if (store.controlMode === 'aligner' && store.alignerInteraction === 'distort' && app) {
+    const rect = app.canvas.getBoundingClientRect();
+    const mx = e.clientX - rect.left;
+    const my = e.clientY - rect.top;
+    const handles = getHandleScreenPositions();
+    for (let i = 0; i < handles.length; i++) {
+      const h = handles[i]!;
+      if (Math.hypot(mx - h[0], my - h[1]) < HANDLE_HIT_RADIUS) {
+        activeHandleIndex = i;
+        distortAxisLock = null;
+        distortAccumX = 0;
+        distortAccumY = 0;
+        isDragging = true;
+        lastX = e.clientX;
+        lastY = e.clientY;
+        return;
+      }
+    }
+    return;
+  }
   isDragging = true;
   lastX = e.clientX;
   lastY = e.clientY;
@@ -360,7 +463,55 @@ const onMouseDown = (e: MouseEvent) => {
 
 const onMouseMove = (e: MouseEvent) => {
   if (!isDragging) return;
-  
+
+  if (store.alignerInteraction === 'distort' && activeHandleIndex >= 0) {
+    const dx_screen = e.clientX - lastX;
+    const dy_screen = e.clientY - lastY;
+    lastX = e.clientX;
+    lastY = e.clientY;
+
+    if (distortAxisLock === null) {
+      distortAccumX += dx_screen;
+      distortAccumY += dy_screen;
+      if (Math.abs(distortAccumX) >= AXIS_LOCK_THRESHOLD || Math.abs(distortAccumY) >= AXIS_LOCK_THRESHOLD) {
+        distortAxisLock = Math.abs(distortAccumX) >= Math.abs(distortAccumY) ? 'x' : 'y';
+      }
+      return;
+    }
+
+    const handles = getHandleScreenPositions();
+    if (handles.length !== 4) return;
+    const [sh0, sh1, , sh3] = handles as [[number,number],[number,number],[number,number],[number,number]];
+    const bboxScreenWidth = Math.hypot(sh1[0] - sh0[0], sh1[1] - sh0[1]);
+    const bboxScreenHeight = Math.hypot(sh3[0] - sh0[0], sh3[1] - sh0[1]);
+
+    const localCenter = getLocalCenter();
+    const mCur = store.targetTransform;
+    const cx_w = (localCenter[0] || 0) * mCur[0] + (localCenter[1] || 0) * mCur[3] + mCur[6];
+    const cy_w = (localCenter[0] || 0) * mCur[1] + (localCenter[1] || 0) * mCur[4] + mCur[7];
+
+    const shearM = mat3.create();
+    if (distortAxisLock === 'x' && bboxScreenHeight > 0) {
+      shearM[3] = dx_screen / (bboxScreenHeight / 2);
+    } else if (distortAxisLock === 'y' && bboxScreenWidth > 0) {
+      shearM[1] = dy_screen / (bboxScreenWidth / 2);
+    }
+
+    const mT = mat3.create();
+    translate(mT, mT, [cx_w, cy_w]);
+    const mTi = mat3.create();
+    translate(mTi, mTi, [-cx_w, -cy_w]);
+
+    const fullShear = mat3.create();
+    multiply(fullShear, shearM, mTi);
+    multiply(fullShear, mT, fullShear);
+
+    const newM = mat3.create();
+    multiply(newM, fullShear, store.targetTransform);
+    store.updateTargetTransform(newM);
+    return;
+  }
+
   if (store.controlMode === 'camera') {
       const screenDx = e.clientX - lastX;
       const screenDy = e.clientY - lastY;
@@ -433,6 +584,10 @@ const onMouseMove = (e: MouseEvent) => {
 
 const onMouseUp = () => {
   isDragging = false;
+  activeHandleIndex = -1;
+  distortAxisLock = null;
+  distortAccumX = 0;
+  distortAccumY = 0;
 };
 
 const onWheel = (e: WheelEvent) => {
