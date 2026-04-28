@@ -22,6 +22,11 @@ let overlayGraphics: Graphics | null = null;
 let activeHandleIndex = -1;
 let dragStartWorldCorners: [number, number][] = [];
 let dragStartMouseWorld: [number, number] = [0, 0];
+let transformBeforeDistort: mat3 | null = null;
+let wasProjective = false;
+let spotGraphics: Graphics | null = null; // reused across frames to avoid GPU alloc/free per draw
+let latestHomography: mat3 | null = null; // RAF-throttled distort drag state
+let distortRafId: number | null = null;
 const HANDLE_HIT_RADIUS = 15;
 
 const calculateFitMatrix = (width: number, height: number) => {
@@ -113,6 +118,47 @@ const getTargetBBox = () => {
   return cachedLocalBBox;
 };
 
+// Properly destroy Pixi display objects so WebGL buffers are freed immediately.
+// Simple removeChildren() only detaches the JS objects; without destroy() the
+// GPU-side VBOs/IBOs accumulate until GC runs and WebGL context is exhausted.
+const destroyChildren = () => {
+  if (!contentContainer) return;
+  const children = [...contentContainer.children];
+  contentContainer.removeChildren();
+  children.forEach(c => c.destroy({ children: true }));
+  spotGraphics = null;
+};
+
+// Redraw all spots into the persistent spotGraphics object (clear + fill).
+// Called every frame during projective transforms; reuses GPU buffers instead of
+// allocating new ones, keeping memory usage constant regardless of drag speed.
+const drawSpots = (projective: boolean) => {
+  if (!spotGraphics || !store.targetData || !store.targetMeta || store.targetMeta.modality_type === 'IMAGE') return;
+  const data = store.targetData as SpotModalityPayload;
+  const [rx, ry] = store.targetSpotSize;
+  const drawRx = rx * store.commonSpotBoost;
+  const drawRy = ry * store.commonSpotBoost;
+  const m = store.targetTransform;
+  spotGraphics.clear();
+  for (const spot of data) {
+    if (!store.targetClassFilter.includes(spot.class)) continue;
+    if (store.targetForegroundMode === 'foreground' && !spot.foreground) continue;
+    if (store.targetForegroundMode === 'background' && spot.foreground) continue;
+    const color = getTargetColor(spot.class);
+    const lx = spot.spatial[0]; const ly = spot.spatial[1];
+    if (projective) {
+      const c0 = projectiveTransformPoint(m, lx - drawRx/2, ly - drawRy/2);
+      const c1 = projectiveTransformPoint(m, lx + drawRx/2, ly - drawRy/2);
+      const c2 = projectiveTransformPoint(m, lx + drawRx/2, ly + drawRy/2);
+      const c3 = projectiveTransformPoint(m, lx - drawRx/2, ly + drawRy/2);
+      spotGraphics.poly([c0[0], c0[1], c1[0], c1[1], c2[0], c2[1], c3[0], c3[1]]);
+    } else {
+      spotGraphics.rect(lx - drawRx/2, ly - drawRy/2, drawRx, drawRy);
+    }
+    spotGraphics.fill(color);
+  }
+};
+
 const worldToScreen = (wx: number, wy: number): [number, number] => {
   if (!app) return [0, 0];
   const { width, height } = app.screen;
@@ -177,6 +223,8 @@ const drawDistortOverlay = () => {
 watch(() => store.targetData, () => {
     cachedLocalCenter = null;
     cachedLocalBBox = null;
+    wasProjective = false;
+    destroyChildren(); // free GPU memory from previous dataset before loading new one
     if (app && store.targetData) {
         const { width, height } = app.screen;
         const fitM = calculateFitMatrix(width, height);
@@ -281,11 +329,10 @@ const updateContentTransform = () => {
 
 const updateContent = async () => {
     if (!app || !contentContainer) return;
-    contentContainer.removeChildren();
-    
-    if (!store.targetData || !store.targetMeta) return;
-    
+    if (!store.targetData || !store.targetMeta) { destroyChildren(); return; }
+
     if (store.targetMeta.modality_type === 'IMAGE') {
+        destroyChildren();
         const imgBlob = store.targetData as Blob;
         const url = URL.createObjectURL(imgBlob);
         try {
@@ -299,48 +346,16 @@ const updateContent = async () => {
             if (app && app.renderer) app.render();
         } catch (e) { console.error(e); }
     } else {
-        const data = store.targetData as SpotModalityPayload;
-        const spots = data;
-        const spotSize = store.targetSpotSize;
-        const rx = spotSize[0];
-        const ry = spotSize[1];
-        
-        store.setTargetSpotBoost(1.0);
-        const finalBoost = store.commonSpotBoost;
-        const drawRx = rx * finalBoost;
-        const drawRy = ry * finalBoost;
-        
-        const graphics = new Graphics();
-        contentContainer.addChild(graphics);
-        
-        const m = store.targetTransform;
-        const projective = isProjective(m);
-
-        spots.forEach(spot => {
-            const isClassVisible = store.targetClassFilter.includes(spot.class);
-            let isForegroundVisible = true;
-            if (store.targetForegroundMode === 'foreground') isForegroundVisible = spot.foreground;
-            if (store.targetForegroundMode === 'background') isForegroundVisible = !spot.foreground;
-
-            const isVisible = isClassVisible && isForegroundVisible;
-            if (!isVisible) return;
-
-            const color = getTargetColor(spot.class);
-
-            if (projective) {
-              // Transform all 4 corners of the spot to get correct perspective distortion
-              const lx = spot.spatial[0]; const ly = spot.spatial[1];
-              const c0 = projectiveTransformPoint(m, lx - drawRx/2, ly - drawRy/2);
-              const c1 = projectiveTransformPoint(m, lx + drawRx/2, ly - drawRy/2);
-              const c2 = projectiveTransformPoint(m, lx + drawRx/2, ly + drawRy/2);
-              const c3 = projectiveTransformPoint(m, lx - drawRx/2, ly + drawRy/2);
-              graphics.poly([c0[0], c0[1], c1[0], c1[1], c2[0], c2[1], c3[0], c3[1]]);
-              graphics.fill(color);
-            } else {
-              graphics.rect(spot.spatial[0] - drawRx/2, spot.spatial[1] - drawRy/2, drawRx, drawRy);
-              graphics.fill(color);
-            }
-        });
+        // Reuse the persistent spotGraphics — only create it once per data load.
+        // Subsequent calls (filter change, boost change, transform change) just
+        // clear and redraw into the same object, keeping GPU memory constant.
+        if (!spotGraphics) {
+            destroyChildren();
+            store.setTargetSpotBoost(1.0);
+            spotGraphics = new Graphics();
+            contentContainer.addChild(spotGraphics);
+        }
+        drawSpots(isProjective(store.targetTransform));
     }
     updateContentTransform();
 };
@@ -361,13 +376,17 @@ watch(() => store.pendingCommand, (cmd) => {
   
   const localCenter = getLocalCenter();
   const mCurrent = store.targetTransform;
-  const cx_target = (localCenter[0] || 0) * mCurrent[0] + (localCenter[1] || 0) * mCurrent[3] + mCurrent[6];
-  const cy_target = (localCenter[0] || 0) * mCurrent[1] + (localCenter[1] || 0) * mCurrent[4] + mCurrent[7];
+  // Use projective-aware center computation so flip/rotate/scale pivot is correct
+  // even after a perspective distortion has been applied.
+  const [cx_target, cy_target] = projectiveTransformPoint(mCurrent, localCenter[0] || 0, localCenter[1] || 0);
 
   const m = mat3.create();
-  
+
   if (cmd.type === 'reset') {
      store.updateTargetTransform(createIdentity());
+  } else if (cmd.type === 'resetDistort') {
+     if (transformBeforeDistort) store.updateTargetTransform(mat3.clone(transformBeforeDistort));
+     transformBeforeDistort = null;
   } else if (cmd.type === 'zoom') {
      translate(m, m, [cx_screen, cy_screen]);
      scale(m, m, [cmd.value, cmd.value]);
@@ -442,12 +461,18 @@ watch(() => store.pendingCommand, (cmd) => {
 // watch(() => store.targetData, () => { ... }) // Moved above to handle cache reset
 
 
-watch(() => [store.targetTransform, store.targetOpacity], async () => {
-    if (store.targetMeta?.modality_type !== 'IMAGE' && isProjective(store.targetTransform)) {
-      await updateContent();
-    } else {
-      updateContentTransform();
-    }
+watch(() => store.alignerInteraction, (mode) => {
+  if (mode === 'distort') transformBeforeDistort = mat3.clone(store.targetTransform);
+});
+
+watch(() => [store.targetTransform, store.targetOpacity], () => {
+    const isSpot = store.targetMeta?.modality_type !== 'IMAGE';
+    const projective = isSpot && isProjective(store.targetTransform);
+    // Redraw spots into the persistent Graphics when projective or on the one
+    // transition frame back to affine (so spots return to local-space positions).
+    if ((projective || wasProjective) && spotGraphics) drawSpots(projective);
+    wasProjective = projective;
+    updateContentTransform();
     render();
 }, { deep: true });
 
@@ -457,8 +482,14 @@ watch(() => [store.globalZoom, store.viewOffset], () => {
 }, { deep: true });
 
 watch(() => [store.targetClassFilter, store.commonSpotBoost, store.targetSpotSize, store.targetForegroundMode], async () => {
-    await updateContent();
-    render();
+    if (spotGraphics) {
+        // Fast path: reuse existing Graphics, just redraw with new filter/boost/size
+        drawSpots(isProjective(store.targetTransform));
+        render();
+    } else {
+        await updateContent();
+        render();
+    }
 }, { deep: true });
 
 watch(
@@ -528,7 +559,21 @@ const onMouseMove = (e: MouseEvent) => {
     ];
 
     const H = computeHomography(localCorners, newWorldCorners);
-    if (H) store.updateTargetTransform(H);
+    if (!H) return;
+
+    // RAF-throttle store updates: compute H on every mouse move but only push
+    // to the reactive store once per animation frame. This caps the watcher
+    // chain (drawSpots + render) at 60 fps regardless of mouse polling rate.
+    latestHomography = H;
+    if (distortRafId === null) {
+      distortRafId = requestAnimationFrame(() => {
+        distortRafId = null;
+        if (latestHomography) {
+          store.updateTargetTransform(latestHomography);
+          latestHomography = null;
+        }
+      });
+    }
     return;
   }
 
@@ -603,6 +648,15 @@ const onMouseMove = (e: MouseEvent) => {
 };
 
 const onMouseUp = () => {
+  // Flush any RAF-pending homography so the final drag position is applied
+  if (distortRafId !== null) {
+    cancelAnimationFrame(distortRafId);
+    distortRafId = null;
+    if (latestHomography) {
+      store.updateTargetTransform(latestHomography);
+      latestHomography = null;
+    }
+  }
   isDragging = false;
   activeHandleIndex = -1;
   dragStartWorldCorners = [];
@@ -656,9 +710,11 @@ onMounted(() => {
 });
 
 onUnmounted(() => {
+  if (distortRafId !== null) { cancelAnimationFrame(distortRafId); distortRafId = null; }
   resizeObserver?.disconnect();
   window.removeEventListener('mouseup', onMouseUp);
   window.removeEventListener('mousemove', onMouseMove);
+  spotGraphics = null;
   if (app) {
     try {
         app.destroy(true, { children: true, texture: true });

@@ -21,7 +21,7 @@ const progress = computed(() => {
   return (store.sampleInfo.sample_index / store.sampleInfo.total_samples_count) * 100;
 });
 
-const sendCommand = (type: 'zoom' | 'rotate' | 'flip' | 'reset' | 'setScale' | 'setRotation' | 'resetScale' | 'resetRotation', value?: any) => {
+const sendCommand = (type: 'zoom' | 'rotate' | 'flip' | 'reset' | 'resetDistort' | 'setScale' | 'setRotation' | 'resetScale' | 'resetRotation', value?: any) => {
   store.pendingCommand = { type, value };
 };
 
@@ -344,6 +344,7 @@ const toggleTgtClass = (cls: number) => {
         <button @click="sendCommand('flip', false)" class="btn-secondary">Flip V</button>
       </div>
 
+      <button v-if="store.alignerInteraction === 'distort'" @click="sendCommand('resetDistort')" class="w-full btn-secondary mb-2">Reset Distortion</button>
       <button @click="sendCommand('reset')" class="w-full btn-secondary mb-2">Reset Transform</button>
       <button @click="store.confirm" class="w-full btn-primary">Confirm Alignment</button>
     </div>

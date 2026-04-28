@@ -25,7 +25,7 @@ export const useMainStore = defineStore('main', {
     targetOpacity: 0.7,
     globalZoom: 1.0,
     viewOffset: [0, 0] as [number, number],
-    pendingCommand: null as { type: 'zoom' | 'rotate' | 'flip' | 'reset' | 'setScale' | 'setRotation' | 'resetScale' | 'resetRotation', value?: any } | null,
+    pendingCommand: null as { type: 'zoom' | 'rotate' | 'flip' | 'reset' | 'resetDistort' | 'setScale' | 'setRotation' | 'resetScale' | 'resetRotation', value?: any } | null,
     referenceSpotBoost: 1.0,
     targetSpotBoost: 1.0,
     controlMode: 'aligner' as 'aligner' | 'camera',
