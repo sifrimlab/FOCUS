@@ -210,6 +210,7 @@ const updateContent = async () => {
         graphics.rect(spot.spatial[0] - drawRx/2, spot.spatial[1] - drawRy/2, drawRx, drawRy);
         graphics.fill(color);
     });
+    if (app && app.renderer) app.render();
   }
 };
 
