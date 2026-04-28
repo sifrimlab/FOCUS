@@ -29,7 +29,6 @@ export const useMainStore = defineStore('main', {
     referenceSpotBoost: 1.0,
     targetSpotBoost: 1.0,
     controlMode: 'aligner' as 'aligner' | 'camera',
-    alignerInteraction: 'translate' as 'translate' | 'rotate' | 'distort',
     referenceSpotSize: [1, 1] as [number, number],
     targetSpotSize: [1, 1] as [number, number],
     referenceForegroundMode: 'all' as 'all' | 'foreground' | 'background',
@@ -44,9 +43,6 @@ export const useMainStore = defineStore('main', {
   actions: {
     setControlMode(mode: 'aligner' | 'camera') {
         this.controlMode = mode;
-    },
-    setAlignerInteraction(mode: 'translate' | 'rotate' | 'distort') {
-        this.alignerInteraction = mode;
     },
     setReferenceSpotBoost(val: number) {
         if (Math.abs(this.referenceSpotBoost - val) > 0.0001) {

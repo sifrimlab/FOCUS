@@ -160,24 +160,6 @@ const toggleTgtClass = (cls: number) => {
         </div>
       </div>
 
-      <div v-if="store.controlMode === 'aligner'" class="flex items-center space-x-2 mb-2">
-        <label class="text-sm">Interaction:</label>
-        <div class="flex bg-gray-200 dark:bg-gray-700 rounded p-1 flex-1">
-            <button
-                @click="store.setAlignerInteraction('translate')"
-                :class="['flex-1 py-1 text-xs rounded', store.alignerInteraction === 'translate' ? 'bg-white dark:bg-gray-600 shadow font-bold' : 'text-gray-500 dark:text-gray-400']"
-            >Translate</button>
-            <button
-                @click="store.setAlignerInteraction('rotate')"
-                :class="['flex-1 py-1 text-xs rounded', store.alignerInteraction === 'rotate' ? 'bg-white dark:bg-gray-600 shadow font-bold' : 'text-gray-500 dark:text-gray-400']"
-            >Rotate</button>
-            <button
-                @click="store.setAlignerInteraction('distort')"
-                :class="['flex-1 py-1 text-xs rounded', store.alignerInteraction === 'distort' ? 'bg-white dark:bg-gray-600 shadow font-bold' : 'text-gray-500 dark:text-gray-400']"
-            >Distort</button>
-        </div>
-      </div>
-
       <div class="flex justify-between items-center mb-1">
           <label class="text-sm">View Zoom</label>
           <button @click="store.globalZoom = 1.0" class="text-xs text-blue-500 hover:underline">Reset</button>
@@ -344,7 +326,7 @@ const toggleTgtClass = (cls: number) => {
         <button @click="sendCommand('flip', false)" class="btn-secondary">Flip V</button>
       </div>
 
-      <button v-if="store.alignerInteraction === 'distort'" @click="sendCommand('resetDistort')" class="w-full btn-secondary mb-2">Reset Distortion</button>
+      <button @click="sendCommand('resetDistort')" class="w-full btn-secondary mb-2">Reset Distortion</button>
       <button @click="sendCommand('reset')" class="w-full btn-secondary mb-2">Reset Transform</button>
       <button @click="store.confirm" class="w-full btn-primary">Confirm Alignment</button>
     </div>

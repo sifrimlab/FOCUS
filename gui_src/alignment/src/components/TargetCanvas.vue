@@ -210,7 +210,7 @@ const getHandleScreenPositions = (): [number, number][] => {
 
 const updateHoverCursor = (mx: number, my: number) => {
   if (!app) return;
-  if (store.controlMode !== 'aligner' || store.alignerInteraction !== 'distort') {
+  if (store.controlMode !== 'aligner') {
     app.canvas.style.cursor = '';
     return;
   }
@@ -223,7 +223,7 @@ const updateHoverCursor = (mx: number, my: number) => {
     if (Math.hypot(mx - h[0], my - h[1]) < HANDLE_HIT_RADIUS) { app.canvas.style.cursor = 'grab'; return; }
   }
   if (isInRotateZone(mx, my)) { app.canvas.style.cursor = ROTATE_CURSOR; return; }
-  app.canvas.style.cursor = isInsideDistortFrame(mx, my) ? 'grab' : '';
+  app.canvas.style.cursor = isInsideDistortFrame(mx, my) ? 'move' : 'default';
 };
 
 const isInsideDistortFrame = (mx: number, my: number): boolean => {
@@ -268,7 +268,7 @@ const getEdgeHandleScreenPositions = (): [number, number][] => {
 const drawDistortOverlay = () => {
   if (!overlayGraphics) return;
   overlayGraphics.clear();
-  if (store.controlMode !== 'aligner' || store.alignerInteraction !== 'distort') return;
+  if (store.controlMode !== 'aligner') return;
 
   const handles = getHandleScreenPositions();
   if (handles.length !== 4) return;
@@ -309,6 +309,7 @@ watch(() => store.targetData, () => {
         const { width, height } = app.screen;
         const fitM = calculateFitMatrix(width, height);
         store.updateTargetTransform(fitM);
+        transformBeforeDistort = mat3.clone(fitM);
         updateContent();
     }
 });
@@ -541,11 +542,6 @@ watch(() => store.pendingCommand, (cmd) => {
 // watch(() => store.targetData, () => { ... }) // Moved above to handle cache reset
 
 
-watch(() => store.alignerInteraction, (mode) => {
-  if (mode === 'distort') transformBeforeDistort = mat3.clone(store.targetTransform);
-  else if (app) app.canvas.style.cursor = '';
-});
-
 watch(() => [store.targetTransform, store.targetOpacity], () => {
     const isSpot = store.targetMeta?.modality_type !== 'IMAGE';
     const projective = isSpot && isProjective(store.targetTransform);
@@ -574,7 +570,7 @@ watch(() => [store.targetClassFilter, store.commonSpotBoost, store.targetSpotSiz
 }, { deep: true });
 
 watch(
-  () => [store.targetTransform, store.alignerInteraction, store.globalZoom, store.viewOffset, store.controlMode],
+  () => [store.targetTransform, store.globalZoom, store.viewOffset, store.controlMode],
   () => { drawDistortOverlay(); app?.render(); },
   { deep: true }
 );
@@ -598,7 +594,7 @@ const startDistortDrag = (handleIdx: number, mx: number, my: number, e: MouseEve
 };
 
 const onMouseDown = (e: MouseEvent) => {
-  if (store.controlMode === 'aligner' && store.alignerInteraction === 'distort' && app) {
+  if (store.controlMode === 'aligner' && app) {
     const rect = app.canvas.getBoundingClientRect();
     const mx = e.clientX - rect.left;
     const my = e.clientY - rect.top;
@@ -652,13 +648,13 @@ const onMouseMove = (e: MouseEvent) => {
     const my = e.clientY - rect.top;
     if (mx >= 0 && my >= 0 && mx <= rect.width && my <= rect.height) {
       updateHoverCursor(mx, my);
-    } else if (store.controlMode === 'aligner' && store.alignerInteraction === 'distort') {
-      app.canvas.style.cursor = '';
+    } else if (store.controlMode === 'aligner') {
+      app.canvas.style.cursor = 'default';
     }
   }
   if (!isDragging) return;
 
-  if (store.alignerInteraction === 'distort' && activeHandleIndex >= 0) {
+  if (store.controlMode === 'aligner' && activeHandleIndex >= 0) {
     if (activeHandleIndex === 9) {
       if (!app) return;
       const rect = app.canvas.getBoundingClientRect();
@@ -752,65 +748,6 @@ const onMouseMove = (e: MouseEvent) => {
       return;
   }
 
-  // Aligner Mode
-  if (store.alignerInteraction === 'rotate') {
-      if (!app) return;
-      const rect = app.canvas.getBoundingClientRect();
-      const cx_screen = rect.width / 2;
-      const cy_screen = rect.height / 2;
-
-      const localCenter = getLocalCenter();
-      const mCurrent = store.targetTransform;
-      
-      const cx_target_world = (localCenter[0] || 0) * mCurrent[0] + (localCenter[1] || 0) * mCurrent[3] + mCurrent[6];
-      const cy_target_world = (localCenter[0] || 0) * mCurrent[1] + (localCenter[1] || 0) * mCurrent[4] + mCurrent[7];
-
-      const cx_target_screen = (cx_target_world - store.viewOffset[0]) * store.globalZoom + cx_screen;
-      const cy_target_screen = (cy_target_world - store.viewOffset[1]) * store.globalZoom + cy_screen;
-
-      const mx_screen = e.clientX - rect.left;
-      const my_screen = e.clientY - rect.top;
-      const last_mx_screen = lastX - rect.left;
-      const last_my_screen = lastY - rect.top;
-
-      const angleOld = Math.atan2(last_my_screen - cy_target_screen, last_mx_screen - cx_target_screen);
-      const angleNew = Math.atan2(my_screen - cy_target_screen, mx_screen - cx_target_screen);
-      const dAngle = angleNew - angleOld;
-      
-      const m = mat3.create();
-      translate(m, m, [cx_target_world, cy_target_world]);
-      rotate(m, m, dAngle);
-      translate(m, m, [-cx_target_world, -cy_target_world]);
-      
-      const newM = mat3.create();
-      multiply(newM, m, store.targetTransform);
-      store.updateTargetTransform(newM);
-      
-      lastX = e.clientX;
-      lastY = e.clientY;
-      return;
-  }
-
-  const dx = (e.clientX - lastX) / store.globalZoom;
-  const dy = (e.clientY - lastY) / store.globalZoom;
-  lastX = e.clientX;
-  lastY = e.clientY;
-  
-  // We need to apply translation in the Target's Local Space?
-  // No, usually we translate in the "World" space (which is View Space / Zoom).
-  // But here we are modifying the Target Transform Matrix (M).
-  // M maps Local -> World.
-  // We want to move the object in World space by (dx, dy).
-  // New_Pos = Old_Pos + Delta
-  // M_new * p = M_old * p + Delta
-  // M_new = Translate(Delta) * M_old
-  
-  const m = mat3.create();
-  translate(m, m, [dx, dy]);
-  
-  const newM = mat3.create();
-  multiply(newM, m, store.targetTransform);
-  store.updateTargetTransform(newM);
 };
 
 const onMouseUp = () => {
