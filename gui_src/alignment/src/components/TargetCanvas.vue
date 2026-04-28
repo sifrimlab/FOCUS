@@ -467,7 +467,6 @@ watch(() => store.pendingCommand, (cmd) => {
      store.updateTargetTransform(createIdentity());
   } else if (cmd.type === 'resetDistort') {
      if (transformBeforeDistort) store.updateTargetTransform(mat3.clone(transformBeforeDistort));
-     transformBeforeDistort = null;
   } else if (cmd.type === 'zoom') {
      translate(m, m, [cx_screen, cy_screen]);
      scale(m, m, [cmd.value, cmd.value]);
@@ -576,6 +575,11 @@ watch(
 );
 
 const startDistortDrag = (handleIdx: number, mx: number, my: number, e: MouseEvent) => {
+  // Snapshot the current affine transform before the first projective corner/edge drag.
+  // This lets "Reset Distortion" undo only the projective warp, preserving panel adjustments.
+  if (handleIdx < 8 && !isProjective(store.targetTransform)) {
+    transformBeforeDistort = mat3.clone(store.targetTransform);
+  }
   activeHandleIndex = handleIdx;
   isDragging = true;
   lastX = e.clientX;
