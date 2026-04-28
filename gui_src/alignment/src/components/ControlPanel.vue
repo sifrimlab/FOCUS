@@ -244,14 +244,89 @@ const toggleTgtClass = (cls: number) => {
       </div>
     </div>
 
-    <!-- ── REFERENCE MODALITY ───────────────── -->
+    <!-- ── TARGET MODALITY ──────────────────── -->
     <div class="px-4 py-3 border-b border-gray-200 dark:border-gray-700 shrink-0">
       <div class="flex items-center gap-2 mb-2.5">
         <div class="w-2 h-2 rounded-full bg-sky-500 shrink-0"></div>
         <h3 class="font-semibold text-slate-900 dark:text-slate-100 leading-none truncate">
-          {{ store.referenceMeta?.modality_name || 'Reference' }}
+          {{ store.targetMeta?.modality_name || 'Target' }}
         </h3>
         <span class="shrink-0 text-[9px] font-bold uppercase tracking-wider text-sky-600 dark:text-sky-400 bg-sky-50 dark:bg-sky-950 border border-sky-200 dark:border-sky-800 px-1.5 py-0.5 rounded">
+          {{ store.targetMeta?.modality_type }}
+        </span>
+      </div>
+
+      <div class="text-xs text-gray-500 dark:text-gray-400 mb-2.5">
+        <div v-if="store.targetMeta?.modality_type === 'IMAGE'">
+          <span class="font-mono" style="font-feature-settings: 'zero'">{{ store.targetMeta?.image_shape?.join(' × ') }}</span>&thinsp;px
+        </div>
+        <div v-else>
+          <label class="text-[11px] font-medium uppercase tracking-wide text-gray-400 dark:text-gray-500 mb-1 block">Spot Size (µm)</label>
+          <div class="flex gap-1.5">
+            <input type="number" v-model.number="store.targetSpotSize[0]"
+              class="w-1/2 border border-gray-200 dark:border-gray-600 rounded px-1.5 h-7 bg-white dark:bg-gray-800 font-mono text-xs" />
+            <input type="number" v-model.number="store.targetSpotSize[1]"
+              class="w-1/2 border border-gray-200 dark:border-gray-600 rounded px-1.5 h-7 bg-white dark:bg-gray-800 font-mono text-xs" />
+          </div>
+        </div>
+      </div>
+
+      <!-- Opacity -->
+      <div class="mb-2.5">
+        <div class="flex justify-between items-center mb-1">
+          <label class="text-[11px] font-semibold uppercase tracking-wide text-gray-400 dark:text-gray-500">Opacity</label>
+          <span class="font-mono text-[11px] text-gray-500 dark:text-gray-400" style="font-feature-settings: 'zero'">
+            {{ (store.targetOpacity * 100).toFixed(0) }}%
+          </span>
+        </div>
+        <input type="range" min="0" max="1" step="0.05" v-model.number="store.targetOpacity"
+          class="w-full h-1.5 cursor-pointer accent-sky-500" />
+      </div>
+
+      <div v-if="store.targetMeta?.modality_type === 'SPOT'">
+        <h4 class="text-[11px] font-semibold uppercase tracking-wide text-gray-400 dark:text-gray-500 mb-1.5">Spot Classes</h4>
+        <div class="space-y-0.5 max-h-36 overflow-y-auto border border-gray-200 dark:border-gray-600 rounded-lg p-1">
+          <div v-for="cls in store.targetSpotClasses" :key="cls"
+            class="flex items-center justify-between px-1.5 py-0.5 rounded hover:bg-gray-50 dark:hover:bg-gray-800">
+            <div class="w-3 h-3 rounded-sm border border-gray-200 dark:border-gray-600 shrink-0"
+              :style="{ backgroundColor: getTargetColor(cls) }"></div>
+            <label class="relative inline-flex items-center cursor-pointer">
+              <input type="checkbox" :checked="store.targetClassFilter.includes(cls)" @change="toggleTgtClass(cls)" class="sr-only peer">
+              <div class="w-8 h-4 bg-gray-200 rounded-full peer dark:bg-gray-700 peer-checked:bg-sky-500 after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:after:translate-x-4"></div>
+            </label>
+          </div>
+        </div>
+        <div class="flex mt-1 gap-2">
+          <button @click="store.targetClassFilter = [...store.targetSpotClasses]" class="text-[10px] text-blue-500 hover:underline">All</button>
+          <button @click="store.targetClassFilter = []" class="text-[10px] text-blue-500 hover:underline">None</button>
+        </div>
+
+        <h4 class="text-[11px] font-semibold uppercase tracking-wide text-gray-400 dark:text-gray-500 mt-2.5 mb-1">Foreground</h4>
+        <div class="flex bg-gray-100 dark:bg-gray-800 rounded-md p-0.5">
+          <button
+            @click="store.targetForegroundMode = 'all'"
+            :class="['flex-1 py-1 text-xs rounded transition-colors select-none', store.targetForegroundMode === 'all' ? 'bg-white dark:bg-gray-700 shadow text-slate-900 dark:text-slate-100 font-medium' : 'text-gray-400 dark:text-gray-500']"
+          >All</button>
+          <button
+            @click="store.targetForegroundMode = 'foreground'"
+            :class="['flex-1 py-1 text-xs rounded transition-colors select-none', store.targetForegroundMode === 'foreground' ? 'bg-white dark:bg-gray-700 shadow text-slate-900 dark:text-slate-100 font-medium' : 'text-gray-400 dark:text-gray-500']"
+          >FG</button>
+          <button
+            @click="store.targetForegroundMode = 'background'"
+            :class="['flex-1 py-1 text-xs rounded transition-colors select-none', store.targetForegroundMode === 'background' ? 'bg-white dark:bg-gray-700 shadow text-slate-900 dark:text-slate-100 font-medium' : 'text-gray-400 dark:text-gray-500']"
+          >BG</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── REFERENCE MODALITY ───────────────── -->
+    <div class="px-4 py-3 pb-6 shrink-0">
+      <div class="flex items-center gap-2 mb-2.5">
+        <div class="w-2 h-2 rounded-full bg-amber-500 shrink-0"></div>
+        <h3 class="font-semibold text-slate-900 dark:text-slate-100 leading-none truncate">
+          {{ store.referenceMeta?.modality_name || 'Reference' }}
+        </h3>
+        <span class="shrink-0 text-[9px] font-bold uppercase tracking-wider text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-950 border border-amber-200 dark:border-amber-800 px-1.5 py-0.5 rounded">
           {{ store.referenceMeta?.modality_type }}
         </span>
       </div>
@@ -301,7 +376,7 @@ const toggleTgtClass = (cls: number) => {
               :style="{ backgroundColor: getReferenceColor(cls) }"></div>
             <label class="relative inline-flex items-center cursor-pointer">
               <input type="checkbox" :checked="store.referenceClassFilter.includes(cls)" @change="toggleRefClass(cls)" class="sr-only peer">
-              <div class="w-8 h-4 bg-gray-200 rounded-full peer dark:bg-gray-700 peer-checked:bg-sky-500 after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:after:translate-x-4"></div>
+              <div class="w-8 h-4 bg-gray-200 rounded-full peer dark:bg-gray-700 peer-checked:bg-amber-500 after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:after:translate-x-4"></div>
             </label>
           </div>
         </div>
@@ -323,81 +398,6 @@ const toggleTgtClass = (cls: number) => {
           <button
             @click="store.referenceForegroundMode = 'background'"
             :class="['flex-1 py-1 text-xs rounded transition-colors select-none', store.referenceForegroundMode === 'background' ? 'bg-white dark:bg-gray-700 shadow text-slate-900 dark:text-slate-100 font-medium' : 'text-gray-400 dark:text-gray-500']"
-          >BG</button>
-        </div>
-      </div>
-    </div>
-
-    <!-- ── TARGET MODALITY ──────────────────── -->
-    <div class="px-4 py-3 pb-6 shrink-0">
-      <div class="flex items-center gap-2 mb-2.5">
-        <div class="w-2 h-2 rounded-full bg-amber-500 shrink-0"></div>
-        <h3 class="font-semibold text-slate-900 dark:text-slate-100 leading-none truncate">
-          {{ store.targetMeta?.modality_name || 'Target' }}
-        </h3>
-        <span class="shrink-0 text-[9px] font-bold uppercase tracking-wider text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-950 border border-amber-200 dark:border-amber-800 px-1.5 py-0.5 rounded">
-          {{ store.targetMeta?.modality_type }}
-        </span>
-      </div>
-
-      <div class="text-xs text-gray-500 dark:text-gray-400 mb-2.5">
-        <div v-if="store.targetMeta?.modality_type === 'IMAGE'">
-          <span class="font-mono" style="font-feature-settings: 'zero'">{{ store.targetMeta?.image_shape?.join(' × ') }}</span>&thinsp;px
-        </div>
-        <div v-else>
-          <label class="text-[11px] font-medium uppercase tracking-wide text-gray-400 dark:text-gray-500 mb-1 block">Spot Size (µm)</label>
-          <div class="flex gap-1.5">
-            <input type="number" v-model.number="store.targetSpotSize[0]"
-              class="w-1/2 border border-gray-200 dark:border-gray-600 rounded px-1.5 h-7 bg-white dark:bg-gray-800 font-mono text-xs" />
-            <input type="number" v-model.number="store.targetSpotSize[1]"
-              class="w-1/2 border border-gray-200 dark:border-gray-600 rounded px-1.5 h-7 bg-white dark:bg-gray-800 font-mono text-xs" />
-          </div>
-        </div>
-      </div>
-
-      <!-- Opacity -->
-      <div class="mb-2.5">
-        <div class="flex justify-between items-center mb-1">
-          <label class="text-[11px] font-semibold uppercase tracking-wide text-gray-400 dark:text-gray-500">Opacity</label>
-          <span class="font-mono text-[11px] text-gray-500 dark:text-gray-400" style="font-feature-settings: 'zero'">
-            {{ (store.targetOpacity * 100).toFixed(0) }}%
-          </span>
-        </div>
-        <input type="range" min="0" max="1" step="0.05" v-model.number="store.targetOpacity"
-          class="w-full h-1.5 cursor-pointer accent-amber-500" />
-      </div>
-
-      <div v-if="store.targetMeta?.modality_type === 'SPOT'" class="mb-2.5">
-        <h4 class="text-[11px] font-semibold uppercase tracking-wide text-gray-400 dark:text-gray-500 mb-1.5">Spot Classes</h4>
-        <div class="space-y-0.5 max-h-36 overflow-y-auto border border-gray-200 dark:border-gray-600 rounded-lg p-1">
-          <div v-for="cls in store.targetSpotClasses" :key="cls"
-            class="flex items-center justify-between px-1.5 py-0.5 rounded hover:bg-gray-50 dark:hover:bg-gray-800">
-            <div class="w-3 h-3 rounded-sm border border-gray-200 dark:border-gray-600 shrink-0"
-              :style="{ backgroundColor: getTargetColor(cls) }"></div>
-            <label class="relative inline-flex items-center cursor-pointer">
-              <input type="checkbox" :checked="store.targetClassFilter.includes(cls)" @change="toggleTgtClass(cls)" class="sr-only peer">
-              <div class="w-8 h-4 bg-gray-200 rounded-full peer dark:bg-gray-700 peer-checked:bg-amber-500 after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:after:translate-x-4"></div>
-            </label>
-          </div>
-        </div>
-        <div class="flex mt-1 gap-2">
-          <button @click="store.targetClassFilter = [...store.targetSpotClasses]" class="text-[10px] text-blue-500 hover:underline">All</button>
-          <button @click="store.targetClassFilter = []" class="text-[10px] text-blue-500 hover:underline">None</button>
-        </div>
-
-        <h4 class="text-[11px] font-semibold uppercase tracking-wide text-gray-400 dark:text-gray-500 mt-2.5 mb-1">Foreground</h4>
-        <div class="flex bg-gray-100 dark:bg-gray-800 rounded-md p-0.5">
-          <button
-            @click="store.targetForegroundMode = 'all'"
-            :class="['flex-1 py-1 text-xs rounded transition-colors select-none', store.targetForegroundMode === 'all' ? 'bg-white dark:bg-gray-700 shadow text-slate-900 dark:text-slate-100 font-medium' : 'text-gray-400 dark:text-gray-500']"
-          >All</button>
-          <button
-            @click="store.targetForegroundMode = 'foreground'"
-            :class="['flex-1 py-1 text-xs rounded transition-colors select-none', store.targetForegroundMode === 'foreground' ? 'bg-white dark:bg-gray-700 shadow text-slate-900 dark:text-slate-100 font-medium' : 'text-gray-400 dark:text-gray-500']"
-          >FG</button>
-          <button
-            @click="store.targetForegroundMode = 'background'"
-            :class="['flex-1 py-1 text-xs rounded transition-colors select-none', store.targetForegroundMode === 'background' ? 'bg-white dark:bg-gray-700 shadow text-slate-900 dark:text-slate-100 font-medium' : 'text-gray-400 dark:text-gray-500']"
           >BG</button>
         </div>
       </div>
