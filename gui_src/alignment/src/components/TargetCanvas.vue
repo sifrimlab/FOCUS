@@ -19,7 +19,7 @@ let lastY = 0;
 let cachedLocalCenter: [number, number] | null = null;
 let cachedLocalBBox: { minX: number; minY: number; maxX: number; maxY: number } | null = null;
 let overlayGraphics: Graphics | null = null;
-let activeHandleIndex = -1;
+let activeHandleIndex = -1; // 0-3: corner handles, 4-7: edge handles, 8: translate, 9: rotate
 let dragStartWorldCorners: [number, number][] = [];
 let dragStartMouseWorld: [number, number] = [0, 0];
 let transformBeforeDistort: mat3 | null = null;
@@ -28,6 +28,19 @@ let spotGraphics: Graphics | null = null; // reused across frames to avoid GPU a
 let latestHomography: mat3 | null = null; // RAF-throttled distort drag state
 let distortRafId: number | null = null;
 const HANDLE_HIT_RADIUS = 15;
+const ROTATE_ZONE_OUTER = 30; // px — annular zone outside handle but near corner triggers rotation
+// Maps each edge handle index (0-3) to the pair of corner indices it connects:
+// 0=top (corners 0,1), 1=right (corners 1,2), 2=bottom (corners 2,3), 3=left (corners 3,0)
+const EDGE_TO_CORNERS: [number, number][] = [[0, 1], [1, 2], [2, 3], [3, 0]];
+// Rotation cursor: 270° clockwise arc (top→left) with a downward arrowhead, hotspot at center
+const ROTATE_CURSOR = (() => {
+  const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24">' +
+    '<path d="M13 4 A9 9 0 1 1 4 13" fill="none" stroke="black" stroke-width="3" stroke-linecap="round"/>' +
+    '<path d="M13 4 A9 9 0 1 1 4 13" fill="none" stroke="white" stroke-width="1.5" stroke-linecap="round"/>' +
+    '<polygon points="4,17 1,11 7,11" fill="white" stroke="black" stroke-width="0.5"/>' +
+    '</svg>';
+  return `url("data:image/svg+xml,${encodeURIComponent(svg)}") 12 12, auto`;
+})();
 
 const calculateFitMatrix = (width: number, height: number) => {
   // Use Base Dimensions
@@ -195,6 +208,63 @@ const getHandleScreenPositions = (): [number, number][] => {
   });
 };
 
+const updateHoverCursor = (mx: number, my: number) => {
+  if (!app) return;
+  if (store.controlMode !== 'aligner' || store.alignerInteraction !== 'distort') {
+    app.canvas.style.cursor = '';
+    return;
+  }
+  const cornerHandles = getHandleScreenPositions();
+  for (const h of cornerHandles) {
+    if (Math.hypot(mx - h[0], my - h[1]) < HANDLE_HIT_RADIUS) { app.canvas.style.cursor = 'grab'; return; }
+  }
+  const edgeHandles = getEdgeHandleScreenPositions();
+  for (const h of edgeHandles) {
+    if (Math.hypot(mx - h[0], my - h[1]) < HANDLE_HIT_RADIUS) { app.canvas.style.cursor = 'grab'; return; }
+  }
+  if (isInRotateZone(mx, my)) { app.canvas.style.cursor = ROTATE_CURSOR; return; }
+  app.canvas.style.cursor = isInsideDistortFrame(mx, my) ? 'grab' : '';
+};
+
+const isInsideDistortFrame = (mx: number, my: number): boolean => {
+  const corners = getHandleScreenPositions();
+  if (corners.length !== 4) return false;
+  // Cross product sign must be consistent for all edges of the (possibly non-axis-aligned) quad
+  let sign: number | null = null;
+  for (let i = 0; i < 4; i++) {
+    const [ax, ay] = corners[i]!;
+    const [bx, by] = corners[(i + 1) % 4]!;
+    const cross = (bx - ax) * (my - ay) - (by - ay) * (mx - ax);
+    const s = cross > 0 ? 1 : cross < 0 ? -1 : 0;
+    if (s === 0) continue;
+    if (sign === null) sign = s;
+    else if (sign !== s) return false;
+  }
+  return true;
+};
+
+const isInRotateZone = (mx: number, my: number): boolean => {
+  if (isInsideDistortFrame(mx, my)) return false;
+  const corners = getHandleScreenPositions();
+  for (const h of corners) {
+    const d = Math.hypot(mx - h[0], my - h[1]);
+    if (d >= HANDLE_HIT_RADIUS && d < ROTATE_ZONE_OUTER) return true;
+  }
+  return false;
+};
+
+const getEdgeHandleScreenPositions = (): [number, number][] => {
+  const corners = getHandleScreenPositions();
+  if (corners.length !== 4) return [];
+  const [h0, h1, h2, h3] = corners as [[number,number],[number,number],[number,number],[number,number]];
+  return [
+    [(h0[0] + h1[0]) / 2, (h0[1] + h1[1]) / 2],
+    [(h1[0] + h2[0]) / 2, (h1[1] + h2[1]) / 2],
+    [(h2[0] + h3[0]) / 2, (h2[1] + h3[1]) / 2],
+    [(h3[0] + h0[0]) / 2, (h3[1] + h0[1]) / 2],
+  ];
+};
+
 const drawDistortOverlay = () => {
   if (!overlayGraphics) return;
   overlayGraphics.clear();
@@ -212,9 +282,19 @@ const drawDistortOverlay = () => {
   overlayGraphics.lineTo(h0[0], h0[1]);
   overlayGraphics.stroke();
 
+  // Corner handles (circles)
   [h0, h1, h2, h3].forEach(([hx, hy], i) => {
     const isActive = activeHandleIndex === i;
     overlayGraphics!.circle(hx, hy, isActive ? 8 : 6);
+    overlayGraphics!.fill({ color: isActive ? 0xFFFFFF : 0xFFD700, alpha: 0.9 });
+  });
+
+  // Edge handles (squares)
+  const edgeHandles = getEdgeHandleScreenPositions();
+  edgeHandles.forEach(([hx, hy], i) => {
+    const isActive = activeHandleIndex === i + 4;
+    const size = isActive ? 6 : 4;
+    overlayGraphics!.rect(hx - size, hy - size, size * 2, size * 2);
     overlayGraphics!.fill({ color: isActive ? 0xFFFFFF : 0xFFD700, alpha: 0.9 });
   });
 };
@@ -463,6 +543,7 @@ watch(() => store.pendingCommand, (cmd) => {
 
 watch(() => store.alignerInteraction, (mode) => {
   if (mode === 'distort') transformBeforeDistort = mat3.clone(store.targetTransform);
+  else if (app) app.canvas.style.cursor = '';
 });
 
 watch(() => [store.targetTransform, store.targetOpacity], () => {
@@ -498,32 +579,64 @@ watch(
   { deep: true }
 );
 
+const startDistortDrag = (handleIdx: number, mx: number, my: number, e: MouseEvent) => {
+  activeHandleIndex = handleIdx;
+  isDragging = true;
+  lastX = e.clientX;
+  lastY = e.clientY;
+  if (app) app.canvas.style.cursor = 'grabbing';
+  const bbox = getTargetBBox();
+  if (bbox) {
+    const m = store.targetTransform;
+    const bboxCorners: [number,number][] = [
+      [bbox.minX, bbox.minY], [bbox.maxX, bbox.minY],
+      [bbox.maxX, bbox.maxY], [bbox.minX, bbox.maxY],
+    ];
+    dragStartWorldCorners = bboxCorners.map(([lx, ly]) => projectiveTransformPoint(m, lx, ly));
+  }
+  dragStartMouseWorld = screenToWorld(mx, my);
+};
+
 const onMouseDown = (e: MouseEvent) => {
   if (store.controlMode === 'aligner' && store.alignerInteraction === 'distort' && app) {
     const rect = app.canvas.getBoundingClientRect();
     const mx = e.clientX - rect.left;
     const my = e.clientY - rect.top;
-    const handles = getHandleScreenPositions();
-    for (let i = 0; i < handles.length; i++) {
-      const h = handles[i]!;
+
+    // Check corner handles first
+    const cornerHandles = getHandleScreenPositions();
+    for (let i = 0; i < cornerHandles.length; i++) {
+      const h = cornerHandles[i]!;
       if (Math.hypot(mx - h[0], my - h[1]) < HANDLE_HIT_RADIUS) {
-        activeHandleIndex = i;
-        isDragging = true;
-        lastX = e.clientX;
-        lastY = e.clientY;
-        // Record current world positions of all 4 corners and the mouse position
-        const bbox = getTargetBBox();
-        if (bbox) {
-          const m = store.targetTransform;
-          const bboxCorners: [number,number][] = [
-            [bbox.minX, bbox.minY], [bbox.maxX, bbox.minY],
-            [bbox.maxX, bbox.maxY], [bbox.minX, bbox.maxY],
-          ];
-          dragStartWorldCorners = bboxCorners.map(([lx, ly]) => projectiveTransformPoint(m, lx, ly));
-        }
-        dragStartMouseWorld = screenToWorld(mx, my);
+        startDistortDrag(i, mx, my, e);
         return;
       }
+    }
+
+    // Check edge handles (indices 4-7)
+    const edgeHandles = getEdgeHandleScreenPositions();
+    for (let i = 0; i < edgeHandles.length; i++) {
+      const h = edgeHandles[i]!;
+      if (Math.hypot(mx - h[0], my - h[1]) < HANDLE_HIT_RADIUS) {
+        startDistortDrag(i + 4, mx, my, e);
+        return;
+      }
+    }
+
+    // Rotation zone: near corner, outside polygon → rotate (index 9)
+    if (isInRotateZone(mx, my)) {
+      activeHandleIndex = 9;
+      isDragging = true;
+      lastX = e.clientX;
+      lastY = e.clientY;
+      if (app) app.canvas.style.cursor = 'grabbing';
+      return;
+    }
+
+    // Inside frame → translate all (index 8)
+    if (isInsideDistortFrame(mx, my)) {
+      startDistortDrag(8, mx, my, e);
+      return;
     }
     return;
   }
@@ -533,9 +646,47 @@ const onMouseDown = (e: MouseEvent) => {
 };
 
 const onMouseMove = (e: MouseEvent) => {
+  if (!isDragging && app) {
+    const rect = app.canvas.getBoundingClientRect();
+    const mx = e.clientX - rect.left;
+    const my = e.clientY - rect.top;
+    if (mx >= 0 && my >= 0 && mx <= rect.width && my <= rect.height) {
+      updateHoverCursor(mx, my);
+    } else if (store.controlMode === 'aligner' && store.alignerInteraction === 'distort') {
+      app.canvas.style.cursor = '';
+    }
+  }
   if (!isDragging) return;
 
   if (store.alignerInteraction === 'distort' && activeHandleIndex >= 0) {
+    if (activeHandleIndex === 9) {
+      if (!app) return;
+      const rect = app.canvas.getBoundingClientRect();
+      const cx_screen = rect.width / 2;
+      const cy_screen = rect.height / 2;
+      const localCenter = getLocalCenter();
+      const mCurrent = store.targetTransform;
+      const cx_target_world = (localCenter[0] || 0) * mCurrent[0] + (localCenter[1] || 0) * mCurrent[3] + mCurrent[6];
+      const cy_target_world = (localCenter[0] || 0) * mCurrent[1] + (localCenter[1] || 0) * mCurrent[4] + mCurrent[7];
+      const cx_target_screen = (cx_target_world - store.viewOffset[0]) * store.globalZoom + cx_screen;
+      const cy_target_screen = (cy_target_world - store.viewOffset[1]) * store.globalZoom + cy_screen;
+      const mx_screen = e.clientX - rect.left;
+      const my_screen = e.clientY - rect.top;
+      const angleOld = Math.atan2(lastY - rect.top - cy_target_screen, lastX - rect.left - cx_target_screen);
+      const angleNew = Math.atan2(my_screen - cy_target_screen, mx_screen - cx_target_screen);
+      const dAngle = angleNew - angleOld;
+      const m = mat3.create();
+      translate(m, m, [cx_target_world, cy_target_world]);
+      rotate(m, m, dAngle);
+      translate(m, m, [-cx_target_world, -cy_target_world]);
+      const newM = mat3.create();
+      multiply(newM, m, store.targetTransform);
+      store.updateTargetTransform(newM);
+      lastX = e.clientX;
+      lastY = e.clientY;
+      return;
+    }
+
     if (!app || dragStartWorldCorners.length !== 4) return;
     const rect = app.canvas.getBoundingClientRect();
     const mx = e.clientX - rect.left;
@@ -546,10 +697,25 @@ const onMouseMove = (e: MouseEvent) => {
     const dx = currentMouseWorld[0] - dragStartMouseWorld[0];
     const dy = currentMouseWorld[1] - dragStartMouseWorld[1];
 
-    // Build new world corner positions: only the active corner moves, others stay fixed
-    const newWorldCorners = dragStartWorldCorners.map((c, i) =>
-      i === activeHandleIndex ? [c[0] + dx, c[1] + dy] as [number, number] : c as [number, number]
-    ) as [[number,number],[number,number],[number,number],[number,number]];
+    // Build new world corner positions
+    let newWorldCorners: [[number,number],[number,number],[number,number],[number,number]];
+    if (activeHandleIndex < 4) {
+      // Corner drag: only the grabbed corner moves
+      newWorldCorners = dragStartWorldCorners.map((c, i) =>
+        i === activeHandleIndex ? [c[0] + dx, c[1] + dy] as [number, number] : c as [number, number]
+      ) as [[number,number],[number,number],[number,number],[number,number]];
+    } else if (activeHandleIndex < 8) {
+      // Edge drag: both corners connected to this edge move together
+      const cornerPair = EDGE_TO_CORNERS[activeHandleIndex - 4]!;
+      newWorldCorners = dragStartWorldCorners.map((c, i) =>
+        cornerPair.includes(i) ? [c[0] + dx, c[1] + dy] as [number, number] : c as [number, number]
+      ) as [[number,number],[number,number],[number,number],[number,number]];
+    } else {
+      // Inside-frame drag: translate all 4 corners uniformly
+      newWorldCorners = dragStartWorldCorners.map(c =>
+        [c[0] + dx, c[1] + dy] as [number, number]
+      ) as [[number,number],[number,number],[number,number],[number,number]];
+    }
 
     const bbox = getTargetBBox();
     if (!bbox) return;
@@ -661,6 +827,7 @@ const onMouseUp = () => {
   activeHandleIndex = -1;
   dragStartWorldCorners = [];
   dragStartMouseWorld = [0, 0];
+  if (app) app.canvas.style.cursor = '';
 };
 
 const onWheel = (e: WheelEvent) => {
