@@ -3,7 +3,7 @@ import { ref, onMounted, onUnmounted, watch } from 'vue';
 import { Application, Container, Sprite, Graphics, Texture } from 'pixi.js';
 import { useMainStore } from '../store/main';
 import { mat3 } from 'gl-matrix';
-import { createIdentity, scale, translate, multiply, rotate } from '../utils/matrix';
+import { createIdentity, scale, translate, multiply, rotate, computeHomography, projectiveTransformPoint } from '../utils/matrix';
 import { getTargetColor } from '../utils/colors';
 import type { SpotModalityPayload } from '../api/types';
 
@@ -20,10 +20,8 @@ let cachedLocalCenter: [number, number] | null = null;
 let cachedLocalBBox: { minX: number; minY: number; maxX: number; maxY: number } | null = null;
 let overlayGraphics: Graphics | null = null;
 let activeHandleIndex = -1;
-let distortAxisLock: 'x' | 'y' | null = null;
-let distortAccumX = 0;
-let distortAccumY = 0;
-const AXIS_LOCK_THRESHOLD = 5;
+let dragStartWorldCorners: [number, number][] = [];
+let dragStartMouseWorld: [number, number] = [0, 0];
 const HANDLE_HIT_RADIUS = 15;
 
 const calculateFitMatrix = (width: number, height: number) => {
@@ -125,6 +123,18 @@ const worldToScreen = (wx: number, wy: number): [number, number] => {
   ];
 };
 
+const screenToWorld = (sx: number, sy: number): [number, number] => {
+  if (!app) return [0, 0];
+  const { width, height } = app.screen;
+  const cx = width / 2; const cy = height / 2;
+  return [
+    (sx - cx) / store.globalZoom + cx - store.viewOffset[0],
+    (sy - cy) / store.globalZoom + cy - store.viewOffset[1],
+  ];
+};
+
+const isProjective = (m: mat3): boolean => Math.abs(m[2]) > 1e-10 || Math.abs(m[5]) > 1e-10;
+
 const getHandleScreenPositions = (): [number, number][] => {
   const bbox = getTargetBBox();
   if (!bbox) return [];
@@ -134,8 +144,7 @@ const getHandleScreenPositions = (): [number, number][] => {
     [bbox.maxX, bbox.maxY], [bbox.minX, bbox.maxY],
   ];
   return localCorners.map(([lx, ly]) => {
-    const wx = lx * m[0] + ly * m[3] + m[6];
-    const wy = lx * m[1] + ly * m[4] + m[7];
+    const [wx, wy] = projectiveTransformPoint(m, lx, ly);
     return worldToScreen(wx, wy);
   });
 };
@@ -248,22 +257,26 @@ const updateViewTransform = () => {
 const updateContentTransform = () => {
     if (!contentContainer || !store.targetTransform) return;
     const m = store.targetTransform;
+    contentContainer.alpha = store.targetOpacity;
+
+    if (isProjective(m)) {
+      // Projective: spots are drawn at world positions directly; container stays at identity
+      contentContainer.position.set(0, 0);
+      contentContainer.rotation = 0;
+      contentContainer.skew.set(0, 0);
+      contentContainer.scale.set(1, 1);
+      return;
+    }
 
     const a = m[0]; const b = m[1]; const c = m[3]; const d = m[4];
     const tx = m[6]; const ty = m[7];
-
-    // Pixi v8 formula: a = cos(rot+skewY)*scaleX, b = sin(rot+skewY)*scaleX
-    //                  c = -sin(rot-skewX)*scaleY, d = cos(rot-skewX)*scaleY
-    // Setting skewY=0 → rotation=atan2(b,a), skewX=atan2(b,a)-atan2(-c,d)
     const rotationX = Math.atan2(b, a);
     const rotationY = Math.atan2(-c, d);
-
     contentContainer.position.set(tx, ty);
     contentContainer.rotation = rotationX;
     contentContainer.skew.x = rotationX - rotationY;
     contentContainer.skew.y = 0;
     contentContainer.scale.set(Math.sqrt(a * a + b * b), Math.sqrt(c * c + d * d));
-    contentContainer.alpha = store.targetOpacity;
 };
 
 const updateContent = async () => {
@@ -300,18 +313,33 @@ const updateContent = async () => {
         const graphics = new Graphics();
         contentContainer.addChild(graphics);
         
+        const m = store.targetTransform;
+        const projective = isProjective(m);
+
         spots.forEach(spot => {
             const isClassVisible = store.targetClassFilter.includes(spot.class);
             let isForegroundVisible = true;
             if (store.targetForegroundMode === 'foreground') isForegroundVisible = spot.foreground;
             if (store.targetForegroundMode === 'background') isForegroundVisible = !spot.foreground;
-            
+
             const isVisible = isClassVisible && isForegroundVisible;
             if (!isVisible) return;
 
             const color = getTargetColor(spot.class);
-            graphics.rect(spot.spatial[0] - drawRx/2, spot.spatial[1] - drawRy/2, drawRx, drawRy);
-            graphics.fill(color);
+
+            if (projective) {
+              // Transform all 4 corners of the spot to get correct perspective distortion
+              const lx = spot.spatial[0]; const ly = spot.spatial[1];
+              const c0 = projectiveTransformPoint(m, lx - drawRx/2, ly - drawRy/2);
+              const c1 = projectiveTransformPoint(m, lx + drawRx/2, ly - drawRy/2);
+              const c2 = projectiveTransformPoint(m, lx + drawRx/2, ly + drawRy/2);
+              const c3 = projectiveTransformPoint(m, lx - drawRx/2, ly + drawRy/2);
+              graphics.poly([c0[0], c0[1], c1[0], c1[1], c2[0], c2[1], c3[0], c3[1]]);
+              graphics.fill(color);
+            } else {
+              graphics.rect(spot.spatial[0] - drawRx/2, spot.spatial[1] - drawRy/2, drawRx, drawRy);
+              graphics.fill(color);
+            }
         });
     }
     updateContentTransform();
@@ -414,8 +442,12 @@ watch(() => store.pendingCommand, (cmd) => {
 // watch(() => store.targetData, () => { ... }) // Moved above to handle cache reset
 
 
-watch(() => [store.targetTransform, store.targetOpacity], () => {
-    updateContentTransform();
+watch(() => [store.targetTransform, store.targetOpacity], async () => {
+    if (store.targetMeta?.modality_type !== 'IMAGE' && isProjective(store.targetTransform)) {
+      await updateContent();
+    } else {
+      updateContentTransform();
+    }
     render();
 }, { deep: true });
 
@@ -431,7 +463,7 @@ watch(() => [store.targetClassFilter, store.commonSpotBoost, store.targetSpotSiz
 
 watch(
   () => [store.targetTransform, store.alignerInteraction, store.globalZoom, store.viewOffset, store.controlMode],
-  () => { drawDistortOverlay(); },
+  () => { drawDistortOverlay(); app?.render(); },
   { deep: true }
 );
 
@@ -445,12 +477,20 @@ const onMouseDown = (e: MouseEvent) => {
       const h = handles[i]!;
       if (Math.hypot(mx - h[0], my - h[1]) < HANDLE_HIT_RADIUS) {
         activeHandleIndex = i;
-        distortAxisLock = null;
-        distortAccumX = 0;
-        distortAccumY = 0;
         isDragging = true;
         lastX = e.clientX;
         lastY = e.clientY;
+        // Record current world positions of all 4 corners and the mouse position
+        const bbox = getTargetBBox();
+        if (bbox) {
+          const m = store.targetTransform;
+          const bboxCorners: [number,number][] = [
+            [bbox.minX, bbox.minY], [bbox.maxX, bbox.minY],
+            [bbox.maxX, bbox.maxY], [bbox.minX, bbox.maxY],
+          ];
+          dragStartWorldCorners = bboxCorners.map(([lx, ly]) => projectiveTransformPoint(m, lx, ly));
+        }
+        dragStartMouseWorld = screenToWorld(mx, my);
         return;
       }
     }
@@ -465,50 +505,30 @@ const onMouseMove = (e: MouseEvent) => {
   if (!isDragging) return;
 
   if (store.alignerInteraction === 'distort' && activeHandleIndex >= 0) {
-    const dx_screen = e.clientX - lastX;
-    const dy_screen = e.clientY - lastY;
-    lastX = e.clientX;
-    lastY = e.clientY;
+    if (!app || dragStartWorldCorners.length !== 4) return;
+    const rect = app.canvas.getBoundingClientRect();
+    const mx = e.clientX - rect.left;
+    const my = e.clientY - rect.top;
+    const currentMouseWorld = screenToWorld(mx, my);
 
-    if (distortAxisLock === null) {
-      distortAccumX += dx_screen;
-      distortAccumY += dy_screen;
-      if (Math.abs(distortAccumX) >= AXIS_LOCK_THRESHOLD || Math.abs(distortAccumY) >= AXIS_LOCK_THRESHOLD) {
-        distortAxisLock = Math.abs(distortAccumX) >= Math.abs(distortAccumY) ? 'x' : 'y';
-      }
-      return;
-    }
+    // Total displacement in world space from drag start
+    const dx = currentMouseWorld[0] - dragStartMouseWorld[0];
+    const dy = currentMouseWorld[1] - dragStartMouseWorld[1];
 
-    const handles = getHandleScreenPositions();
-    if (handles.length !== 4) return;
-    const [sh0, sh1, , sh3] = handles as [[number,number],[number,number],[number,number],[number,number]];
-    const bboxScreenWidth = Math.hypot(sh1[0] - sh0[0], sh1[1] - sh0[1]);
-    const bboxScreenHeight = Math.hypot(sh3[0] - sh0[0], sh3[1] - sh0[1]);
+    // Build new world corner positions: only the active corner moves, others stay fixed
+    const newWorldCorners = dragStartWorldCorners.map((c, i) =>
+      i === activeHandleIndex ? [c[0] + dx, c[1] + dy] as [number, number] : c as [number, number]
+    ) as [[number,number],[number,number],[number,number],[number,number]];
 
-    const localCenter = getLocalCenter();
-    const mCur = store.targetTransform;
-    const cx_w = (localCenter[0] || 0) * mCur[0] + (localCenter[1] || 0) * mCur[3] + mCur[6];
-    const cy_w = (localCenter[0] || 0) * mCur[1] + (localCenter[1] || 0) * mCur[4] + mCur[7];
+    const bbox = getTargetBBox();
+    if (!bbox) return;
+    const localCorners: [[number,number],[number,number],[number,number],[number,number]] = [
+      [bbox.minX, bbox.minY], [bbox.maxX, bbox.minY],
+      [bbox.maxX, bbox.maxY], [bbox.minX, bbox.maxY],
+    ];
 
-    const shearM = mat3.create();
-    if (distortAxisLock === 'x' && bboxScreenHeight > 0) {
-      shearM[3] = dx_screen / (bboxScreenHeight / 2);
-    } else if (distortAxisLock === 'y' && bboxScreenWidth > 0) {
-      shearM[1] = dy_screen / (bboxScreenWidth / 2);
-    }
-
-    const mT = mat3.create();
-    translate(mT, mT, [cx_w, cy_w]);
-    const mTi = mat3.create();
-    translate(mTi, mTi, [-cx_w, -cy_w]);
-
-    const fullShear = mat3.create();
-    multiply(fullShear, shearM, mTi);
-    multiply(fullShear, mT, fullShear);
-
-    const newM = mat3.create();
-    multiply(newM, fullShear, store.targetTransform);
-    store.updateTargetTransform(newM);
+    const H = computeHomography(localCorners, newWorldCorners);
+    if (H) store.updateTargetTransform(H);
     return;
   }
 
@@ -585,9 +605,8 @@ const onMouseMove = (e: MouseEvent) => {
 const onMouseUp = () => {
   isDragging = false;
   activeHandleIndex = -1;
-  distortAxisLock = null;
-  distortAccumX = 0;
-  distortAccumY = 0;
+  dragStartWorldCorners = [];
+  dragStartMouseWorld = [0, 0];
 };
 
 const onWheel = (e: WheelEvent) => {
