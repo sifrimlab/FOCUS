@@ -17,7 +17,7 @@ import gc
 from scipy.ndimage import binary_fill_holes, binary_opening
 
 import focus.utils as utils
-from focus.constants import ImzMLFileParser, MsiIntensityNormalization, MsiMetadata, MsiIonMode, MsiPreprocessingParams
+from focus.constants import ImzMLFileParser, MsiIntensityNormalization, MsiSampleType, MsiMetadata, MsiIonMode, MsiPreprocessingParams
 from focus.constants import MODALITY_PREPROCESSING, MODALITY_PREPROCESSING_MERGED
 from focus.preprocessing.base import BaseSample, BaseDataset
 from focus.preprocessing._registry import ModalityHandler, register_modality
@@ -214,7 +214,7 @@ class MsiSample(BaseSample):
 		self.filtered_recalibration_offset: dict[
 			MsiIonMode, np.ndarray] = {}  # To be computed during dataset preprocessing
 		self.filtered_idx: list[int] | None = None  # To be computed during dataset preprocessing
-		self._sample_type: str = "tissue"  # To be set from process_dataset ("tissue" or "microgrid")
+		self._sample_type: MsiSampleType = MsiSampleType.TISSUE  # To be set from process_dataset
 
 		# Initialize the other variables
 		self._metadata_files = {}  # For each ion mode, store the absolute path to the imzML file
@@ -815,7 +815,7 @@ class MsiSample(BaseSample):
 
 		tissue_mask = np.zeros(n_spots, dtype=bool)
 
-		if self._sample_type == "microgrid":
+		if self._sample_type == MsiSampleType.MICROGRID:
 			# Microgrid: mostly background with isolated single cells.  Otsu with a
 			# 25th-percentile floor ensures at most 75 % of spots are discarded,
 			# protecting weak single-cell signals.
@@ -887,7 +887,7 @@ class MsiSample(BaseSample):
 		# ------------------------------------------------------------------
 		# 5. Spatial morphological cleanup (tissue section only)
 		# ------------------------------------------------------------------
-		if self._sample_type == "tissue":
+		if self._sample_type == MsiSampleType.TISSUE:
 			pixel_coords = self._metadata[ion_mode][MsiMetadata.PIXEL_COORDINATES]  # (N, 2): (y, x)
 			if pixel_coords is not None and len(pixel_coords) == n_spots:
 				grid_h = int(pixel_coords[:, 0].max()) + 1
@@ -1512,7 +1512,7 @@ class MsiDataset(BaseDataset):
 	                    recalibration_reference: dict[MsiIonMode, np.ndarray] | None = None,
 	                    min_intensity_threshold: float = 10000.0,
 	                    detect_background: bool = True,
-	                    sample_type: str = "tissue",
+	                    sample_type: str = MsiSampleType.TISSUE,
 	                    force_recomputing: bool = False,
 	                    step_reporter=None
 	                    ) -> dict[str, str]:
@@ -1954,7 +1954,7 @@ def _extract_msi_settings(settings):
 		'recalibration_reference': settings.get(MsiPreprocessingParams.RECALIBRATION_REFERENCE, None),
 		'min_intensity_threshold': settings.get(MsiPreprocessingParams.MIN_INTENSITY_THRESHOLD, 1e4),
 		'detect_background': settings.get(MsiPreprocessingParams.DETECT_BACKGROUND, False),
-		'sample_type': settings.get(MsiPreprocessingParams.SAMPLE_TYPE, "tissue"),
+		'sample_type': settings.get(MsiPreprocessingParams.SAMPLE_TYPE, MsiSampleType.TISSUE),
 		'force_recomputing': settings.get(MsiPreprocessingParams.FORCE_RECOMPUTING, False),
 	}
 

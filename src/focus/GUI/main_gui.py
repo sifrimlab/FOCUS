@@ -7,10 +7,11 @@ from focus.constants import (
 	ConfigParameters, ModalityParameters, ModalityType, RegistrationType,
 	REGISTRATION_COMPATIBILITY,
 	AlignmentStrategy, ALIGNMENT_STRATEGY_COMPATIBILITY,
-	SegmentationBackgroundColor, MsiIntensityNormalization,
+	SegmentationBackgroundColor, MsiIntensityNormalization, MsiSampleType,
 	MicroscopyImageProcessingParams, MsiPreprocessingParams,
 	RamanPreprocessingParams, STPreprocessingParams,
 	AnnotationFileType,
+	DISPLAY_NAMES,
 )
 from focus.preprocessing._utils import discover_sample_ids, validate_path_readable
 
@@ -452,7 +453,7 @@ def _build_schema() -> dict:
 				MsiPreprocessingParams.RECALIBRATION_REFERENCE: {"type": "string", "default": None, "nullable": True},
 				MsiPreprocessingParams.MIN_INTENSITY_THRESHOLD: {"type": "float", "default": 1e4},
 				MsiPreprocessingParams.DETECT_BACKGROUND: {"type": "bool", "default": False},
-				MsiPreprocessingParams.SAMPLE_TYPE: {"type": "enum", "options": ["tissue", "microgrid"], "default": "tissue"},
+				MsiPreprocessingParams.SAMPLE_TYPE: {"type": "enum", "options": MsiSampleType.list(), "default": MsiSampleType.TISSUE},
 				MsiPreprocessingParams.FORCE_RECOMPUTING: {"type": "bool", "default": False},
 			},
 			ModalityType.RAMAN: {
@@ -477,9 +478,10 @@ def _build_schema() -> dict:
 			},
 		},
 		"annotation_file_types": AnnotationFileType.list(),
+		"display_names": DISPLAY_NAMES,
 		"registration_params": {
 			RegistrationType.FEATURE_EXTRACTION: {
-				"min_max_rescale": {"type": "bool", "default": True},
+				"min_max_rescale": {"type": "bool", "default": False},
 				"force_recomputing": {"type": "bool", "default": False},
 				"patch_size": {"type": "int", "default": 224},
 				"background_color": {
@@ -489,7 +491,7 @@ def _build_schema() -> dict:
 				},
 			},
 			RegistrationType.SPOT_INTERPOLATION: {
-				"min_max_rescale": {"type": "bool", "default": True},
+				"min_max_rescale": {"type": "bool", "default": False},
 				"force_recomputing": {"type": "bool", "default": False},
 			},
 			RegistrationType.NONE: {},

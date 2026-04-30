@@ -235,6 +235,10 @@ class TransformationType(_AbstractEnum):
 	AFFINE = "affine"
 	BSPLINE = "bspline"
 
+class MsiSampleType(_AbstractEnum):
+	TISSUE   = "tissue"
+	MICROGRID = "microgrid"
+
 class MsiIntensityNormalization(_AbstractEnum):
 	TIC = "tic"
 	LOG = "log"
@@ -243,3 +247,33 @@ class MsiIntensityNormalization(_AbstractEnum):
 class DecompositionMethod(_AbstractEnum):
 	PCA = "pca"
 	NMF = "nmf"
+
+
+# Human-readable labels for all string constants shown in the GUI.
+# The GUI uses the original literals in the config file; these labels are display-only.
+DISPLAY_NAMES: dict[str, str] = {
+	# Modality types
+	ModalityType.MICROSCOPY_IMAGE: "Microscopy Image",
+	ModalityType.MSI:              "MSI",
+	ModalityType.RAMAN:            "Raman",
+	ModalityType.ST:               "Spatial Transcriptomics",
+	# Registration types
+	RegistrationType.NONE:               "None",
+	RegistrationType.FEATURE_EXTRACTION: "Feature Extraction",
+	RegistrationType.SPOT_INTERPOLATION: "Spot Interpolation",
+	# Alignment strategies
+	AlignmentStrategy.MANUAL:      "Manual",
+	AlignmentStrategy.PRE_ALIGNED: "Pre-Aligned",
+	# MSI intensity normalisation
+	MsiIntensityNormalization.TIC:  "TIC",
+	MsiIntensityNormalization.LOG:  "Log",
+	MsiIntensityNormalization.NONE: "None",
+	# Background colour
+	SegmentationBackgroundColor.WHITE: "White",
+	SegmentationBackgroundColor.BLACK: "Black",
+	# MSI sample type
+	MsiSampleType.TISSUE:    "Tissue",
+	MsiSampleType.MICROGRID: "Microgrid",
+	# Annotation file types
+	AnnotationFileType.GEOJSON: "GeoJSON",
+}

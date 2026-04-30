@@ -58,7 +58,7 @@ class FeatureExtractorRegistration:
 		anchor_files: dict[str, str],
 		image_name: str,
 		anchor_name: str,
-		min_max_rescale: bool = True,
+		min_max_rescale: bool = False,
 		force_recomputing: bool = False,
 		step_reporter=None,
 		**kwargs,
@@ -339,7 +339,7 @@ class SpotInterpolationRegistration:
 		target_files: dict[str, str],
 		anchor_name: str,
 		target_name: str,
-		min_max_rescale: bool = True,
+		min_max_rescale: bool = False,
 		force_recomputing: bool = False,
 		step_reporter=None,
 	) -> dict[str, str]:

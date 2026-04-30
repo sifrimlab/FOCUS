@@ -16,6 +16,7 @@ export interface Schema {
   annotation_file_types: string[];
   processing_params: Record<string, Record<string, ParamSpec>>;
   registration_params: Record<string, Record<string, ParamSpec>>;
+  display_names: Record<string, string>;
 }
 
 export interface Modality {

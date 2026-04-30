@@ -9,7 +9,7 @@ from focus.constants import (
 	AlignmentStrategy, AnnotationsParameters, AnnotationFileType,
 	MODALITY_ANNOTATION, MODALITY_ANNOTATION_MERGED,
 )
-from focus.utils import write_h5ad_compat, concat_on_disk_compat
+from focus.utils import write_h5ad_compat, concat_on_disk_compat, write_h5mu_compat
 from focus.preprocessing import preprocess_modality
 from focus.preprocessing._utils import StepReporter
 from focus.alignment.alignment import DirectMappingAligner
@@ -464,7 +464,7 @@ def _run_registration(config: dict, modality_files: dict, aligned_files: dict, s
 				anchor_files=aligned_files[mod_name],
 				image_name=mod_name,
 				anchor_name=ref_name,
-				min_max_rescale=reg_settings.get("min_max_rescale", True),
+				min_max_rescale=reg_settings.get("min_max_rescale", False),
 				force_recomputing=reg_settings.get("force_recomputing", False),
 				background_color=reg_settings.get("background_color", None),
 				patch_size=reg_settings.get("patch_size", 224),
@@ -482,7 +482,7 @@ def _run_registration(config: dict, modality_files: dict, aligned_files: dict, s
 				target_files=modality_files[mod_name],
 				anchor_name=ref_name,
 				target_name=mod_name,
-				min_max_rescale=reg_settings.get("min_max_rescale", True),
+				min_max_rescale=reg_settings.get("min_max_rescale", False),
 				force_recomputing=reg_settings.get("force_recomputing", False),
 				step_reporter=step_reporter,
 			)
@@ -596,13 +596,7 @@ def _compile_mudata(
 
 	output_path = MULTIMODAL_DATASET(dataset_path, "h5mu")
 	os.makedirs(os.path.dirname(output_path), exist_ok=True)
-	for _df in (mdata.obs, mdata.var):
-		for _col in _df.columns:
-			if isinstance(_df[_col].dtype, pd.StringDtype):
-				_df[_col] = _df[_col].astype(object)
-		if isinstance(_df.index.dtype, pd.StringDtype):
-			_df.index = _df.index.astype(object)
-	mdata.write(output_path)
+	write_h5mu_compat(mdata, output_path)
 	logger.info(f"MuData saved to {output_path} with {len(mod_dict)} modalities, {n_anchor_obs} observations")
 
 	return output_path

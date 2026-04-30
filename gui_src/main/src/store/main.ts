@@ -88,6 +88,10 @@ export const useMainStore = defineStore('main', {
   },
 
   actions: {
+    displayName(value: string): string {
+      return this.schema?.display_names[value] ?? value;
+    },
+
     async fetchSchema() {
       this.schema = await api.getSchema();
     },
@@ -206,6 +210,17 @@ export const useMainStore = defineStore('main', {
           }
         }
         Object.assign(m, updates);
+      }
+      this.triggerAutoSave();
+    },
+
+    setReferenceModality(name: string) {
+      this.config.reference_modality = name;
+      // The reference modality is never registered — reset its type
+      const ref = this.config.modalities.find((m: Modality) => m.name === name);
+      if (ref && ref.registration_type !== 'none') {
+        ref.registration_type = 'none';
+        ref.registration_settings = {};
       }
       this.triggerAutoSave();
     },

@@ -391,17 +391,51 @@ def concat_on_disk_compat(*args, **kwargs) -> None:
 	anndata.experimental.concat_on_disk(*args, **kwargs)
 
 
+def _compat_strings(obj):
+	"""Recursively convert pd.StringDtype fields to object dtype in-place."""
+	if isinstance(obj, pd.DataFrame):
+		for col in obj.columns:
+			if isinstance(obj[col].dtype, pd.StringDtype):
+				obj[col] = obj[col].astype(object)
+		if isinstance(obj.index.dtype, pd.StringDtype):
+			obj.index = obj.index.astype(object)
+	elif isinstance(obj, pd.Series):
+		if isinstance(obj.dtype, pd.StringDtype):
+			return obj.astype(object)
+	elif isinstance(obj, dict):
+		for key in list(obj.keys()):
+			obj[key] = _compat_strings(obj[key])
+	return obj
+
+
+def _compat_adata(adata) -> None:
+	"""Convert all nullable string fields in an AnnData (or MuData) to object dtype."""
+	for df in (adata.obs, adata.var):
+		_compat_strings(df)
+	for key in list(adata.obsm.keys()):
+		adata.obsm[key] = _compat_strings(adata.obsm[key])
+	_compat_strings(adata.uns)
+
+
 def write_h5ad_compat(adata, path, **kwargs) -> None:
 	"""Write AnnData to h5ad, converting nullable string arrays to object dtype.
 
-	Converts pd.StringDtype columns and indices in obs and var to object dtype before
-	writing so that the output files are readable by anndata < 0.11 and downstream
-	tools that do not support the newer nullable-string encoding.
+	Converts pd.StringDtype in obs, var, obsm, and uns (recursively) before writing
+	so that the file is readable by anndata < 0.11 and downstream tools that do not
+	support the newer nullable-string encoding.
 	"""
-	for df in (adata.obs, adata.var):
-		for col in df.columns:
-			if isinstance(df[col].dtype, pd.StringDtype):
-				df[col] = df[col].astype(object)
-		if isinstance(df.index.dtype, pd.StringDtype):
-			df.index = df.index.astype(object)
+	_compat_adata(adata)
 	adata.write_h5ad(path, **kwargs)
+
+
+def write_h5mu_compat(mdata, path, **kwargs) -> None:
+	"""Write MuData to h5mu, converting nullable string arrays to object dtype.
+
+	Converts pd.StringDtype in obs, var, obsm, and uns (recursively) for the
+	top-level MuData and every modality AnnData so the file is readable by
+	anndata/mudata < 0.11 and downstream tools that do not support the newer
+	nullable-string encoding.
+	"""
+	for adata in [mdata] + list(mdata.mod.values()):
+		_compat_adata(adata)
+	mdata.write(path, **kwargs)

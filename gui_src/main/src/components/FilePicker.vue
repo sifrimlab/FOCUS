@@ -56,21 +56,26 @@ const displayValue = (): string => {
 
 <template>
   <div class="relative">
-    <!-- Display + browse button -->
-    <div class="flex items-center gap-1 w-64">
-      <div
-        class="flex-1 border rounded px-2 py-1 text-sm dark:bg-gray-700 dark:border-gray-600 font-mono truncate min-w-0"
-        :title="(value as string) || ''"
+    <!-- Display + browse button (inset) -->
+    <div
+      class="flex items-center w-48 border rounded text-sm bg-white dark:bg-gray-700 border-gray-300 dark:border-gray-600 overflow-hidden"
+      :title="(value as string) || ''"
+    >
+      <span
+        class="flex-1 px-2 py-1.5 font-mono truncate min-w-0 select-none"
         :class="value ? 'text-gray-700 dark:text-gray-200' : 'text-gray-400 dark:text-gray-500 italic'"
       >
         {{ displayValue() || 'optional' }}
-      </div>
+      </span>
+      <!-- Separator -->
+      <span class="w-px self-stretch bg-gray-200 dark:bg-gray-600 shrink-0"></span>
+      <!-- Inset browse button -->
       <button
         @click="openBrowser"
-        class="shrink-0 p-1.5 rounded border border-gray-300 dark:border-gray-600 hover:bg-gray-100 dark:hover:bg-gray-600 transition-colors"
+        class="shrink-0 px-2 self-stretch flex items-center bg-white dark:bg-gray-700 hover:bg-gray-100 dark:hover:bg-gray-600 transition-colors"
         title="Browse files"
       >
-        <svg class="w-3.5 h-3.5 text-gray-500 dark:text-gray-400" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+        <svg class="w-3.5 h-3.5 text-gray-400 dark:text-gray-400" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
           <path stroke-linecap="round" stroke-linejoin="round" d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V7z" />
         </svg>
       </button>

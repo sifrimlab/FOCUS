@@ -95,8 +95,8 @@ const confirmRemoveAll = async () => {
         <div class="flex items-center justify-between gap-4">
           <label class="text-sm font-medium shrink-0">Reference Modality</label>
           <select
-            v-model="store.config.reference_modality"
-            @change="store.triggerAutoSave()"
+            :value="store.config.reference_modality"
+            @change="store.setReferenceModality(($event.target as HTMLSelectElement).value)"
             class="border rounded px-3 py-2 text-sm dark:bg-gray-700 dark:border-gray-600 w-56"
           >
             <option value="" disabled>Select reference...</option>

@@ -68,7 +68,7 @@ const formatLabel = (key: string): string => {
         @change="updateSetting(key, ($event.target as HTMLSelectElement).value)"
         class="border rounded px-2 py-1 text-sm dark:bg-gray-700 dark:border-gray-600 w-40"
       >
-        <option v-for="opt in spec.options" :key="opt" :value="opt">{{ opt }}</option>
+        <option v-for="opt in spec.options" :key="opt" :value="opt">{{ store.displayName(opt) }}</option>
       </select>
 
       <!-- Int input -->

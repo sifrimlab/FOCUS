@@ -53,6 +53,8 @@ const onRegistrationTypeChange = (newRegType: string) => {
   });
 };
 
+const isReference = computed(() => modality.value.name === store.config.reference_modality);
+
 // Alignment settings visibility: shown for non-reference modalities when alignment is enabled
 // AND the reference modality is spot-based (spot-based refs have meaningful spatial coordinates
 // that could already be expressed in another modality's coordinate system).
@@ -176,7 +178,7 @@ const cancelEditName = () => {
           @change="onTypeChange(($event.target as HTMLSelectElement).value)"
           class="border rounded px-2 py-1.5 text-sm dark:bg-gray-700 dark:border-gray-600 w-48"
         >
-          <option v-for="t in store.schema?.modality_types" :key="t" :value="t">{{ t }}</option>
+          <option v-for="t in store.schema?.modality_types" :key="t" :value="t">{{ store.displayName(t) }}</option>
         </select>
       </div>
 
@@ -236,8 +238,8 @@ const cancelEditName = () => {
         </div>
       </template>
 
-      <!-- Registration (only when perform_registration is enabled) -->
-      <template v-if="store.config.perform_registration">
+      <!-- Registration (only when perform_registration is enabled and this is not the reference) -->
+      <template v-if="store.config.perform_registration && !isReference">
         <!-- Registration type — inline -->
         <div class="flex items-center justify-between gap-4">
           <label class="text-sm font-medium shrink-0">Registration Type</label>
@@ -246,7 +248,7 @@ const cancelEditName = () => {
             @change="onRegistrationTypeChange(($event.target as HTMLSelectElement).value)"
             class="border rounded px-2 py-1.5 text-sm dark:bg-gray-700 dark:border-gray-600 w-48"
           >
-            <option v-for="rt in compatibleRegistrationTypes" :key="rt" :value="rt">{{ rt }}</option>
+            <option v-for="rt in compatibleRegistrationTypes" :key="rt" :value="rt">{{ store.displayName(rt) }}</option>
           </select>
         </div>
 
