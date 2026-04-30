@@ -446,7 +446,7 @@ class SpotInterpolationRegistration:
 				f"Target: {target_coords.shape[0]} spots, {target_features.shape[1]} features."
 			)
 
-			# Perform Gaussian-weighted interpolation
+			# Perform Gaussian-weighted interpolation on .X
 			registered_features = self._interpolate_features(
 				anchor_coordinates=anchor_coords,
 				anchor_spot_size=spot_size,
@@ -454,18 +454,29 @@ class SpotInterpolationRegistration:
 				target_features=target_features,
 			)
 
+			# Interpolate each layer separately — same spots, different payload versions
+			registered_layers: dict[str, np.ndarray] = {}
+			for layer_key in target_adata.layers:
+				layer_mat = target_adata.layers[layer_key]
+				if scipy.sparse.issparse(layer_mat):
+					layer_mat = np.asarray(layer_mat.todense())
+				registered_layers[layer_key] = self._interpolate_features(
+					anchor_coordinates=anchor_coords,
+					anchor_spot_size=spot_size,
+					target_coordinates=target_coords,
+					target_features=layer_mat,
+				)
+
 			# Build output AnnData at anchor positions
 			adata = anndata.AnnData(
 				X=registered_features,
 				obsm={'spatial': anchor_coords.copy()},
 				obs={'sample_id': [sample_id] * anchor_coords.shape[0]},
+				layers=registered_layers if registered_layers else None,
 			)
 
-			# Carry over var metadata from target if available
-			if target_adata.var is not None and len(target_adata.var.columns) > 0:
-				adata.var = target_adata.var.copy()
-			if target_adata.var_names is not None and len(target_adata.var_names) == registered_features.shape[1]:
-				adata.var_names = target_adata.var_names.tolist()
+			# Carry over var metadata from target (gene names, m/z values, etc.)
+			adata.var = target_adata.var.copy()
 
 			write_h5ad_compat(adata, registered_file, compression=_H5AD_COMPRESSION)
 			registered_files[sample_id] = registered_file
