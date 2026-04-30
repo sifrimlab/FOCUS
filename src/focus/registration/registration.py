@@ -207,7 +207,7 @@ class FeatureExtractorRegistration:
 			adata.obs_names = [f"{sample_id}_{i}" for i in range(adata.n_obs)]
 			adata_list.append(adata)
 
-		merged = anndata.concat(adata_list)
+		merged = anndata.concat(adata_list, merge='same')
 
 		if min_max_rescale and merged.n_obs > 0:
 			scaler = MinMaxScaler()
@@ -521,7 +521,7 @@ class SpotInterpolationRegistration:
 			adata.obs_names = [f"{sample_id}_{i}" for i in range(adata.n_obs)]
 			adata_list.append(adata)
 
-		merged = anndata.concat(adata_list)
+		merged = anndata.concat(adata_list, merge='same')
 
 		if min_max_rescale and merged.n_obs > 0:
 			scaler = MinMaxScaler()

@@ -344,7 +344,7 @@ class SpatialTranscriptomicDataset(BaseDataset):
         reporter.message(f"Concatenating {len(self.samples)} samples...")
         # Use outer join to preserve genes when panels differ across samples.
         # Missing genes are filled with 0 counts.
-        combined = ad.concat(adata_list, join="outer", fill_value=0)
+        combined = ad.concat(adata_list, join="outer", fill_value=0, merge='same')
         del adata_list  # Free per-sample objects
 
         # Ensure .X is sparse CSR for efficient row-based filter operations.

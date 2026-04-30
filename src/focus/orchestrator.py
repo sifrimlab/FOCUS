@@ -7,7 +7,7 @@ from focus.constants import (
 	ConfigParameters, ModalityParameters, RegistrationType,
 	ModalityType, MODALITY_FILE_EXTENSION, MULTIMODAL_DATASET,
 	AlignmentStrategy, AnnotationsParameters, AnnotationFileType,
-	MODALITY_ANNOTATION, MODALITY_ANNOTATION_MERGED,
+	MODALITY_ANNOTATION, MODALITY_ANNOTATION_MERGED, DISPLAY_NAMES,
 )
 from focus.utils import write_h5ad_compat, concat_on_disk_compat, write_h5mu_compat
 from focus.preprocessing import preprocess_modality
@@ -159,7 +159,8 @@ def run(config: dict, progress_callback=None) -> dict:
 		_report(state="running", stage="registration", stage_index=stage_reg, total_stages=n_stages,
 				message="Starting registration...", sub_step=None, sub_step_index=0,
 				sub_step_total=0, sub_step_progress=0, sub_step_items_total=0)
-		registered_files = _run_registration(config, modality_files, aligned_files, step_reporter)
+		registered_files = _run_registration(config, modality_files, aligned_files, step_reporter,
+										   report=_report, stage_index=stage_reg, n_stages=n_stages)
 		reg_merged: list[str] = []
 		reg_per_modality: dict[str, list[str]] = {}
 		for mod_name, mod_files in registered_files.items():
@@ -421,7 +422,8 @@ def _run_annotation_transfer(
 	return result
 
 
-def _run_registration(config: dict, modality_files: dict, aligned_files: dict, step_reporter=None) -> dict:
+def _run_registration(config: dict, modality_files: dict, aligned_files: dict, step_reporter=None,
+					  report=None, stage_index: int = 3, n_stages: int = 4) -> dict:
 	"""
 	Register each non-reference modality that has a registration_type != 'none'.
 
@@ -450,6 +452,13 @@ def _run_registration(config: dict, modality_files: dict, aligned_files: dict, s
 
 		reg_settings = modality[ModalityParameters.REGISTRATION_SETTINGS]
 		logger.info(f"Registering '{mod_name}' using '{reg_type}' strategy")
+
+		if report:
+			report(state="running", stage="registration", stage_index=stage_index, total_stages=n_stages,
+				   current_modality=mod_name,
+				   message=f"Performing registration in {DISPLAY_NAMES[reg_type]} mode",
+				   sub_step=None, sub_step_index=0, sub_step_total=0,
+				   sub_step_progress=0, sub_step_items_total=0)
 
 		if reg_type == RegistrationType.FEATURE_EXTRACTION:
 			engine = FeatureExtractorRegistration(
