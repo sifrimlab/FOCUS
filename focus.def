@@ -1,0 +1,75 @@
+# ── FOCUS Singularity / Apptainer definition ─────────────────────────────────
+#
+# Build:
+#   singularity build focus.sif focus.def       (requires root or --fakeroot)
+#   apptainer build focus.sif focus.def
+#
+# Run (GUI):
+#   singularity run --bind /your/data -p 5050:5050 focus.sif
+#   apptainer run  --bind /your/data focus.sif
+#
+# Run (CLI):
+#   singularity run --bind /your/data focus.sif --config /your/data/project/config.json
+#
+# Note: Singularity/Apptainer automatically bind-mounts $HOME and /tmp.
+# Use --bind /path to add additional directories at the same path inside
+# the container — no directory translation required in config files.
+
+Bootstrap: docker
+From: python:3.11-slim
+
+%labels
+    Author  Lorenzo Venturelli
+    Version 0.1.0
+    Description FOCUS — Flexible Multiomics data preprocessing, alignment and registration
+
+%environment
+    export PATH=/opt/focus-env/bin:$PATH
+    export PYTHONPATH=/opt/focus/src:$PYTHONPATH
+
+%files
+    requirements.txt  /opt/focus/requirements.txt
+    pyproject.toml    /opt/focus/pyproject.toml
+    src               /opt/focus/src
+
+%post
+    # System dependencies
+    apt-get update && apt-get install -y --no-install-recommends \
+        libgl1 \
+        libglib2.0-0 \
+        libgomp1 \
+        libsm6 \
+        libxext6 \
+    && rm -rf /var/lib/apt/lists/*
+
+    # Create a dedicated venv so binaries are on a known PATH
+    python3 -m venv /opt/focus-env
+    /opt/focus-env/bin/pip install --no-cache-dir --upgrade pip
+
+    # Install dependencies then the FOCUS package
+    /opt/focus-env/bin/pip install --no-cache-dir -r /opt/focus/requirements.txt
+    /opt/focus-env/bin/pip install --no-cache-dir -e /opt/focus
+
+%runscript
+    exec /opt/focus-env/bin/focus "$@"
+
+%startscript
+    exec /opt/focus-env/bin/focus "$@"
+
+%help
+    FOCUS: Flexible Multiomics data preprocessing, alignment and registration.
+
+    Usage
+    -----
+    Launch GUI (opens http://localhost:5050):
+        singularity run --bind /your/data focus.sif
+
+    CLI mode:
+        singularity run --bind /your/data focus.sif --config /your/data/project/config.json
+
+    The --bind flag maps the given host directory into the container at the
+    *same absolute path*, so all paths in your config file stay unchanged.
+
+    On HPC clusters without outbound port access use SSH port-forwarding:
+        ssh -L 5050:localhost:5050 <cluster-host>
+    then open http://localhost:5050 in your local browser.

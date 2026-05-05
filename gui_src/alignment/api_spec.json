@@ -81,12 +81,12 @@
                     "type": "string",
                     "description": "Display name for the modality"
                   },
-                  "raster_size": {
+                  "spot_size": {
                     "type": "array",
                     "items": { "type": "number" },
                     "minItems": 2,
                     "maxItems": 2,
-                    "description": "[width, height] of the raster grid. Required if modality_type is SPOT."
+                    "description": "[x, y] spot dimensions in micrometers. Required if modality_type is SPOT."
                   },
                   "image_shape": {
                     "type": "array",
@@ -204,10 +204,10 @@
                       },
                       "description": "List of target spots mapped to reference pixel coordinates. Null if outside reference bounds."
                     },
-                    "raster_size_px": {
+                    "spot_size_px": {
                       "type": "array",
                       "items": { "type": "number" },
-                      "description": "The size of the target raster projected into reference pixel space"
+                      "description": "The spot size projected into reference pixel space"
                     }
                   }
                 }

@@ -201,3 +201,17 @@ cython_debug/
 tools/BaSiCpy/basicpy.sif
 
 notebooks/gigapath
+
+# GUI — Node / build intermediates (exclude node_modules and Vite cache;
+# keep gui_src source files and the built artifacts under src/focus/GUI/)
+gui_src/**/node_modules/
+gui_src/**/.vite/
+gui_src/**/*.tsbuildinfo
+gui_src/**/dist/
+
+# Graphify data
+graphify-out/
+
+# Claude Code
+CLAUDE.md
+.claude/

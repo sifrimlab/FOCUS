@@ -53,9 +53,9 @@ export function computeExportPayload(
 
   if (refMeta.modality_type === 'IMAGE' && tgtMeta.modality_type === 'SPOT') {
     const spots = tgtData as SpotModalityPayload;
-    const rasterSize = tgtMeta.raster_size!;
+    const spotSize = tgtMeta.spot_size!;
     const scale = getScaleFactor();
-    const rasterSizePx = [rasterSize[0] * scale, rasterSize[1] * scale];
+    const spotSizePx = [spotSize[0] * scale, spotSize[1] * scale];
     
     const mappedSpots = spots.map(spot => {
       const [px, py] = transformPoint(spot.spatial[0], spot.spatial[1]);
@@ -69,15 +69,15 @@ export function computeExportPayload(
 
     return {
       spots: mappedSpots,
-      raster_size_px: rasterSizePx
+      spot_size_px: spotSizePx
     };
   }
 
   if (refMeta.modality_type === 'SPOT' && tgtMeta.modality_type === 'IMAGE') {
     const [h, w] = tgtMeta.image_shape!;
     const refSpots = refData as SpotModalityPayload;
-    const refRaster = refMeta.raster_size!;
-    const [rx, ry] = refRaster;
+    const refSpotSize = refMeta.spot_size!;
+    const [rx, ry] = refSpotSize;
     const rx2 = rx / 2;
     const ry2 = ry / 2;
 

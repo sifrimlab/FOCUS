@@ -25,13 +25,12 @@ export const useMainStore = defineStore('main', {
     targetOpacity: 0.7,
     globalZoom: 1.0,
     viewOffset: [0, 0] as [number, number],
-    pendingCommand: null as { type: 'zoom' | 'rotate' | 'flip' | 'reset' | 'setScale' | 'setRotation' | 'resetScale' | 'resetRotation', value?: any } | null,
+    pendingCommand: null as { type: 'zoom' | 'rotate' | 'flip' | 'reset' | 'resetDistort' | 'setScale' | 'setRotation' | 'resetScale' | 'resetRotation', value?: any } | null,
     referenceSpotBoost: 1.0,
     targetSpotBoost: 1.0,
     controlMode: 'aligner' as 'aligner' | 'camera',
-    alignerInteraction: 'translate' as 'translate' | 'rotate',
-    referenceRasterSize: [1, 1] as [number, number],
-    targetRasterSize: [1, 1] as [number, number],
+    referenceSpotSize: [1, 1] as [number, number],
+    targetSpotSize: [1, 1] as [number, number],
     referenceForegroundMode: 'all' as 'all' | 'foreground' | 'background',
     targetForegroundMode: 'all' as 'all' | 'foreground' | 'background',
     loadingMessage: null as string | null,
@@ -44,9 +43,6 @@ export const useMainStore = defineStore('main', {
   actions: {
     setControlMode(mode: 'aligner' | 'camera') {
         this.controlMode = mode;
-    },
-    setAlignerInteraction(mode: 'translate' | 'rotate') {
-        this.alignerInteraction = mode;
     },
     setReferenceSpotBoost(val: number) {
         if (Math.abs(this.referenceSpotBoost - val) > 0.0001) {
@@ -86,11 +82,11 @@ export const useMainStore = defineStore('main', {
         this.referenceMeta = refMeta;
         this.targetMeta = tgtMeta;
 
-        if (refMeta.raster_size) {
-            this.referenceRasterSize = [...refMeta.raster_size];
+        if (refMeta.spot_size) {
+            this.referenceSpotSize = [...refMeta.spot_size];
         }
-        if (tgtMeta.raster_size) {
-            this.targetRasterSize = [...tgtMeta.raster_size];
+        if (tgtMeta.spot_size) {
+            this.targetSpotSize = [...tgtMeta.spot_size];
         }
 
         // Fetch payloads

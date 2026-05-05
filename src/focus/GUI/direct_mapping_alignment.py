@@ -7,12 +7,17 @@ from werkzeug.serving import make_server
 
 class DirectMappingAlignmentGUI:
     """
-    A GUI interface that allows the user to directly map target coordinates to a reference image
+    A GUI interface that allows the user to directly map target coordinates to a reference image.
+
+    Serves a Flask web app on localhost:8000 that displays reference and target modalities
+    and collects user-provided alignment transformations sample by sample.
 
     Parameters
     ----------
-        samples: list[str]
-            A list of sample identifiers.
+        dataset_size: int
+            The number of samples to be aligned.
+        dataset_completed_event: threading.Event
+            Event that signals when the alignment thread has finished processing all samples.
     """
 
     def __init__(self, dataset_size: int, dataset_completed_event: threading.Event):
@@ -24,19 +29,22 @@ class DirectMappingAlignmentGUI:
         self._dataset_completed_event = dataset_completed_event  # Event to signal when the dataset processing is completed
 
         # Sample metadata
-        self._sample_id: int | None = None      # Name of the sample (sample ID)
+        self._sample_id: str | None = None      # Name of the sample (sample ID)
         self._sample_index: int | None = None   # Index of the sample in the dataset
 
         # Modalities' metadata
         self._reference_metadata: dict | None = None  # Metadata of the reference modality
         self._target_metadata: dict | None = None     # Metadata of the target modality
 
-        # Modalities' data
-        self._reference_payload: dict | Image.Image | None = None  # Payload of the reference modality
-        self._target_payload: dict | Image.Image | None = None      # Payload of the target modality
+        # Modalities' data (Image.Image for IMAGE modalities, list[dict] for SPOT modalities)
+        self._reference_payload: list[dict] | Image.Image | None = None
+        self._target_payload: list[dict] | Image.Image | None = None
 
         # Aligned coordinates
         self._aligned_target: dict | None = None                     # Aligned target modality data
+
+        # Error state (set by alignment thread on crash)
+        self._error_message: str | None = None
 
         # Reset the events
         self._user_event.clear()
@@ -57,6 +65,11 @@ class DirectMappingAlignmentGUI:
         self._server = None
         self._register_routes()
 
+    def set_error(self, message: str) -> None:
+        """Signal that the alignment thread encountered an error. Triggers server shutdown."""
+        self._error_message = message
+        self._dataset_completed_event.set()
+
     def _register_routes(self):
         @self.app.route('/')
         def index():
@@ -72,12 +85,15 @@ class DirectMappingAlignmentGUI:
 
         @self.app.route('/status', methods=['GET'])
         def get_status():
+            if self._error_message is not None:
+                return jsonify({"error": self._error_message}), 500
+
             if self._dataset_completed_event.is_set():
                 return jsonify({"message": "No more samples available"}), 404
-            
+
             if self._sample_id is None:
                 return jsonify({"message": "Sample not ready"}), 400
-            
+
             return jsonify({
                 "sample_id": self._sample_id,
                 "sample_index": self._sample_index,
@@ -144,8 +160,8 @@ class DirectMappingAlignmentGUI:
         sample_index: int,
         reference_metadata: dict,
         target_metadata: dict,
-        reference_payload: dict | Image.Image,
-        target_payload: dict | Image.Image,
+        reference_payload: list[dict] | Image.Image,
+        target_payload: list[dict] | Image.Image,
         ) -> dict:
         """
         Align the target coordinates to the reference image for a given sample.
@@ -209,8 +225,9 @@ class DirectMappingAlignmentGUI:
         # Wait for the dataset to be completed
         self._dataset_completed_event.wait()
 
-        # Introduce two seconds delay to allow any ongoing requests to complete
-        time.sleep(2)
+        # Give the browser time to read any error screen; otherwise just drain in-flight requests
+        delay = 60 if self._error_message else 2
+        time.sleep(delay)
 
         if self._server:
             self._server.shutdown()

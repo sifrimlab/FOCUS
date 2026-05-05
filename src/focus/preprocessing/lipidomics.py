@@ -1,7 +1,10 @@
 import numpy as np
+import scipy.sparse as sp
 import os, tqdm, psutil
+from focus.preprocessing._utils import StepReporter
 from collections import defaultdict
 from sklearn.linear_model import LinearRegression
+from sklearn.mixture import GaussianMixture
 import anndata as ad
 import pandas as pd
 import xml.etree.ElementTree as ET
@@ -11,14 +14,16 @@ from joblib import Parallel, delayed
 from functools import partial
 import scanpy as sc
 import gc
-from sklearn.mixture import GaussianMixture
+from scipy.ndimage import binary_fill_holes, binary_opening
 
 import focus.utils as utils
-from focus.constants import ImzMLFileParser, MsiIntensityNormalization, MsiMetadata, MsiIonMode
+from focus.constants import ImzMLFileParser, MsiIntensityNormalization, MsiSampleType, MsiMetadata, MsiIonMode, MsiPreprocessingParams
 from focus.constants import MODALITY_PREPROCESSING, MODALITY_PREPROCESSING_MERGED
+from focus.preprocessing.base import BaseSample, BaseDataset
+from focus.preprocessing._registry import ModalityHandler, register_modality
 
 
-@njit
+@njit(cache=True)
 def cluster_unique_mz_chunk(unique_mz, counts, mass_tolerance_ppm):
 	"""
 	Cluster m/z values within a chunk using sliding window clustering and weighted centroids.
@@ -47,26 +52,18 @@ def cluster_unique_mz_chunk(unique_mz, counts, mass_tolerance_ppm):
 	start_idx = 0
 
 	while start_idx < n:
-		cluster_mz = [unique_mz[start_idx]]
-		cluster_counts = [counts[start_idx]]
 		centroid = unique_mz[start_idx]
 		weight_sum = counts[start_idx]
+		weighted_sum = unique_mz[start_idx] * counts[start_idx]
 		end_idx = start_idx + 1
 
 		while end_idx < n:
 			candidate_mz = unique_mz[end_idx]
 			ppm_diff = abs(candidate_mz - centroid) / centroid * 1e6
 			if ppm_diff <= mass_tolerance_ppm:
-				cluster_mz.append(candidate_mz)
-				cluster_counts.append(counts[end_idx])
 				weight_sum += counts[end_idx]
-				# Update weighted centroid incrementally
-				weighted_sum = 0.0
-				total_weight = 0.0
-				for m, w in zip(cluster_mz, cluster_counts):
-					weighted_sum += m * w
-					total_weight += w
-				centroid = weighted_sum / total_weight
+				weighted_sum += candidate_mz * counts[end_idx]
+				centroid = weighted_sum / weight_sum
 				end_idx += 1
 			else:
 				break
@@ -79,6 +76,7 @@ def cluster_unique_mz_chunk(unique_mz, counts, mass_tolerance_ppm):
 	return np.array(consensus_mz), np.array(consensus_weights)
 
 
+@njit(cache=True)
 def merge_chunks(prev_mz, prev_w, curr_mz, curr_w, mass_tolerance_ppm):
 	"""
 	Merge consensus clusters from two adjacent chunks resolving overlaps.
@@ -87,43 +85,49 @@ def merge_chunks(prev_mz, prev_w, curr_mz, curr_w, mass_tolerance_ppm):
 
 	Returns merged consensus m/z and weights arrays.
 	"""
+	max_size = len(prev_mz) + len(curr_mz)
+	merged_mz = np.empty(max_size, dtype=np.float64)
+	merged_w = np.empty(max_size, dtype=np.float64)
+	k = 0
 	i, j = 0, 0
-	merged_mz = []
-	merged_w = []
 
 	while i < len(prev_mz) and j < len(curr_mz):
 		ppm_diff = abs(curr_mz[j] - prev_mz[i]) / ((curr_mz[j] + prev_mz[i]) / 2) * 1e6
 		if ppm_diff <= mass_tolerance_ppm:
 			# Merge clusters by weighted average
 			tot_w = prev_w[i] + curr_w[j]
-			centroid = (prev_mz[i] * prev_w[i] + curr_mz[j] * curr_w[j]) / tot_w
-			merged_mz.append(centroid)
-			merged_w.append(tot_w)
+			merged_mz[k] = (prev_mz[i] * prev_w[i] + curr_mz[j] * curr_w[j]) / tot_w
+			merged_w[k] = tot_w
+			k += 1
 			i += 1
 			j += 1
 		elif prev_mz[i] < curr_mz[j]:
-			merged_mz.append(prev_mz[i])
-			merged_w.append(prev_w[i])
+			merged_mz[k] = prev_mz[i]
+			merged_w[k] = prev_w[i]
+			k += 1
 			i += 1
 		else:
-			merged_mz.append(curr_mz[j])
-			merged_w.append(curr_w[j])
+			merged_mz[k] = curr_mz[j]
+			merged_w[k] = curr_w[j]
+			k += 1
 			j += 1
 
 	# Append remaining
 	while i < len(prev_mz):
-		merged_mz.append(prev_mz[i])
-		merged_w.append(prev_w[i])
+		merged_mz[k] = prev_mz[i]
+		merged_w[k] = prev_w[i]
+		k += 1
 		i += 1
 	while j < len(curr_mz):
-		merged_mz.append(curr_mz[j])
-		merged_w.append(curr_w[j])
+		merged_mz[k] = curr_mz[j]
+		merged_w[k] = curr_w[j]
+		k += 1
 		j += 1
 
-	return np.array(merged_mz), np.array(merged_w)
+	return merged_mz[:k], merged_w[:k]
 
 
-@njit
+@njit(cache=True)
 def interpolate_single(original_mz, original_intensity, reference_mz, mass_tolerance):
 	"""Numba-optimized function to interpolate a single spectrum onto a reference M/Z grid using weighted averaging."""
 	n_ref = len(reference_mz)
@@ -154,7 +158,8 @@ def interpolate_single(original_mz, original_intensity, reference_mz, mass_toler
 	return result
 
 
-class MsiSample:
+class MsiSample(BaseSample):
+
 	def __init__(
 			self,
 			source_path: str,
@@ -168,7 +173,7 @@ class MsiSample:
 
 		Parameters
 		----------
-		input_path : str
+		source_path : str
 			Path to the data source directory. If double_ion_mode is True, this should be the parent directory containing both ion mode subdirectories.
 		sample_id : str
 			Sample ID.
@@ -181,15 +186,11 @@ class MsiSample:
 		'''
 
 		# Ensure consistency of input parameters
-		if double_ion_mode != True and ion_mode not in MsiIonMode.list():
+		if not double_ion_mode and ion_mode not in MsiIonMode.list():
 			raise ValueError(
 				f'Invalid ion_mode value. Expected one of {MsiIonMode.list()} when double_ion_mode is False.')
 
-		# Check that the input path exists and it can be read
-		if not os.path.exists(source_path):
-			raise FileNotFoundError(f"Input path {source_path} does not exist.")
-		if not os.access(source_path, os.R_OK):
-			raise PermissionError(f"Input path {source_path} is not readable.")
+		super().__init__(source_path, sample_id, modality_name)
 
 		# If double ion mode is True, check that the input path contains both pos and neg subdirectories
 		pos_path = os.path.join(source_path, sample_id, modality_name, 'pos')
@@ -203,10 +204,7 @@ class MsiSample:
 		else:
 			self.input_paths = {ion_mode: os.path.join(source_path, sample_id, modality_name, ion_mode)}
 
-		self.source_path = source_path
-		self.sample_id = sample_id
 		self.double_ion_mode = double_ion_mode
-		self.modality_name = modality_name
 		self.ion_mode = ion_mode
 
 		self.recalibration_reference: dict[
@@ -216,6 +214,7 @@ class MsiSample:
 		self.filtered_recalibration_offset: dict[
 			MsiIonMode, np.ndarray] = {}  # To be computed during dataset preprocessing
 		self.filtered_idx: list[int] | None = None  # To be computed during dataset preprocessing
+		self._sample_type: MsiSampleType = MsiSampleType.TISSUE  # To be set from process_dataset
 
 		# Initialize the other variables
 		self._metadata_files = {}  # For each ion mode, store the absolute path to the imzML file
@@ -337,7 +336,7 @@ class MsiSample:
 		if not isinstance(spectra, ET.Element):
 			raise TypeError('Invalid input type. Expected ET.Element.')
 
-		x, y, mzs, intesities = None, None, None, None
+		x, y, mzs, intensities = None, None, None, None
 		physical_x, physical_y = None, None
 
 		scan_list = spectra.find(ImzMLFileParser.SCAN_LIST)
@@ -354,7 +353,8 @@ class MsiSample:
 			if user_param.attrib['name'] == "3DPositionY":
 				physical_y = float(user_param.attrib['value'])
 
-		# Fallback if the physical coordinates are not provided
+		# Record whether true physical coordinates were present before applying fallback
+		has_physical_coordinates = physical_x is not None and physical_y is not None
 		if physical_x is None:
 			physical_x = float(x)
 		if physical_y is None:
@@ -379,14 +379,14 @@ class MsiSample:
 				}
 			elif element.find(ImzMLFileParser.REFERENCEABLE_PARAM_GROUP_REF).attrib['ref'] in ['intensities',
 			                                                                                   "intensityArray"]:
-				intesities = {
+				intensities = {
 					'length': length,
 					'encoded_length': encoded_length,
 					'offset': offset
 				}
 
-		return {'pixel_x': x, 'pixel_y': y, 'mzs': mzs, 'intensities': intesities, 'physical_x': physical_x,
-		        'physical_y': physical_y}
+		return {'pixel_x': x, 'pixel_y': y, 'mzs': mzs, 'intensities': intensities, 'physical_x': physical_x,
+		        'physical_y': physical_y, 'has_physical_coordinates': has_physical_coordinates}
 
 	def _correct_rotation_error(self, physical_coords: np.ndarray[np.float32], pixel_coords: np.ndarray[np.int32]) -> \
 			np.ndarray[np.float32]:
@@ -484,6 +484,11 @@ class MsiSample:
 				if scan_settings.attrib['name'] == "pixel size y":
 					raster_size[1] = int(scan_settings.attrib['value'])
 
+		# If raster size is absent from the file, assume unit spacing so that pixel
+		# coordinates can be used directly as physical coordinates without overlap.
+		if raster_size[0] == 0 or raster_size[1] == 0:
+			raster_size = np.array([1, 1], dtype=np.int16)
+
 		run = root.find(ImzMLFileParser.RUN_KEY)
 		spectrum_list = run.find(ImzMLFileParser.SPECTRUM_LIST_KEY)
 		spectra = spectrum_list.findall(ImzMLFileParser.SPECTRUM_KEY)
@@ -502,6 +507,15 @@ class MsiSample:
 		intensities_binary_metadata = np.array([(metadata["intensities"]["length"],
 		                                         metadata["intensities"]["encoded_length"],
 		                                         metadata["intensities"]["offset"]) for metadata in parsed_spectra])
+
+		# Where physical coordinates were absent, the fallback stored raw pixel indices.
+		# Scale those entries by raster_size so the inter-spot spacing is in micrometers,
+		# consistent with the downstream normalization and raster_size/2 centering shift.
+		has_physical = np.array([m['has_physical_coordinates'] for m in parsed_spectra])
+		if not has_physical.any():
+			physical_coordinates = pixel_coordinates.astype(np.float32) * raster_size
+		elif not has_physical.all():
+			physical_coordinates[~has_physical] = pixel_coordinates[~has_physical].astype(np.float32) * raster_size
 
 		# Align MSI laser grid to the axes using linear regression
 		physical_coordinates = self._correct_rotation_error(physical_coordinates, pixel_coordinates)
@@ -691,276 +705,207 @@ class MsiSample:
 				self._metadata[mode][MsiMetadata.RASTER_SIZE]
 			)
 
-	def _filter_datapoint_without_annotations(
+	def _detect_tissue_spots(
 			self,
 			mz_vectors: list[np.ndarray],
 			intensity_vectors: list[np.ndarray],
-			database: pd.DataFrame,
-			mass_tolerance: int,
 			ion_mode: MsiIonMode,
+			database: pd.DataFrame | None = None,
+			mass_tolerance: int | None = None,
 	) -> list[int]:
 		"""
-		Stable v3 (POS/NEG consistent):
-		- intensity-aware target matching (unique DB hits + summed max intensity per hit)
-		- peak-shift decoys (K random ppm shifts) to estimate chance matches
-		- optional calibration only if a near-null tail exists
-		- 1D robust score (MAD-z) combining intensity, TIC, and decoy-corrected purity terms
-		- GMM model selection via BIC for n_components in {1,2,3}
-		- tissue component selection by decoy-corrected intensity: J = log1p(I) - log1p(Idec)
-		- regime decision uses both tissue_weight and intensity-weighted posterior mass W
-			to avoid NEG selecting a broad "structured background" component.
-		Notes:
-		- Requires numpy/pandas/GaussianMixture imports outside.
-		- Returns indices of kept spots.
+		Identify tissue/cell spots from background using spectral complexity features.
+
+		Tissue spots have richer, more diverse spectra than background spots (which are
+		dominated by uniformly sprayed standards and slide coating). Three parameter-free
+		features capture this: Shannon entropy, number of detected peaks, and log(TIC).
+		An optional annotation DB hit ratio is added as a 4th feature when a database and
+		mass_tolerance are provided.
+
+		Behavior adapts based on self._sample_type:
+		  "tissue"   -- contiguous tissue section. A 2-component GMM is fit; BIC selects
+		               between 1-component (unimodal → keep all) and 2-component (bimodal →
+		               classify by posterior). This handles class-imbalanced distributions
+		               (e.g. 95 % tissue / 5 % background) where Otsu splits the dominant
+		               tissue mode instead of separating it from background. Morphological
+		               cleanup (hole filling + opening) is applied afterwards.
+		  "microgrid" -- isolated single cells in a grid pattern. Spatial cleanup is
+		               disabled (it would fill gaps and erase real cells). Otsu is used with
+		               a 25th-percentile floor to avoid discarding weak single-cell signals.
+
+		Returns
+		-------
+		list[int]
+			Indices of spots classified as foreground (tissue/cell).
 		"""
-		# -----------------------
-		# 0) Validate + DB subset
-		# -----------------------
 		n_spots = len(mz_vectors)
 		if len(intensity_vectors) != n_spots:
 			raise ValueError("intensity_vectors must have same length as mz_vectors")
-
-		db_subset = database[database["ion_mode"] == ion_mode]
-		if db_subset.empty or n_spots == 0:
+		if n_spots == 0:
 			return []
 
-		masses = db_subset["ionized_mass"].to_numpy(dtype=np.float64)
-		masses.sort()
-		if masses.size == 0:
-			return []
-
-		ion_mode_str = str(ion_mode).lower()
-		is_neg = ion_mode_str.startswith("neg") or ("neg" in ion_mode_str)
-		eps = 1e-12
-
-		# -----------------------
-		# 1) Hyperparameters (mode aware, but conservative)
-		# -----------------------
-		# decoy peak shifts (ppm), must be > tolerance
-		min_shift_ppm = float(max(50, 5 * mass_tolerance))
-		max_shift_ppm = float(max(120, 12 * mass_tolerance))
-		K = 7
-		rng = np.random.default_rng(0)
-		shifts_ppm = rng.uniform(min_shift_ppm, max_shift_ppm, size=K) * rng.choice([-1.0, 1.0], size=K)
-
-		# score weights: NEG leans more on purity terms
-		gamma_T = 1.35 if is_neg else 0.95
-		gamma_I = 2.40 if is_neg else 1.70
-		alpha = 1.20 if is_neg else 1.25
-
-		min_candidates_for_gmm = 500
-
-		# regime thresholds (do not hardcode "10k"; use posterior/intensity mass instead)
-		sparse_weight = 0.10  # tissue component weight <= 10% -> potentially sparse
-		sparse_W = 0.15  # intensity mass fraction <= 15% -> sparse
-		tissue_weight_hi = 0.90  # mostly tissue
-		tissue_W_hi = 0.80  # mostly tissue
-
-		post_sparse = 0.90
-		post_bal = 0.60
-
-		# -----------------------
-		# 2) Matching helper (unique DB hits + summed max intensity per hit)
-		# -----------------------
-		def _match_unique_and_intensity(peaks: np.ndarray, intens: np.ndarray, ref_masses: np.ndarray):
-			if peaks.size == 0:
-				return 0, 0.0
-
-			idx = np.searchsorted(ref_masses, peaks)
-			left = np.clip(idx - 1, 0, ref_masses.size - 1)
-			right = np.clip(idx, 0, ref_masses.size - 1)
-
-			dist_left = np.abs(peaks - ref_masses[left])
-			dist_right = np.abs(peaks - ref_masses[right])
-
-			tol_left = ref_masses[left] * mass_tolerance * 1e-6
-			tol_right = ref_masses[right] * mass_tolerance * 1e-6
-
-			within_left = dist_left <= tol_left
-			within_right = dist_right <= tol_right
-			within = within_left | within_right
-			if not np.any(within):
-				return 0, 0.0
-
-			w = np.where(within)[0]
-			chosen = np.where(within_left[w], left[w], right[w])
-
-			best = {}
-			for db_idx, peak_idx in zip(chosen, w):
-				v = float(intens[peak_idx])
-				key = int(db_idx)
-				prev = best.get(key)
-				if prev is None or v > prev:
-					best[key] = v
-
-			T = len(best)
-			I = float(np.sum(list(best.values()))) if T > 0 else 0.0
-			return T, I
-
-		def _robust_z(x: np.ndarray) -> np.ndarray:
-			med = np.median(x)
-			mad = np.median(np.abs(x - med)) + eps
-			return (x - med) / (1.4826 * mad + eps)
-
-		# -----------------------
-		# 3) Per-spot target/decoy stats
-		# -----------------------
-		n_peaks = np.zeros(n_spots, dtype=np.int32)
-		TIC = np.zeros(n_spots, dtype=np.float64)
-
-		T = np.zeros(n_spots, dtype=np.int32)
-		I = np.zeros(n_spots, dtype=np.float64)
-
-		Tdec = np.zeros(n_spots, dtype=np.float64)
-		Idec = np.zeros(n_spots, dtype=np.float64)
+		# ------------------------------------------------------------------
+		# 1. Per-spot spectral complexity features
+		# ------------------------------------------------------------------
+		n_peaks = np.array([len(mz) for mz in mz_vectors], dtype=np.int32)
+		tic = np.zeros(n_spots, dtype=np.float64)
+		entropy = np.zeros(n_spots, dtype=np.float64)
 
 		for i in range(n_spots):
-			mz = np.asarray(mz_vectors[i], dtype=np.float64).ravel()
-			inten = np.asarray(intensity_vectors[i], dtype=np.float64).ravel()
-			if mz.size != inten.size:
-				raise ValueError(f"Intensity length mismatch at spot {i}: {inten.size} != {mz.size}")
-
-			n_peaks[i] = mz.size
-			if mz.size == 0:
+			if n_peaks[i] == 0:
 				continue
-
-			TIC[i] = float(np.sum(inten))
-
-			ti, ii = _match_unique_and_intensity(mz, inten, masses)
-			T[i] = ti
-			I[i] = ii
-
-			td_sum = 0.0
-			id_sum = 0.0
-			for s in shifts_ppm:
-				mz_d = mz * (1.0 + s * 1e-6)
-				td, id_ = _match_unique_and_intensity(mz_d, inten, masses)
-				td_sum += td
-				id_sum += id_
-			Tdec[i] = td_sum / K
-			Idec[i] = id_sum / K
+			iv = np.asarray(intensity_vectors[i], dtype=np.float64)
+			tic[i] = iv.sum()
+			if n_peaks[i] < 2 or tic[i] <= 0:
+				continue
+			p = iv / tic[i]
+			p = p[p > 0]
+			entropy[i] = -np.sum(p * np.log2(p))
 
 		valid = n_peaks > 0
 		if not np.any(valid):
 			return []
 
-		# candidates: any DB evidence OR high TIC (handles weak DB in a mode)
-		tic_thr = float(np.quantile(TIC[valid], 0.80))
-		cand = valid & ((T > 0) | (TIC >= tic_thr))
-		if not np.any(cand):
-			return []
-		cand_idx = np.where(cand)[0]
+		# ------------------------------------------------------------------
+		# 2. Optional annotation DB hit-ratio feature
+		# ------------------------------------------------------------------
+		features: list[np.ndarray] = [entropy, n_peaks.astype(np.float64), np.log1p(tic)]
 
-		# -----------------------
-		# 4) Derived metrics + conditional calibration
-		# -----------------------
-		D_raw = np.zeros(n_spots, dtype=np.float64)
-		D_raw[cand] = T[cand] / (n_peaks[cand] + eps)
-		D = D_raw / max(float(np.median(D_raw[cand])), eps)
+		if database is not None and mass_tolerance is not None:
+			db_subset = database[database["ion_mode"] == ion_mode]
+			if not db_subset.empty:
+				masses = np.sort(db_subset["ionized_mass"].to_numpy(dtype=np.float64))
+				hit_ratio = np.zeros(n_spots, dtype=np.float64)
+				for i in range(n_spots):
+					if n_peaks[i] == 0:
+						continue
+					mz = np.asarray(mz_vectors[i], dtype=np.float64)
+					idx = np.searchsorted(masses, mz)
+					left = np.clip(idx - 1, 0, masses.size - 1)
+					right = np.clip(idx, 0, masses.size - 1)
+					tol_l = masses[left] * mass_tolerance * 1e-6
+					tol_r = masses[right] * mass_tolerance * 1e-6
+					within_l = np.abs(mz - masses[left]) <= tol_l
+					within_r = np.abs(mz - masses[right]) <= tol_r
+					within = within_l | within_r
+					if np.any(within):
+						w = np.where(within)[0]
+						chosen = np.where(within_l[w], left[w], right[w])
+						hit_ratio[i] = len(np.unique(chosen)) / n_peaks[i]
+				features.append(hit_ratio)
 
-		PT = (T.astype(np.float64) + 1.0) / (Tdec + 1.0)
-		PI = (I + 1.0) / (Idec + 1.0)
+		# ------------------------------------------------------------------
+		# 3. Min-max normalise each feature and average into a single score
+		# ------------------------------------------------------------------
+		score = np.zeros(n_spots, dtype=np.float64)
+		for feat in features:
+			vals = feat[valid]
+			lo, hi = vals.min(), vals.max()
+			if hi - lo > 1e-12:
+				norm = np.zeros(n_spots, dtype=np.float64)
+				norm[valid] = (feat[valid] - lo) / (hi - lo)
+				score += norm
+		score /= len(features)
 
-		ex_T = np.abs(T.astype(np.float64)[cand_idx] - Tdec[cand_idx])
-		ex_I = np.abs(np.log1p(I[cand_idx]) - np.log1p(Idec[cand_idx]))
-		near_null_exists = (float(np.quantile(ex_T, 0.10)) <= (2.0 if is_neg else 3.0)) and (
-				float(np.quantile(ex_I, 0.10)) <= 0.5)
+		# ------------------------------------------------------------------
+		# 4. Threshold: Otsu (microgrid) or GMM + BIC model selection (tissue)
+		# ------------------------------------------------------------------
+		valid_scores = score[valid]
+		lo, hi = valid_scores.min(), valid_scores.max()
 
-		if near_null_exists:
-			comb = _robust_z(ex_T) + _robust_z(ex_I)
-			k0 = int(max(200, 0.30 * cand_idx.size))
-			null_idx = cand_idx[np.argsort(comb)[:k0]]
-			PT_adj = PT / max(float(np.median(PT[null_idx])), eps)
-			PI_adj = PI / max(float(np.median(PI[null_idx])), eps)
+		tissue_mask = np.zeros(n_spots, dtype=bool)
+
+		if self._sample_type == MsiSampleType.MICROGRID:
+			# Microgrid: mostly background with isolated single cells.  Otsu with a
+			# 25th-percentile floor ensures at most 75 % of spots are discarded,
+			# protecting weak single-cell signals.
+			if hi - lo < 1e-12:
+				print(f"Tissue detection (microgrid): unimodal score distribution -- treating all {n_spots} spots as foreground.")
+				return np.where(valid)[0].tolist()
+
+			scaled = ((valid_scores - lo) / (hi - lo) * 255).astype(np.uint8)
+			hist, _ = np.histogram(scaled, bins=256, range=(0, 255))
+			hist = hist.astype(np.float64)
+			total = hist.sum()
+			sum_total = np.dot(np.arange(256, dtype=np.float64), hist)
+			sum_bg, w_bg, max_between_var, best_t = 0.0, 0.0, 0.0, 0
+			for t in range(256):
+				w_bg += hist[t]
+				if w_bg == 0:
+					continue
+				w_fg = total - w_bg
+				if w_fg == 0:
+					break
+				sum_bg += t * hist[t]
+				mu_bg = sum_bg / w_bg
+				mu_fg = (sum_total - sum_bg) / w_fg
+				between_var = (w_bg / total) * (w_fg / total) * (mu_bg - mu_fg) ** 2
+				if between_var > max_between_var:
+					max_between_var = between_var
+					best_t = t
+			otsu_threshold = best_t / 255.0 * (hi - lo) + lo
+			floor_threshold = float(np.percentile(valid_scores, 25))
+			effective_threshold = min(otsu_threshold, floor_threshold)
+			tissue_mask[valid] = score[valid] >= effective_threshold
+			_log_info = f"otsu_thr={otsu_threshold:.4f}, floor_thr={floor_threshold:.4f}, effective_thr={effective_threshold:.4f}"
+
 		else:
-			PT_adj = PT
-			PI_adj = PI
+			# Tissue section: use GMM + BIC to decide between unimodal (all tissue)
+			# and bimodal (tissue + background).  This handles imbalanced distributions
+			# (e.g. 95 % tissue / 5 % background) where Otsu tends to split the
+			# dominant tissue mode rather than separating it from background.
+			n_valid = valid_scores.shape[0]
+			if n_valid < 4 or hi - lo < 1e-12:
+				print(f"Tissue detection (tissue): degenerate score distribution -- treating all {n_spots} spots as foreground.")
+				return np.where(valid)[0].tolist()
 
-		# decoy-corrected matched intensity (for tissue component identification)
-		J = np.log1p(I[cand_idx]) - np.log1p(Idec[cand_idx])  # == log(PI) up to smoothing
+			vs2d = valid_scores.reshape(-1, 1)
+			gmm1 = GaussianMixture(n_components=1, random_state=0).fit(vs2d)
+			gmm2 = GaussianMixture(n_components=2, random_state=0, n_init=3).fit(vs2d)
+			bic1, bic2 = gmm1.bic(vs2d), gmm2.bic(vs2d)
 
-		# -----------------------
-		# 5) Robust 1D score for clustering
-		# -----------------------
-		f_I = _robust_z(np.log1p(I[cand_idx]))
-		f_T = _robust_z(np.log1p(T[cand_idx].astype(np.float64)))
-		f_PI = _robust_z(np.log(PI_adj[cand_idx] + eps))
-		f_PT = _robust_z(np.log(PT_adj[cand_idx] + eps))
-		f_D = _robust_z(np.log(D[cand_idx] + eps))
-		f_TIC = _robust_z(np.log1p(TIC[cand_idx]))
+			if bic1 <= bic2:
+				# BIC prefers unimodal model -- keep all valid spots as tissue
+				print(
+					f"Tissue detection (tissue): GMM BIC prefers 1-component "
+					f"(BIC1={bic1:.1f} <= BIC2={bic2:.1f}) -- treating all {n_spots} spots as foreground, "
+					f"n_features={len(features)}, ion_mode={ion_mode}"
+				)
+				return np.where(valid)[0].tolist()
 
-		score1d = (
-				1.00 * f_I
-				+ 0.50 * f_T
-				+ gamma_I * f_PI
-				+ gamma_T * f_PT
-				+ 0.25 * alpha * f_D
-				+ 0.50 * f_TIC
-		)
-
-		# -----------------------
-		# 6) If too small, fallback to top tail
-		# -----------------------
-		if cand_idx.size < min_candidates_for_gmm:
-			thr = float(np.quantile(score1d, 0.95))
-			kept = cand_idx[score1d >= thr]
-			print(
-				f"Annotation-based filtering (stable v3): kept {kept.size} / {n_spots} "
-				f"(candidates={cand_idx.size}, scenario=smallN_tail, near_null={near_null_exists}, mode={'NEG' if is_neg else 'POS'})"
+			# 2-component model wins: classify by posterior on the higher-mean component
+			tissue_comp = int(np.argmax(gmm2.means_.ravel()))
+			posteriors = gmm2.predict_proba(vs2d)[:, tissue_comp]
+			tissue_mask[valid] = posteriors >= 0.5
+			mu0, mu1 = gmm2.means_.ravel()
+			pi0, pi1 = gmm2.weights_
+			_log_info = (
+				f"GMM 2-comp (BIC1={bic1:.1f}, BIC2={bic2:.1f}), "
+				f"means=[{mu0:.3f},{mu1:.3f}], weights=[{pi0:.2f},{pi1:.2f}]"
 			)
-			return kept.tolist()
 
-		# -----------------------
-		# 7) GMM model selection (BIC) for K in {1,2,3}
-		# -----------------------
-		X = score1d.reshape(-1, 1)
-		models = []
-		bics = []
-		for k in (1, 2, 3):
-			gmm = GaussianMixture(n_components=k, covariance_type="full", random_state=0, n_init=3)
-			gmm.fit(X)
-			models.append(gmm)
-			bics.append(gmm.bic(X))
-		gmm = models[int(np.argmin(bics))]
+		# ------------------------------------------------------------------
+		# 5. Spatial morphological cleanup (tissue section only)
+		# ------------------------------------------------------------------
+		if self._sample_type == MsiSampleType.TISSUE:
+			pixel_coords = self._metadata[ion_mode][MsiMetadata.PIXEL_COORDINATES]  # (N, 2): (y, x)
+			if pixel_coords is not None and len(pixel_coords) == n_spots:
+				grid_h = int(pixel_coords[:, 0].max()) + 1
+				grid_w = int(pixel_coords[:, 1].max()) + 1
+				raster = np.zeros((grid_h, grid_w), dtype=bool)
+				for i in range(n_spots):
+					if tissue_mask[i]:
+						raster[pixel_coords[i, 0], pixel_coords[i, 1]] = True
+				raster = binary_fill_holes(raster)
+				raster = binary_opening(raster, structure=np.ones((3, 3), dtype=bool))
+				for i in range(n_spots):
+					tissue_mask[i] = raster[pixel_coords[i, 0], pixel_coords[i, 1]]
 
-		post = gmm.predict_proba(X)  # posterior p(component|x) [web:105]
-		labels = np.argmax(post, axis=1)
-
-		# -----------------------
-		# 8) Tissue component selection: maximize median decoy-corrected intensity J
-		# -----------------------
-		med_J = np.array(
-			[np.median(J[labels == c]) if np.any(labels == c) else -np.inf for c in range(gmm.n_components)])
-		tissue_c = int(np.argmax(med_J))
-
-		tissue_weight = float(np.mean(labels == tissue_c))
-
-		# Intensity-weighted posterior mass W (prevents NEG “structured background” from dominating)
-		Jpos = np.maximum(0.0, J)
-		W = float(np.sum(post[:, tissue_c] * Jpos) / (np.sum(Jpos) + eps))
-
-		# -----------------------
-		# 9) Regime decision + keep mask
-		# -----------------------
-		if (tissue_weight <= sparse_weight) or (W <= sparse_W):
-			scenario = "sparse_tissue"
-			keep_local = post[:, tissue_c] >= post_sparse
-		elif (tissue_weight >= tissue_weight_hi) or (W >= tissue_W_hi):
-			scenario = "mostly_tissue"
-			thr = float(np.quantile(score1d, 0.01))  # drop bottom 1%
-			keep_local = score1d >= thr
-		else:
-			scenario = "balanced"
-			keep_local = post[:, tissue_c] >= post_bal
-
-		kept = cand_idx[keep_local]
-
+		kept = np.where(tissue_mask)[0]
 		print(
-			f"Annotation-based filtering (stable v3): kept {kept.size} / {n_spots} "
-			f"(candidates={cand_idx.size}, scenario={scenario}, n_comp={gmm.n_components}, "
-			f"tissue_weight={tissue_weight:.3f}, W={W:.3f}, near_null={near_null_exists}, mode={'NEG' if is_neg else 'POS'})"
+			f"Tissue detection ({self._sample_type}): kept {kept.size} / {n_spots} spots "
+			f"({_log_info}, n_features={len(features)}, ion_mode={ion_mode})"
 		)
-
 		return kept.tolist()
 
 	def _recalibrate_mz_vector(
@@ -1091,7 +1036,7 @@ class MsiSample:
 		intensity_vectors = {}
 		filtered_mz, filtered_intensity = {}, {}
 
-		if annotation_db is not None and isinstance(annotation_db, pd.DataFrame) == False:
+		if annotation_db is not None and not isinstance(annotation_db, pd.DataFrame):
 			raise ValueError("If provided, annotation_db must be a pd.DataFrame")
 		if annotation_db is not None and mass_tolerance is None:
 			raise ValueError("Mass tolerance must be provided if annotation_db is provided")
@@ -1123,13 +1068,12 @@ class MsiSample:
 
 				for mode in self._metadata.keys():
 					if detect_background:
-						# Filter the datapoints that do not contain any annotated lipids
-						keep_indices.update(self._filter_datapoint_without_annotations(
+						keep_indices.update(self._detect_tissue_spots(
 							mz_vectors=mz_vectors[mode],
 							intensity_vectors=intensity_vectors[mode],
+							ion_mode=mode,
 							database=annotation_db,
 							mass_tolerance=mass_tolerance,
-							ion_mode=mode
 						))
 					else:
 						# Keep all the datapoints
@@ -1138,12 +1082,16 @@ class MsiSample:
 				# Save the filtered indices
 				self.filtered_idx = sorted(list(keep_indices))
 
-			# Apply the filtering to the M/Z vectors and to intensity vectors. This computes the offsets per row as well
-			for mode in self._metadata.keys():
-				filtered_mz[mode] = [mz_vectors[mode][i] for i in self.filtered_idx]
-				filtered_intensity[mode] = [intensity_vectors[mode][i] for i in self.filtered_idx]
+		# Always populate filtered vectors: use filtered_idx when available, otherwise keep all spectra
+		for mode in self._metadata.keys():
+			indices = self.filtered_idx if self.filtered_idx is not None else range(len(mz_vectors[mode]))
+			filtered_mz[mode] = [mz_vectors[mode][i] for i in indices]
+			filtered_intensity[mode] = [intensity_vectors[mode][i] for i in indices]
 
-				# If the reclaibration reference is set, apply it to the M/Z vectors
+		# Apply recalibration if configured (requires mass_tolerance, only available when annotation_db is provided)
+		if annotation_db is not None:
+			for mode in self._metadata.keys():
+				# If the recalibration reference is set, apply it to the M/Z vectors
 				if self.recalibration_reference is not None and mode in self.recalibration_reference:
 					# Apply the recalibration to both raw and filtered M/Z vectors. It must be done separately to keep the correct coordinates
 					mz_vectors[mode], self.raw_recalibration_offset = self._recalibrate_mz_vector(
@@ -1169,7 +1117,12 @@ class MsiSample:
 		return mz_vectors, intensity_vectors, filtered_mz, filtered_intensity
 
 
-class MsiDataset:
+class MsiDataset(BaseDataset):
+
+	_LEIDEN_RESOLUTION = 0.5
+	_H5AD_COMPRESSION = "lzf"
+	_H5AD_INTERMEDIATE_COMPRESSION = None  # No compression for per-sample files (fastest I/O for concat_on_disk)
+
 	def __init__(self, path: str, samples: list[MsiSample], lipid_annotation_db: str | None = None) -> None:
 		'''
 		MSI dataset containing multiple samples. This class provide utilities to preprocess the raw experiments
@@ -1186,16 +1139,15 @@ class MsiDataset:
 			The file can be a CSV or a JSON and it must contain three columns: name, ionized_mass, ion_mode.
 		'''
 
-		if not isinstance(samples, list) or not all(isinstance(sample, MsiSample) for sample in samples):
+		super().__init__(path, samples)
+
+		if not all(isinstance(sample, MsiSample) for sample in samples):
 			raise TypeError('Invalid input type. Expected list of MsiSample objects.')
 
-		self.samples = samples
 		self.reference_mz: dict[MsiIonMode, np.ndarray] = {}
 		self.interpolated: dict[str, dict[MsiIonMode, np.ndarray]] = {}
 		self.normalized: dict[str, dict[MsiIonMode, np.ndarray]] = {}
 		self.foreground_masks: dict[str, np.ndarray] = {}
-
-		self.dataset_source_path = path
 
 		# If the lipid DB is provided, check if it exists and we can read it
 		if lipid_annotation_db is not None:
@@ -1280,8 +1232,14 @@ class MsiDataset:
 			Consensus m/z values after grouping and filtering.
 		"""
 
-		# Concatenate and round m/z values
+		# Guard: return empty array if there are no spectra or all spectra are empty
+		if not spectra_list:
+			return np.array([], dtype=np.float64)
 		all_mz = np.concatenate(spectra_list).astype(np.float64)
+		if all_mz.size == 0:
+			return np.array([], dtype=np.float64)
+
+		# Concatenate and round m/z values
 		all_mz = np.round(all_mz, decimals=6)
 		all_mz.sort()
 
@@ -1303,14 +1261,25 @@ class MsiDataset:
 		# Prepare chunk arrays with overlap
 		chunks = [(unique_mz[start:end], counts[start:end]) for start, end in chunk_indices]
 
-		with concurrent.futures.ProcessPoolExecutor() as executor:
+		n_workers = utils.available_cpus() or 1
+		executor = concurrent.futures.ProcessPoolExecutor(max_workers=n_workers)
+		try:
 			futures = [executor.submit(cluster_unique_mz_chunk, chunk[0], chunk[1], mass_tolerance) for chunk in chunks]
 			results = [f.result() for f in futures]
+		except Exception:
+			executor.shutdown(wait=False, cancel_futures=True)
+			raise
+		else:
+			executor.shutdown(wait=True)
 
 		# Merge clusters across chunks
 		merged_mz, merged_w = results[0]
 		for i in range(1, len(results)):
 			merged_mz, merged_w = merge_chunks(merged_mz, merged_w, results[i][0], results[i][1], mass_tolerance)
+
+		# Guard: return empty array if clustering produced no results
+		if merged_w.size == 0:
+			return np.array([], dtype=np.float64)
 
 		# Filter by frequency threshold
 		max_count = merged_w.max()
@@ -1319,7 +1288,8 @@ class MsiDataset:
 
 		return merged_mz[filtered_idx]
 
-	def _interpolate_intensities(self, original_mzs_list: list[np.ndarray], original_intensities_list: list[np.ndarray],
+	@staticmethod
+	def _interpolate_intensities(original_mzs_list: list[np.ndarray], original_intensities_list: list[np.ndarray],
 	                             reference_mz: np.ndarray, mass_tolerance: float) -> np.ndarray:
 		"""
 		Rebin intensities to reference M/Z vector. This method processes a chunk of spectra.
@@ -1424,7 +1394,7 @@ class MsiDataset:
 		Scan the dataset to select the M/Z values to use as reference for recalibration.
 		Each ion mode is processed separately. For each ion mode, the M/Z values from all samples are concatenated,
 		and the top 'number_of_references' most frequent M/Z values are selected as reference.
-		To reduce memory usage, only a random subset (10%) of the M/Z values from each sample is used.
+		To reduce memory usage, only a random subset (30%) of the M/Z values from each sample is used.
 
 		Parameters
 		----------
@@ -1449,13 +1419,13 @@ class MsiDataset:
 
 		rng = np.random.default_rng()
 
-		# Downsample each sample and collect per-sample mz per mode. Evaluate only 10% of the spectra to reduce memory usage
+		# Downsample each sample and collect per-sample mz per mode. Evaluate only 30% of the spectra to reduce memory usage
 		for sample_mz in mz_vectors:
 			for mode, spectra in sample_mz.items():
 				n = len(spectra)
 				if n == 0:
 					continue
-				subset_idx = rng.choice(n, size=max(1, n // 10), replace=False)
+				subset_idx = rng.choice(n, size=max(1, n * 3 // 10), replace=False)
 				sample_mode_mz = np.concatenate([spectra[i] for i in subset_idx]).astype(np.float64)
 				sample_mode_mz = np.round(sample_mode_mz, decimals=6)
 				per_sample_mz[mode].append(sample_mode_mz)
@@ -1542,7 +1512,9 @@ class MsiDataset:
 	                    recalibration_reference: dict[MsiIonMode, np.ndarray] | None = None,
 	                    min_intensity_threshold: float = 10000.0,
 	                    detect_background: bool = True,
-	                    force_recomputing: bool = False
+	                    sample_type: str = MsiSampleType.TISSUE,
+	                    force_recomputing: bool = False,
+	                    step_reporter=None
 	                    ) -> dict[str, str]:
 		'''
 		Process the dataset by aligning the M/Z values across all samples and interpolating the intensities.
@@ -1624,13 +1596,15 @@ class MsiDataset:
 				print("All samples have already been processed and merged dataset exists. Using cached results.")
 				return processed_samples
 
+		reporter = step_reporter or StepReporter()
 		print("Processing Lipidomic Dataset")
 		processed_samples = {}
 		reference_mz_samples: dict[MsiIonMode, list[np.float32]] = {MsiIonMode.POSITIVE: [], MsiIonMode.NEGATIVE: []}
 
 		# STEP 1: Initialize each sample to load the metadata
-		for sample in tqdm.tqdm(self.samples, desc="1/9 - Loading MSI data", unit="sample"):
+		for sample in reporter.tqdm(self.samples, desc="1/9 - Loading MSI data", unit="sample"):
 			sample.initialize_sample()
+			sample._sample_type = sample_type
 
 		# STEP 2: Compute the recalibration offsets for each sample. If a reference is provided, it is used directly.
 		# Otherwise, if the annotation DB is provided, the reference is computed from the annotated lipids (5 annotated lipids with the highest intensity).
@@ -1638,9 +1612,10 @@ class MsiDataset:
 		if recalibration_reference is None:
 			mz_vectors_all_samples = []
 
-			for sample in tqdm.tqdm(self.samples, desc="2/9 - Selecting high-confidence tissue spots", unit="sample"):
+			for sample in reporter.tqdm(self.samples, desc="2/9 - Selecting high-confidence tissue spots", unit="sample"):
 				raw_mz, _, filtered_mz, _ = sample.load_payload(annotation_db=self.lipid_annotation_db,
-				                                                mass_tolerance=mass_tolerance)
+				                                                mass_tolerance=mass_tolerance,
+				                                                detect_background=detect_background)
 
 				# If it was possible to filter the datapoints using the lipid annotation DB, use the filtered M/Z values
 				if filtered_mz != {}:
@@ -1652,7 +1627,7 @@ class MsiDataset:
 				gc.collect()
 
 			# Compute the recalibration reference from the dataset
-			print(
+			reporter.step(
 				"3/9 - Selecting recalibration reference M/Z values from the dataset and filtering background datapoints")
 			recalibration_reference = self._find_calibration_reference(
 				mz_vectors=mz_vectors_all_samples,
@@ -1663,11 +1638,12 @@ class MsiDataset:
 			gc.collect()
 		else:
 			# Dummy call to still filter the datapoints in each sample
-			for sample in tqdm.tqdm(self.samples, desc="2/8 - Selecting high-confidence tissue spots", unit="sample"):
-				_, _, _, _ = sample.load_payload(annotation_db=self.lipid_annotation_db, mass_tolerance=mass_tolerance)
+			for sample in reporter.tqdm(self.samples, desc="2/8 - Selecting high-confidence tissue spots", unit="sample"):
+				_, _, _, _ = sample.load_payload(annotation_db=self.lipid_annotation_db, mass_tolerance=mass_tolerance,
+				                                 detect_background=detect_background)
 				gc.collect()
 
-			print("3/9 - Using provided recalibration reference M/Z values.")
+			reporter.step("3/9 - Using provided recalibration reference M/Z values.")
 
 		# Store the recalibration reference in each sample
 		for sample in self.samples:
@@ -1675,8 +1651,8 @@ class MsiDataset:
 			sample.min_intensity_threshold = min_intensity_threshold
 
 		# STEP 3: For each ion mode in each sample, compute the reference M/Z vector
-		for sample in tqdm.tqdm(self.samples, desc="4/9 - Computing reference M/Z backbone for each sample",
-		                        unit="sample"):
+		for sample in reporter.tqdm(self.samples, desc="4/9 - Computing reference M/Z backbone for each sample",
+		                            unit="sample"):
 			raw_mz, _, filtered_mz, _ = sample.load_payload(annotation_db=self.lipid_annotation_db,
 			                                                mass_tolerance=mass_tolerance)
 			for mode in sample.ion_modes:
@@ -1691,7 +1667,7 @@ class MsiDataset:
 			gc.collect()
 
 		# STEP 4: Compute the global reference M/Z vector for each ion mode. No frequency thresholding is applied here
-		print("5/9 - Computing global reference M/Z backbone for the dataset")
+		reporter.step("5/9 - Computing global reference M/Z backbone for the dataset")
 		for mode in reference_mz_samples.keys():
 			if len(reference_mz_samples[mode]) > 0:
 				self.reference_mz[mode] = self._compute_reference_mz(
@@ -1709,7 +1685,7 @@ class MsiDataset:
 			f"Selected {len(self.reference_mz.get(MsiIonMode.POSITIVE, []))} M/Z values for POSITIVE mode and {len(self.reference_mz.get(MsiIonMode.NEGATIVE, []))} M/Z values for NEGATIVE mode as reference backbone.")
 
 		# STEP 5: For each ion mode, annotate the reference M/Z vector if a lipid annotation database is provided
-		print("6/9 - Annotating features (backbone M/Z values) for each ion mode")
+		reporter.step("6/9 - Annotating features (backbone M/Z values) for each ion mode")
 		self.lipid_annotations: dict[MsiIonMode, np.ndarray] = {}
 		if self.lipid_annotation_db is not None:
 			for mode in self.reference_mz.keys():
@@ -1720,7 +1696,7 @@ class MsiDataset:
 				)
 
 		# STEP 6: Now that the global reference M/Z vectors are computed, process each sample to interpolate the intensities
-		for sample in tqdm.tqdm(self.samples, desc="7/9 - Aligning intensities to reference M/Z", unit="sample"):
+		for sample in reporter.tqdm(self.samples, desc="7/9 - Aligning intensities to reference M/Z", unit="sample"):
 			self.interpolated[sample.sample_id] = {MsiIonMode.POSITIVE: None, MsiIonMode.NEGATIVE: None}
 			self.normalized[sample.sample_id] = {MsiIonMode.POSITIVE: None, MsiIonMode.NEGATIVE: None}
 
@@ -1752,8 +1728,9 @@ class MsiDataset:
 					[(i * chunk_size, min((i + 1) * chunk_size, datapoints)) for i in range(num_workers)]
 				]
 
-				# Worker function which partially fixes reference_mz and mass_tolerance
-				worker_func = partial(self._interpolate_intensities,
+				# Worker function which partially fixes reference_mz and mass_tolerance.
+				# Reference via the class (not self) so joblib does not pickle the entire dataset.
+				worker_func = partial(MsiDataset._interpolate_intensities,
 				                      reference_mz=self.reference_mz[mode],
 				                      mass_tolerance=mass_tolerance)
 
@@ -1789,118 +1766,200 @@ class MsiDataset:
 			del intensities, original_mzs  # Free memory
 			gc.collect()
 
-		for sample in tqdm.tqdm(self.samples, desc="8/9 - Generating AnnData objects and saving results",
-		                        unit="sample"):
-			reference_mode = MsiIonMode.POSITIVE if MsiIonMode.POSITIVE in sample.ion_modes else MsiIonMode.NEGATIVE
-			sample_id = sample.sample_id
-			raster_size = sample._metadata[reference_mode][MsiMetadata.RASTER_SIZE].tolist()
-			physical_coords = sample._metadata[reference_mode][MsiMetadata.PHYSICAL_COORDINATES]  # Shape (N, 2)
-			raster_coords = sample._metadata[reference_mode][MsiMetadata.RASTER_COORDINATES]  # Shape (N, 2, 2)
-			rows = self.interpolated[sample_id][reference_mode].shape[0]  # Shape (N, )
-			positive_cols = self.reference_mz[MsiIonMode.POSITIVE].shape[
-				0] if MsiIonMode.POSITIVE in self.reference_mz else 0  # Shape (M1, )
-			negative_cols = self.reference_mz[MsiIonMode.NEGATIVE].shape[
-				0] if MsiIonMode.NEGATIVE in self.reference_mz else 0  # Shape (M2, )
-			rows_dtype = self.interpolated[sample_id][
-				MsiIonMode.POSITIVE].dtype if MsiIonMode.POSITIVE in sample.ion_modes else self.interpolated[sample_id][
-				MsiIonMode.NEGATIVE].dtype
+		# Pre-build var metadata (shared across all samples)
+		positive_cols = self.reference_mz[MsiIonMode.POSITIVE].shape[0] if MsiIonMode.POSITIVE in self.reference_mz else 0
+		negative_cols = self.reference_mz[MsiIonMode.NEGATIVE].shape[0] if MsiIonMode.NEGATIVE in self.reference_mz else 0
+		total_cols = positive_cols + negative_cols
 
-			merged_interpolated = np.zeros((
-				rows,
-				positive_cols + negative_cols
-			), dtype=rows_dtype)
+		# Reference mz, mode labels, and annotations (shared var metadata)
+		mz_parts, mode_parts, annotation_parts = [], [], []
+		for mode in [MsiIonMode.POSITIVE, MsiIonMode.NEGATIVE]:
+			if mode not in self.reference_mz or self.reference_mz[mode].size == 0:
+				continue
+			mz_parts.append(self.reference_mz[mode])
+			mode_parts.extend([mode] * self.reference_mz[mode].shape[0])
+			if self.lipid_annotation_db is not None and mode in self.lipid_annotations:
+				annotation_parts.append(self.lipid_annotations[mode])
+			else:
+				annotation_parts.append(np.array(['Unannotated'] * self.reference_mz[mode].shape[0]))
 
-			merged_normalized = np.zeros((
-				rows,
-				positive_cols + negative_cols
-			), dtype=rows_dtype)
+		merged_reference_mz = np.concatenate(mz_parts).astype(np.float32)
+		merged_mode_labels = mode_parts
+		merged_annotations = np.concatenate(annotation_parts) if annotation_parts else np.array(['Unannotated'] * total_cols)
 
-			merged_reference_mz = np.concatenate(
-				[self.reference_mz[MsiIonMode.POSITIVE], self.reference_mz[MsiIonMode.NEGATIVE]])
-			reference_mode = np.concatenate([[MsiIonMode.POSITIVE] * len(self.reference_mz[MsiIonMode.POSITIVE]),
-			                                 [MsiIonMode.NEGATIVE] * len(self.reference_mz[MsiIonMode.NEGATIVE])])
+		var_df = pd.DataFrame({
+			"mz": merged_reference_mz,
+			"mz_mode": pd.Categorical(merged_mode_labels),
+			"lipid_annotation": pd.Categorical(merged_annotations),
+		}, index=pd.Index([str(i) for i in range(total_cols)], dtype=object))
 
-			# Concatenate the annotations if available
-			if self.lipid_annotation_db is not None:
-				reference_annotations = np.concatenate([
-					self.lipid_annotations[
-						MsiIonMode.POSITIVE] if MsiIonMode.POSITIVE in self.lipid_annotations else np.zeros_like(
-						self.reference_mz[MsiIonMode.POSITIVE], dtype=str),
-					self.lipid_annotations[
-						MsiIonMode.NEGATIVE] if MsiIonMode.NEGATIVE in self.lipid_annotations else np.zeros_like(
-						self.reference_mz[MsiIonMode.NEGATIVE], dtype=str)
-				])
+		spot_sizes: dict[str, list[float]] = {}
+		write_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+		write_futures = []
 
-			merged_interpolated[:, :positive_cols] = self.interpolated[sample_id][
-				MsiIonMode.POSITIVE] if MsiIonMode.POSITIVE in sample.ion_modes else 0.0
-			merged_interpolated[:, positive_cols:] = self.interpolated[sample_id][
-				MsiIonMode.NEGATIVE] if MsiIonMode.NEGATIVE in sample.ion_modes else 0.0
+		try:
+			for sample in reporter.tqdm(self.samples, desc="8/9 - Generating AnnData objects and saving results",
+			                            unit="sample"):
+				ref_mode = MsiIonMode.POSITIVE if MsiIonMode.POSITIVE in sample.ion_modes else MsiIonMode.NEGATIVE
+				sample_id = sample.sample_id
+				physical_coords = sample._metadata[ref_mode][MsiMetadata.PHYSICAL_COORDINATES].astype(np.float32)
+				raster_coords = sample._metadata[ref_mode][MsiMetadata.RASTER_COORDINATES]
+				rows = self.interpolated[sample_id][ref_mode].shape[0]
 
-			merged_normalized[:, :positive_cols] = self.normalized[sample_id][
-				MsiIonMode.POSITIVE] if MsiIonMode.POSITIVE in sample.ion_modes else 0.0
-			merged_normalized[:, positive_cols:] = self.normalized[sample_id][
-				MsiIonMode.NEGATIVE] if MsiIonMode.NEGATIVE in sample.ion_modes else 0.0
+				# Spot size from raster_size: [width, height] in micrometers
+				raster_size = sample._metadata[ref_mode][MsiMetadata.RASTER_SIZE]
+				spot_size = np.array([float(raster_size[0]), float(raster_size[1])], dtype=np.float32)
+				spot_sizes[sample_id] = spot_size.tolist()
 
-			# Create the AnnData object
-			adata = ad.AnnData(
-				X=merged_interpolated,
-				layers={
-					f"X_{intensity_normalization}": merged_normalized
-				},
-				obs=pd.DataFrame({
-					'sample_id': [sample_id] * merged_interpolated.shape[0],
-					'foreground': self.foreground_masks[sample_id]
-				}, index=[str(i) for i in range(merged_interpolated.shape[0])]),
-				obsm={
-					'spatial': physical_coords,
-					'raster_coordinates': raster_coords
-				},
-				var=pd.DataFrame({
-					"mz": merged_reference_mz,
-					"mz_mode": reference_mode,
-					"lipid_annotation": reference_annotations if self.lipid_annotation_db is not None else ['Unannotated'] *
-					                                                                                       merged_reference_mz.shape[
-						                                                                                       0]
-				}, index=[str(i) for i in range(merged_interpolated.shape[1])]),
-				uns={
-					"raster_size": raster_size,
-				}
-			)
+				# Merge pos/neg intensity matrices into a single (N, M) float32 array
+				raw_matrix = np.zeros((rows, total_cols), dtype=np.float32)
+				norm_matrix = np.zeros((rows, total_cols), dtype=np.float32)
 
-			# Update the obs_names to include the sample ID for uniqueness
-			adata.obs_names = [f"{sample_id}_{obs_name}" for obs_name in adata.obs_names]
+				if MsiIonMode.POSITIVE in sample.ion_modes and positive_cols > 0:
+					raw_matrix[:, :positive_cols] = self.interpolated[sample_id][MsiIonMode.POSITIVE].astype(np.float32)
+					norm_matrix[:, :positive_cols] = self.normalized[sample_id][MsiIonMode.POSITIVE].astype(np.float32)
+				if MsiIonMode.NEGATIVE in sample.ion_modes and negative_cols > 0:
+					raw_matrix[:, positive_cols:] = self.interpolated[sample_id][MsiIonMode.NEGATIVE].astype(np.float32)
+					norm_matrix[:, positive_cols:] = self.normalized[sample_id][MsiIonMode.NEGATIVE].astype(np.float32)
 
-			# Compute Leiden clustering on the normalized data
-			sc.tl.pca(adata, n_comps=50, layer=f"X_{intensity_normalization}")
-			sc.pp.neighbors(adata, n_neighbors=15)
-			sc.tl.leiden(adata, resolution=0.5, flavor="igraph", n_iterations=2)
+				# Free per-mode arrays now that they're merged
+				del self.interpolated[sample_id], self.normalized[sample_id]
 
-			# Save the AnnData object to the output path
-			output_file = MODALITY_PREPROCESSING(self.dataset_source_path, sample.sample_id, sample.modality_name,
-			                                     'h5ad')
-			adata.write_h5ad(output_file)
-			processed_samples[sample.sample_id] = output_file
+				# Convert to sparse CSR for memory efficiency
+				X_sparse = sp.csr_matrix(norm_matrix)
+				raw_sparse = sp.csr_matrix(raw_matrix)
+				del raw_matrix, norm_matrix
 
-			# Free memory
-			del merged_interpolated, merged_normalized, adata
-			gc.collect()
+				# Build obs DataFrame
+				n_obs = rows
+				obs_index = pd.Index([f"{sample_id}_{i}" for i in range(n_obs)], dtype=object)
 
-		# Save the merged dataset
-		adatas: list[ad.AnnData] = []
+				obs_df = pd.DataFrame({
+					'sample_id': pd.Categorical([sample_id] * n_obs),
+					'foreground': pd.Categorical(self.foreground_masks[sample_id]),
+				}, index=obs_index)
 
-		# STEP 7: Merge all the AnnData objects on disk (memory-efficient)
-		print("9/9 - Merging all samples into a single dataset")
+				# Create AnnData: .X = normalized (sparse), .layers["raw"] = raw interpolated (sparse)
+				adata = ad.AnnData(
+					X=X_sparse,
+					layers={'raw': raw_sparse},
+					obs=obs_df,
+					obsm={
+						'spatial': physical_coords,
+						'raster_coordinates': raster_coords
+					},
+					var=var_df.copy(),
+					uns={'spot_size': spot_size.tolist()}
+				)
+
+				# Per-sample Leiden clustering on the normalized data
+				n_pcs = min(50, adata.n_obs - 1, adata.n_vars - 1)
+				if adata.n_obs >= 2 and n_pcs >= 2:
+					sc.pp.pca(adata, n_comps=n_pcs)
+					sc.pp.neighbors(adata, n_neighbors=min(15, adata.n_obs - 1))
+					sc.tl.leiden(adata, resolution=self._LEIDEN_RESOLUTION, flavor="igraph", n_iterations=2, key_added='leiden')
+				else:
+					adata.obs['leiden'] = '0'
+				adata.obs['leiden'] = pd.Categorical(adata.obs['leiden'])
+
+				# Save with lzf compression (faster than gzip for intermediate files)
+				output_file = MODALITY_PREPROCESSING(self.dataset_source_path, sample.sample_id, sample.modality_name, 'h5ad')
+				# Wait for any previous write to finish before reusing gc
+				for f in write_futures:
+					f.result()
+				write_futures.clear()
+				# Write in background thread so next sample's computation overlaps with I/O
+				write_futures.append(write_executor.submit(utils.write_h5ad_compat, adata, output_file, compression=self._H5AD_INTERMEDIATE_COMPRESSION))
+				processed_samples[sample.sample_id] = output_file
+
+			# Wait for the last write to complete
+			for f in write_futures:
+				f.result()
+		finally:
+			write_executor.shutdown(wait=True)
+		gc.collect()
+
+		# STEP 9: Merge all samples into a single dataset (memory-efficient on-disk concat)
+		reporter.step("9/9 - Merging all samples into a single dataset")
 		merged_file = MODALITY_PREPROCESSING_MERGED(self.dataset_source_path, self.samples[0].modality_name, 'h5ad')
 
 		if processed_samples:
-			ad.experimental.concat_on_disk(
-				processed_samples,
+			# Filter to only per-sample files (exclude any "merged" key)
+			sample_files = {k: v for k, v in processed_samples.items() if k != "merged"}
+
+			utils.concat_on_disk_compat(
+				sample_files,
 				merged_file,
 				axis=0,
 				join="inner",
-				merge="same",  # keep only entries which are identical across objects
-				uns_merge="first",  # keep first .uns when keys differ
+				merge="same",
+				uns_merge="first",
 			)
+
+			# Update the merged file's .uns["spot_size"] to be a per-sample dict
+			merged_adata = ad.read_h5ad(merged_file)
+			merged_adata.uns["spot_size"] = spot_sizes
+			utils.write_h5ad_compat(merged_adata, merged_file, compression=self._H5AD_COMPRESSION)
+			del merged_adata
+			gc.collect()
 
 			processed_samples["merged"] = merged_file
 		return processed_samples
+
+
+# --- Modality Registration ---
+
+def _create_msi_samples(path, sample_ids, modality_name, settings):
+	samples = []
+	for sample_id in sample_ids:
+		subdir = os.listdir(os.path.join(path, sample_id, modality_name))
+		ion_modes = 0
+
+		for mode in MsiIonMode.list():
+			if mode in subdir:
+				ion_modes += 1
+
+		if ion_modes == 0:
+			raise ValueError(f"No ion mode subdirectories found for sample {sample_id}. Expected at least one of: {MsiIonMode.list()}")
+		elif ion_modes == 1:
+			samples.append(
+				MsiSample(
+					source_path=path,
+					sample_id=sample_id,
+					modality_name=modality_name,
+					double_ion_mode=False,
+					ion_mode=MsiIonMode.POSITIVE if MsiIonMode.POSITIVE in subdir else MsiIonMode.NEGATIVE
+				)
+			)
+		else:
+			samples.append(
+				MsiSample(
+					source_path=path,
+					sample_id=sample_id,
+					modality_name=modality_name,
+					double_ion_mode=True,
+				)
+			)
+	return samples
+
+def _create_msi_dataset(path, samples, settings):
+	lipid_annotation_db = settings.get(MsiPreprocessingParams.LIPID_ANNOTATION_DB, None)
+	return MsiDataset(path=path, samples=samples, lipid_annotation_db=lipid_annotation_db)
+
+def _extract_msi_settings(settings):
+	return {
+		'mass_tolerance': settings.get(MsiPreprocessingParams.MASS_TOLERANCE, 10),
+		'frequency_threshold': settings.get(MsiPreprocessingParams.FREQUENCY_THRESHOLD, 0.01),
+		'intensity_normalization': settings.get(MsiPreprocessingParams.INTENSITY_NORMALIZATION, MsiIntensityNormalization.NONE),
+		'recalibration_reference': settings.get(MsiPreprocessingParams.RECALIBRATION_REFERENCE, None),
+		'min_intensity_threshold': settings.get(MsiPreprocessingParams.MIN_INTENSITY_THRESHOLD, 1e4),
+		'detect_background': settings.get(MsiPreprocessingParams.DETECT_BACKGROUND, False),
+		'sample_type': settings.get(MsiPreprocessingParams.SAMPLE_TYPE, MsiSampleType.TISSUE),
+		'force_recomputing': settings.get(MsiPreprocessingParams.FORCE_RECOMPUTING, False),
+	}
+
+register_modality('msi', ModalityHandler(
+	create_samples=_create_msi_samples,
+	create_dataset=_create_msi_dataset,
+	extract_settings=_extract_msi_settings,
+))

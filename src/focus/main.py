@@ -1,84 +1,54 @@
-import os, json, argparse
+import os, sys, json, argparse, logging
 
-import utils
-from constants import ConfigParameters, ModalityParameters
-import preprocessing.preprocessing as preprocessing
-from alignment.alignment import Aligner
+
+def main():
+	parser = argparse.ArgumentParser(
+		description='FOCUS: Flexible Multiomics data preprocessing and alignment pipeline.'
+	)
+	parser.add_argument('-c', '--config', type=str, required=False, default=None,
+						help='Absolute path of the JSON config file. If omitted, the GUI starts.')
+	parser.add_argument('--debug', action='store_true', default=False,
+						help='Enable debug logging (shows all log levels including HTTP request logs).')
+	args = parser.parse_args()
+
+	if args.config:
+		# CLI mode: load config, validate, run pipeline
+		from focus.constants import ConfigParameters
+		from focus import utils, orchestrator
+
+		# Phase 1: console-only logging so validation errors are formatted
+		utils.setup_logging(debug=args.debug)
+		logger = logging.getLogger("focus")
+
+		config_path = args.config
+		if not os.path.exists(config_path):
+			logger.error(f"Config file not found: {config_path}")
+			sys.exit(1)
+
+		try:
+			with open(config_path, 'r') as f:
+				config = json.load(f)
+		except json.JSONDecodeError as e:
+			logger.error(f"Invalid JSON in config file '{config_path}': {e}")
+			sys.exit(1)
+
+		try:
+			config = utils.parse_config(config)
+		except (TypeError, KeyError, ValueError, FileNotFoundError, PermissionError) as e:
+			logger.error(f"Config validation failed: {e}")
+			sys.exit(1)
+
+		# Phase 2: full logging — adds the file handler now that dataset_path is known
+		utils.setup_logging(config[ConfigParameters.DATASET_PATH], debug=args.debug)
+		logger.info(f"Config loaded and validated: {config_path}")
+
+		orchestrator.run(config)
+	else:
+		# GUI mode: start web interface
+		from focus.GUI.main_gui import MainGUI
+		gui = MainGUI(debug=args.debug)
+		gui.start()
+
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description='FOCUS: Flexible Multiomics data preprocessing and alignment pipeline.')
-    parser.add_argument('-c', '--config', type = str, help='Absolute path of the config file', required = True)
-    
-    args = parser.parse_args()
-    config_path = args.config
-    if not os.path.exists(config_path):
-        raise FileNotFoundError(f"The config file {config_path} does not exist. Please check the input values.")
-    
-    # Load the config
-    try:
-        with open(config_path, 'r') as f:
-            config = json.load(f)
-    except json.JSONDecodeError as e:
-        raise ValueError(f"Error decoding JSON: {e}")
-    except Exception as e:
-        raise Exception(f"An error occurred while loading the config file: {e}")
-    
-    print(f"Loaded config file: {config_path}")
-    
-    # Check the config
-    utils.parse_config(config)
-
-    data_source_path = config[ConfigParameters.DATA_SOURCE_PATH]
-    sample_id =  config[ConfigParameters.SAMPLE_NAME]
-    sample_folder = os.path.join(data_source_path, sample_id)
-
-    # Get the anchor modality that will be used as a reference for the alignment
-    anchor_modality = config[ConfigParameters.ANCHOR_MODALITY]
-    anchor_settings = None
-
-    print("STEP 1: Preprocessing of the input modalities")
-    if config[ConfigParameters.PERFORM_PREPROCESSING] == True:
-        # Apply preprocessing to the input modalities
-        for modality in config[ConfigParameters.MODALITIES]:
-            print(f"Preprocessing {modality[ModalityParameters.MODALITY_NAME]}")
-            
-            #NOTE: The metadata is not used anymore, it will be computed in the alignment step
-            inferred_physical_size = preprocessing.preprocess_modality(
-                path = data_source_path,
-                sample_id = sample_id,
-                modality_name = modality[ModalityParameters.MODALITY_NAME],
-                modality_type = modality[ModalityParameters.MODALITY_TYPE],
-                preprocessing_settings = modality[ModalityParameters.PREPROCESSING_SETTINGS]
-            )
-
-            # Save the anchor settings for the alignment step
-            if anchor_settings is None and modality[ModalityParameters.MODALITY_NAME] == anchor_modality:
-                anchor_settings = modality
-    else:
-        print("Skipping preprocessing step as per config.")
-        
-        # Get the anchor settings for the alignment step
-        for modality in config[ConfigParameters.MODALITIES]:
-            if anchor_settings is None and modality[ModalityParameters.MODALITY_NAME] == anchor_modality:
-                anchor_settings = modality
-
-    print(f"STEP 2: Alignment of the input modalities")
-
-    # Align each modality to the anchor modality
-    for modality in config[ConfigParameters.MODALITIES]:
-        if modality[ModalityParameters.MODALITY_NAME] == anchor_modality:
-            continue
-        
-        print(f"Aligning {modality[ModalityParameters.MODALITY_NAME]} to {anchor_modality}")
-
-        alignment_engine = Aligner(
-            source_folder = data_source_path,
-            sample_id = sample_id,
-            load_landmarks = False,
-            load_alignment_transformation = False
-        )
-        
-        alignment_engine.align_modality_to_anchor(
-            target_modality = modality,
-            anchor_modality = anchor_settings
-        )
+	main()

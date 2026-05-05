@@ -49,6 +49,20 @@ MULTIMODAL_DATASET = lambda base_path, file_type: os.path.join(
 	f"multimodal_dataset.{file_type}"
 )
 
+MODALITY_ANNOTATION = lambda base_path, sample_id, modality_name, file_type: os.path.join(
+	base_path,
+	sample_id,
+	FocusOutputDirectories.ANNOTATIONS,
+	f"{modality_name}_{sample_id}_annotated.{file_type}"
+)
+
+MODALITY_ANNOTATION_MERGED = lambda base_path, modality_name, file_type: os.path.join(
+	base_path,
+	FocusOutputDirectories.MERGED,
+	FocusOutputDirectories.ANNOTATIONS,
+	f"{modality_name}_merged_annotated.{file_type}"
+)
+
 
 class _AbstractEnum():
 	def __init__(self) -> None:
@@ -63,6 +77,7 @@ class FocusOutputDirectories(_AbstractEnum):
 	PREPROCESSING = "preprocessing"
 	ALIGNMENT = "alignment"
 	REGISTRATION = "registration"
+	ANNOTATIONS = "annotations"
 	PLOTS = "plots"
 	RESOURCES = "resources"
 	MERGED = "merged"
@@ -105,34 +120,42 @@ class MsiIonMode(_AbstractEnum):
 	NEGATIVE = "neg"
 
 class ConfigParameters(_AbstractEnum):
-	
-	DATA_SOURCE_PATH = "data_source_path"
-	SAMPLE_NAME = "sample_name"
+	DATASET_PATH = "dataset_path"
 	MODALITIES = "modalities"
-	ANCHOR_MODALITY = "anchor_modality"
-	PERFORM_PREPROCESSING = "perform_preprocessing"
+	REFERENCE_MODALITY = "reference_modality"
+	PERFORM_ALIGNMENT = "perform_alignment"
+	ALIGNMENT_FORCE_RECOMPUTING = "alignment_force_recomputing"
+	PERFORM_REGISTRATION = "perform_registration"
+	HUGGINGFACE_TOKEN = "huggingface_token"
+	SPATIAL_ANNOTATIONS = "spatial_annotations"
+
+class AnnotationsParameters(_AbstractEnum):
+	MODALITY_NAME = "modality_name"
+	FILE_TYPE = "file_type"
+
+class AnnotationFileType(_AbstractEnum):
+	GEOJSON = "geojson"
 
 class ModalityParameters(_AbstractEnum):
-
-	MODALITY_NAME = "modality_name"
-	MODALITY_TYPE = "modality_type"
-	PREPROCESSING_SETTINGS = "preprocessing_settings"
-	ALIGNMENT_SETTINGS = "alignment_settings"
-	REGISTRATION_SETTINGS = "registration_settings"
-	PHYSICAL_PIXEL_COVERAGE = "physical_pixel_coverage"
-
-
-class RegistrationSettings(_AbstractEnum):
+	NAME = "name"
 	TYPE = "type"
+	PROCESSING_SETTINGS = "processing_settings"
+	REGISTRATION_TYPE = "registration_type"
+	REGISTRATION_SETTINGS = "registration_settings"
+	ALIGNMENT_STRATEGY = "alignment_strategy"
 
 class RegistrationType(_AbstractEnum):
 	NONE = "none"
-	RESOLUTION_SCALING_TO_TARGET = "resolution_scaling_to_target"
-	RESOLUTION_SCALING_TO_ANCHOR = "resolution_scaling_to_anchor"
-	
+	FEATURE_EXTRACTION = "feature_extraction"
+	SPOT_INTERPOLATION = "spot_interpolation"
+
+class AlignmentStrategy(_AbstractEnum):
+	MANUAL = "manual"
+	PRE_ALIGNED = "pre_aligned"
+
 
 class MicroscopyImageProcessingParams(_AbstractEnum):
-	
+
 	COLOR_ENHANCEMENT = "color_enhancement"
 	REMOVE_BACKGROUND = "remove_background"
 	CROP_TO_TISSUE = "crop_to_tissue"
@@ -140,6 +163,12 @@ class MicroscopyImageProcessingParams(_AbstractEnum):
 	PYRAMID_LEVELS = "pyramid_levels"
 	MIN_OBJECT_COVERAGE = "min_object_coverage"
 	FORCE_RECOMPUTING = "force_recomputing"
+	GAUSSIAN_BLUR_KERNEL_SIZE = "gaussian_blur_kernel_size"
+	MIN_OBJECT_SIZE = "min_object_size"
+	CLIP_PERCENTILE = "clip_percentile"
+	CROP_MARGIN = "crop_margin"
+	GAMMA = "gamma"
+	CONTRAST_SATURATION = "contrast_saturation"
 
 class MsiPreprocessingParams(_AbstractEnum):
 
@@ -150,10 +179,17 @@ class MsiPreprocessingParams(_AbstractEnum):
 	RECALIBRATION_REFERENCE = "recalibration_reference"
 	MIN_INTENSITY_THRESHOLD = "min_intensity_threshold"
 	DETECT_BACKGROUND = "detect_background"
+	SAMPLE_TYPE = "sample_type"
 	FORCE_RECOMPUTING = "force_recomputing"
 
 class RamanPreprocessingParams(_AbstractEnum):
 	FORCE_RECOMPUTING = "force_recomputing"
+	MAX_WORKERS = "max_workers"
+	SAVGOL_WINDOW = "savgol_window"
+	SAVGOL_POLYORDER = "savgol_polyorder"
+	BG_MIN_AREA_FRACTION = "bg_min_area_fraction"
+	OTSU_THRESHOLD_FACTOR = "otsu_threshold_factor"
+	MIN_OBJECT_SIZE = "min_object_size"
 
 class STPreprocessingParams(_AbstractEnum):
 	MIN_COUNT_PER_SPOT = "min_count_per_spot"
@@ -172,11 +208,36 @@ class ModalityType(_AbstractEnum):
 	RAMAN = "raman"
 	ST = "st"
 
+# Maps modality type to the file extension used for preprocessed/aligned output
+MODALITY_FILE_EXTENSION = {
+	ModalityType.MICROSCOPY_IMAGE: "ome.tiff",
+	ModalityType.RAMAN: "ome.tiff",
+	ModalityType.MSI: "h5ad",
+	ModalityType.ST: "h5ad",
+}
+
+# Maps registration type to compatible modality types (None = all types)
+REGISTRATION_COMPATIBILITY = {
+	RegistrationType.FEATURE_EXTRACTION: [ModalityType.MICROSCOPY_IMAGE],
+	RegistrationType.SPOT_INTERPOLATION: [ModalityType.MSI, ModalityType.ST, ModalityType.RAMAN],
+	RegistrationType.NONE: None,
+}
+
+# Maps alignment strategy to compatible target modality types (None = all types)
+ALIGNMENT_STRATEGY_COMPATIBILITY = {
+	AlignmentStrategy.MANUAL: None,
+	AlignmentStrategy.PRE_ALIGNED: [ModalityType.MSI, ModalityType.ST],
+}
+
 class TransformationType(_AbstractEnum):
 	TRANSLATION = "translation"
 	RIGID = "rigid"
 	AFFINE = "affine"
 	BSPLINE = "bspline"
+
+class MsiSampleType(_AbstractEnum):
+	TISSUE   = "tissue"
+	MICROGRID = "microgrid"
 
 class MsiIntensityNormalization(_AbstractEnum):
 	TIC = "tic"
@@ -186,3 +247,33 @@ class MsiIntensityNormalization(_AbstractEnum):
 class DecompositionMethod(_AbstractEnum):
 	PCA = "pca"
 	NMF = "nmf"
+
+
+# Human-readable labels for all string constants shown in the GUI.
+# The GUI uses the original literals in the config file; these labels are display-only.
+DISPLAY_NAMES: dict[str, str] = {
+	# Modality types
+	ModalityType.MICROSCOPY_IMAGE: "Microscopy Image",
+	ModalityType.MSI:              "MSI",
+	ModalityType.RAMAN:            "Raman",
+	ModalityType.ST:               "Spatial Transcriptomics",
+	# Registration types
+	RegistrationType.NONE:               "None",
+	RegistrationType.FEATURE_EXTRACTION: "Feature Extraction",
+	RegistrationType.SPOT_INTERPOLATION: "Spot Interpolation",
+	# Alignment strategies
+	AlignmentStrategy.MANUAL:      "Manual",
+	AlignmentStrategy.PRE_ALIGNED: "Pre-Aligned",
+	# MSI intensity normalisation
+	MsiIntensityNormalization.TIC:  "TIC",
+	MsiIntensityNormalization.LOG:  "Log",
+	MsiIntensityNormalization.NONE: "None",
+	# Background colour
+	SegmentationBackgroundColor.WHITE: "White",
+	SegmentationBackgroundColor.BLACK: "Black",
+	# MSI sample type
+	MsiSampleType.TISSUE:    "Tissue",
+	MsiSampleType.MICROGRID: "Microgrid",
+	# Annotation file types
+	AnnotationFileType.GEOJSON: "GeoJSON",
+}
