@@ -208,7 +208,7 @@ class MsiSample(BaseSample):
 		self.ion_mode = ion_mode
 
 		self.recalibration_reference: dict[
-			                              MsiIonMode, np.ndarray] | None = None  # To be set during dataset preprocessing
+										  MsiIonMode, np.ndarray] | None = None  # To be set during dataset preprocessing
 		self.min_intensity_threshold: float | None = None  # To be set during dataset preprocessing
 		self.raw_recalibration_offset: dict[MsiIonMode, np.ndarray] = {}  # To be computed during dataset preprocessing
 		self.filtered_recalibration_offset: dict[
@@ -290,7 +290,7 @@ class MsiSample(BaseSample):
 			Boolean array indicating which spots are foreground (True) and which are background (False).
 		'''
 		foreground_mask = np.zeros(self._metadata[self.ion_modes[0]][MsiMetadata.PIXEL_COORDINATES].shape[0],
-		                           dtype=bool)
+								   dtype=bool)
 		if self.filtered_idx is not None:
 			foreground_mask[self.filtered_idx] = True
 
@@ -378,7 +378,7 @@ class MsiSample(BaseSample):
 					'offset': offset
 				}
 			elif element.find(ImzMLFileParser.REFERENCEABLE_PARAM_GROUP_REF).attrib['ref'] in ['intensities',
-			                                                                                   "intensityArray"]:
+																							   "intensityArray"]:
 				intensities = {
 					'length': length,
 					'encoded_length': encoded_length,
@@ -386,7 +386,7 @@ class MsiSample(BaseSample):
 				}
 
 		return {'pixel_x': x, 'pixel_y': y, 'mzs': mzs, 'intensities': intensities, 'physical_x': physical_x,
-		        'physical_y': physical_y, 'has_physical_coordinates': has_physical_coordinates}
+				'physical_y': physical_y, 'has_physical_coordinates': has_physical_coordinates}
 
 	def _correct_rotation_error(self, physical_coords: np.ndarray[np.float32], pixel_coords: np.ndarray[np.int32]) -> \
 			np.ndarray[np.float32]:
@@ -422,7 +422,7 @@ class MsiSample(BaseSample):
 		# Define helper function (for code clarity)
 		def rotate(points, angle, center):
 			R = np.array([[np.cos(angle), -np.sin(angle)],
-			              [np.sin(angle), np.cos(angle)]])
+						  [np.sin(angle), np.cos(angle)]])
 			shifted = points - center
 			rotated = shifted.dot(R.T) + center
 			return rotated
@@ -498,15 +498,15 @@ class MsiSample(BaseSample):
 
 		# Convert the parsed spectra to a set of Numpy arrays to facilitate further processing
 		pixel_coordinates = np.array([(metadata["pixel_y"], metadata['pixel_x']) for metadata in parsed_spectra],
-		                             dtype=np.int32)  #NOTE: The X and Y axes are inverted between pixel and physical coordinates
+									 dtype=np.int32)  #NOTE: The X and Y axes are inverted between pixel and physical coordinates
 		physical_coordinates = np.array(
 			[(metadata["physical_x"], metadata['physical_y']) for metadata in parsed_spectra], dtype=np.float32)
 		mz_binary_metadata = np.array(
 			[(metadata["mzs"]["length"], metadata["mzs"]["encoded_length"], metadata["mzs"]["offset"]) for metadata in
 			 parsed_spectra])
 		intensities_binary_metadata = np.array([(metadata["intensities"]["length"],
-		                                         metadata["intensities"]["encoded_length"],
-		                                         metadata["intensities"]["offset"]) for metadata in parsed_spectra])
+												 metadata["intensities"]["encoded_length"],
+												 metadata["intensities"]["offset"]) for metadata in parsed_spectra])
 
 		# Where physical coordinates were absent, the fallback stored raw pixel indices.
 		# Scale those entries by raster_size so the inter-spot spacing is in micrometers,
@@ -575,6 +575,7 @@ class MsiSample(BaseSample):
 	def _filter_unpaired_spots(self) -> None:
 		'''
 		Analyze the metadata of both ion modes and remove unpaired spots (experimental artifacts).
+		Only pixels present in both ion modes are retained.
 		'''
 
 		if not self.double_ion_mode:
@@ -589,35 +590,35 @@ class MsiSample(BaseSample):
 		pos_pixel_coords_struct = pos_pixel_coords.view(dtype)
 		neg_pixel_coords_struct = neg_pixel_coords.view(dtype)
 
-		# Create mask of elements in the largest array not in the other one
-		if pos_pixel_coords.shape[0] >= neg_pixel_coords.shape[0]:
-			large_coords, small_coords = pos_pixel_coords_struct, neg_pixel_coords_struct
-			large_mode, small_mode = MsiIonMode.POSITIVE, MsiIonMode.NEGATIVE
-		else:
-			large_coords, small_coords = neg_pixel_coords_struct, pos_pixel_coords_struct
-			large_mode, small_mode = MsiIonMode.NEGATIVE, MsiIonMode.POSITIVE
+		# Find the intersection: keep pixels present in BOTH modes
+		pos_mask = np.isin(pos_pixel_coords_struct, neg_pixel_coords_struct)
+		neg_mask = np.isin(neg_pixel_coords_struct, pos_pixel_coords_struct)
 
-		missing_mask = ~np.isin(large_coords, small_coords)
-		missing_indices = np.nonzero(missing_mask)[0]
+		pos_indices = np.nonzero(pos_mask)[0]
+		neg_indices = np.nonzero(neg_mask)[0]
 
-		filtered_large_coords = np.delete(large_coords, missing_indices, axis=0)
-
-		# Update the metadata to remove the unpaired spots
-		self._metadata[large_mode][MsiMetadata.PIXEL_COORDINATES] = filtered_large_coords.view(np.int32).reshape(-1, 2)
-		self._metadata[large_mode][MsiMetadata.PHYSICAL_COORDINATES] = np.delete(
-			self._metadata[large_mode][MsiMetadata.PHYSICAL_COORDINATES],
-			missing_indices,
-			axis=0
+		# Filter positive mode metadata
+		self._metadata[MsiIonMode.POSITIVE][MsiMetadata.PIXEL_COORDINATES] = pos_pixel_coords[pos_indices]
+		self._metadata[MsiIonMode.POSITIVE][MsiMetadata.PHYSICAL_COORDINATES] = (
+			self._metadata[MsiIonMode.POSITIVE][MsiMetadata.PHYSICAL_COORDINATES][pos_indices]
 		)
-		self._metadata[large_mode][MsiMetadata.MZ_BINARY_METADATA] = np.delete(
-			self._metadata[large_mode][MsiMetadata.MZ_BINARY_METADATA],
-			missing_indices,
-			axis=0
+		self._metadata[MsiIonMode.POSITIVE][MsiMetadata.MZ_BINARY_METADATA] = (
+			self._metadata[MsiIonMode.POSITIVE][MsiMetadata.MZ_BINARY_METADATA][pos_indices]
 		)
-		self._metadata[large_mode][MsiMetadata.INTENSITIES_BINARY_METADATA] = np.delete(
-			self._metadata[large_mode][MsiMetadata.INTENSITIES_BINARY_METADATA],
-			missing_indices,
-			axis=0
+		self._metadata[MsiIonMode.POSITIVE][MsiMetadata.INTENSITIES_BINARY_METADATA] = (
+			self._metadata[MsiIonMode.POSITIVE][MsiMetadata.INTENSITIES_BINARY_METADATA][pos_indices]
+		)
+
+		# Filter negative mode metadata
+		self._metadata[MsiIonMode.NEGATIVE][MsiMetadata.PIXEL_COORDINATES] = neg_pixel_coords[neg_indices]
+		self._metadata[MsiIonMode.NEGATIVE][MsiMetadata.PHYSICAL_COORDINATES] = (
+			self._metadata[MsiIonMode.NEGATIVE][MsiMetadata.PHYSICAL_COORDINATES][neg_indices]
+		)
+		self._metadata[MsiIonMode.NEGATIVE][MsiMetadata.MZ_BINARY_METADATA] = (
+			self._metadata[MsiIonMode.NEGATIVE][MsiMetadata.MZ_BINARY_METADATA][neg_indices]
+		)
+		self._metadata[MsiIonMode.NEGATIVE][MsiMetadata.INTENSITIES_BINARY_METADATA] = (
+			self._metadata[MsiIonMode.NEGATIVE][MsiMetadata.INTENSITIES_BINARY_METADATA][neg_indices]
 		)
 
 	def initialize_sample(self) -> None:
@@ -672,7 +673,7 @@ class MsiSample(BaseSample):
 					self._metadata[MsiIonMode.POSITIVE][MsiMetadata.RASTER_SIZE][1]:
 				# The raster is square, offset along both axes
 				offset = (self._metadata[MsiIonMode.POSITIVE][MsiMetadata.RASTER_SIZE][0] // 2,
-				          self._metadata[MsiIonMode.POSITIVE][MsiMetadata.RASTER_SIZE][1] // 2)
+						  self._metadata[MsiIonMode.POSITIVE][MsiMetadata.RASTER_SIZE][1] // 2)
 			elif self._metadata[MsiIonMode.POSITIVE][MsiMetadata.RASTER_SIZE][0] > \
 					self._metadata[MsiIonMode.POSITIVE][MsiMetadata.RASTER_SIZE][1]:
 				# The raster is rectangular, offset along the X axis
@@ -684,7 +685,7 @@ class MsiSample(BaseSample):
 			# Apply the offset to the transformed coordinates and compute the average between pos and neg to have the coordinate of the raster's center
 			pos_coords_transformed -= np.array(offset)
 			final_physical_coords = np.mean([pos_coords_transformed, neg_coords],
-			                                axis=0)  # Midpoint between the two physical sets
+											axis=0)  # Midpoint between the two physical sets
 		else:
 			final_physical_coords = self._metadata[self.ion_mode][MsiMetadata.PHYSICAL_COORDINATES]
 
@@ -724,14 +725,14 @@ class MsiSample(BaseSample):
 
 		Behavior adapts based on self._sample_type:
 		  "tissue"   -- contiguous tissue section. A 2-component GMM is fit; BIC selects
-		               between 1-component (unimodal → keep all) and 2-component (bimodal →
-		               classify by posterior). This handles class-imbalanced distributions
-		               (e.g. 95 % tissue / 5 % background) where Otsu splits the dominant
-		               tissue mode instead of separating it from background. Morphological
-		               cleanup (hole filling + opening) is applied afterwards.
+					   between 1-component (unimodal → keep all) and 2-component (bimodal →
+					   classify by posterior). This handles class-imbalanced distributions
+					   (e.g. 95 % tissue / 5 % background) where Otsu splits the dominant
+					   tissue mode instead of separating it from background. Morphological
+					   cleanup (hole filling + opening) is applied afterwards.
 		  "microgrid" -- isolated single cells in a grid pattern. Spatial cleanup is
-		               disabled (it would fill gaps and erase real cells). Otsu is used with
-		               a 25th-percentile floor to avoid discarding weak single-cell signals.
+					   disabled (it would fill gaps and erase real cells). Otsu is used with
+					   a 25th-percentile floor to avoid discarding weak single-cell signals.
 
 		Returns
 		-------
@@ -1002,7 +1003,7 @@ class MsiSample(BaseSample):
 		return recalibrated_mz_vector, recalibration_offset
 
 	def load_payload(self, mass_tolerance: int | None = None, annotation_db: pd.DataFrame | None = None,
-	                 detect_background: bool = False) -> tuple[dict[list[list[np.float32 | np.float64]]]]:
+					 detect_background: bool = False) -> tuple[dict[list[list[np.float32 | np.float64]]]]:
 		'''
 		Load the M/Z vectors and the corresponding intensities from the binary IBD files.
 		If the sample contains both ion modes, load the data for both modes.
@@ -1045,8 +1046,8 @@ class MsiSample(BaseSample):
 		for mode in self._metadata.keys():
 			# Define an utility to read the M/Z values and the intensityfrom the binary file
 			read_mzs = lambda count, offset: np.fromfile(self._binary_files[mode],
-			                                             dtype=self._metadata[mode][MsiMetadata.MZ_DTYPE], count=count,
-			                                             offset=offset)
+														 dtype=self._metadata[mode][MsiMetadata.MZ_DTYPE], count=count,
+														 offset=offset)
 			read_intensities = lambda count, offset: np.fromfile(self._binary_files[mode], dtype=self._metadata[mode][
 				MsiMetadata.INTENSITIES_DTYPE], count=count, offset=offset)
 
@@ -1213,7 +1214,7 @@ class MsiDataset(BaseDataset):
 		return n_chunks
 
 	def _compute_reference_mz(self, spectra_list: list[np.ndarray], mass_tolerance: int,
-	                          frequency_threshold: float) -> np.ndarray:
+							  frequency_threshold: float) -> np.ndarray:
 		"""
 		Create consensus reference m/z vector using adaptive mass tolerance with parallel CPU clustering.
 
@@ -1290,7 +1291,7 @@ class MsiDataset(BaseDataset):
 
 	@staticmethod
 	def _interpolate_intensities(original_mzs_list: list[np.ndarray], original_intensities_list: list[np.ndarray],
-	                             reference_mz: np.ndarray, mass_tolerance: float) -> np.ndarray:
+								 reference_mz: np.ndarray, mass_tolerance: float) -> np.ndarray:
 		"""
 		Rebin intensities to reference M/Z vector. This method processes a chunk of spectra.
 		The interpolation distributes the intensity of each original peak to the reference M/Z bins that fall within the mass tolerance,
@@ -1344,7 +1345,7 @@ class MsiDataset(BaseDataset):
 		return result_matrix
 
 	def _annotate_reference_mz(self, mz_vector: np.ndarray[np.float32], ion_mode: MsiIonMode,
-	                           mass_tolerance: int) -> np.ndarray:
+							   mass_tolerance: int) -> np.ndarray:
 		'''
 		Annotate the reference M/Z vector using the lipid annotation database.
 
@@ -1389,7 +1390,7 @@ class MsiDataset(BaseDataset):
 		return np.array(annotations, dtype=str)
 
 	def _find_calibration_reference(self, mz_vectors: list[dict[MsiIonMode, list[np.ndarray]]], mass_tolerance: int,
-	                                number_of_references: int = 1) -> dict[MsiIonMode, np.ndarray]:
+									number_of_references: int = 1) -> dict[MsiIonMode, np.ndarray]:
 		'''
 		Scan the dataset to select the M/Z values to use as reference for recalibration.
 		Each ion mode is processed separately. For each ion mode, the M/Z values from all samples are concatenated,
@@ -1506,16 +1507,16 @@ class MsiDataset(BaseDataset):
 		return recalibration_reference
 
 	def process_dataset(self,
-	                    mass_tolerance: int = 10,
-	                    frequency_threshold: float = 0.01,
-	                    intensity_normalization: MsiIntensityNormalization = MsiIntensityNormalization.TIC,
-	                    recalibration_reference: dict[MsiIonMode, np.ndarray] | None = None,
-	                    min_intensity_threshold: float = 10000.0,
-	                    detect_background: bool = True,
-	                    sample_type: str = MsiSampleType.TISSUE,
-	                    force_recomputing: bool = False,
-	                    step_reporter=None
-	                    ) -> dict[str, str]:
+						mass_tolerance: int = 10,
+						frequency_threshold: float = 0.01,
+						intensity_normalization: MsiIntensityNormalization = MsiIntensityNormalization.TIC,
+						recalibration_reference: dict[MsiIonMode, np.ndarray] | None = None,
+						min_intensity_threshold: float = 10000.0,
+						detect_background: bool = True,
+						sample_type: str = MsiSampleType.TISSUE,
+						force_recomputing: bool = False,
+						step_reporter=None
+						) -> dict[str, str]:
 		'''
 		Process the dataset by aligning the M/Z values across all samples and interpolating the intensities.
 
@@ -1575,13 +1576,13 @@ class MsiDataset(BaseDataset):
 			for sample in self.samples:
 				if not os.path.exists(
 						MODALITY_PREPROCESSING(self.dataset_source_path, sample.sample_id, sample.modality_name,
-						                       'h5ad')):
+											   'h5ad')):
 					all_sample_computed = False
 					break
 				else:
 					processed_samples[sample.sample_id] = MODALITY_PREPROCESSING(self.dataset_source_path,
-					                                                             sample.sample_id, sample.modality_name,
-					                                                             'h5ad')
+																				 sample.sample_id, sample.modality_name,
+																				 'h5ad')
 
 			# Check if the merged dataset already exists
 			if not os.path.exists(
@@ -1589,7 +1590,7 @@ class MsiDataset(BaseDataset):
 				all_sample_computed = False
 			else:
 				processed_samples["merged"] = MODALITY_PREPROCESSING_MERGED(self.dataset_source_path,
-				                                                            self.samples[0].modality_name, 'h5ad')
+																			self.samples[0].modality_name, 'h5ad')
 
 			# If the merged dataset already exists and force_recompute is False, skip the computation
 			if all_sample_computed:
@@ -1614,8 +1615,8 @@ class MsiDataset(BaseDataset):
 
 			for sample in reporter.tqdm(self.samples, desc="2/9 - Selecting high-confidence tissue spots", unit="sample"):
 				raw_mz, _, filtered_mz, _ = sample.load_payload(annotation_db=self.lipid_annotation_db,
-				                                                mass_tolerance=mass_tolerance,
-				                                                detect_background=detect_background)
+																mass_tolerance=mass_tolerance,
+																detect_background=detect_background)
 
 				# If it was possible to filter the datapoints using the lipid annotation DB, use the filtered M/Z values
 				if filtered_mz != {}:
@@ -1640,7 +1641,7 @@ class MsiDataset(BaseDataset):
 			# Dummy call to still filter the datapoints in each sample
 			for sample in reporter.tqdm(self.samples, desc="2/8 - Selecting high-confidence tissue spots", unit="sample"):
 				_, _, _, _ = sample.load_payload(annotation_db=self.lipid_annotation_db, mass_tolerance=mass_tolerance,
-				                                 detect_background=detect_background)
+												 detect_background=detect_background)
 				gc.collect()
 
 			reporter.step("3/9 - Using provided recalibration reference M/Z values.")
@@ -1652,9 +1653,9 @@ class MsiDataset(BaseDataset):
 
 		# STEP 3: For each ion mode in each sample, compute the reference M/Z vector
 		for sample in reporter.tqdm(self.samples, desc="4/9 - Computing reference M/Z backbone for each sample",
-		                            unit="sample"):
+									unit="sample"):
 			raw_mz, _, filtered_mz, _ = sample.load_payload(annotation_db=self.lipid_annotation_db,
-			                                                mass_tolerance=mass_tolerance)
+															mass_tolerance=mass_tolerance)
 			for mode in sample.ion_modes:
 				reference_mz_samples[mode].append(
 					self._compute_reference_mz(
@@ -1702,7 +1703,7 @@ class MsiDataset(BaseDataset):
 
 			# Load the intensities and M/Z values
 			original_mzs, intensities, _, _ = sample.load_payload(annotation_db=self.lipid_annotation_db,
-			                                                      mass_tolerance=mass_tolerance)
+																  mass_tolerance=mass_tolerance)
 
 			# All the spots are interpolated but an additional obs mask is stored to separate foreground/background
 			self.foreground_masks[sample.sample_id] = sample.foreground_mask
@@ -1710,7 +1711,7 @@ class MsiDataset(BaseDataset):
 			# Process each ion mode separately
 			for mode in sample.ion_modes:
 				merged_intensities = np.zeros((len(intensities[mode]), len(self.reference_mz[mode])),
-				                              dtype=sample._metadata[mode][MsiMetadata.INTENSITIES_DTYPE])
+											  dtype=sample._metadata[mode][MsiMetadata.INTENSITIES_DTYPE])
 
 				# Consider only the datapoints for the current ion mode
 				intensities_mode = intensities[mode]
@@ -1731,13 +1732,13 @@ class MsiDataset(BaseDataset):
 				# Worker function which partially fixes reference_mz and mass_tolerance.
 				# Reference via the class (not self) so joblib does not pickle the entire dataset.
 				worker_func = partial(MsiDataset._interpolate_intensities,
-				                      reference_mz=self.reference_mz[mode],
-				                      mass_tolerance=mass_tolerance)
+									  reference_mz=self.reference_mz[mode],
+									  mass_tolerance=mass_tolerance)
 
 				# Joblib parallel execution - auto-manages processes
 				results = Parallel(n_jobs=num_workers,
-				                   backend='loky',  # Robust process management
-				                   verbose=0)(
+								   backend='loky',  # Robust process management
+								   verbose=0)(
 					delayed(worker_func)(orig_chunk, intens_chunk)
 					for orig_chunk, intens_chunk in chunks
 				)
@@ -1799,7 +1800,7 @@ class MsiDataset(BaseDataset):
 
 		try:
 			for sample in reporter.tqdm(self.samples, desc="8/9 - Generating AnnData objects and saving results",
-			                            unit="sample"):
+										unit="sample"):
 				ref_mode = MsiIonMode.POSITIVE if MsiIonMode.POSITIVE in sample.ion_modes else MsiIonMode.NEGATIVE
 				sample_id = sample.sample_id
 				physical_coords = sample._metadata[ref_mode][MsiMetadata.PHYSICAL_COORDINATES].astype(np.float32)
