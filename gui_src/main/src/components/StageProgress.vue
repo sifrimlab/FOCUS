@@ -24,7 +24,7 @@ const stageStatus = computed(() =>
 </script>
 
 <template>
-  <div class="flex items-center justify-between w-full max-w-2xl mx-auto">
+  <div class="flex items-center w-full max-w-2xl mx-auto" :class="stageStatus.length === 1 ? 'justify-center' : 'justify-between'">
     <template v-for="(stage, i) in stageStatus" :key="stage.name">
       <!-- Stage circle + label -->
       <div class="flex flex-col items-center">
