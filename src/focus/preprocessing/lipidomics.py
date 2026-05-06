@@ -627,6 +627,7 @@ class MsiSample(BaseSample):
 												count=count_mz,
 												offset=int(mz_meta[idx, 2]))
 							n_bad = int(np.sum(~np.isfinite(arr)))
+							del arr  # release mmap reference before next read
 							if n_bad:
 								chunk_bad_mz[idx] = n_bad
 
@@ -636,6 +637,7 @@ class MsiSample(BaseSample):
 												count=count_int,
 												offset=int(int_meta[idx, 2]))
 							n_bad = int(np.sum(~np.isfinite(arr)))
+							del arr  # release mmap reference before next read
 							if n_bad:
 								chunk_bad_int[idx] = n_bad
 				finally:
