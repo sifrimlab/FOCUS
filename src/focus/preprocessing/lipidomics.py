@@ -692,19 +692,69 @@ class MsiSample(BaseSample):
 		if not self.double_ion_mode:
 			return
 
-		# Extract the pixel coordinates for both ion modes
+		# Extract pixel and physical coordinates for both ion modes
 		pos_pixel_coords = self._metadata[MsiIonMode.POSITIVE][MsiMetadata.PIXEL_COORDINATES]
 		neg_pixel_coords = self._metadata[MsiIonMode.NEGATIVE][MsiMetadata.PIXEL_COORDINATES]
+		pos_phys_coords = self._metadata[MsiIonMode.POSITIVE][MsiMetadata.PHYSICAL_COORDINATES]
+		neg_phys_coords = self._metadata[MsiIonMode.NEGATIVE][MsiMetadata.PHYSICAL_COORDINATES]
 
-		# Convert to structured array to compare rows
+		# Debug: show pixel and physical extremes before any correction
+		for mode_label, pix, phys in [
+			("POSITIVE", pos_pixel_coords, pos_phys_coords),
+			("NEGATIVE", neg_pixel_coords, neg_phys_coords),
+		]:
+			def _fmt(idx, pix=pix, phys=phys):
+				return f"pixel=({pix[idx, 0]},{pix[idx, 1]}) phys=({phys[idx, 0]:.1f},{phys[idx, 1]:.1f})"
+
+			print(
+				f"[filter_unpaired_spots] {mode_label} extremes:\n"
+				f"  min_x  {_fmt(int(np.argmin(pix[:, 0])))}\n"
+				f"  max_x  {_fmt(int(np.argmax(pix[:, 0])))}\n"
+				f"  min_y  {_fmt(int(np.argmin(pix[:, 1])))}\n"
+				f"  max_y  {_fmt(int(np.argmax(pix[:, 1])))}"
+			)
+
+		# Detect pixel axis orientation mismatch by fitting a linear pixel->physical map for each mode.
+		# T has shape (2, 2): row i contains how pixel axis i drives (phys_x, phys_y).
+		# Flipping pixel axis i negates row i of T. We test all 4 flip combinations and pick the one
+		# that makes the negative map best align (minimum Frobenius distance) with the positive map.
+		def _fit_pixel_transform(pix, phys):
+			A = np.column_stack([pix.astype(float), np.ones(len(pix))])
+			return np.linalg.lstsq(A, phys.astype(float), rcond=None)[0][:2]
+
+		T_pos = _fit_pixel_transform(pos_pixel_coords, pos_phys_coords)
+		T_neg = _fit_pixel_transform(neg_pixel_coords, neg_phys_coords)
+		T_pos_norm = T_pos / np.linalg.norm(T_pos, 'fro')
+		T_neg_norm = T_neg / np.linalg.norm(T_neg, 'fro')
+
+		flip_candidates = {
+			(False, False): np.array([ 1.,  1.]),
+			(True,  False): np.array([-1.,  1.]),
+			(False, True):  np.array([ 1., -1.]),
+			(True,  True):  np.array([-1., -1.]),
+		}
+		flip_x, flip_y = min(
+			flip_candidates,
+			key=lambda k: np.linalg.norm(T_neg_norm * flip_candidates[k][:, None] - T_pos_norm, 'fro')
+		)
+
+		if flip_x or flip_y:
+			neg_pixel_coords = neg_pixel_coords.copy()
+			min_x, max_x = int(neg_pixel_coords[:, 0].min()), int(neg_pixel_coords[:, 0].max())
+			min_y, max_y = int(neg_pixel_coords[:, 1].min()), int(neg_pixel_coords[:, 1].max())
+			if flip_x:
+				neg_pixel_coords[:, 0] = max_x + min_x - neg_pixel_coords[:, 0]
+			if flip_y:
+				neg_pixel_coords[:, 1] = max_y + min_y - neg_pixel_coords[:, 1]
+			self._metadata[MsiIonMode.NEGATIVE][MsiMetadata.PIXEL_COORDINATES] = neg_pixel_coords
+			print(f"[filter_unpaired_spots] Applied pixel axis flip to NEGATIVE: flip_x={flip_x}, flip_y={flip_y}")
+		else:
+			print(f"[filter_unpaired_spots] No pixel axis flip needed")
+
+		# Build structured arrays AFTER the flip so comparisons use corrected coordinates
 		dtype = [('x', pos_pixel_coords.dtype), ('y', pos_pixel_coords.dtype)]
 		pos_pixel_coords_struct = pos_pixel_coords.view(dtype)
 		neg_pixel_coords_struct = neg_pixel_coords.view(dtype)
-
-		pos_shape = (int(pos_pixel_coords[:, 0].max()), int(pos_pixel_coords[:, 1].max()))
-		neg_shape = (int(neg_pixel_coords[:, 0].max()), int(neg_pixel_coords[:, 1].max()))
-		print(f"[filter_unpaired_spots] POSITIVE grid shape before filtering: {pos_shape}")
-		print(f"[filter_unpaired_spots] NEGATIVE grid shape before filtering: {neg_shape}")
 
 		# Find the intersection: keep pixels present in BOTH modes
 		pos_mask = np.isin(pos_pixel_coords_struct, neg_pixel_coords_struct)
