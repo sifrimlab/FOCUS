@@ -763,6 +763,19 @@ class MsiSample(BaseSample):
 		pos_indices = np.nonzero(pos_mask)[0]
 		neg_indices = np.nonzero(neg_mask)[0]
 
+		# After the pixel flip the negative array is still in its original scan order, which is
+		# the reverse of positive when a flip was applied. Pairing by array index would therefore
+		# match opposite ends of the scan, producing a reflected affine transform and wavy output.
+		# Reorder neg_indices so that neg_pixel_coords[neg_indices[k]] == pos_pixel_coords[pos_indices[k]].
+		neg_pix_to_idx = {
+			(int(neg_pixel_coords[ni, 0]), int(neg_pixel_coords[ni, 1])): ni
+			for ni in neg_indices
+		}
+		neg_indices = np.array([
+			neg_pix_to_idx[(int(pos_pixel_coords[pi, 0]), int(pos_pixel_coords[pi, 1]))]
+			for pi in pos_indices
+		])
+
 		pos_shape_filtered = (int(pos_pixel_coords[pos_indices, 0].max()), int(pos_pixel_coords[pos_indices, 1].max()))
 		neg_shape_filtered = (int(neg_pixel_coords[neg_indices, 0].max()), int(neg_pixel_coords[neg_indices, 1].max()))
 		print(f"[filter_unpaired_spots] POSITIVE grid shape after intersection: {pos_shape_filtered}")
