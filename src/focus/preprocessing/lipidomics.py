@@ -701,12 +701,22 @@ class MsiSample(BaseSample):
 		pos_pixel_coords_struct = pos_pixel_coords.view(dtype)
 		neg_pixel_coords_struct = neg_pixel_coords.view(dtype)
 
+		pos_shape = (int(pos_pixel_coords[:, 0].max()), int(pos_pixel_coords[:, 1].max()))
+		neg_shape = (int(neg_pixel_coords[:, 0].max()), int(neg_pixel_coords[:, 1].max()))
+		print(f"[filter_unpaired_spots] POSITIVE grid shape before filtering: {pos_shape}")
+		print(f"[filter_unpaired_spots] NEGATIVE grid shape before filtering: {neg_shape}")
+
 		# Find the intersection: keep pixels present in BOTH modes
 		pos_mask = np.isin(pos_pixel_coords_struct, neg_pixel_coords_struct)
 		neg_mask = np.isin(neg_pixel_coords_struct, pos_pixel_coords_struct)
 
 		pos_indices = np.nonzero(pos_mask)[0]
 		neg_indices = np.nonzero(neg_mask)[0]
+
+		pos_shape_filtered = (int(pos_pixel_coords[pos_indices, 0].max()), int(pos_pixel_coords[pos_indices, 1].max()))
+		neg_shape_filtered = (int(neg_pixel_coords[neg_indices, 0].max()), int(neg_pixel_coords[neg_indices, 1].max()))
+		print(f"[filter_unpaired_spots] POSITIVE grid shape after intersection: {pos_shape_filtered}")
+		print(f"[filter_unpaired_spots] NEGATIVE grid shape after intersection: {neg_shape_filtered}")
 
 		# Filter positive mode metadata
 		self._metadata[MsiIonMode.POSITIVE][MsiMetadata.PIXEL_COORDINATES] = pos_pixel_coords[pos_indices]
