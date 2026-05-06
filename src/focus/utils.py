@@ -1,6 +1,7 @@
 import os
 import logging
 import multiprocessing
+from pathlib import Path
 
 import anndata
 import numpy as np
@@ -393,6 +394,16 @@ def gamma_correction(channel: np.ndarray, gamma: float = 0.45) -> np.ndarray:
 
 def concat_on_disk_compat(*args, **kwargs) -> None:
 	anndata.settings.allow_write_nullable_strings = True
+	# Newer anndata versions call .is_dir() on input paths and require Path objects, not strings.
+	args = list(args)
+	if args:
+		inp = args[0]
+		if isinstance(inp, dict):
+			args[0] = {k: Path(v) for k, v in inp.items()}
+		elif isinstance(inp, (list, tuple)):
+			args[0] = [Path(p) for p in inp]
+	if len(args) >= 2 and isinstance(args[1], str):
+		args[1] = Path(args[1])
 	anndata.experimental.concat_on_disk(*args, **kwargs)
 
 
