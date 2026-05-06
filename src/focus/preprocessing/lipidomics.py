@@ -533,6 +533,163 @@ class MsiSample(BaseSample):
 
 		return experiment_metadata
 
+	def _validate_binary_data(self, mode: 'MsiIonMode') -> None:
+		"""Validate the IBD binary file for *mode* before any processing begins.
+
+		Performs two checks and raises ``ValueError`` with a detailed, actionable
+		message on the first failure found:
+
+		1. **File-size check** – verifies that the IBD file is at least as large as
+		   the byte range implied by all (offset + count × itemsize) pairs declared
+		   in the imzML.  A smaller file means the acquisition or transfer was
+		   interrupted.
+
+		2. **Spot-check for NaN / Inf** – reads a representative subset of spectra
+		   (first 10, middle 10, last 10) and checks both the m/z and intensity
+		   arrays for non-finite values.  These indicate either bit-level corruption
+		   of the binary data or a mismatch between the data type declared in the
+		   imzML and the actual encoding stored in the IBD file.
+		"""
+		ibd_path = self._binary_files[mode]
+		meta = self._metadata[mode]
+		mz_meta = meta[MsiMetadata.MZ_BINARY_METADATA]           # shape (n_spectra, 3)
+		int_meta = meta[MsiMetadata.INTENSITIES_BINARY_METADATA]  # shape (n_spectra, 3)
+		# columns: [0] = n_values (count), [1] = encoded_length (bytes), [2] = byte offset
+		mz_dtype: np.dtype = meta[MsiMetadata.MZ_DTYPE]
+		int_dtype: np.dtype = meta[MsiMetadata.INTENSITIES_DTYPE]
+		n_spectra: int = mz_meta.shape[0]
+		mz_itemsize: int = np.dtype(mz_dtype).itemsize
+		int_itemsize: int = np.dtype(int_dtype).itemsize
+
+		# ── 1. File-size check ─────────────────────────────────────────────────
+		actual_size = os.path.getsize(ibd_path)
+
+		# The minimum required file size is the highest byte address that any
+		# spectrum occupies: max over all spectra of (offset + count × itemsize).
+		last_mz_byte  = int(np.max(mz_meta[:, 2]  + mz_meta[:, 0]  * mz_itemsize))
+		last_int_byte = int(np.max(int_meta[:, 2] + int_meta[:, 0] * int_itemsize))
+		required_size = max(last_mz_byte, last_int_byte)
+
+		if actual_size < required_size:
+			missing = required_size - actual_size
+			raise ValueError(
+				f"[Sample '{self.sample_id}' – {str(mode).upper()} mode] "
+				f"IBD binary file is truncated.\n"
+				f"\n"
+				f"  File            : {ibd_path}\n"
+				f"  Actual size     : {actual_size:,} bytes\n"
+				f"  Required size   : {required_size:,} bytes  "
+				f"({n_spectra:,} spectra × up to "
+				f"{max(int(np.max(mz_meta[:,0]))*mz_itemsize, int(np.max(int_meta[:,0]))*int_itemsize):,} bytes/spectrum)\n"
+				f"  Missing         : {missing:,} bytes  "
+				f"(≈ {missing / required_size * 100:.1f}% of the file is absent)\n"
+				f"\n"
+				f"  Likely causes:\n"
+				f"    • The mass-spectrometry acquisition was interrupted before the last\n"
+				f"      spectra were written to disk.\n"
+				f"    • The IBD file was not fully copied / transferred to this machine\n"
+				f"      (network timeout, storage quota exceeded, etc.).\n"
+				f"    • The imzML file was edited manually after export and the spectrum\n"
+				f"      count no longer matches the binary payload.\n"
+				f"\n"
+				f"  Action: Re-export the raw data from the acquisition software and\n"
+				f"  verify that both the .imzML and .ibd files are complete before\n"
+				f"  transferring them to the analysis machine."
+			)
+
+		# ── 2. Spot-check for NaN / Inf values ────────────────────────────────
+		# Probe spectra spread across the beginning, middle and end of the file
+		# so that both early corruption and late-file degradation are detected.
+		if n_spectra <= 30:
+			probe_indices = list(range(n_spectra))
+		else:
+			mid = n_spectra // 2
+			probe_indices = sorted(set(
+				list(range(10)) +
+				list(range(mid - 5, mid + 5)) +
+				list(range(n_spectra - 10, n_spectra))
+			))
+
+		bad_mz: dict[int, int] = {}    # spectrum_idx → number of non-finite m/z values
+		bad_int: dict[int, int] = {}   # spectrum_idx → number of non-finite intensity values
+
+		for idx in probe_indices:
+			count_mz,  _, offset_mz  = int(mz_meta[idx, 0]),  int(mz_meta[idx, 1]),  int(mz_meta[idx, 2])
+			count_int, _, offset_int = int(int_meta[idx, 0]), int(int_meta[idx, 1]), int(int_meta[idx, 2])
+
+			if count_mz > 0:
+				arr = np.fromfile(ibd_path, dtype=mz_dtype, count=count_mz, offset=offset_mz)
+				n_bad = int(np.sum(~np.isfinite(arr)))
+				if n_bad:
+					bad_mz[idx] = n_bad
+
+			if count_int > 0:
+				arr = np.fromfile(ibd_path, dtype=int_dtype, count=count_int, offset=offset_int)
+				n_bad = int(np.sum(~np.isfinite(arr)))
+				if n_bad:
+					bad_int[idx] = n_bad
+
+		def _format_bad_spectra(bad: dict[int, int], checked: int) -> str:
+			shown = list(bad.items())[:8]
+			detail = "; ".join(f"spectrum {i}: {n} bad value(s)" for i, n in shown)
+			if len(bad) > 8:
+				detail += f"; … and {len(bad) - 8} more affected spectra"
+			return (
+				f"  {len(bad)} of {checked} sampled spectra contain non-finite values.\n"
+				f"  Detail  : {detail}\n"
+			)
+
+		def _bad_value_causes_and_action(array_name: str, dtype: np.dtype) -> str:
+			return (
+				f"  Likely causes:\n"
+				f"    • The {array_name} binary data is partially corrupt or was written\n"
+				f"      with bit errors (e.g. storage failure during acquisition).\n"
+				f"    • The data type declared in the imzML for {array_name} ('{dtype}') does\n"
+				f"      not match the actual binary encoding in the IBD file — for example,\n"
+				f"      the data was stored as 32-bit integer but the imzML declares 32-bit\n"
+				f"      float.  When those integer bits are reinterpreted as IEEE 754 floats,\n"
+				f"      many values decode to NaN or Inf.\n"
+				f"    • The acquisition software used a non-standard or vendor-specific\n"
+				f"      compression or byte-order that FOCUS does not account for.\n"
+				f"\n"
+				f"  Action:\n"
+				f"    1. Open the imzML file in a text editor and check the\n"
+				f"       <referenceableParamGroup> entry for {array_name}:\n"
+				f"       the 'name' attribute must read '32-bit float' or '64-bit float'\n"
+				f"       and must match the actual encoding written by the instrument.\n"
+				f"    2. If the type is wrong, re-export the dataset from the acquisition\n"
+				f"       software selecting 'float32' or 'float64' as the {array_name} type.\n"
+				f"    3. Alternatively, open the IBD file in a hex editor and compare the\n"
+				f"       byte pattern of the first spectrum against the declared dtype to\n"
+				f"       confirm which encoding was actually used."
+			)
+
+		if bad_mz:
+			raise ValueError(
+				f"[Sample '{self.sample_id}' – {str(mode).upper()} mode] "
+				f"IBD file contains invalid (NaN or Inf) m/z values.\n"
+				f"\n"
+				f"  File    : {ibd_path}\n"
+				f"  Dtype   : {np.dtype(mz_dtype)} (declared in imzML)\n"
+				f"\n"
+				+ _format_bad_spectra(bad_mz, len(probe_indices))
+				+ "\n"
+				+ _bad_value_causes_and_action("m/z", np.dtype(mz_dtype))
+			)
+
+		if bad_int:
+			raise ValueError(
+				f"[Sample '{self.sample_id}' – {str(mode).upper()} mode] "
+				f"IBD file contains invalid (NaN or Inf) intensity values.\n"
+				f"\n"
+				f"  File    : {ibd_path}\n"
+				f"  Dtype   : {np.dtype(int_dtype)} (declared in imzML)\n"
+				f"\n"
+				+ _format_bad_spectra(bad_int, len(probe_indices))
+				+ "\n"
+				+ _bad_value_causes_and_action("intensity", np.dtype(int_dtype))
+			)
+
 	def _compute_raster_coordinates(physical_coords: np.ndarray, raster_size: np.ndarray[np.int16]) -> np.ndarray[
 		np.int32]:
 		'''
@@ -643,6 +800,10 @@ class MsiSample(BaseSample):
 
 			# Parse the imzML file to extract the metadata and the parsed spectra
 			self._metadata[mode] = self._parse_imzml(self._metadata_files[mode])
+
+			# Validate the binary payload before any downstream processing.
+			# Raises ValueError with a detailed message on truncation or NaN/Inf values.
+			self._validate_binary_data(mode)
 
 		# If there are both ion modes, correct the physical coordinates offset between the two
 		if self.double_ion_mode:
