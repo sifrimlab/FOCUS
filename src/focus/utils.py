@@ -124,12 +124,17 @@ def parse_config(config: dict) -> dict:
 	config.setdefault(ConfigParameters.ALIGNMENT_FORCE_RECOMPUTING, False)
 	config.setdefault(ConfigParameters.PERFORM_REGISTRATION, True)
 	config.setdefault(ConfigParameters.HUGGINGFACE_TOKEN, None)
+	config.setdefault(ConfigParameters.IGNORE_SAMPLES, [])
 
 	_check_type(config, ConfigParameters.PERFORM_ALIGNMENT, bool)
 	_check_type(config, ConfigParameters.ALIGNMENT_FORCE_RECOMPUTING, bool)
 	_check_type(config, ConfigParameters.PERFORM_REGISTRATION, bool)
 	if config[ConfigParameters.HUGGINGFACE_TOKEN] is not None:
 		_check_type(config, ConfigParameters.HUGGINGFACE_TOKEN, str)
+
+	ignore_samples = config[ConfigParameters.IGNORE_SAMPLES]
+	if not isinstance(ignore_samples, list) or not all(isinstance(s, str) for s in ignore_samples):
+		raise TypeError("'ignore_samples' must be a list of strings.")
 
 	# --- Step 3: dataset_path exists and is readable ---
 	dataset_path = config[ConfigParameters.DATASET_PATH]
@@ -177,7 +182,7 @@ def parse_config(config: dict) -> dict:
 		)
 
 	# --- Step 8: Sample directory structure ---
-	sample_ids = discover_sample_ids(dataset_path)
+	sample_ids = discover_sample_ids(dataset_path, ignore_samples=ignore_samples)
 	if len(sample_ids) == 0:
 		raise ValueError(f"No sample directories found in '{dataset_path}'.")
 

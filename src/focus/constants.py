@@ -128,6 +128,7 @@ class ConfigParameters(_AbstractEnum):
 	PERFORM_REGISTRATION = "perform_registration"
 	HUGGINGFACE_TOKEN = "huggingface_token"
 	SPATIAL_ANNOTATIONS = "spatial_annotations"
+	IGNORE_SAMPLES = "ignore_samples"
 
 class AnnotationsParameters(_AbstractEnum):
 	MODALITY_NAME = "modality_name"

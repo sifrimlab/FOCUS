@@ -12,6 +12,7 @@ function emptyConfig(): Config {
     huggingface_token: null,
     spatial_annotations: null,
     modalities: [],
+    ignore_samples: [],
   };
 }
 
@@ -24,6 +25,7 @@ function normalizeConfig(raw: unknown): Config {
     ...r,
     // Ensure nullable fields introduced after initial release default to null, not undefined
     spatial_annotations: (r.spatial_annotations as Config['spatial_annotations']) ?? null,
+    ignore_samples: (r.ignore_samples as string[]) ?? [],
   } as Config;
 }
 

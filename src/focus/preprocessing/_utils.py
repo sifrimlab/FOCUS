@@ -18,14 +18,16 @@ def validate_path_readable(path: str) -> None:
 		raise PermissionError(f"The specified path is not readable: {path}")
 
 
-def discover_sample_ids(path: str) -> list[str]:
+def discover_sample_ids(path: str, ignore_samples: list[str] | None = None) -> list[str]:
 	"""Discover sample IDs from subdirectories under the given path.
 
-	Returns a sorted list of directory names, excluding standard FOCUS output directories.
+	Returns a sorted list of directory names, excluding standard FOCUS output directories
+	and any sample IDs listed in ignore_samples.
 	"""
+	excluded = set(FocusOutputDirectories.list()) | set(ignore_samples or [])
 	sample_ids = sorted(
 		d for d in os.listdir(path)
-		if os.path.isdir(os.path.join(path, d)) and d not in FocusOutputDirectories.list()
+		if os.path.isdir(os.path.join(path, d)) and d not in excluded
 	)
 	return sample_ids
 

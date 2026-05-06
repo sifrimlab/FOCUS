@@ -81,7 +81,8 @@ def run(config: dict, progress_callback=None) -> dict:
 			modality_name=mod_name,
 			modality_type=mod_type,
 			preprocessing_settings=modality[ModalityParameters.PROCESSING_SETTINGS],
-			step_reporter=step_reporter
+			step_reporter=step_reporter,
+			ignore_samples=config.get(ConfigParameters.IGNORE_SAMPLES, []),
 		)
 		logger.info(f"Preprocessing complete for '{mod_name}': {len(modality_files[mod_name])} samples")
 

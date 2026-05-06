@@ -70,6 +70,25 @@ const confirmRemoveAll = async () => {
   });
   if (ok) store.removeAllModalities();
 };
+
+// Sample inclusion helpers
+function isIncluded(id: string) {
+  return !store.config.ignore_samples.includes(id);
+}
+function toggleSample(id: string) {
+  const idx = store.config.ignore_samples.indexOf(id);
+  if (idx === -1) store.config.ignore_samples.push(id);
+  else store.config.ignore_samples.splice(idx, 1);
+  store.triggerAutoSave();
+}
+function selectAllSamples() {
+  store.config.ignore_samples = [];
+  store.triggerAutoSave();
+}
+function deselectAllSamples() {
+  store.config.ignore_samples = [...store.samples];
+  store.triggerAutoSave();
+}
 </script>
 
 <template>
@@ -296,6 +315,58 @@ const confirmRemoveAll = async () => {
         >
           No modalities yet — click + to add one.
         </div>
+      </div>
+    </div>
+
+    <!-- Samples card -->
+    <div class="bg-white dark:bg-gray-800 rounded-lg shadow border border-gray-200 dark:border-gray-700 mb-6">
+      <!-- Card header -->
+      <div class="flex items-center justify-between px-5 py-3 bg-gray-50 dark:bg-gray-900 border-b border-gray-200 dark:border-gray-700 rounded-t-lg">
+        <div class="flex items-center gap-3">
+          <span class="text-xs font-semibold uppercase tracking-widest text-gray-400 dark:text-gray-500">Samples</span>
+          <span class="text-xs text-gray-400 dark:text-gray-500">
+            {{ store.samples.length - store.config.ignore_samples.length }} / {{ store.samples.length }} active
+          </span>
+        </div>
+        <div class="flex gap-3">
+          <button
+            @click="selectAllSamples"
+            class="text-xs text-blue-500 hover:text-blue-600 dark:hover:text-blue-400 transition-colors"
+          >
+            Select all
+          </button>
+          <button
+            @click="deselectAllSamples"
+            class="text-xs text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 transition-colors"
+          >
+            Deselect all
+          </button>
+        </div>
+      </div>
+
+      <!-- Sample rows -->
+      <div class="px-5 py-2 divide-y divide-gray-100 dark:divide-gray-700">
+        <p v-if="store.samples.length === 0" class="text-sm text-gray-400 dark:text-gray-500 italic py-4 text-center">
+          No samples discovered.
+        </p>
+        <label
+          v-for="sampleId in store.samples"
+          :key="sampleId"
+          class="flex items-center gap-3 py-2 cursor-pointer select-none"
+        >
+          <input
+            type="checkbox"
+            :checked="isIncluded(sampleId)"
+            @change="toggleSample(sampleId)"
+            class="w-4 h-4 rounded border-gray-300 dark:border-gray-600 text-blue-500 focus:ring-blue-500"
+          />
+          <span class="font-mono text-sm text-gray-700 dark:text-gray-300">{{ sampleId }}</span>
+        </label>
+      </div>
+
+      <!-- Footer hint -->
+      <div class="px-5 py-2 border-t border-gray-100 dark:border-gray-700">
+        <p class="text-xs text-gray-400 dark:text-gray-500">Uncheck a sample to exclude it from processing entirely.</p>
       </div>
     </div>
 

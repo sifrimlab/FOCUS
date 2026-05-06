@@ -42,6 +42,7 @@ export interface Config {
   huggingface_token: string | null;
   spatial_annotations: SpatialAnnotations | null;
   modalities: Modality[];
+  ignore_samples: string[];
 }
 
 export interface OutputSection {
