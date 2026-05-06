@@ -590,7 +590,7 @@ class MsiSample(BaseSample):
 		# np.frombuffer creates zero-copy views — no extra allocation per spectrum.
 		_reporter = getattr(self, '_step_reporter', None)
 		if _reporter:
-			_reporter.message("Integrity check")
+			_reporter.message(f"Verifying file integrity for sample {self.sample_id}")
 
 		n_workers = utils.available_cpus() or 1
 		chunk_size = max(1, -(-n_spectra // n_workers))  # ceiling division
