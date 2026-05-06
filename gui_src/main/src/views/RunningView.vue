@@ -6,6 +6,24 @@ import StageProgress from '../components/StageProgress.vue';
 const store = useMainStore();
 const s = computed(() => store.pipelineStatus);
 
+const visibleStages = computed(() => {
+  const cfg = store.config;
+  const stages: { name: string; label: string }[] = [
+    { name: 'preprocessing', label: 'Preprocessing' },
+  ];
+  if (cfg.perform_alignment && cfg.modalities.length >= 2) {
+    stages.push({ name: 'alignment', label: 'Alignment' });
+  }
+  if (cfg.spatial_annotations !== null) {
+    stages.push({ name: 'annotation_transfer', label: 'Annotation Transfer' });
+  }
+  if (cfg.perform_registration) {
+    stages.push({ name: 'registration', label: 'Registration' });
+    stages.push({ name: 'compiling', label: 'Compiling' });
+  }
+  return stages;
+});
+
 const openAlignmentTool = () => {
   window.open(`http://localhost:${s.value.alignment_port}`, '_blank');
 };
@@ -56,8 +74,8 @@ const stepLinePct = computed(() => {
     <!-- Stage progress -->
     <div>
       <StageProgress
-        :current-stage-index="s.stage_index"
-        :total-stages="s.total_stages"
+        :current-stage="s.stage"
+        :stages="visibleStages"
       />
     </div>
 

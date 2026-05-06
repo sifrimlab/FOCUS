@@ -2,41 +2,30 @@
 import { computed } from 'vue';
 
 const props = defineProps<{
-  currentStageIndex: number;
-  totalStages: number;
+  currentStage: string | null;
+  stages: { name: string; label: string }[];
 }>();
 
-const stages = computed(() => {
-  if (props.totalStages === 5) {
-    return [
-      { index: 1, label: 'Preprocessing' },
-      { index: 2, label: 'Alignment' },
-      { index: 3, label: 'Annotation Transfer' },
-      { index: 4, label: 'Registration' },
-      { index: 5, label: 'Compiling' },
-    ];
-  }
-  return [
-    { index: 1, label: 'Preprocessing' },
-    { index: 2, label: 'Alignment' },
-    { index: 3, label: 'Registration' },
-    { index: 4, label: 'Compiling' },
-  ];
+const activeIndex = computed(() => {
+  if (!props.currentStage) return 0;
+  const idx = props.stages.findIndex(s => s.name === props.currentStage);
+  return idx === -1 ? 0 : idx;
 });
 
-const stageStatus = computed(() => {
-  return stages.value.map(s => ({
+const stageStatus = computed(() =>
+  props.stages.map((s, i) => ({
     ...s,
-    completed: s.index < props.currentStageIndex,
-    active: s.index === props.currentStageIndex,
-    pending: s.index > props.currentStageIndex,
-  }));
-});
+    number: i + 1,
+    completed: i < activeIndex.value,
+    active: i === activeIndex.value,
+    pending: i > activeIndex.value,
+  }))
+);
 </script>
 
 <template>
   <div class="flex items-center justify-between w-full max-w-2xl mx-auto">
-    <template v-for="(stage, i) in stageStatus" :key="stage.index">
+    <template v-for="(stage, i) in stageStatus" :key="stage.name">
       <!-- Stage circle + label -->
       <div class="flex flex-col items-center">
         <div
@@ -48,7 +37,7 @@ const stageStatus = computed(() => {
           }"
         >
           <span v-if="stage.completed">&#10003;</span>
-          <span v-else>{{ stage.index }}</span>
+          <span v-else>{{ stage.number }}</span>
         </div>
         <span class="text-xs mt-1 font-medium" :class="{ 'text-blue-600 dark:text-blue-400': stage.active }">
           {{ stage.label }}
