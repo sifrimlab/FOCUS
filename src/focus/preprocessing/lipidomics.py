@@ -1,5 +1,6 @@
 import numpy as np
 import scipy.sparse as sp
+import mmap
 import os, tqdm, psutil
 from focus.preprocessing._utils import StepReporter
 from collections import defaultdict
@@ -597,45 +598,72 @@ class MsiSample(BaseSample):
 				f"  transferring them to the analysis machine."
 			)
 
-		# ── 2. Spot-check for NaN / Inf values ────────────────────────────────
-		# Probe spectra spread across the beginning, middle and end of the file
-		# so that both early corruption and late-file degradation are detected.
-		if n_spectra <= 30:
-			probe_indices = list(range(n_spectra))
-		else:
-			mid = n_spectra // 2
-			probe_indices = sorted(set(
-				list(range(10)) +
-				list(range(mid - 5, mid + 5)) +
-				list(range(n_spectra - 10, n_spectra))
-			))
+		# ── 2. Full NaN / Inf scan ─────────────────────────────────────────────
+		# Read every spectrum via memory-mapped I/O and validate with np.isfinite.
+		# Each worker thread opens its own mmap so file reads are truly parallel.
+		# np.frombuffer creates zero-copy views — no extra allocation per spectrum.
+		_reporter = getattr(self, '_step_reporter', None)
+		if _reporter:
+			_reporter.message(
+				f"[{self.sample_id}] Full binary integrity scan: "
+				f"{n_spectra:,} spectra × 2 arrays ({str(mode).upper()} mode) …"
+			)
 
-		bad_mz: dict[int, int] = {}    # spectrum_idx → number of non-finite m/z values
-		bad_int: dict[int, int] = {}   # spectrum_idx → number of non-finite intensity values
+		n_workers = utils.available_cpus() or 1
+		chunk_size = max(1, -(-n_spectra // n_workers))  # ceiling division
+		chunks = [range(i, min(i + chunk_size, n_spectra))
+				  for i in range(0, n_spectra, chunk_size)]
 
-		for idx in probe_indices:
-			count_mz,  _, offset_mz  = int(mz_meta[idx, 0]),  int(mz_meta[idx, 1]),  int(mz_meta[idx, 2])
-			count_int, _, offset_int = int(int_meta[idx, 0]), int(int_meta[idx, 1]), int(int_meta[idx, 2])
+		def _check_chunk(spec_range):
+			chunk_bad_mz: dict[int, int] = {}
+			chunk_bad_int: dict[int, int] = {}
+			with open(ibd_path, 'rb') as fh:
+				mm = mmap.mmap(fh.fileno(), 0, access=mmap.ACCESS_READ)
+				try:
+					for idx in spec_range:
+						count_mz = int(mz_meta[idx, 0])
+						if count_mz > 0:
+							arr = np.frombuffer(mm, dtype=mz_dtype,
+												count=count_mz,
+												offset=int(mz_meta[idx, 2]))
+							n_bad = int(np.sum(~np.isfinite(arr)))
+							if n_bad:
+								chunk_bad_mz[idx] = n_bad
 
-			if count_mz > 0:
-				arr = np.fromfile(ibd_path, dtype=mz_dtype, count=count_mz, offset=offset_mz)
-				n_bad = int(np.sum(~np.isfinite(arr)))
-				if n_bad:
-					bad_mz[idx] = n_bad
+						count_int = int(int_meta[idx, 0])
+						if count_int > 0:
+							arr = np.frombuffer(mm, dtype=int_dtype,
+												count=count_int,
+												offset=int(int_meta[idx, 2]))
+							n_bad = int(np.sum(~np.isfinite(arr)))
+							if n_bad:
+								chunk_bad_int[idx] = n_bad
+				finally:
+					mm.close()
+			return chunk_bad_mz, chunk_bad_int
 
-			if count_int > 0:
-				arr = np.fromfile(ibd_path, dtype=int_dtype, count=count_int, offset=offset_int)
-				n_bad = int(np.sum(~np.isfinite(arr)))
-				if n_bad:
-					bad_int[idx] = n_bad
+		bad_mz: dict[int, int] = {}
+		bad_int: dict[int, int] = {}
 
-		def _format_bad_spectra(bad: dict[int, int], checked: int) -> str:
+		with tqdm.tqdm(total=n_spectra,
+					   desc=f"Validating IBD ({str(mode).upper()}, {self.sample_id})",
+					   unit="spec") as pbar:
+			with concurrent.futures.ThreadPoolExecutor(max_workers=n_workers) as executor:
+				futures = {executor.submit(_check_chunk, chunk): chunk
+						   for chunk in chunks}
+				for future in concurrent.futures.as_completed(futures):
+					bm, bi = future.result()
+					bad_mz.update(bm)
+					bad_int.update(bi)
+					pbar.update(len(futures[future]))
+
+		def _format_bad_spectra(bad: dict[int, int]) -> str:
 			shown = list(bad.items())[:8]
 			detail = "; ".join(f"spectrum {i}: {n} bad value(s)" for i, n in shown)
 			if len(bad) > 8:
 				detail += f"; … and {len(bad) - 8} more affected spectra"
 			return (
-				f"  {len(bad)} of {checked} sampled spectra contain non-finite values.\n"
+				f"  {len(bad)} of {n_spectra:,} spectra contain non-finite values.\n"
 				f"  Detail  : {detail}\n"
 			)
 
@@ -672,7 +700,7 @@ class MsiSample(BaseSample):
 				f"  File    : {ibd_path}\n"
 				f"  Dtype   : {np.dtype(mz_dtype)} (declared in imzML)\n"
 				f"\n"
-				+ _format_bad_spectra(bad_mz, len(probe_indices))
+				+ _format_bad_spectra(bad_mz)
 				+ "\n"
 				+ _bad_value_causes_and_action("m/z", np.dtype(mz_dtype))
 			)
@@ -685,7 +713,7 @@ class MsiSample(BaseSample):
 				f"  File    : {ibd_path}\n"
 				f"  Dtype   : {np.dtype(int_dtype)} (declared in imzML)\n"
 				f"\n"
-				+ _format_bad_spectra(bad_int, len(probe_indices))
+				+ _format_bad_spectra(bad_int)
 				+ "\n"
 				+ _bad_value_causes_and_action("intensity", np.dtype(int_dtype))
 			)
@@ -1765,6 +1793,7 @@ class MsiDataset(BaseDataset):
 
 		# STEP 1: Initialize each sample to load the metadata
 		for sample in reporter.tqdm(self.samples, desc="1/9 - Loading MSI data", unit="sample"):
+			sample._step_reporter = reporter
 			sample.initialize_sample()
 			sample._sample_type = sample_type
 
