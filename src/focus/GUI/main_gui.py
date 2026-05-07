@@ -1,4 +1,5 @@
 import os, json, logging, threading, traceback
+from datetime import datetime, timezone
 
 from flask import Flask, request, jsonify, send_from_directory
 from werkzeug.serving import make_server
@@ -14,6 +15,7 @@ from focus.constants import (
 	DISPLAY_NAMES,
 )
 from focus.preprocessing._utils import discover_sample_ids, validate_path_readable
+from focus.sample_manager import SampleManager, _validate_sample_id
 
 
 _CONFIG_FILENAME = "focus_config.json"
@@ -141,6 +143,52 @@ class MainGUI:
 			except (FileNotFoundError, PermissionError) as e:
 				return jsonify({"error": str(e)}), 400
 
+		# --- Sample creation ---
+
+		@self.app.route('/api/samples/create', methods=['POST'])
+		def create_sample():
+			data = request.get_json()
+			if not data:
+				return jsonify({"error": "No JSON body"}), 400
+			sample_id = data.get("sample_id", "")
+			dataset_path = self._config.get(ConfigParameters.DATASET_PATH, "")
+			if not dataset_path:
+				return jsonify({"error": "dataset_path not set in current config"}), 400
+			try:
+				_validate_sample_id(sample_id)
+			except ValueError as e:
+				return jsonify({"error": str(e)}), 400
+			existing = discover_sample_ids(dataset_path)
+			if sample_id in existing:
+				return jsonify({"error": f"A sample named '{sample_id}' already exists."}), 400
+			try:
+				modalities = self._config.get(ConfigParameters.MODALITIES, [])
+				SampleManager(dataset_path).create_sample(sample_id, modalities)
+			except Exception as e:
+				return jsonify({"error": str(e)}), 500
+			return jsonify({"sample_id": sample_id})
+
+		# --- Modality folder scaffolding ---
+
+		@self.app.route('/api/modalities/create-folders', methods=['POST'])
+		def create_modality_folders():
+			data = request.get_json()
+			if not data:
+				return jsonify({"error": "No JSON body"}), 400
+			modality_name = data.get("modality_name", "")
+			modality_type = data.get("modality_type", "")
+			if not modality_name or not modality_type:
+				return jsonify({"error": "modality_name and modality_type are required"}), 400
+			dataset_path = self._config.get(ConfigParameters.DATASET_PATH, "")
+			if not dataset_path or not os.path.isdir(dataset_path):
+				return jsonify({"updated_samples": []})
+			try:
+				sample_ids = discover_sample_ids(dataset_path)
+				SampleManager(dataset_path).ensure_modality_folders(sample_ids, modality_name, modality_type)
+			except Exception as e:
+				return jsonify({"error": str(e)}), 500
+			return jsonify({"updated_samples": sample_ids})
+
 		# --- Config CRUD ---
 
 		@self.app.route('/api/config', methods=['GET'])
@@ -247,6 +295,11 @@ class MainGUI:
 			dataset_path = self._config[ConfigParameters.DATASET_PATH]
 			utils.setup_logging(dataset_path, debug=self._debug)
 
+			# Record which samples will be processed in this run
+			ignore_samples = self._config.get(ConfigParameters.IGNORE_SAMPLES, [])
+			self._config[ConfigParameters.SAMPLES] = discover_sample_ids(dataset_path, ignore_samples)
+			self._auto_save()
+
 			# Reset status
 			self._pipeline_status = _default_status()
 			self._pipeline_status["state"] = "running"
@@ -350,6 +403,7 @@ class MainGUI:
 		if not dataset_path or not os.path.isdir(dataset_path):
 			return
 		try:
+			self._config[ConfigParameters.LAST_EDIT] = datetime.now(timezone.utc).isoformat()
 			config_path = os.path.join(dataset_path, _CONFIG_FILENAME)
 			with open(config_path, 'w') as f:
 				json.dump(self._config, f, indent=2)

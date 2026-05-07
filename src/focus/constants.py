@@ -129,6 +129,8 @@ class ConfigParameters(_AbstractEnum):
 	HUGGINGFACE_TOKEN = "huggingface_token"
 	SPATIAL_ANNOTATIONS = "spatial_annotations"
 	IGNORE_SAMPLES = "ignore_samples"
+	SAMPLES = "samples"
+	LAST_EDIT = "last_edit"
 
 class AnnotationsParameters(_AbstractEnum):
 	MODALITY_NAME = "modality_name"

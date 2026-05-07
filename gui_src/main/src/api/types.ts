@@ -43,6 +43,8 @@ export interface Config {
   spatial_annotations: SpatialAnnotations | null;
   modalities: Modality[];
   ignore_samples: string[];
+  samples: string[];
+  last_edit: string | null;
 }
 
 export interface OutputSection {

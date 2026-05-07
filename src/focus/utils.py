@@ -126,6 +126,8 @@ def parse_config(config: dict) -> dict:
 	config.setdefault(ConfigParameters.PERFORM_REGISTRATION, True)
 	config.setdefault(ConfigParameters.HUGGINGFACE_TOKEN, None)
 	config.setdefault(ConfigParameters.IGNORE_SAMPLES, [])
+	config.setdefault(ConfigParameters.SAMPLES, [])
+	config.setdefault(ConfigParameters.LAST_EDIT, None)
 
 	_check_type(config, ConfigParameters.PERFORM_ALIGNMENT, bool)
 	_check_type(config, ConfigParameters.ALIGNMENT_FORCE_RECOMPUTING, bool)
@@ -136,6 +138,13 @@ def parse_config(config: dict) -> dict:
 	ignore_samples = config[ConfigParameters.IGNORE_SAMPLES]
 	if not isinstance(ignore_samples, list) or not all(isinstance(s, str) for s in ignore_samples):
 		raise TypeError("'ignore_samples' must be a list of strings.")
+
+	samples = config[ConfigParameters.SAMPLES]
+	if not isinstance(samples, list) or not all(isinstance(s, str) for s in samples):
+		raise TypeError("'samples' must be a list of strings.")
+
+	if config[ConfigParameters.LAST_EDIT] is not None and not isinstance(config[ConfigParameters.LAST_EDIT], str):
+		raise TypeError("'last_edit' must be a string or null.")
 
 	# --- Step 3: dataset_path exists and is readable ---
 	dataset_path = config[ConfigParameters.DATASET_PATH]

@@ -13,6 +13,8 @@ function emptyConfig(): Config {
     spatial_annotations: null,
     modalities: [],
     ignore_samples: [],
+    samples: [],
+    last_edit: null,
   };
 }
 
@@ -26,6 +28,8 @@ function normalizeConfig(raw: unknown): Config {
     // Ensure nullable fields introduced after initial release default to null, not undefined
     spatial_annotations: (r.spatial_annotations as Config['spatial_annotations']) ?? null,
     ignore_samples: (r.ignore_samples as string[]) ?? [],
+    samples: (r.samples as string[]) ?? [],
+    last_edit: (r.last_edit as string | null) ?? null,
   } as Config;
 }
 
@@ -58,6 +62,7 @@ export const useMainStore = defineStore('main', {
     schema: null as Schema | null,
     config: emptyConfig(),
     samples: [] as string[],
+    manuallyAddedSamples: [] as string[],
     currentView: 'setup' as 'setup' | 'config' | 'running' | 'complete',
     validationErrors: [] as string[],
     pipelineStatus: defaultPipelineStatus(),
@@ -165,10 +170,19 @@ export const useMainStore = defineStore('main', {
       }
     },
 
+    async addManualSample(name: string) {
+      await api.createSample(name);
+      this.manuallyAddedSamples.push(name);
+      const result = await api.getSamples(this.config.dataset_path);
+      this.samples = result.samples;
+      this.triggerAutoSave();
+    },
+
     addModality(name: string) {
+      const defaultType = this.schema?.modality_types[0] || '';
       this.config.modalities.push({
         name,
-        type: this.schema?.modality_types[0] || '',
+        type: defaultType,
         processing_settings: {},
         registration_type: 'none',
         registration_settings: {},
@@ -179,6 +193,10 @@ export const useMainStore = defineStore('main', {
         this.config.reference_modality = name;
       }
       this.triggerAutoSave();
+      // Fire-and-forget: create modality subfolders in all existing samples
+      if (name && defaultType && this.config.dataset_path) {
+        api.ensureModalityFolders(name, defaultType).catch(() => {});
+      }
     },
 
     removeModality(index: number) {
@@ -210,6 +228,11 @@ export const useMainStore = defineStore('main', {
           if (!this.config.reference_modality && updates.name) {
             this.config.reference_modality = updates.name;
           }
+        }
+        // Fire-and-forget: create modality subfolders when type changes
+        if (updates.type !== undefined && updates.type !== m.type && this.config.dataset_path) {
+          const modalityName = updates.name ?? m.name;
+          api.ensureModalityFolders(modalityName, updates.type).catch(() => {});
         }
         Object.assign(m, updates);
       }
@@ -313,6 +336,7 @@ export const useMainStore = defineStore('main', {
       await api.reset();
       this.config = emptyConfig();
       this.samples = [];
+      this.manuallyAddedSamples = [];
       this.validationErrors = [];
       this.pipelineStatus = defaultPipelineStatus();
       this.hasExistingConfig = false;

@@ -71,6 +71,50 @@ const confirmRemoveAll = async () => {
   if (ok) store.removeAllModalities();
 };
 
+// Add sample: name-entry inline form
+const showSampleEntry = ref(false);
+const newSampleName = ref('');
+const sampleEntryError = ref('');
+const sampleInputRef = ref<HTMLInputElement | null>(null);
+const addingSample = ref(false);
+
+const openAddSample = async () => {
+  newSampleName.value = '';
+  sampleEntryError.value = '';
+  showSampleEntry.value = true;
+  await nextTick();
+  sampleInputRef.value?.focus();
+};
+
+const confirmAddSample = async () => {
+  const name = newSampleName.value.trim();
+  if (!name) {
+    sampleEntryError.value = 'Please enter a name.';
+    return;
+  }
+  if (store.samples.includes(name)) {
+    sampleEntryError.value = 'A sample with this name already exists.';
+    return;
+  }
+  addingSample.value = true;
+  sampleEntryError.value = '';
+  try {
+    await store.addManualSample(name);
+    showSampleEntry.value = false;
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e);
+    // Extract server error message if available
+    const axiosErr = e as { response?: { data?: { error?: string } } };
+    sampleEntryError.value = axiosErr?.response?.data?.error ?? msg;
+  } finally {
+    addingSample.value = false;
+  }
+};
+
+const cancelAddSample = () => {
+  showSampleEntry.value = false;
+};
+
 // Sample inclusion helpers
 function isIncluded(id: string) {
   return !store.config.ignore_samples.includes(id);
@@ -328,7 +372,7 @@ function deselectAllSamples() {
             {{ store.samples.length - store.config.ignore_samples.length }}&thinsp;/&thinsp;{{ store.samples.length }} active
           </span>
         </div>
-        <div class="flex gap-4">
+        <div class="flex items-center gap-4">
           <button
             @click="selectAllSamples"
             class="text-xs font-medium text-emerald-600 hover:text-emerald-700 dark:text-emerald-400 dark:hover:text-emerald-300 transition-colors"
@@ -341,11 +385,57 @@ function deselectAllSamples() {
           >
             Disable all
           </button>
+          <button
+            @click="openAddSample"
+            :disabled="showSampleEntry"
+            title="Add new sample"
+            class="flex items-center justify-center w-6 h-6 rounded-full bg-emerald-500 hover:bg-emerald-600 disabled:opacity-40 disabled:cursor-not-allowed text-white font-bold text-sm leading-none transition-colors"
+          >+</button>
         </div>
+      </div>
+
+      <!-- Add sample inline form -->
+      <div v-if="showSampleEntry" class="px-5 py-3 border-b border-gray-100 dark:border-gray-700 bg-gray-50 dark:bg-gray-900/50">
+        <div class="flex items-center gap-2">
+          <input
+            ref="sampleInputRef"
+            v-model="newSampleName"
+            type="text"
+            placeholder="Sample name"
+            :disabled="addingSample"
+            @keyup.enter="confirmAddSample"
+            @keyup.escape="cancelAddSample"
+            class="flex-1 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-400 disabled:opacity-50"
+          />
+          <button
+            @click="confirmAddSample"
+            :disabled="addingSample"
+            class="px-3 py-1 rounded bg-emerald-500 hover:bg-emerald-600 disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm font-medium transition-colors"
+          >{{ addingSample ? 'Creating…' : 'Add' }}</button>
+          <button
+            @click="cancelAddSample"
+            :disabled="addingSample"
+            class="px-3 py-1 rounded bg-gray-200 hover:bg-gray-300 dark:bg-gray-700 dark:hover:bg-gray-600 disabled:opacity-50 disabled:cursor-not-allowed text-gray-700 dark:text-gray-300 text-sm font-medium transition-colors"
+          >Cancel</button>
+        </div>
+        <p v-if="sampleEntryError" class="mt-1 text-xs text-red-600 dark:text-red-400">{{ sampleEntryError }}</p>
       </div>
 
       <!-- Sample chip grid -->
       <div class="p-4">
+        <!-- Warning: manually created samples need data files -->
+        <div
+          v-if="store.manuallyAddedSamples.length > 0"
+          class="mb-3 flex items-start gap-2 rounded-lg border border-yellow-400 bg-yellow-50 px-4 py-3 text-sm text-yellow-800 dark:bg-yellow-900/20 dark:border-yellow-600 dark:text-yellow-300"
+        >
+          <span class="flex-shrink-0">&#9888;</span>
+          <span>
+            {{ store.manuallyAddedSamples.length }} sample folder{{ store.manuallyAddedSamples.length > 1 ? 's were' : ' was' }} manually created
+            ({{ store.manuallyAddedSamples.join(', ') }}).
+            You must populate {{ store.manuallyAddedSamples.length > 1 ? 'them' : 'it' }} with data files before starting processing.
+          </span>
+        </div>
+
         <p v-if="store.samples.length === 0" class="text-sm text-gray-400 dark:text-gray-500 italic text-center py-3">
           No samples discovered.
         </p>

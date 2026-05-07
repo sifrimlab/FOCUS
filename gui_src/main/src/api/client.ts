@@ -80,4 +80,14 @@ export const api = {
   async reset(): Promise<void> {
     await apiClient.post('/api/reset');
   },
+
+  async createSample(sample_id: string): Promise<{ sample_id: string }> {
+    const r = await apiClient.post<{ sample_id: string }>('/api/samples/create', { sample_id });
+    return r.data;
+  },
+
+  async ensureModalityFolders(modality_name: string, modality_type: string): Promise<{ updated_samples: string[] }> {
+    const r = await apiClient.post<{ updated_samples: string[] }>('/api/modalities/create-folders', { modality_name, modality_type });
+    return r.data;
+  },
 };
