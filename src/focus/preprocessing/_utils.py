@@ -114,6 +114,6 @@ def create_output_directories(path: str, sample_ids: list[str], modality_name: s
 			exist_ok=True,
 		)
 	os.makedirs(
-		os.path.join(path, FocusOutputDirectories.MERGED, FocusOutputDirectories.PREPROCESSING, modality_name),
+		os.path.join(path, FocusOutputDirectories.MERGED, FocusOutputDirectories.PREPROCESSING),
 		exist_ok=True,
 	)

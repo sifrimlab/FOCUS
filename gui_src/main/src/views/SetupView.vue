@@ -69,10 +69,6 @@ const onSetPath = async () => {
   }
   localStorage.setItem('focus_last_dataset_path', pathInput.value.trim());
   await store.setDatasetPath(pathInput.value.trim());
-  if (store.samples.length === 0 && !store.hasExistingConfig) {
-    pathError.value = 'No sample directories found at this path. Please check the path.';
-    return;
-  }
   showSamplesPrompt.value = true;
 };
 
@@ -263,7 +259,7 @@ const goBackFromCorruption = () => {
           </div>
         </div>
         <p v-else class="text-sm text-yellow-600 dark:text-yellow-400 italic mb-5">
-          No sample directories found. An existing configuration file was detected.
+          No sample directories found. You can add samples manually in the config builder.
         </p>
 
         <div class="flex gap-3">
