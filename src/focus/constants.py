@@ -245,6 +245,7 @@ class MsiSampleType(_AbstractEnum):
 class MsiIntensityNormalization(_AbstractEnum):
 	TIC = "tic"
 	LOG = "log"
+	CLR = "clr"
 	NONE = "none"
 
 class DecompositionMethod(_AbstractEnum):
@@ -270,6 +271,7 @@ DISPLAY_NAMES: dict[str, str] = {
 	# MSI intensity normalisation
 	MsiIntensityNormalization.TIC:  "TIC",
 	MsiIntensityNormalization.LOG:  "Log",
+	MsiIntensityNormalization.CLR:  "CLR",
 	MsiIntensityNormalization.NONE: "None",
 	# Background colour
 	SegmentationBackgroundColor.WHITE: "White",

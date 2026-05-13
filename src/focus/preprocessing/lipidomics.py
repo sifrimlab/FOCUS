@@ -1975,6 +1975,14 @@ class MsiDataset(BaseDataset):
 				elif intensity_normalization == MsiIntensityNormalization.LOG:
 					# Log-Transform normalization
 					merged_intensities = np.log1p(merged_intensities)
+				elif intensity_normalization == MsiIntensityNormalization.CLR:
+					# Centered Log-Ratio normalization
+					nonzero_vals = merged_intensities[merged_intensities > 0]
+					delta = nonzero_vals.min() / 2.0 if nonzero_vals.size > 0 else 1.0
+					x = merged_intensities.copy()
+					x[x == 0] = delta
+					log_x = np.log(x)
+					merged_intensities = log_x - log_x.mean(axis=1, keepdims=True)
 
 				self.normalized[sample.sample_id][mode] = merged_intensities
 
