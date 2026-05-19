@@ -122,24 +122,25 @@ If the reference is aligned against multiple targets sequentially, all `obsm` ke
 ```yaml
 reference_modality: st          # name of the reference modality
 perform_alignment: true         # set to false to skip this stage entirely
-alignment_force_recomputing: false  # set to true to redo all alignments
 
 modalities:
   - name: msi
     type: msi
     alignment_strategy: manual  # or pre_aligned
+    alignment_force_recomputing: false  # set to true to redo this pair's alignment
     ...
   - name: microscopy
     type: microscopy_image
     alignment_strategy: manual
+    alignment_force_recomputing: false
     ...
 ```
 
 | Field | Scope | Default | Description |
 |-------|-------|---------|-------------|
 | `perform_alignment` | global | `true` | Whether to run the alignment stage |
-| `alignment_force_recomputing` | global | `false` | Re-run even if cached output exists |
 | `alignment_strategy` | per modality | `manual` | `manual` or `pre_aligned` |
+| `alignment_force_recomputing` | per modality | `false` | Re-run even if cached output exists for this pair |
 
 ---
 
@@ -155,4 +156,4 @@ FOCUS checks whether the expected `obsm` key is present in the aligned file befo
 
 To redo specific alignments, either:
 - Delete the per-sample aligned file(s) for the affected modality and sample(s), or
-- Set `alignment_force_recomputing: true` in the config to redo all alignments.
+- Set `alignment_force_recomputing: true` on the specific modality entry to redo that pair's alignment.

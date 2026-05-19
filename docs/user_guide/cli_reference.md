@@ -99,9 +99,9 @@ focus --help                             # Show help and exit
             {
               "perform_alignment": true,
               "perform_registration": true,
-              "alignment_force_recomputing": false,
               "modalities": [
                 {
+                  "alignment_force_recomputing": false,
                   "processing_settings": {
                     "force_recomputing": false
                   },

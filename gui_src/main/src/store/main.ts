@@ -7,7 +7,6 @@ function emptyConfig(): Config {
     dataset_path: '',
     reference_modality: '',
     perform_alignment: true,
-    alignment_force_recomputing: false,
     perform_registration: true,
     huggingface_token: null,
     spatial_annotations: null,
@@ -30,6 +29,12 @@ function normalizeConfig(raw: unknown): Config {
     ignore_samples: (r.ignore_samples as string[]) ?? [],
     samples: (r.samples as string[]) ?? [],
     last_edit: (r.last_edit as string | null) ?? null,
+    // Normalize per-modality fields — ensures alignment_force_recomputing defaults to false
+    // for modalities saved before this field was introduced
+    modalities: ((r.modalities as Record<string, unknown>[]) ?? []).map((m) => ({
+      ...m,
+      alignment_force_recomputing: (m.alignment_force_recomputing as boolean) ?? false,
+    } as Modality)),
   } as Config;
 }
 
@@ -187,6 +192,7 @@ export const useMainStore = defineStore('main', {
         registration_type: 'none',
         registration_settings: {},
         alignment_strategy: 'manual',
+        alignment_force_recomputing: false,
       });
       // Auto-select reference if none is set
       if (!this.config.reference_modality && name) {

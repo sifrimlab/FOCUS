@@ -20,7 +20,6 @@ This page documents the **canonical structure** and the set of config fields tha
   "dataset_path": "string",
   "reference_modality": "string",
   "perform_alignment": true,
-  "alignment_force_recomputing": false,
   "perform_registration": true,
   "huggingface_token": null,
   "spatial_annotations": {
@@ -32,6 +31,7 @@ This page documents the **canonical structure** and the set of config fields tha
       "name": "string",
       "type": "microscopy_image | msi | raman | st",
       "alignment_strategy": "manual | pre_aligned",
+      "alignment_force_recomputing": false,
       "registration_type": "none | feature_extraction | spot_interpolation",
       "processing_settings": {},
       "registration_settings": {}
@@ -51,7 +51,6 @@ This page documents the **canonical structure** and the set of config fields tha
 | `dataset_path` | string | Absolute path to the dataset root containing sample directories. |
 | `reference_modality` | string | Modality `name` that defines the shared coordinate system. |
 | `perform_alignment` | boolean | Enable/disable alignment stage globally. |
-| `alignment_force_recomputing` | boolean | Re-run alignment even when cached aligned outputs exist. |
 | `perform_registration` | boolean | Enable/disable registration stage globally. |
 | `huggingface_token` | string or null | Required when any modality uses `registration_type: "feature_extraction"`. |
 | `spatial_annotations` | object or null | GeoJSON annotation transfer settings. |
@@ -82,6 +81,7 @@ This page documents the **canonical structure** and the set of config fields tha
 | `name` | string | Unique modality identifier; must match sample subdirectory name exactly. |
 | `type` | string | One of `microscopy_image`, `msi`, `raman`, `st`. |
 | `alignment_strategy` | string | `manual` or `pre_aligned`. |
+| `alignment_force_recomputing` | boolean | Re-run alignment for this modality even when cached outputs exist. Default `false`. |
 | `registration_type` | string | `none`, `feature_extraction`, or `spot_interpolation`. |
 | `processing_settings` | object | Modality-specific preprocessing settings. |
 | `registration_settings` | object | Registration-specific settings (empty object allowed). |
@@ -203,7 +203,6 @@ This page documents the **canonical structure** and the set of config fields tha
   "dataset_path": "/data/my_tissue_cohort",
   "reference_modality": "st",
   "perform_alignment": true,
-  "alignment_force_recomputing": false,
   "perform_registration": true,
   "huggingface_token": "hf_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
   "spatial_annotations": {
@@ -233,6 +232,7 @@ This page documents the **canonical structure** and the set of config fields tha
       "name": "msi",
       "type": "msi",
       "alignment_strategy": "manual",
+      "alignment_force_recomputing": false,
       "registration_type": "spot_interpolation",
       "processing_settings": {
         "mass_tolerance": 10,
@@ -253,6 +253,7 @@ This page documents the **canonical structure** and the set of config fields tha
       "name": "raman",
       "type": "raman",
       "alignment_strategy": "manual",
+      "alignment_force_recomputing": false,
       "registration_type": "spot_interpolation",
       "processing_settings": {
         "savgol_window": 7,
@@ -271,6 +272,7 @@ This page documents the **canonical structure** and the set of config fields tha
       "name": "microscopy",
       "type": "microscopy_image",
       "alignment_strategy": "manual",
+      "alignment_force_recomputing": false,
       "registration_type": "feature_extraction",
       "processing_settings": {
         "color_enhancement": true,

@@ -61,7 +61,7 @@ Yes: set `"perform_registration": false` or set `"registration_type": "none"` fo
 FOCUS caches the output of each stage as files on disk. On the next run:
 
 - **Preprocessing**: cached per sample. Set `"force_recomputing": true` inside a modality's `processing_settings` to redo only that modality.
-- **Alignment**: cached per sample. Set `"alignment_force_recomputing": true` at the top level to redo all alignment pairs, or set `"force_recomputing": true` inside the relevant modality's `processing_settings`.
+- **Alignment**: cached per sample and per reference-target pair. Set `"alignment_force_recomputing": true` on a specific non-reference modality to redo only that pair's alignment.
 - **Registration**: cached per sample. Set `"force_recomputing": true` inside the modality's `registration_settings`.
 
 If a run crashed mid-stage, FOCUS may detect incomplete partial outputs. Delete the relevant sample's output directory (e.g. `sample_001/registration/`) and rerun to regenerate only that stage.

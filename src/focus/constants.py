@@ -124,7 +124,6 @@ class ConfigParameters(_AbstractEnum):
 	MODALITIES = "modalities"
 	REFERENCE_MODALITY = "reference_modality"
 	PERFORM_ALIGNMENT = "perform_alignment"
-	ALIGNMENT_FORCE_RECOMPUTING = "alignment_force_recomputing"
 	PERFORM_REGISTRATION = "perform_registration"
 	HUGGINGFACE_TOKEN = "huggingface_token"
 	SPATIAL_ANNOTATIONS = "spatial_annotations"
@@ -146,6 +145,7 @@ class ModalityParameters(_AbstractEnum):
 	REGISTRATION_TYPE = "registration_type"
 	REGISTRATION_SETTINGS = "registration_settings"
 	ALIGNMENT_STRATEGY = "alignment_strategy"
+	ALIGNMENT_FORCE_RECOMPUTING = "alignment_force_recomputing"
 
 class RegistrationType(_AbstractEnum):
 	NONE = "none"

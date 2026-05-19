@@ -122,7 +122,6 @@ def parse_config(config: dict) -> dict:
 
 	# Apply defaults for optional top-level keys
 	config.setdefault(ConfigParameters.PERFORM_ALIGNMENT, True)
-	config.setdefault(ConfigParameters.ALIGNMENT_FORCE_RECOMPUTING, False)
 	config.setdefault(ConfigParameters.PERFORM_REGISTRATION, True)
 	config.setdefault(ConfigParameters.HUGGINGFACE_TOKEN, None)
 	config.setdefault(ConfigParameters.IGNORE_SAMPLES, [])
@@ -130,7 +129,6 @@ def parse_config(config: dict) -> dict:
 	config.setdefault(ConfigParameters.LAST_EDIT, None)
 
 	_check_type(config, ConfigParameters.PERFORM_ALIGNMENT, bool)
-	_check_type(config, ConfigParameters.ALIGNMENT_FORCE_RECOMPUTING, bool)
 	_check_type(config, ConfigParameters.PERFORM_REGISTRATION, bool)
 	if config[ConfigParameters.HUGGINGFACE_TOKEN] is not None:
 		_check_type(config, ConfigParameters.HUGGINGFACE_TOKEN, str)
@@ -170,6 +168,7 @@ def parse_config(config: dict) -> dict:
 		modality.setdefault(ModalityParameters.REGISTRATION_TYPE, RegistrationType.NONE)
 		modality.setdefault(ModalityParameters.REGISTRATION_SETTINGS, {})
 		modality.setdefault(ModalityParameters.ALIGNMENT_STRATEGY, AlignmentStrategy.MANUAL)
+		modality.setdefault(ModalityParameters.ALIGNMENT_FORCE_RECOMPUTING, False)
 
 	# --- Step 5: Unique modality names ---
 	names = [m[ModalityParameters.NAME] for m in config[ConfigParameters.MODALITIES]]

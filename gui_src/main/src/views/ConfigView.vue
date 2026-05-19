@@ -188,25 +188,10 @@ function deselectAllSamples() {
               <input
                 type="checkbox"
                 v-model="store.config.perform_alignment"
-                @change="() => { if (!store.config.perform_alignment) { store.config.perform_registration = false; store.config.alignment_force_recomputing = false; } store.triggerAutoSave(); }"
+                @change="() => { if (!store.config.perform_alignment) { store.config.perform_registration = false; } store.triggerAutoSave(); }"
                 class="sr-only peer"
               />
               <div class="w-9 h-5 bg-gray-200 rounded-full peer dark:bg-gray-700 peer-checked:bg-blue-600 after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:after:translate-x-full"></div>
-            </label>
-          </div>
-
-          <!-- Force alignment recomputing -->
-          <div class="flex items-center gap-3" :class="{ 'opacity-40': !store.config.perform_alignment }">
-            <label class="text-sm font-medium">Force Alignment Recomputing</label>
-            <label class="relative inline-flex items-center cursor-pointer">
-              <input
-                type="checkbox"
-                v-model="store.config.alignment_force_recomputing"
-                :disabled="!store.config.perform_alignment"
-                @change="store.triggerAutoSave()"
-                class="sr-only peer"
-              />
-              <div class="w-9 h-5 bg-gray-200 rounded-full peer dark:bg-gray-700 peer-checked:bg-orange-500 after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:after:translate-x-full"></div>
             </label>
           </div>
 

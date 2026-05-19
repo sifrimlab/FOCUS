@@ -30,7 +30,6 @@ The example below covers all three supported modality types and uses every avail
   "dataset_path": "/data/my_tissue_cohort",
   "reference_modality": "st",
   "perform_alignment": true,
-  "alignment_force_recomputing": false,
   "perform_registration": true,
   "huggingface_token": "hf_...",
   "spatial_annotations": {

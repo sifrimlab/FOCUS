@@ -99,6 +99,10 @@ def run(config: dict, progress_callback=None) -> dict:
 	if pre_merged or pre_per_modality:
 		output_files["preprocessing"] = {"merged": pre_merged, "per_modality": pre_per_modality}
 
+	# Compute effective force_recomputing flags, cascading upstream changes downstream:
+	# preprocessing force → alignment force → registration force
+	alignment_force, registration_force = _compute_effective_force_flags(config)
+
 	# --- Stage 2: Alignment ---
 	aligned_files: dict[str, dict[str, str]] = {}
 	if config[ConfigParameters.PERFORM_ALIGNMENT]:
@@ -111,7 +115,8 @@ def run(config: dict, progress_callback=None) -> dict:
 				current_sample=None, current_sample_index=0, total_samples=0,
 				sub_step=None, sub_step_index=0, sub_step_total=0,
 				sub_step_progress=0, sub_step_items_total=0)
-		aligned_files = _run_alignment(config, modality_files, _report, n_stages)
+		aligned_files = _run_alignment(config, modality_files, _report, n_stages,
+									   force_overrides=alignment_force)
 		aln_merged: list[str] = []
 		aln_per_modality: dict[str, list[str]] = {}
 		for mod_name, mod_files in aligned_files.items():
@@ -162,7 +167,8 @@ def run(config: dict, progress_callback=None) -> dict:
 				message="Starting registration...", sub_step=None, sub_step_index=0,
 				sub_step_total=0, sub_step_progress=0, sub_step_items_total=0)
 		registered_files = _run_registration(config, modality_files, aligned_files, step_reporter,
-										   report=_report, stage_index=stage_reg, n_stages=n_stages)
+										   report=_report, stage_index=stage_reg, n_stages=n_stages,
+										   force_overrides=registration_force)
 		reg_merged: list[str] = []
 		reg_per_modality: dict[str, list[str]] = {}
 		for mod_name, mod_files in registered_files.items():
@@ -213,7 +219,52 @@ def _has_spot_modalities(config: dict) -> bool:
 	return ref_mod[ModalityParameters.TYPE] in _SPOT_MODALITIES
 
 
-def _run_alignment(config: dict, modality_files: dict, report, n_stages: int) -> dict:
+def _compute_effective_force_flags(config: dict) -> tuple[dict[str, bool], dict[str, bool]]:
+	"""
+	Derive effective force_recomputing flags for alignment and registration by cascading
+	upstream flags downstream through the pipeline dependency chain.
+
+	Cascade rules (OR-combined per modality):
+	- reference modality preprocessing forced → force ALL alignment pairs + ALL registrations
+	- target modality preprocessing forced    → force THAT pair's alignment + THAT registration
+	- alignment forced (any cause above)      → force THAT registration
+
+	Returns
+	-------
+	alignment_force : dict[str, bool]
+		Effective alignment force per non-reference modality name.
+	registration_force : dict[str, bool]
+		Effective registration force per non-reference modality name.
+	"""
+	ref_mod = _get_reference_modality(config)
+	ref_name = config[ConfigParameters.REFERENCE_MODALITY]
+	ref_preproc_force: bool = ref_mod[ModalityParameters.PROCESSING_SETTINGS].get("force_recomputing", False)
+
+	alignment_force: dict[str, bool] = {}
+	registration_force: dict[str, bool] = {}
+
+	for modality in config[ConfigParameters.MODALITIES]:
+		mod_name = modality[ModalityParameters.NAME]
+		if mod_name == ref_name:
+			continue
+
+		tgt_preproc_force: bool = modality[ModalityParameters.PROCESSING_SETTINGS].get("force_recomputing", False)
+
+		effective_align = (
+			modality.get(ModalityParameters.ALIGNMENT_FORCE_RECOMPUTING, False)
+			or ref_preproc_force
+			or tgt_preproc_force
+		)
+		alignment_force[mod_name] = effective_align
+
+		explicit_reg_force: bool = modality.get(ModalityParameters.REGISTRATION_SETTINGS, {}).get("force_recomputing", False)
+		registration_force[mod_name] = explicit_reg_force or effective_align
+
+	return alignment_force, registration_force
+
+
+def _run_alignment(config: dict, modality_files: dict, report, n_stages: int,
+				   force_overrides: dict[str, bool] | None = None) -> dict:
 	"""
 	Align the reference modality into each non-reference modality's coordinate system.
 
@@ -235,9 +286,6 @@ def _run_alignment(config: dict, modality_files: dict, report, n_stages: int) ->
 	ref_mod = _get_reference_modality(config)
 	ref_type = ref_mod[ModalityParameters.TYPE]
 
-	global_force = config.get(ConfigParameters.ALIGNMENT_FORCE_RECOMPUTING, False)
-	ref_proc_force = ref_mod[ModalityParameters.PROCESSING_SETTINGS].get("force_recomputing", False)
-
 	aligned_files: dict[str, dict[str, str]] = {}
 
 	for modality in modalities:
@@ -247,9 +295,9 @@ def _run_alignment(config: dict, modality_files: dict, report, n_stages: int) ->
 
 		mod_type = modality[ModalityParameters.TYPE]
 
-		# Force recomputing if: global switch is on, or either modality's preprocessing was forced
-		tgt_proc_force = modality[ModalityParameters.PROCESSING_SETTINGS].get("force_recomputing", False)
-		pair_force = global_force or ref_proc_force or tgt_proc_force
+		pair_force = (force_overrides or {}).get(
+			mod_name, modality.get(ModalityParameters.ALIGNMENT_FORCE_RECOMPUTING, False)
+		)
 
 		logger.info(f"Aligning reference '{ref_name}' into '{mod_name}' coordinate space (force_recomputing={pair_force})")
 
@@ -425,7 +473,8 @@ def _run_annotation_transfer(
 
 
 def _run_registration(config: dict, modality_files: dict, aligned_files: dict, step_reporter=None,
-					  report=None, stage_index: int = 3, n_stages: int = 4) -> dict:
+					  report=None, stage_index: int = 3, n_stages: int = 4,
+					  force_overrides: dict[str, bool] | None = None) -> dict:
 	"""
 	Register each non-reference modality that has a registration_type != 'none'.
 
@@ -476,7 +525,7 @@ def _run_registration(config: dict, modality_files: dict, aligned_files: dict, s
 				image_name=mod_name,
 				anchor_name=ref_name,
 				min_max_rescale=reg_settings.get("min_max_rescale", False),
-				force_recomputing=reg_settings.get("force_recomputing", False),
+				force_recomputing=(force_overrides or {}).get(mod_name, reg_settings.get("force_recomputing", False)),
 				background_color=reg_settings.get("background_color", None),
 				patch_size=reg_settings.get("patch_size", 224),
 				step_reporter=step_reporter,
@@ -494,7 +543,7 @@ def _run_registration(config: dict, modality_files: dict, aligned_files: dict, s
 				anchor_name=ref_name,
 				target_name=mod_name,
 				min_max_rescale=reg_settings.get("min_max_rescale", False),
-				force_recomputing=reg_settings.get("force_recomputing", False),
+				force_recomputing=(force_overrides or {}).get(mod_name, reg_settings.get("force_recomputing", False)),
 				step_reporter=step_reporter,
 			)
 

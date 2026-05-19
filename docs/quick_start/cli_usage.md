@@ -58,7 +58,6 @@ The CLI requires a valid JSON configuration file. See [Configuration Reference](
   "dataset_path": "/path/to/dataset",
   "reference_modality": "microscopy",
   "perform_alignment": false,
-  "alignment_force_recomputing": false,
   "perform_registration": false,
   "huggingface_token": null,
   "spatial_annotations": null,

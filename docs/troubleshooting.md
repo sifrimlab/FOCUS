@@ -283,9 +283,9 @@ dataset_path/
 
 **Symptom:** When rerunning FOCUS, the alignment GUI appears again even though the previous run completed alignment successfully.
 
-**Cause:** `"alignment_force_recomputing": true` is set in the config, or `"force_recomputing": true` is set in one of the modality `processing_settings`.
+**Cause:** `"alignment_force_recomputing": true` is set on one of the non-reference modality entries in the config.
 
-**Fix:** Set `"alignment_force_recomputing": false` (the default) and ensure `"force_recomputing": false` in all modality settings to reuse cached results.
+**Fix:** Set `"alignment_force_recomputing": false` (the default) on each modality to reuse cached alignment results.
 
 ---
 

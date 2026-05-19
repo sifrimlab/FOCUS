@@ -363,7 +363,6 @@ The JSON configuration file contains:
   "dataset_path": "/path/to/dataset",
   "reference_modality": "msi",
   "perform_alignment": true,
-  "alignment_force_recomputing": false,
   "perform_registration": true,
   "huggingface_token": null,
   "spatial_annotations": null,
@@ -384,6 +383,7 @@ The JSON configuration file contains:
     },
     {
       "alignment_strategy": "manual",
+      "alignment_force_recomputing": false,
       "name": "microscopy",
       "processing_settings": {
         "color_enhancement": true,

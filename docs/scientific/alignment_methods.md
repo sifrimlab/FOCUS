@@ -134,6 +134,6 @@ Per sample cropped OME-TIFF:
 
 ## 7. Caching semantics
 
-Alignment is skipped when expected aligned outputs are already present, unless `alignment_force_recomputing` (or pair force conditions) is enabled.
+Alignment is skipped when expected aligned outputs are already present, unless `alignment_force_recomputing` is set to `true` on that modality's config entry.
 
 For spot outputs, cache validity requires presence of the expected `obsm` key in the aligned file.

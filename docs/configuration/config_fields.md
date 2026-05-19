@@ -50,21 +50,6 @@ Example:
 
 ---
 
-### `alignment_force_recomputing`
-
-- **Type**: `boolean`
-- **Required**: No
-- **Default**: `false`
-- **Description**: Re-run alignment even if cached alignment outputs are present.
-
-Example:
-
-```json
-"alignment_force_recomputing": false
-```
-
----
-
 ### `perform_registration`
 
 - **Type**: `boolean`
@@ -184,6 +169,21 @@ Example:
 
 ```json
 "alignment_strategy": "manual"
+```
+
+---
+
+### `alignment_force_recomputing`
+
+- **Type**: `boolean`
+- **Required**: No
+- **Default**: `false`
+- **Description**: Re-run alignment for this modality even if cached alignment outputs are already present. Set to `true` to force re-alignment of this specific reference–target pair without affecting other modalities.
+
+Example:
+
+```json
+"alignment_force_recomputing": false
 ```
 
 ---
@@ -406,7 +406,6 @@ Example:
   "dataset_path": "/data/my_tissue_cohort",
   "reference_modality": "st",
   "perform_alignment": true,
-  "alignment_force_recomputing": false,
   "perform_registration": true,
   "huggingface_token": "hf_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
   "spatial_annotations": {
@@ -436,6 +435,7 @@ Example:
       "name": "msi",
       "type": "msi",
       "alignment_strategy": "manual",
+      "alignment_force_recomputing": false,
       "registration_type": "spot_interpolation",
       "processing_settings": {
         "mass_tolerance": 10,
@@ -456,6 +456,7 @@ Example:
       "name": "raman",
       "type": "raman",
       "alignment_strategy": "manual",
+      "alignment_force_recomputing": false,
       "registration_type": "spot_interpolation",
       "processing_settings": {
         "savgol_window": 7,
@@ -474,6 +475,7 @@ Example:
       "name": "microscopy",
       "type": "microscopy_image",
       "alignment_strategy": "manual",
+      "alignment_force_recomputing": false,
       "registration_type": "feature_extraction",
       "processing_settings": {
         "color_enhancement": true,

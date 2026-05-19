@@ -215,6 +215,20 @@ const cancelEditName = () => {
           </select>
         </div>
 
+        <!-- Force alignment recomputing -->
+        <div class="flex items-center justify-between gap-4">
+          <label class="text-sm font-medium shrink-0">Force Alignment Recomputing</label>
+          <label class="relative inline-flex items-center cursor-pointer">
+            <input
+              type="checkbox"
+              :checked="modality.alignment_force_recomputing"
+              @change="store.updateModality(props.index, { alignment_force_recomputing: ($event.target as HTMLInputElement).checked }); store.triggerAutoSave()"
+              class="sr-only peer"
+            />
+            <div class="w-9 h-5 bg-gray-200 rounded-full peer dark:bg-gray-700 peer-checked:bg-orange-500 after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:after:translate-x-full"></div>
+          </label>
+        </div>
+
         <!-- Hint when pre_aligned is blocked by another modality -->
         <div
           v-if="preAlignedAlreadyUsed && modality.alignment_strategy !== 'pre_aligned'"
