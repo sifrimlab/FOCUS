@@ -1,5 +1,6 @@
 import os, logging, anndata
 import numpy as np
+import scipy.sparse
 import pandas as pd
 import mudata
 
@@ -506,6 +507,42 @@ def _run_registration(config: dict, modality_files: dict, aligned_files: dict, s
 	return registered_files
 
 
+def _compute_valid_spot_mask(
+	mod_dict: dict,
+	ref_name: str,
+	n_obs: int,
+) -> np.ndarray | None:
+	"""
+	Returns a bool mask (n_obs,) — True where a spot has non-zero coverage in
+	every non-anchor modality. Returns None when no filtering is needed.
+
+	An all-zero feature vector is the sentinel produced by
+	SpotInterpolationRegistration._interpolate_features() when no target spots
+	fall within an anchor spot's spatial footprint (i.e. the anchor spot lies
+	outside the target modality's tissue section).
+	"""
+	mask = np.ones(n_obs, dtype=bool)
+	any_empty = False
+
+	for mod_name, adata in mod_dict.items():
+		if mod_name == ref_name:
+			continue
+		X = adata.X
+		if scipy.sparse.issparse(X):
+			X_csr = X.tocsr().copy()
+			X_csr.eliminate_zeros()
+			mod_mask = np.asarray(X_csr.getnnz(axis=1) > 0)
+		else:
+			mod_mask = ~np.all(X == 0.0, axis=1)
+		n_empty = int(np.sum(~mod_mask))
+		if n_empty > 0:
+			logger.debug(f"Coverage check '{mod_name}': {n_empty}/{n_obs} uncovered spots (all-zero features)")
+			any_empty = True
+		mask &= mod_mask
+
+	return mask if any_empty else None
+
+
 def _compile_mudata(
 	config: dict,
 	modality_files: dict,
@@ -587,6 +624,25 @@ def _compile_mudata(
 		reg_adata.obs_names = anchor_adata.obs_names.tolist()
 		mod_dict[mod_name] = reg_adata
 
+	# Filter anchor spots with no coverage in any target modality
+	valid_mask = _compute_valid_spot_mask(mod_dict, ref_name, n_anchor_obs)
+	if valid_mask is not None:
+		n_removed = int(np.sum(~valid_mask))
+		logger.info(
+			f"Removing {n_removed}/{n_anchor_obs} anchor spots with no coverage "
+			f"in at least one target modality."
+		)
+		mod_dict = {k: v[valid_mask].copy() for k, v in mod_dict.items()}
+		shared_spatial = shared_spatial[valid_mask]
+		shared_sample_id = shared_sample_id[valid_mask]
+		n_anchor_obs = int(np.sum(valid_mask))
+		if n_anchor_obs == 0:
+			logger.warning(
+				"All anchor spots filtered out (no spot has coverage in all modalities). "
+				"Skipping MuData compilation."
+			)
+			return None
+
 	if len(mod_dict) < 2:
 		logger.info("Only one modality available for MuData, skipping compilation.")
 		return None
@@ -600,8 +656,8 @@ def _compile_mudata(
 		mdata.uns['spot_size'] = shared_spot_size
 
 	# Propagate spatial annotations (if present) to top-level mdata.obs
-	if 'spatial_annotation' in anchor_adata.obs.columns:
-		mdata.obs['spatial_annotation'] = anchor_adata.obs['spatial_annotation'].values
+	if 'spatial_annotation' in mod_dict[ref_name].obs.columns:
+		mdata.obs['spatial_annotation'] = mod_dict[ref_name].obs['spatial_annotation'].values
 		logger.info("Spatial annotation labels promoted to mdata.obs['spatial_annotation']")
 
 	output_path = MULTIMODAL_DATASET(dataset_path, "h5mu")
