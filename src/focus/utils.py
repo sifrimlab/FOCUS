@@ -452,6 +452,22 @@ def write_h5ad_compat(adata, path, **kwargs) -> None:
 	adata.write_h5ad(path, **kwargs)
 
 
+def read_merged_sample_ids(path: str) -> set[str] | None:
+	"""Return the set of unique obs['sample_id'] values from a merged h5ad file.
+
+	Reads only the obs DataFrame (backed mode) so the full data matrix is never loaded.
+	Returns None if the file cannot be opened or lacks the obs['sample_id'] column.
+	"""
+	try:
+		import anndata as _ad
+		adata = _ad.read_h5ad(path, backed='r')
+		ids = set(adata.obs['sample_id'].unique())
+		adata.file.close()
+		return ids
+	except Exception:
+		return None
+
+
 def write_h5mu_compat(mdata, path, **kwargs) -> None:
 	"""Write MuData to h5mu, converting nullable string arrays to object dtype.
 

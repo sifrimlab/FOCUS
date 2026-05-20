@@ -6,7 +6,7 @@ from sklearn.preprocessing import MinMaxScaler
 
 from focus.constants import MODALITY_REGISTRATION, MODALITY_REGISTRATION_MERGED
 from focus.constants import ModalityType
-from focus.utils import write_h5ad_compat
+from focus.utils import write_h5ad_compat, read_merged_sample_ids
 
 from focus.registration.microscopy_image import MicroscopyImageFeatureExtractor
 
@@ -194,11 +194,15 @@ class FeatureExtractorRegistration:
 		os.makedirs(merge_dir, exist_ok=True)
 		merged_file = MODALITY_REGISTRATION_MERGED(self._path, modality_name, "h5ad")
 
-		# Cache check: if all per-sample files were valid and the merged file already exists, reuse it
+		# Cache check: reuse merged only when all per-sample files were cached and the merged
+		# file exists with exactly the active sample composition.
 		if os.path.exists(merged_file) and not force_recomputing and all_per_sample_cached:
-			logger.info(f"Using cached merged registration for '{modality_name}'")
-			registered_files["merged"] = merged_file
-			return registered_files
+			active_ids = set(sample_files.keys())
+			merged_ids = read_merged_sample_ids(merged_file)
+			if merged_ids == active_ids:
+				logger.info(f"Using cached merged registration for '{modality_name}'")
+				registered_files["merged"] = merged_file
+				return registered_files
 
 		logger.info(f"Merging registration files for '{modality_name}'")
 		adata_list = []
@@ -508,11 +512,15 @@ class SpotInterpolationRegistration:
 		os.makedirs(merge_dir, exist_ok=True)
 		merged_file = MODALITY_REGISTRATION_MERGED(self._path, modality_name, "h5ad")
 
-		# Cache check: reuse merged file when all per-sample files came from valid cache
+		# Cache check: reuse merged only when all per-sample files were cached and the merged
+		# file exists with exactly the active sample composition.
 		if os.path.exists(merged_file) and not force_recomputing and all_per_sample_cached:
-			logger.info(f"Using cached merged registration for '{modality_name}'")
-			registered_files["merged"] = merged_file
-			return registered_files
+			active_ids = set(sample_files.keys())
+			merged_ids = read_merged_sample_ids(merged_file)
+			if merged_ids == active_ids:
+				logger.info(f"Using cached merged registration for '{modality_name}'")
+				registered_files["merged"] = merged_file
+				return registered_files
 
 		logger.info(f"Merging registration files for '{modality_name}'")
 		adata_list = []

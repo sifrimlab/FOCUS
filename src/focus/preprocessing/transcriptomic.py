@@ -6,7 +6,7 @@ import scanpy as sc
 import scipy.sparse as sp
 
 from focus.constants import MODALITY_PREPROCESSING, MODALITY_PREPROCESSING_MERGED, STPreprocessingParams
-from focus.utils import write_h5ad_compat
+from focus.utils import write_h5ad_compat, read_merged_sample_ids
 from focus.preprocessing._utils import StepReporter
 from focus.preprocessing.base import BaseSample, BaseDataset
 from focus.preprocessing._registry import ModalityHandler, register_modality
@@ -325,10 +325,14 @@ class SpatialTranscriptomicDataset(BaseDataset):
         merged_file = MODALITY_PREPROCESSING_MERGED(self.dataset_source_path, self.samples[0].modality_name, "h5ad")
 
         # Cache check before loading per-sample files into memory
+        # Also validate that the merged file contains exactly the active samples.
         if not force_recomputing and os.path.exists(merged_file):
-            reporter.message("Combined dataset already exists. Using cached results.")
-            processed_samples["merged"] = merged_file
-            return processed_samples
+            active_ids = {s.sample_id for s in self.samples}
+            merged_ids = read_merged_sample_ids(merged_file)
+            if merged_ids == active_ids:
+                reporter.message("Combined dataset already exists. Using cached results.")
+                processed_samples["merged"] = merged_file
+                return processed_samples
 
         # Load per-sample files into memory only when the merged file needs to be built
         adata_list: list[ad.AnnData] = []

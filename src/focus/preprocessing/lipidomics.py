@@ -1797,13 +1797,17 @@ class MsiDataset(BaseDataset):
 																				 sample.sample_id, sample.modality_name,
 																				 'h5ad')
 
-			# Check if the merged dataset already exists
-			if not os.path.exists(
-					MODALITY_PREPROCESSING_MERGED(self.dataset_source_path, self.samples[0].modality_name, 'h5ad')):
+			# Check if the merged dataset already exists and has the correct sample composition
+			merged_path = MODALITY_PREPROCESSING_MERGED(self.dataset_source_path, self.samples[0].modality_name, 'h5ad')
+			if not os.path.exists(merged_path):
 				all_sample_computed = False
 			else:
-				processed_samples["merged"] = MODALITY_PREPROCESSING_MERGED(self.dataset_source_path,
-																			self.samples[0].modality_name, 'h5ad')
+				active_ids = {s.sample_id for s in self.samples}
+				merged_ids = utils.read_merged_sample_ids(merged_path)
+				if merged_ids != active_ids:
+					all_sample_computed = False
+				else:
+					processed_samples["merged"] = merged_path
 
 			# If the merged dataset already exists and force_recompute is False, skip the computation
 			if all_sample_computed:
