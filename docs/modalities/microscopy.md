@@ -88,14 +88,12 @@ The `feature_extraction` registration type extracts patch embeddings centred on 
 | Name | Type | Default | Description |
 |------|------|---------|-------------|
 | `patch_size` | `int` | `224` | Side length (pixels) of each patch extracted around an anchor spot |
-| `min_max_rescale` | `bool` | `True` | Apply min-max rescaling across all samples after embedding |
 | `background_color` | `str` | — | Background fill colour passed to the feature extractor (`"white"` or `"black"`) |
 
 ```yaml
 registration_type: feature_extraction
 registration_settings:
   patch_size: 224
-  min_max_rescale: true
   background_color: white
 ```
 
@@ -151,6 +149,5 @@ modalities:
     registration_type: feature_extraction
     registration_settings:
       patch_size: 224
-      min_max_rescale: true
       background_color: white
 ```

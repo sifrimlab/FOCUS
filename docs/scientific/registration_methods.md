@@ -51,19 +51,10 @@ Per-sample AnnData:
 - `.obsm['spatial']`: anchor centers used for extraction
 - `.obs['sample_id']`
 
-### 2.4 Optional scaling
-
-If `min_max_rescale: true`, merged matrix is transformed per feature dimension with `MinMaxScaler`:
-
-\[
-\tilde{x}_{i,d}=\frac{x_{i,d}-\min_j x_{j,d}}{\max_j x_{j,d}-\min_j x_{j,d}}
-\]
-
-### 2.5 Parameters reflected in code path
+### 2.4 Parameters reflected in code path
 
 - `patch_size` (default 224)
 - `background_color` (`white`/`black`)
-- `min_max_rescale` (default true)
 - `force_recomputing` (default false)
 
 ---
@@ -114,9 +105,8 @@ Per-sample output AnnData has:
 - `.obsm['spatial']`: anchor coordinates in target frame
 - target `.var` and `.var_names` propagated when available
 
-### 3.4 Optional scaling and parameters
+### 3.4 Parameters
 
-- `min_max_rescale` (default true, merged-level)
 - `force_recomputing` (default false)
 
 ---

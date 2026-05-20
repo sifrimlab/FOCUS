@@ -71,7 +71,6 @@ Reference Spots × Patch Embeddings → Feature Matrix
   "registration_type": "feature_extraction",
   "registration_settings": {
     "patch_size": 224,
-    "min_max_rescale": false,
     "force_recomputing": false
   }
 }
@@ -82,7 +81,6 @@ Reference Spots × Patch Embeddings → Feature Matrix
 | Parameter | Type | Default | Range | Description                         |
 |-----------|------|---------|-------|-------------------------------------|
 | `patch_size` | int | 224 | — | Size of extracted patches (must be 224 for Prov-GigaPath) |
-| `min_max_rescale` | bool | true | — | Normalize output feature embeddings |
 | `force_recomputing` | bool | false | — | Bypass cache                        |
 
 ### Processing Steps
@@ -346,7 +344,6 @@ MuData Structure:
 **Feature Extraction**:
 - Start with default parameters
 - patch_size must be 224 (required by the Prov-GigaPath model)
-- min_max_rescale=false (unless downstream AI methods require features to be [0, 1])
 
 **Spot Interpolation**:
 

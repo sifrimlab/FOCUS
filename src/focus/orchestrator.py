@@ -524,7 +524,6 @@ def _run_registration(config: dict, modality_files: dict, aligned_files: dict, s
 				anchor_files=aligned_files[mod_name],
 				image_name=mod_name,
 				anchor_name=ref_name,
-				min_max_rescale=reg_settings.get("min_max_rescale", False),
 				force_recomputing=(force_overrides or {}).get(mod_name, reg_settings.get("force_recomputing", False)),
 				background_color=reg_settings.get("background_color", None),
 				patch_size=reg_settings.get("patch_size", 224),
@@ -542,7 +541,6 @@ def _run_registration(config: dict, modality_files: dict, aligned_files: dict, s
 				target_files=modality_files[mod_name],
 				anchor_name=ref_name,
 				target_name=mod_name,
-				min_max_rescale=reg_settings.get("min_max_rescale", False),
 				force_recomputing=(force_overrides or {}).get(mod_name, reg_settings.get("force_recomputing", False)),
 				step_reporter=step_reporter,
 			)
@@ -565,10 +563,11 @@ def _compute_valid_spot_mask(
 	Returns a bool mask (n_obs,) — True where a spot has non-zero coverage in
 	every non-anchor modality. Returns None when no filtering is needed.
 
-	An all-zero feature vector is the sentinel produced by
-	SpotInterpolationRegistration._interpolate_features() when no target spots
-	fall within an anchor spot's spatial footprint (i.e. the anchor spot lies
-	outside the target modality's tissue section).
+	Zero-vector rows arise from two sources:
+	- SpotInterpolationRegistration: no target spots fall within the anchor
+	  spot's spatial footprint (spot lies outside the target tissue section).
+	- FeatureExtractorRegistration: the patch extracted at the anchor spot
+	  location is pure background (>= 99% background pixels).
 	"""
 	mask = np.ones(n_obs, dtype=bool)
 	any_empty = False

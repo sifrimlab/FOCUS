@@ -535,7 +535,6 @@ def _build_schema() -> dict:
 		"display_names": DISPLAY_NAMES,
 		"registration_params": {
 			RegistrationType.FEATURE_EXTRACTION: {
-				"min_max_rescale": {"type": "bool", "default": False},
 				"force_recomputing": {"type": "bool", "default": False},
 				"patch_size": {"type": "int", "default": 224},
 				"background_color": {
@@ -545,7 +544,6 @@ def _build_schema() -> dict:
 				},
 			},
 			RegistrationType.SPOT_INTERPOLATION: {
-				"min_max_rescale": {"type": "bool", "default": False},
 				"force_recomputing": {"type": "bool", "default": False},
 			},
 			RegistrationType.NONE: {},

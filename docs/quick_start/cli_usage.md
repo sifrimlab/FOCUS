@@ -306,7 +306,6 @@ For feature extraction registration, FOCUS automatically uses the first availabl
       "name": "microscopy",
       "registration_type": "feature_extraction",
       "registration_settings": {
-        "min_max_rescale": true,
         "force_recomputing": false
       }
     }

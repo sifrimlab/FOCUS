@@ -180,7 +180,6 @@ This page documents the **canonical structure** and the set of config fields tha
 ```json
 {
   "patch_size": 224,
-  "min_max_rescale": true,
   "background_color": "white",
   "force_recomputing": false
 }
@@ -291,7 +290,6 @@ This page documents the **canonical structure** and the set of config fields tha
       },
       "registration_settings": {
         "patch_size": 224,
-        "min_max_rescale": true,
         "background_color": "white",
         "force_recomputing": false
       }

@@ -82,7 +82,6 @@ The example below covers all three supported modality types and uses every avail
       },
       "registration_settings": {
         "patch_size": 224,
-        "min_max_rescale": true,
         "force_recomputing": false
       },
       "registration_type": "feature_extraction",

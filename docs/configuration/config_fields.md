@@ -366,7 +366,6 @@ Compatible modality type: `microscopy_image`.
 | Field | Type | Default |
 |---|---|---|
 | `patch_size` | int | `224` |
-| `min_max_rescale` | bool | `true` |
 | `background_color` | string | `"white"` |
 | `force_recomputing` | bool | `false` |
 
@@ -375,7 +374,6 @@ Example:
 ```json
 "registration_settings": {
   "patch_size": 224,
-  "min_max_rescale": true,
   "background_color": "white",
   "force_recomputing": false
 }
@@ -494,7 +492,6 @@ Example:
       },
       "registration_settings": {
         "patch_size": 224,
-        "min_max_rescale": true,
         "background_color": "white",
         "force_recomputing": false
       }

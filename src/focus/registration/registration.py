@@ -2,7 +2,6 @@ import os, logging, anndata, tifffile
 import numpy as np
 import scipy.sparse
 from scipy.spatial import cKDTree
-from sklearn.preprocessing import MinMaxScaler
 
 from focus.constants import MODALITY_REGISTRATION, MODALITY_REGISTRATION_MERGED
 from focus.constants import ModalityType
@@ -58,7 +57,6 @@ class FeatureExtractorRegistration:
 		anchor_files: dict[str, str],
 		image_name: str,
 		anchor_name: str,
-		min_max_rescale: bool = False,
 		force_recomputing: bool = False,
 		step_reporter=None,
 		**kwargs,
@@ -78,8 +76,6 @@ class FeatureExtractorRegistration:
 			Name of the image modality.
 		anchor_name : str
 			Name of the anchor modality.
-		min_max_rescale : bool
-			Whether to apply min-max rescaling across all samples.
 		force_recomputing : bool
 			Whether to recompute even if cached results exist.
 		step_reporter : StepReporter, optional
@@ -172,7 +168,7 @@ class FeatureExtractorRegistration:
 
 		# Merge across samples
 		registered_files = self._merge_samples(
-			registered_files, image_name, min_max_rescale,
+			registered_files, image_name,
 			force_recomputing=force_recomputing, all_per_sample_cached=all_cached,
 		)
 		return registered_files
@@ -181,11 +177,10 @@ class FeatureExtractorRegistration:
 		self,
 		registered_files: dict[str, str],
 		modality_name: str,
-		min_max_rescale: bool,
 		force_recomputing: bool = False,
 		all_per_sample_cached: bool = False,
 	) -> dict[str, str]:
-		"""Merge per-sample registration files and optionally apply min-max rescaling."""
+		"""Merge per-sample registration files."""
 		sample_files = {k: v for k, v in registered_files.items() if k != "merged"}
 		if not sample_files:
 			return registered_files
@@ -212,10 +207,6 @@ class FeatureExtractorRegistration:
 			adata_list.append(adata)
 
 		merged = anndata.concat(adata_list, merge='same')
-
-		if min_max_rescale and merged.n_obs > 0:
-			scaler = MinMaxScaler()
-			merged.X = scaler.fit_transform(merged.X)
 
 		write_h5ad_compat(merged, merged_file, compression=_H5AD_COMPRESSION)
 		registered_files["merged"] = merged_file
@@ -343,7 +334,6 @@ class SpotInterpolationRegistration:
 		target_files: dict[str, str],
 		anchor_name: str,
 		target_name: str,
-		min_max_rescale: bool = False,
 		force_recomputing: bool = False,
 		step_reporter=None,
 	) -> dict[str, str]:
@@ -371,8 +361,6 @@ class SpotInterpolationRegistration:
 			Name of the anchor (reference) modality.
 		target_name : str
 			Name of the target modality being registered.
-		min_max_rescale : bool
-			Whether to apply global min-max rescaling across all samples.
 		force_recomputing : bool
 			Whether to recompute even if cached results exist.
 		step_reporter : StepReporter, optional
@@ -490,7 +478,7 @@ class SpotInterpolationRegistration:
 
 		# Merge across samples
 		registered_files = self._merge_samples(
-			registered_files, target_name, min_max_rescale,
+			registered_files, target_name,
 			force_recomputing=force_recomputing, all_per_sample_cached=all_cached,
 		)
 		return registered_files
@@ -499,11 +487,10 @@ class SpotInterpolationRegistration:
 		self,
 		registered_files: dict[str, str],
 		modality_name: str,
-		min_max_rescale: bool,
 		force_recomputing: bool = False,
 		all_per_sample_cached: bool = False,
 	) -> dict[str, str]:
-		"""Merge per-sample registration files and optionally apply min-max rescaling."""
+		"""Merge per-sample registration files."""
 		sample_files = {k: v for k, v in registered_files.items() if k != "merged"}
 		if not sample_files:
 			return registered_files
@@ -530,10 +517,6 @@ class SpotInterpolationRegistration:
 			adata_list.append(adata)
 
 		merged = anndata.concat(adata_list, merge='same')
-
-		if min_max_rescale and merged.n_obs > 0:
-			scaler = MinMaxScaler()
-			merged.X = scaler.fit_transform(merged.X)
 
 		write_h5ad_compat(merged, merged_file, compression=_H5AD_COMPRESSION)
 		registered_files["merged"] = merged_file
