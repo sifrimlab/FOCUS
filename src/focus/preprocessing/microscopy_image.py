@@ -34,6 +34,7 @@ class MicroscopyImage(BaseSample):
 	_CLIP_PERCENTILE = 99
 	_GAMMA = 0.45
 	_CONTRAST_SATURATION = 0.35
+	_MAX_PYRAMID_PIXELS = 3000 * 3000  # pixel cap for the smallest pyramid level (GUI rendering)
 
 	def __init__(self, source_path: str, sample_id: str, modality_name: str) -> None:
 		super().__init__(source_path, sample_id, modality_name)
@@ -130,12 +131,24 @@ class MicroscopyImage(BaseSample):
 
 		return image
 
-	def _save_image_pyramid(self, img: np.ndarray, output_file: str, levels: int = 4) -> str:
+	@staticmethod
+	def _compute_pyramid_levels(H: int, W: int) -> int:
+		"""Compute how many pyramid levels are needed so the smallest level fits within _MAX_PYRAMID_PIXELS."""
+		import math
+		total = H * W
+		if total <= MicroscopyImage._MAX_PYRAMID_PIXELS:
+			return 1
+		return math.ceil(math.log(total / MicroscopyImage._MAX_PYRAMID_PIXELS, 4)) + 1
+
+	def _save_image_pyramid(self, img: np.ndarray, output_file: str) -> str:
 		"""
 		Saves an RGB/multi-channel image as a multi-resolution OME-TIFF containing
 		multiple independent images, one for each resolution level.
 		Uses separate top-level IFDs (not SubIFDs) and zlib compression,
 		following the reference implementation for maximum compatibility.
+
+		The number of levels is computed automatically so the smallest level
+		does not exceed _MAX_PYRAMID_PIXELS total pixels.
 
 		Parameters
 		----------
@@ -143,8 +156,6 @@ class MicroscopyImage(BaseSample):
 			The input image as a NumPy array of shape (H, W, C) or (H, W) and dtype float32.
 		output_file : str
 			The path to the output OME-TIFF file.
-		levels : int
-			The number of resolution levels to generate (default is 4).
 		"""
 		assert img.dtype == np.float32, "Expecting float32 array"
 
@@ -152,6 +163,7 @@ class MicroscopyImage(BaseSample):
 		if img.ndim == 2:
 			img = img[..., np.newaxis]  # Grayscale -> [H,W,1]
 		H_base, W_base, C = img.shape
+		levels = self._compute_pyramid_levels(H_base, W_base)
 		is_rgb = (C == 3)
 
 		# 1. Generate pyramid (resize preserves shape type)
@@ -382,7 +394,6 @@ class MicroscopyImage(BaseSample):
 		remove_background: bool = True,
 		crop_to_tissue: bool = True,
 		background_color: SegmentationBackgroundColor = SegmentationBackgroundColor.WHITE,
-		pyramid_levels: int = 4,
 		min_object_coverage: float = 0.01,
 		force_recomputing: bool = False,
 		gaussian_blur_kernel_size: int = _GAUSSIAN_BLUR_KERNEL_SIZE,
@@ -405,8 +416,6 @@ class MicroscopyImage(BaseSample):
 			Whether to crop the image to the tissue bounding box.
 		background_color : SegmentationBackgroundColor
 			Color to fill the background with after removal.
-		pyramid_levels : int
-			Number of resolution levels in the output OME-TIFF.
 		min_object_coverage : float
 			Minimum tissue area fraction to keep during background removal (0-1).
 		force_recomputing : bool
@@ -476,8 +485,9 @@ class MicroscopyImage(BaseSample):
 			reporter.step(f"4/5 - Cropping not required")
 
 		# 5. Save
-		reporter.step(f"5/5 - Saving OME-TIFF with {pyramid_levels} pyramid levels")
-		self._save_image_pyramid(image, output_ome_tiff, levels=pyramid_levels)
+		n_levels = self._compute_pyramid_levels(*image.shape[:2])
+		reporter.step(f"5/5 - Saving OME-TIFF ({n_levels} pyramid levels, cap={self._MAX_PYRAMID_PIXELS} px)")
+		self._save_image_pyramid(image, output_ome_tiff)
 		return output_ome_tiff
 
 
@@ -495,7 +505,6 @@ class MicroscopyImageDataset(BaseDataset):
 		remove_background: bool = True,
 		crop_to_tissue: bool = True,
 		background_color: SegmentationBackgroundColor = SegmentationBackgroundColor.WHITE,
-		pyramid_levels: int = 4,
 		min_object_coverage: float = 0.01,
 		force_recomputing: bool = False,
 		gaussian_blur_kernel_size: int = MicroscopyImage._GAUSSIAN_BLUR_KERNEL_SIZE,
@@ -527,7 +536,6 @@ class MicroscopyImageDataset(BaseDataset):
 					remove_background=remove_background,
 					crop_to_tissue=crop_to_tissue,
 					background_color=background_color,
-					pyramid_levels=pyramid_levels,
 					min_object_coverage=min_object_coverage,
 					force_recomputing=force_recomputing,
 					gaussian_blur_kernel_size=gaussian_blur_kernel_size,
@@ -560,7 +568,6 @@ def _extract_microscopy_settings(settings):
 		'remove_background': settings.get(MicroscopyImageProcessingParams.REMOVE_BACKGROUND, True),
 		'crop_to_tissue': settings.get(MicroscopyImageProcessingParams.CROP_TO_TISSUE, True),
 		'background_color': settings.get(MicroscopyImageProcessingParams.BACKGROUND_COLOR, SegmentationBackgroundColor.WHITE),
-		'pyramid_levels': settings.get(MicroscopyImageProcessingParams.PYRAMID_LEVELS, 4),
 		'min_object_coverage': settings.get(MicroscopyImageProcessingParams.MIN_OBJECT_COVERAGE, 0.01),
 		'force_recomputing': settings.get(MicroscopyImageProcessingParams.FORCE_RECOMPUTING, False),
 		'gaussian_blur_kernel_size': settings.get(MicroscopyImageProcessingParams.GAUSSIAN_BLUR_KERNEL_SIZE, MicroscopyImage._GAUSSIAN_BLUR_KERNEL_SIZE),

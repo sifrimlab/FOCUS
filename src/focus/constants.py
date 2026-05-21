@@ -163,7 +163,6 @@ class MicroscopyImageProcessingParams(_AbstractEnum):
 	REMOVE_BACKGROUND = "remove_background"
 	CROP_TO_TISSUE = "crop_to_tissue"
 	BACKGROUND_COLOR = "background_color"
-	PYRAMID_LEVELS = "pyramid_levels"
 	MIN_OBJECT_COVERAGE = "min_object_coverage"
 	FORCE_RECOMPUTING = "force_recomputing"
 	GAUSSIAN_BLUR_KERNEL_SIZE = "gaussian_blur_kernel_size"
