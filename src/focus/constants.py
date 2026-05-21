@@ -151,6 +151,7 @@ class RegistrationType(_AbstractEnum):
 	NONE = "none"
 	FEATURE_EXTRACTION = "feature_extraction"
 	SPOT_INTERPOLATION = "spot_interpolation"
+	RAMAN_PIXEL_INTERPOLATION = "raman_pixel_interpolation"
 
 class AlignmentStrategy(_AbstractEnum):
 	MANUAL = "manual"
@@ -221,7 +222,8 @@ MODALITY_FILE_EXTENSION = {
 # Maps registration type to compatible modality types (None = all types)
 REGISTRATION_COMPATIBILITY = {
 	RegistrationType.FEATURE_EXTRACTION: [ModalityType.MICROSCOPY_IMAGE],
-	RegistrationType.SPOT_INTERPOLATION: [ModalityType.MSI, ModalityType.ST, ModalityType.RAMAN],
+	RegistrationType.SPOT_INTERPOLATION: [ModalityType.MSI, ModalityType.ST],
+	RegistrationType.RAMAN_PIXEL_INTERPOLATION: [ModalityType.RAMAN],
 	RegistrationType.NONE: None,
 }
 
@@ -261,9 +263,10 @@ DISPLAY_NAMES: dict[str, str] = {
 	ModalityType.RAMAN:            "Raman",
 	ModalityType.ST:               "Spatial Transcriptomics",
 	# Registration types
-	RegistrationType.NONE:               "None",
-	RegistrationType.FEATURE_EXTRACTION: "Feature Extraction",
-	RegistrationType.SPOT_INTERPOLATION: "Spot Interpolation",
+	RegistrationType.NONE:                        "None",
+	RegistrationType.FEATURE_EXTRACTION:          "Feature Extraction",
+	RegistrationType.SPOT_INTERPOLATION:          "Spot Interpolation",
+	RegistrationType.RAMAN_PIXEL_INTERPOLATION:   "Raman Pixel Interpolation",
 	# Alignment strategies
 	AlignmentStrategy.MANUAL:      "Manual",
 	AlignmentStrategy.PRE_ALIGNED: "Pre-Aligned",

@@ -15,6 +15,7 @@ from focus.preprocessing import preprocess_modality
 from focus.preprocessing._utils import StepReporter
 from focus.alignment.alignment import DirectMappingAligner
 from focus.registration.registration import FeatureExtractorRegistration, SpotInterpolationRegistration
+from focus.registration.raman_pixel import RamanPixelInterpolationRegistration
 
 logger = logging.getLogger("focus.orchestrator")
 
@@ -482,6 +483,8 @@ def _run_registration(config: dict, modality_files: dict, aligned_files: dict, s
 		Extracts patch embeddings from the image at anchor spot locations.
 	For SpotInterpolation (spot modalities):
 		Gaussian-weighted interpolation of target features onto anchor spot grid.
+	For RamanPixelInterpolation (raman modality):
+		Gaussian-weighted interpolation of Raman OME-TIFF pixels onto anchor spot grid.
 
 	Returns
 	-------
@@ -536,6 +539,20 @@ def _run_registration(config: dict, modality_files: dict, aligned_files: dict, s
 			# obsm['{mod_name}_spatial'] (reference coords in the non-ref modality's space).
 			# modality_files[mod_name] contains the non-ref modality's preprocessed AnnData
 			# with its own obsm['spatial'] and feature matrix X.
+			registered_files[mod_name] = engine.register_dataset(
+				anchor_files=aligned_files[mod_name],
+				target_files=modality_files[mod_name],
+				anchor_name=ref_name,
+				target_name=mod_name,
+				force_recomputing=(force_overrides or {}).get(mod_name, reg_settings.get("force_recomputing", False)),
+				step_reporter=step_reporter,
+			)
+
+		elif reg_type == RegistrationType.RAMAN_PIXEL_INTERPOLATION:
+			engine = RamanPixelInterpolationRegistration(path=dataset_path)
+			# anchor_files[mod_name]: aligned anchor h5ad with obsm['{mod_name}_spatial']
+			#   (anchor spots in the Raman image's pixel coordinate system).
+			# modality_files[mod_name]: ASHLAR-stitched Raman OME-TIFF files.
 			registered_files[mod_name] = engine.register_dataset(
 				anchor_files=aligned_files[mod_name],
 				target_files=modality_files[mod_name],
