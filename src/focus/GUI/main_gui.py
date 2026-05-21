@@ -485,7 +485,6 @@ def _build_schema() -> dict:
 					"options": SegmentationBackgroundColor.list(),
 					"default": SegmentationBackgroundColor.WHITE,
 				},
-				MicroscopyImageProcessingParams.PYRAMID_LEVELS: {"type": "int", "default": 4},
 				MicroscopyImageProcessingParams.MIN_OBJECT_COVERAGE: {"type": "float", "default": 0.01},
 				MicroscopyImageProcessingParams.FORCE_RECOMPUTING: {"type": "bool", "default": False},
 				MicroscopyImageProcessingParams.GAUSSIAN_BLUR_KERNEL_SIZE: {"type": "int", "default": 251},
