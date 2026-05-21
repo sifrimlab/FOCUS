@@ -646,6 +646,8 @@ def _compile_mudata(
 	shared_spot_size = anchor_adata.uns.get('spot_size', None)
 	n_anchor_obs = anchor_adata.n_obs
 
+	anchor_sample_ids = anchor_adata.obs['sample_id'].astype(str).to_numpy()
+
 	# Build modality dict for MuData
 	mod_dict: dict[str, anndata.AnnData] = {}
 
@@ -657,7 +659,9 @@ def _compile_mudata(
 		del ref_ad.uns['spot_size']
 	mod_dict[ref_name] = ref_ad
 
-	# Add registered non-anchor modalities
+	# Add registered non-anchor modalities. We do NOT overwrite obs_names yet —
+	# obs_name synchronisation happens after the zero-vector filter so the
+	# anchor's filtered slice is what gets propagated.
 	for modality in modalities:
 		mod_name = modality[ModalityParameters.NAME]
 		if mod_name == ref_name:
@@ -681,12 +685,29 @@ def _compile_mudata(
 			)
 			continue
 
+		# Verify row alignment against the anchor by comparing per-row sample_id.
+		# Matching counts alone is not enough: the per-sample concat order in
+		# registration._merge_samples can diverge from preprocessing's order, and
+		# silently mis-pairing spots produces a MuData that mudata cannot read back.
+		if 'sample_id' not in reg_adata.obs.columns:
+			logger.warning(
+				f"Registered modality '{mod_name}' has no obs['sample_id']; cannot verify "
+				"row alignment with anchor. Skipping in MuData."
+			)
+			continue
+		reg_sample_ids = reg_adata.obs['sample_id'].astype(str).to_numpy()
+		if not np.array_equal(reg_sample_ids, anchor_sample_ids):
+			logger.warning(
+				f"Sample-ID sequence mismatch between anchor '{ref_name}' and '{mod_name}'. "
+				"Refusing to compile with misaligned rows; skipping this modality."
+			)
+			continue
+
 		if 'spatial' in reg_adata.obsm:
 			del reg_adata.obsm['spatial']
 		if 'spot_size' in reg_adata.uns:
 			del reg_adata.uns['spot_size']
 
-		reg_adata.obs_names = anchor_adata.obs_names.tolist()
 		mod_dict[mod_name] = reg_adata
 
 	# Filter anchor spots with no coverage in any target modality
@@ -711,6 +732,34 @@ def _compile_mudata(
 	if len(mod_dict) < 2:
 		logger.info("Only one modality available for MuData, skipping compilation.")
 		return None
+
+	# Synchronise obs_names across modalities using the (possibly filtered) anchor.
+	anchor_obs_names = mod_dict[ref_name].obs_names.tolist()
+	for mod_name, adata in mod_dict.items():
+		if mod_name == ref_name:
+			continue
+		adata.obs_names = anchor_obs_names
+
+	# Namespace var_names per modality. MSI uses bare integer strings ("0", "1", ...)
+	# and Raman/microscopy may carry similarly generic names, so cross-modality
+	# var_name collisions are possible. Mudata's `_update_attr` takes a fragile
+	# duplicates/intersection branch in that case and raises a KeyError on read.
+	# Prefixing var_names with the modality name eliminates that risk and keeps
+	# mudata on its simple, lossless code path on both write and read.
+	for mod_name, adata in mod_dict.items():
+		adata.var_names = pd.Index(
+			[f"{mod_name}:{v}" for v in adata.var_names], dtype=object
+		)
+		adata.var_names_make_unique()
+
+	logger.debug(
+		"Compiling MuData: "
+		+ ", ".join(
+			f"{k}: n_obs={v.n_obs} n_vars={v.n_vars} "
+			f"obs_unique={v.obs_names.is_unique} var_unique={v.var_names.is_unique}"
+			for k, v in mod_dict.items()
+		)
+	)
 
 	# Build MuData
 	mdata = mudata.MuData(mod_dict)
