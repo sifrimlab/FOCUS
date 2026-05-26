@@ -1915,91 +1915,12 @@ class MsiDataset(BaseDataset):
 					mass_tolerance=mass_tolerance
 				)
 
-		# STEP 6: Now that the global reference M/Z vectors are computed, process each sample to interpolate the intensities
-		for sample in reporter.tqdm(self.samples, desc="7/9 - Aligning intensities to reference M/Z", unit="sample"):
-			self.interpolated[sample.sample_id] = {MsiIonMode.POSITIVE: None, MsiIonMode.NEGATIVE: None}
-			self.normalized[sample.sample_id] = {MsiIonMode.POSITIVE: None, MsiIonMode.NEGATIVE: None}
-
-			# Load the intensities and M/Z values
-			original_mzs, intensities, _, _ = sample.load_payload(annotation_db=self.lipid_annotation_db,
-																  mass_tolerance=mass_tolerance)
-
-			# All the spots are interpolated but an additional obs mask is stored to separate foreground/background
-			self.foreground_masks[sample.sample_id] = sample.foreground_mask
-
-			# Process each ion mode separately
-			for mode in sample.ion_modes:
-				merged_intensities = np.zeros((len(intensities[mode]), len(self.reference_mz[mode])),
-											  dtype=sample._metadata[mode][MsiMetadata.INTENSITIES_DTYPE])
-
-				# Consider only the datapoints for the current ion mode
-				intensities_mode = intensities[mode]
-				original_mzs_mode = original_mzs[mode]
-				datapoints = len(intensities_mode)
-
-				# Determine chunk size for each worker
-				num_workers = min(utils.available_cpus() or 1, datapoints)
-				chunk_size = (datapoints + num_workers - 1) // num_workers  # ceil division
-
-				# Split data into contiguous chunks: lists of arrays
-				chunks = [
-					(original_mzs_mode[start:end], intensities_mode[start:end])
-					for start, end in
-					[(i * chunk_size, min((i + 1) * chunk_size, datapoints)) for i in range(num_workers)]
-				]
-
-				# Worker function which partially fixes reference_mz and mass_tolerance.
-				# Reference via the class (not self) so joblib does not pickle the entire dataset.
-				worker_func = partial(MsiDataset._interpolate_intensities,
-									  reference_mz=self.reference_mz[mode],
-									  mass_tolerance=mass_tolerance)
-
-				# Joblib parallel execution - auto-manages processes
-				results = Parallel(n_jobs=num_workers,
-								   backend='loky',  # Robust process management
-								   verbose=0)(
-					delayed(worker_func)(orig_chunk, intens_chunk)
-					for orig_chunk, intens_chunk in chunks
-				)
-
-				# Concatenate results in correct order into final array
-				current_idx = 0
-				for chunk_result in results:
-					chunk_len = chunk_result.shape[0]
-					merged_intensities[current_idx:current_idx + chunk_len, :] = chunk_result
-					current_idx += chunk_len
-
-				self.interpolated[sample.sample_id][mode] = merged_intensities
-
-				# Intensity normalization
-				if intensity_normalization == MsiIntensityNormalization.TIC:
-					# Total Ion Count normalization
-					tic = merged_intensities.sum(axis=1, keepdims=True)
-					tic[tic == 0] = 1  # Prevent division by zero
-					merged_intensities = merged_intensities / tic
-				elif intensity_normalization == MsiIntensityNormalization.LOG:
-					# Log-Transform normalization
-					merged_intensities = np.log1p(merged_intensities)
-				elif intensity_normalization == MsiIntensityNormalization.CLR:
-					# Centered Log-Ratio normalization
-					nonzero_vals = merged_intensities[merged_intensities > 0]
-					delta = nonzero_vals.min() / 2.0 if nonzero_vals.size > 0 else 1.0
-					x = merged_intensities.copy()
-					x[x == 0] = delta
-					log_x = np.log(x)
-					merged_intensities = log_x - log_x.mean(axis=1, keepdims=True)
-
-				self.normalized[sample.sample_id][mode] = merged_intensities
-
-			del intensities, original_mzs  # Free memory
-			gc.collect()
-
-		# Pre-build var metadata (shared across all samples)
+		# Pre-build var metadata (shared across all samples); only depends on reference_mz and lipid_annotations,
+		# both available after Stage 6, so this is computed once before the per-sample loop.
 		positive_cols = self.reference_mz[MsiIonMode.POSITIVE].shape[0] if MsiIonMode.POSITIVE in self.reference_mz else 0
 		negative_cols = self.reference_mz[MsiIonMode.NEGATIVE].shape[0] if MsiIonMode.NEGATIVE in self.reference_mz else 0
 		total_cols = positive_cols + negative_cols
 
-		# Reference mz, mode labels, and annotations (shared var metadata)
 		mz_parts, mode_parts, annotation_parts = [], [], []
 		for mode in [MsiIonMode.POSITIVE, MsiIonMode.NEGATIVE]:
 			if mode not in self.reference_mz or self.reference_mz[mode].size == 0:
@@ -2021,53 +1942,117 @@ class MsiDataset(BaseDataset):
 			"lipid_annotation": pd.Categorical(merged_annotations),
 		}, index=pd.Index([str(i) for i in range(total_cols)], dtype=object))
 
+		# STEP 6+7: Process one sample at a time — interpolate, normalize, build AnnData, write, free.
+		# This keeps peak RAM proportional to a single sample rather than all samples simultaneously.
 		spot_sizes: dict[str, list[float]] = {}
 		write_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
 		write_futures = []
 
 		try:
-			for sample in reporter.tqdm(self.samples, desc="8/9 - Generating AnnData objects and saving results",
+			for sample in reporter.tqdm(self.samples,
+										desc="7-8/9 - Aligning intensities and building per-sample AnnData",
 										unit="sample"):
-				ref_mode = MsiIonMode.POSITIVE if MsiIonMode.POSITIVE in sample.ion_modes else MsiIonMode.NEGATIVE
 				sample_id = sample.sample_id
+				ref_mode = MsiIonMode.POSITIVE if MsiIonMode.POSITIVE in sample.ion_modes else MsiIonMode.NEGATIVE
+
+				# Load raw spectra for this sample
+				original_mzs, intensities, _, _ = sample.load_payload(annotation_db=self.lipid_annotation_db,
+																	  mass_tolerance=mass_tolerance)
+				self.foreground_masks[sample_id] = sample.foreground_mask
+
+				# Interpolate and normalize each ion mode; keep local copies only
+				interp_by_mode: dict = {}
+				norm_by_mode: dict = {}
+
+				for mode in sample.ion_modes:
+					merged_intensities = np.zeros((len(intensities[mode]), len(self.reference_mz[mode])),
+												  dtype=sample._metadata[mode][MsiMetadata.INTENSITIES_DTYPE])
+
+					intensities_mode = intensities[mode]
+					original_mzs_mode = original_mzs[mode]
+					datapoints = len(intensities_mode)
+
+					num_workers = min(utils.available_cpus() or 1, datapoints)
+					chunk_size = (datapoints + num_workers - 1) // num_workers  # ceil division
+
+					chunks = [
+						(original_mzs_mode[start:end], intensities_mode[start:end])
+						for start, end in
+						[(i * chunk_size, min((i + 1) * chunk_size, datapoints)) for i in range(num_workers)]
+					]
+
+					# Reference via the class (not self) so joblib does not pickle the entire dataset.
+					worker_func = partial(MsiDataset._interpolate_intensities,
+										  reference_mz=self.reference_mz[mode],
+										  mass_tolerance=mass_tolerance)
+
+					results = Parallel(n_jobs=num_workers,
+									   backend='loky',
+									   verbose=0)(
+						delayed(worker_func)(orig_chunk, intens_chunk)
+						for orig_chunk, intens_chunk in chunks
+					)
+
+					current_idx = 0
+					for chunk_result in results:
+						chunk_len = chunk_result.shape[0]
+						merged_intensities[current_idx:current_idx + chunk_len, :] = chunk_result
+						current_idx += chunk_len
+
+					# Store raw before normalization overwrites the reference
+					interp_by_mode[mode] = merged_intensities
+
+					if intensity_normalization == MsiIntensityNormalization.TIC:
+						tic = merged_intensities.sum(axis=1, keepdims=True)
+						tic[tic == 0] = 1
+						merged_intensities = merged_intensities / tic
+					elif intensity_normalization == MsiIntensityNormalization.LOG:
+						merged_intensities = np.log1p(merged_intensities)
+					elif intensity_normalization == MsiIntensityNormalization.CLR:
+						nonzero_vals = merged_intensities[merged_intensities > 0]
+						delta = nonzero_vals.min() / 2.0 if nonzero_vals.size > 0 else 1.0
+						x = merged_intensities.copy()
+						x[x == 0] = delta
+						log_x = np.log(x)
+						merged_intensities = log_x - log_x.mean(axis=1, keepdims=True)
+
+					norm_by_mode[mode] = merged_intensities
+
+				del intensities, original_mzs
+				gc.collect()
+
+				# Build combined pos+neg matrices for this sample
 				physical_coords = sample._metadata[ref_mode][MsiMetadata.PHYSICAL_COORDINATES].astype(np.float32)
 				raster_coords = sample._metadata[ref_mode][MsiMetadata.RASTER_COORDINATES]
-				rows = self.interpolated[sample_id][ref_mode].shape[0]
-
-				# Spot size from raster_size: [width, height] in micrometers
 				raster_size = sample._metadata[ref_mode][MsiMetadata.RASTER_SIZE]
 				spot_size = np.array([float(raster_size[0]), float(raster_size[1])], dtype=np.float32)
 				spot_sizes[sample_id] = spot_size.tolist()
 
-				# Merge pos/neg intensity matrices into a single (N, M) float32 array
+				rows = interp_by_mode[ref_mode].shape[0]
 				raw_matrix = np.zeros((rows, total_cols), dtype=np.float32)
 				norm_matrix = np.zeros((rows, total_cols), dtype=np.float32)
 
 				if MsiIonMode.POSITIVE in sample.ion_modes and positive_cols > 0:
-					raw_matrix[:, :positive_cols] = self.interpolated[sample_id][MsiIonMode.POSITIVE].astype(np.float32)
-					norm_matrix[:, :positive_cols] = self.normalized[sample_id][MsiIonMode.POSITIVE].astype(np.float32)
+					raw_matrix[:, :positive_cols] = interp_by_mode[MsiIonMode.POSITIVE].astype(np.float32)
+					norm_matrix[:, :positive_cols] = norm_by_mode[MsiIonMode.POSITIVE].astype(np.float32)
 				if MsiIonMode.NEGATIVE in sample.ion_modes and negative_cols > 0:
-					raw_matrix[:, positive_cols:] = self.interpolated[sample_id][MsiIonMode.NEGATIVE].astype(np.float32)
-					norm_matrix[:, positive_cols:] = self.normalized[sample_id][MsiIonMode.NEGATIVE].astype(np.float32)
+					raw_matrix[:, positive_cols:] = interp_by_mode[MsiIonMode.NEGATIVE].astype(np.float32)
+					norm_matrix[:, positive_cols:] = norm_by_mode[MsiIonMode.NEGATIVE].astype(np.float32)
 
-				# Free per-mode arrays now that they're merged
-				del self.interpolated[sample_id], self.normalized[sample_id]
+				del interp_by_mode, norm_by_mode
+				gc.collect()
 
-				# Convert to sparse CSR for memory efficiency
 				X_sparse = sp.csr_matrix(norm_matrix)
 				raw_sparse = sp.csr_matrix(raw_matrix)
 				del raw_matrix, norm_matrix
 
-				# Build obs DataFrame
 				n_obs = rows
 				obs_index = pd.Index([f"{sample_id}_{i}" for i in range(n_obs)], dtype=object)
-
 				obs_df = pd.DataFrame({
 					'sample_id': pd.Categorical([sample_id] * n_obs),
 					'foreground': pd.Categorical(self.foreground_masks[sample_id]),
 				}, index=obs_index)
 
-				# Create AnnData: .X = normalized (sparse), .layers["raw"] = raw interpolated (sparse)
 				adata = ad.AnnData(
 					X=X_sparse,
 					layers={'raw': raw_sparse},
@@ -2080,7 +2065,6 @@ class MsiDataset(BaseDataset):
 					uns={'spot_size': spot_size.tolist()}
 				)
 
-				# Per-sample Leiden clustering on the normalized data
 				n_pcs = min(50, adata.n_obs - 1, adata.n_vars - 1)
 				if adata.n_obs >= 2 and n_pcs >= 2:
 					sc.pp.pca(adata, n_comps=n_pcs)
@@ -2090,17 +2074,13 @@ class MsiDataset(BaseDataset):
 					adata.obs['leiden'] = '0'
 				adata.obs['leiden'] = pd.Categorical(adata.obs['leiden'])
 
-				# Save with lzf compression (faster than gzip for intermediate files)
 				output_file = MODALITY_PREPROCESSING(self.dataset_source_path, sample.sample_id, sample.modality_name, 'h5ad')
-				# Wait for any previous write to finish before reusing gc
 				for f in write_futures:
 					f.result()
 				write_futures.clear()
-				# Write in background thread so next sample's computation overlaps with I/O
 				write_futures.append(write_executor.submit(utils.write_h5ad_compat, adata, output_file, compression=self._H5AD_INTERMEDIATE_COMPRESSION))
 				processed_samples[sample.sample_id] = output_file
 
-			# Wait for the last write to complete
 			for f in write_futures:
 				f.result()
 		finally:
