@@ -1821,7 +1821,7 @@ class MsiDataset(BaseDataset):
 		reference_mz_samples: dict[MsiIonMode, list[np.float32]] = {MsiIonMode.POSITIVE: [], MsiIonMode.NEGATIVE: []}
 
 		# STEP 1: Initialize each sample to load the metadata
-		for sample in reporter.tqdm(self.samples, desc="1/9 - Loading MSI data", unit="sample"):
+		for sample in reporter.tqdm(self.samples, desc="1/8 - Loading MSI data", unit="sample"):
 			sample._step_reporter = reporter
 			sample.initialize_sample()
 			sample._sample_type = sample_type
@@ -1832,7 +1832,7 @@ class MsiDataset(BaseDataset):
 		if recalibration_reference is None:
 			mz_vectors_all_samples = []
 
-			for sample in reporter.tqdm(self.samples, desc="2/9 - Selecting high-confidence tissue spots", unit="sample"):
+			for sample in reporter.tqdm(self.samples, desc="2/8 - Selecting high-confidence tissue spots", unit="sample"):
 				raw_mz, _, filtered_mz, _ = sample.load_payload(annotation_db=self.lipid_annotation_db,
 																mass_tolerance=mass_tolerance,
 																detect_background=detect_background)
@@ -1848,7 +1848,7 @@ class MsiDataset(BaseDataset):
 
 			# Compute the recalibration reference from the dataset
 			reporter.step(
-				"3/9 - Selecting recalibration reference M/Z values from the dataset and filtering background datapoints")
+				"3/8 - Selecting recalibration reference M/Z values from the dataset and filtering background datapoints")
 			recalibration_reference = self._find_calibration_reference(
 				mz_vectors=mz_vectors_all_samples,
 				mass_tolerance=mass_tolerance,
@@ -1863,7 +1863,7 @@ class MsiDataset(BaseDataset):
 												 detect_background=detect_background)
 				gc.collect()
 
-			reporter.step("3/9 - Using provided recalibration reference M/Z values.")
+			reporter.step("3/8 - Using provided recalibration reference M/Z values.")
 
 		# Store the recalibration reference in each sample
 		for sample in self.samples:
@@ -1871,7 +1871,7 @@ class MsiDataset(BaseDataset):
 			sample.min_intensity_threshold = min_intensity_threshold
 
 		# STEP 3: For each ion mode in each sample, compute the reference M/Z vector
-		for sample in reporter.tqdm(self.samples, desc="4/9 - Computing reference M/Z backbone for each sample",
+		for sample in reporter.tqdm(self.samples, desc="4/8 - Computing reference M/Z backbone for each sample",
 									unit="sample"):
 			raw_mz, _, filtered_mz, _ = sample.load_payload(annotation_db=self.lipid_annotation_db,
 															mass_tolerance=mass_tolerance)
@@ -1887,7 +1887,7 @@ class MsiDataset(BaseDataset):
 			gc.collect()
 
 		# STEP 4: Compute the global reference M/Z vector for each ion mode. No frequency thresholding is applied here
-		reporter.step("5/9 - Computing global reference M/Z backbone for the dataset")
+		reporter.step("5/8 - Computing global reference M/Z backbone for the dataset")
 		for mode in reference_mz_samples.keys():
 			if len(reference_mz_samples[mode]) > 0:
 				self.reference_mz[mode] = self._compute_reference_mz(
@@ -1905,7 +1905,7 @@ class MsiDataset(BaseDataset):
 			f"Selected {len(self.reference_mz.get(MsiIonMode.POSITIVE, []))} M/Z values for POSITIVE mode and {len(self.reference_mz.get(MsiIonMode.NEGATIVE, []))} M/Z values for NEGATIVE mode as reference backbone.")
 
 		# STEP 5: For each ion mode, annotate the reference M/Z vector if a lipid annotation database is provided
-		reporter.step("6/9 - Annotating features (backbone M/Z values) for each ion mode")
+		reporter.step("6/8 - Annotating features (backbone M/Z values) for each ion mode")
 		self.lipid_annotations: dict[MsiIonMode, np.ndarray] = {}
 		if self.lipid_annotation_db is not None:
 			for mode in self.reference_mz.keys():
@@ -1950,7 +1950,7 @@ class MsiDataset(BaseDataset):
 
 		try:
 			for sample in reporter.tqdm(self.samples,
-										desc="7-8/9 - Aligning intensities and building per-sample AnnData",
+										desc="7/8 - Interpolating intensities and saving per-sample AnnData",
 										unit="sample"):
 				sample_id = sample.sample_id
 				ref_mode = MsiIonMode.POSITIVE if MsiIonMode.POSITIVE in sample.ion_modes else MsiIonMode.NEGATIVE
@@ -2088,7 +2088,7 @@ class MsiDataset(BaseDataset):
 		gc.collect()
 
 		# STEP 9: Merge all samples into a single dataset (memory-efficient on-disk concat)
-		reporter.step("9/9 - Merging all samples into a single dataset")
+		reporter.step("8/8 - Merging all samples into a single dataset")
 		merged_file = MODALITY_PREPROCESSING_MERGED(self.dataset_source_path, self.samples[0].modality_name, 'h5ad')
 
 		if processed_samples:
