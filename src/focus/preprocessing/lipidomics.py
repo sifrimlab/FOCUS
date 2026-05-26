@@ -1531,7 +1531,8 @@ class MsiDataset(BaseDataset):
 		n_ref = len(reference_mz)
 
 		if n_datapoints == 0 or n_ref == 0:
-			return np.zeros((n_datapoints, n_ref), dtype=original_intensities_list[0].dtype)
+			fallback_dtype = original_intensities_list[0].dtype if original_intensities_list else np.float32
+			return np.zeros((n_datapoints, n_ref), dtype=fallback_dtype)
 
 		out_dtype = original_intensities_list[0].dtype
 		result_matrix = np.zeros((n_datapoints, n_ref), dtype=out_dtype)
