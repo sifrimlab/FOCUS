@@ -1720,6 +1720,24 @@ class MsiDataset(BaseDataset):
 
 		return recalibration_reference
 
+	@staticmethod
+	def _read_cached_var_and_spotsize(path: str) -> tuple[pd.DataFrame, list[float]] | None:
+		'''
+		Read .var (mz, mz_mode, lipid_annotation) and .uns["spot_size"] from a per-sample h5ad
+		without materializing X. Returns None if the file is missing or unreadable.
+		'''
+		try:
+			adata = ad.read_h5ad(path, backed='r')
+			try:
+				var_subset = adata.var[['mz', 'mz_mode', 'lipid_annotation']].copy()
+				spot_size = list(adata.uns['spot_size'])
+			finally:
+				if adata.file is not None:
+					adata.file.close()
+			return var_subset, spot_size
+		except Exception:
+			return None
+
 	def process_dataset(self,
 						mass_tolerance: int = 10,
 						frequency_threshold: float = 0.01,
@@ -1815,13 +1833,84 @@ class MsiDataset(BaseDataset):
 				print("All samples have already been processed and merged dataset exists. Using cached results.")
 				return processed_samples
 
+		# STEP 0b: Partial-resume cache discovery
+		# Walk self.samples in order looking for already-written per-sample h5ad files. Take the first
+		# valid one as ground truth: its .var (mz/mz_mode/lipid_annotation) IS the global reference
+		# from a previous (possibly partial) run. Samples whose file is missing OR whose var disagrees
+		# with the ground truth (and all subsequent samples) are queued for reprocessing. We then
+		# skip steps 4-6 entirely (we have the cached global reference) and run steps 1-3, 7 only
+		# on the queued subset. Step 8 always runs to rebuild the merged dataset.
+		samples_to_process: list = list(self.samples)
+		spot_sizes: dict[str, list[float]] = {}
+		processed_samples = {}
+		has_partial_cache = False
+
+		if not force_recomputing:
+			ground_truth_var: pd.DataFrame | None = None
+			gt_mz = gt_mode = gt_ann = None
+			invalid_from_index: int | None = None
+
+			for i, sample in enumerate(self.samples):
+				sample_path = MODALITY_PREPROCESSING(self.dataset_source_path, sample.sample_id,
+													 sample.modality_name, 'h5ad')
+				result = MsiDataset._read_cached_var_and_spotsize(sample_path)
+				if result is None:
+					invalid_from_index = i
+					break
+
+				var_subset, spot_size = result
+				this_mz = var_subset['mz'].to_numpy(dtype=np.float32)
+				this_mode = var_subset['mz_mode'].astype(str).to_numpy()
+				this_ann = var_subset['lipid_annotation'].astype(str).to_numpy()
+
+				if ground_truth_var is None:
+					ground_truth_var = var_subset
+					gt_mz, gt_mode, gt_ann = this_mz, this_mode, this_ann
+				else:
+					if (not np.array_equal(this_mz, gt_mz)
+							or not np.array_equal(this_mode, gt_mode)
+							or not np.array_equal(this_ann, gt_ann)):
+						invalid_from_index = i
+						break
+
+				processed_samples[sample.sample_id] = sample_path
+				spot_sizes[sample.sample_id] = spot_size
+
+			has_partial_cache = ground_truth_var is not None
+
+			if has_partial_cache:
+				if invalid_from_index is None:
+					samples_to_process = []
+				else:
+					samples_to_process = list(self.samples[invalid_from_index:])
+					for s in samples_to_process:
+						processed_samples.pop(s.sample_id, None)
+						spot_sizes.pop(s.sample_id, None)
+
+				# Reconstruct the global reference m/z and lipid annotations from the cached var
+				mode_str_array = ground_truth_var['mz_mode'].astype(str).to_numpy()
+				self.reference_mz = {}
+				self.lipid_annotations = {}
+				for mode_enum in [MsiIonMode.POSITIVE, MsiIonMode.NEGATIVE]:
+					mask = mode_str_array == str(mode_enum)
+					if mask.any():
+						self.reference_mz[mode_enum] = ground_truth_var.loc[mask, 'mz'].to_numpy(dtype=np.float32)
+						self.lipid_annotations[mode_enum] = ground_truth_var.loc[mask, 'lipid_annotation'].astype(str).to_numpy()
+					else:
+						self.reference_mz[mode_enum] = np.array([], dtype=np.float32)
+						self.lipid_annotations[mode_enum] = np.array([], dtype=object)
+
+				print(f"Partial-resume: reusing {len(processed_samples)} cached per-sample file(s); "
+					  f"reprocessing {len(samples_to_process)} sample(s).")
+
+		iter_samples = samples_to_process
+
 		reporter = step_reporter or StepReporter()
 		print("Processing Lipidomic Dataset")
-		processed_samples = {}
 		reference_mz_samples: dict[MsiIonMode, list[np.float32]] = {MsiIonMode.POSITIVE: [], MsiIonMode.NEGATIVE: []}
 
 		# STEP 1: Initialize each sample to load the metadata
-		for sample in reporter.tqdm(self.samples, desc="1/8 - Loading MSI data", unit="sample"):
+		for sample in reporter.tqdm(iter_samples, desc="1/8 - Loading MSI data", unit="sample"):
 			sample._step_reporter = reporter
 			sample.initialize_sample()
 			sample._sample_type = sample_type
@@ -1832,7 +1921,7 @@ class MsiDataset(BaseDataset):
 		if recalibration_reference is None:
 			mz_vectors_all_samples = []
 
-			for sample in reporter.tqdm(self.samples, desc="2/8 - Selecting high-confidence tissue spots", unit="sample"):
+			for sample in reporter.tqdm(iter_samples, desc="2/8 - Selecting high-confidence tissue spots", unit="sample"):
 				raw_mz, _, filtered_mz, _ = sample.load_payload(annotation_db=self.lipid_annotation_db,
 																mass_tolerance=mass_tolerance,
 																detect_background=detect_background)
@@ -1858,65 +1947,68 @@ class MsiDataset(BaseDataset):
 			gc.collect()
 		else:
 			# Dummy call to still filter the datapoints in each sample
-			for sample in reporter.tqdm(self.samples, desc="2/8 - Selecting high-confidence tissue spots", unit="sample"):
+			for sample in reporter.tqdm(iter_samples, desc="2/8 - Selecting high-confidence tissue spots", unit="sample"):
 				_, _, _, _ = sample.load_payload(annotation_db=self.lipid_annotation_db, mass_tolerance=mass_tolerance,
 												 detect_background=detect_background)
 				gc.collect()
 
 			reporter.step("3/8 - Using provided recalibration reference M/Z values.")
 
-		# Store the recalibration reference in each sample
-		for sample in self.samples:
+		# Store the recalibration reference in each sample to reprocess
+		for sample in iter_samples:
 			sample.recalibration_reference = recalibration_reference
 			sample.min_intensity_threshold = min_intensity_threshold
 
-		# STEP 3: For each ion mode in each sample, compute the reference M/Z vector
-		for sample in reporter.tqdm(self.samples, desc="4/8 - Computing reference M/Z backbone for each sample",
-									unit="sample"):
-			raw_mz, _, filtered_mz, _ = sample.load_payload(annotation_db=self.lipid_annotation_db,
-															mass_tolerance=mass_tolerance)
-			for mode in sample.ion_modes:
-				reference_mz_samples[mode].append(
-					self._compute_reference_mz(
-						filtered_mz[mode] if filtered_mz != {} else raw_mz[mode],
-						mass_tolerance=mass_tolerance,
-						frequency_threshold=frequency_threshold
+		if not has_partial_cache:
+			# STEP 3: For each ion mode in each sample, compute the reference M/Z vector
+			for sample in reporter.tqdm(iter_samples, desc="4/8 - Computing reference M/Z backbone for each sample",
+										unit="sample"):
+				raw_mz, _, filtered_mz, _ = sample.load_payload(annotation_db=self.lipid_annotation_db,
+																mass_tolerance=mass_tolerance)
+				for mode in sample.ion_modes:
+					reference_mz_samples[mode].append(
+						self._compute_reference_mz(
+							filtered_mz[mode] if filtered_mz != {} else raw_mz[mode],
+							mass_tolerance=mass_tolerance,
+							frequency_threshold=frequency_threshold
+						)
 					)
-				)
-			del raw_mz, filtered_mz  # Free memory
+				del raw_mz, filtered_mz  # Free memory
+				gc.collect()
+
+			# STEP 4: Compute the global reference M/Z vector for each ion mode. No frequency thresholding is applied here
+			reporter.step("5/8 - Computing global reference M/Z backbone for the dataset")
+			for mode in reference_mz_samples.keys():
+				if len(reference_mz_samples[mode]) > 0:
+					self.reference_mz[mode] = self._compute_reference_mz(
+						reference_mz_samples[mode],
+						mass_tolerance=mass_tolerance,
+						frequency_threshold=0.0
+					)
+				else:
+					self.reference_mz[mode] = np.array([], dtype=np.float32)
+
+			del reference_mz_samples  # Free memory
 			gc.collect()
 
-		# STEP 4: Compute the global reference M/Z vector for each ion mode. No frequency thresholding is applied here
-		reporter.step("5/8 - Computing global reference M/Z backbone for the dataset")
-		for mode in reference_mz_samples.keys():
-			if len(reference_mz_samples[mode]) > 0:
-				self.reference_mz[mode] = self._compute_reference_mz(
-					reference_mz_samples[mode],
-					mass_tolerance=mass_tolerance,
-					frequency_threshold=0.0
-				)
-			else:
-				self.reference_mz[mode] = np.array([], dtype=np.float32)
+			print(
+				f"Selected {len(self.reference_mz.get(MsiIonMode.POSITIVE, []))} M/Z values for POSITIVE mode and {len(self.reference_mz.get(MsiIonMode.NEGATIVE, []))} M/Z values for NEGATIVE mode as reference backbone.")
 
-		del reference_mz_samples  # Free memory
-		gc.collect()
+			# STEP 5: For each ion mode, annotate the reference M/Z vector if a lipid annotation database is provided
+			reporter.step("6/8 - Annotating features (backbone M/Z values) for each ion mode")
+			self.lipid_annotations: dict[MsiIonMode, np.ndarray] = {}
+			if self.lipid_annotation_db is not None:
+				for mode in self.reference_mz.keys():
+					self.lipid_annotations[mode] = self._annotate_reference_mz(
+						self.reference_mz[mode],
+						mode,
+						mass_tolerance=mass_tolerance
+					)
+		else:
+			reporter.step("4-6/8 - Reusing cached reference M/Z backbone and annotations from per-sample files")
 
-		print(
-			f"Selected {len(self.reference_mz.get(MsiIonMode.POSITIVE, []))} M/Z values for POSITIVE mode and {len(self.reference_mz.get(MsiIonMode.NEGATIVE, []))} M/Z values for NEGATIVE mode as reference backbone.")
-
-		# STEP 5: For each ion mode, annotate the reference M/Z vector if a lipid annotation database is provided
-		reporter.step("6/8 - Annotating features (backbone M/Z values) for each ion mode")
-		self.lipid_annotations: dict[MsiIonMode, np.ndarray] = {}
-		if self.lipid_annotation_db is not None:
-			for mode in self.reference_mz.keys():
-				self.lipid_annotations[mode] = self._annotate_reference_mz(
-					self.reference_mz[mode],
-					mode,
-					mass_tolerance=mass_tolerance
-				)
-
-		# Pre-build var metadata (shared across all samples); only depends on reference_mz and lipid_annotations,
-		# both available after Stage 6, so this is computed once before the per-sample loop.
+		# Build var metadata (shared across all samples); reads self.reference_mz and self.lipid_annotations,
+		# which are either freshly computed above or pulled from the partial-resume cache.
 		positive_cols = self.reference_mz[MsiIonMode.POSITIVE].shape[0] if MsiIonMode.POSITIVE in self.reference_mz else 0
 		negative_cols = self.reference_mz[MsiIonMode.NEGATIVE].shape[0] if MsiIonMode.NEGATIVE in self.reference_mz else 0
 		total_cols = positive_cols + negative_cols
@@ -1932,7 +2024,7 @@ class MsiDataset(BaseDataset):
 			else:
 				annotation_parts.append(np.array(['Unannotated'] * self.reference_mz[mode].shape[0]))
 
-		merged_reference_mz = np.concatenate(mz_parts).astype(np.float32)
+		merged_reference_mz = np.concatenate(mz_parts).astype(np.float32) if mz_parts else np.array([], dtype=np.float32)
 		merged_mode_labels = mode_parts
 		merged_annotations = np.concatenate(annotation_parts) if annotation_parts else np.array(['Unannotated'] * total_cols)
 
@@ -1944,12 +2036,13 @@ class MsiDataset(BaseDataset):
 
 		# STEP 6+7: Process one sample at a time — interpolate, normalize, build AnnData, write, free.
 		# This keeps peak RAM proportional to a single sample rather than all samples simultaneously.
-		spot_sizes: dict[str, list[float]] = {}
+		# spot_sizes was initialized in the partial-resume block above and may already contain entries
+		# from cached samples; this loop only appends entries for samples in iter_samples.
 		write_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
 		write_futures = []
 
 		try:
-			for sample in reporter.tqdm(self.samples,
+			for sample in reporter.tqdm(iter_samples,
 										desc="7/8 - Interpolating intensities and saving per-sample AnnData",
 										unit="sample"):
 				sample_id = sample.sample_id
