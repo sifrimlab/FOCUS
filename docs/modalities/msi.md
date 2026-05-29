@@ -72,28 +72,34 @@ All other directories at `<dataset_path>/` are treated as sample directories, wi
 
 ### Format
 
-The lipid annotation database should be a JSON file with the following structure:
+The lipid annotation database is a **tabular** file — CSV or JSON — with one row per ionized lipid species. It must contain the following three columns:
 
-```json
-{
-  "pos": {
-    "Phosphatidylcholine(32:0)": 734.569,
-    "Phosphatidylcholine(34:1)": 760.584,
-    "Sphingomyelin(d18:1/16:0)": 703.598,
-    ...
-  },
-  "neg": {
-    "Phosphatidylethanolamine(36:2)": 764.536,
-    "Phosphatidylserine(38:4)": 834.525,
-    "Cardiolipin(72:8)": 1445.987,
-    ...
-  }
-}
+| Column | Type | Description |
+|--------|------|-------------|
+| `db_name` | string | Lipid name or identifier |
+| `ionized_mass` | float | Theoretical ionized (m/z) mass of the species |
+| `ion_mode` | string | Ion mode of the species: `pos` or `neg` |
+
+CSV example:
+
+```csv
+db_name,ionized_mass,ion_mode
+Phosphatidylcholine(32:0),734.569,pos
+Phosphatidylcholine(34:1),760.584,pos
+Sphingomyelin(d18:1/16:0),703.598,pos
+Phosphatidylethanolamine(36:2),764.536,neg
+Phosphatidylserine(38:4),834.525,neg
 ```
 
-Each ion mode (`pos` or `neg`) is a dictionary where:
-- **Keys** are lipid names or identifiers (string)
-- **Values** are theoretical m/z values (float)
+JSON equivalent (a list of records, or any orientation `pandas.read_json` accepts):
+
+```json
+[
+  {"db_name": "Phosphatidylcholine(32:0)", "ionized_mass": 734.569, "ion_mode": "pos"},
+  {"db_name": "Phosphatidylcholine(34:1)", "ionized_mass": 760.584, "ion_mode": "pos"},
+  {"db_name": "Phosphatidylethanolamine(36:2)", "ionized_mass": 764.536, "ion_mode": "neg"}
+]
+```
 
 ### Location
 
@@ -149,9 +155,11 @@ If the database is omitted or set to `None`, FOCUS will process the data without
 
 7. **Tissue / background detection** — when `detect_background=True`, three spectral complexity features are computed per spot: Shannon entropy, peak count, and log(TIC). An optional 4th feature (annotation DB hit ratio) is added when a lipid database is provided. For `sample_type="tissue"`, a 2-component Gaussian Mixture Model is fit; BIC determines whether the distribution is unimodal (all spots kept) or bimodal (posterior ≥ 0.5 classifies tissue). Morphological hole-filling and binary opening clean up the spatial mask. For `sample_type="microgrid"`, Otsu thresholding with a 25th-percentile floor is used and spatial cleanup is disabled.
 
-8. **Intensity normalisation** — supported methods are TIC (divide each spectrum by its total ion current), log (log-transform), or none. Applied after background detection.
+8. **Intensity normalisation** — supported methods are `tic` (divide each spectrum by its total ion current), `log` (log(1 + x) transform), `clr` (sparsity-preserving centered log-ratio — log-centers each spectrum over its nonzero entries only, leaving structural zeros at 0), or `none`. Applied after background detection. The unnormalised interpolated intensities are preserved in `.layers['raw']`.
 
-9. **Format as AnnData** — the interpolated matrix, spatial coordinates, and metadata are assembled into an AnnData object and saved as a gzip-compressed `.h5ad` file. Ion mode is encoded in `.var` and a per-mode merged dataset is written.
+9. **Per-sample Leiden clustering** — PCA (up to 50 components) → neighbor graph → Leiden (`resolution=0.5`, `flavor="igraph"`, `n_iterations=2`) is computed on the normalised matrix and stored in `.obs['leiden']`. The PCA embedding and neighbor graph are then discarded (only `.obs['leiden']` is kept) to minimise file size.
+
+10. **Format as AnnData** — the interpolated matrix, spatial coordinates, and metadata are assembled into an AnnData object and saved as a gzip-compressed `.h5ad` file. Ion mode is encoded in `.var`, and all samples are concatenated into a single merged dataset (inner join on m/z features, gzip-compressed).
 
 ---
 
@@ -161,16 +169,16 @@ If the database is omitted or set to `None`, FOCUS will process the data without
 |------|------|---------|-------------|----------------|
 | `mass_tolerance` | `int` | `10` | Mass tolerance in ppm for m/z clustering and interpolation | Positive integer |
 | `frequency_threshold` | `float` | `0.01` | Minimum relative cluster frequency to retain an m/z in the consensus grid | `0.0` – `1.0` |
-| `intensity_normalization` | `str` | `"tic"` | Intensity normalisation method | `"tic"`, `"log"`, `"none"` |
+| `intensity_normalization` | `str` | `"none"` | Intensity normalisation method | `"none"`, `"tic"`, `"log"`, `"clr"` |
 | `min_intensity_threshold` | `float` | `10000.0` | Minimum peak intensity considered valid during m/z recalibration | Non-negative float |
-| `detect_background` | `bool` | `True` | Detect and exclude background spots from the output | `True`, `False` |
+| `detect_background` | `bool` | `False` | Detect and flag background spots in the output (`obs["foreground"]`); all spots are still written | `True`, `False` |
 | `sample_type` | `str` | `"tissue"` | Tissue architecture type; controls background detection strategy | `"tissue"`, `"microgrid"` |
 | `recalibration_reference` | `dict` or `None` | `None` | Pre-computed per-ion-mode reference m/z arrays; computed from the dataset when `None` | `None` or `{MsiIonMode: np.ndarray}` |
 | `lipid_annotation_db` | `str` or `None` | `None` | Path to a CSV or JSON lipid annotation database (columns: `db_name`, `ionized_mass`, `ion_mode`) | File path or `None` |
 | `force_recomputing` | `bool` | `False` | Reprocess even if cached output files already exist | `True`, `False` |
 
-!!! note "detect_background default"
-    In `process_dataset`, `detect_background` defaults to `True`. The value listed above reflects the function signature. Set to `False` if all spots are known to be tissue (e.g. homogeneous cell cultures) or to disable the GMM/Otsu step for speed.
+!!! note "Config defaults vs. direct API calls"
+    The defaults above are the values applied when running through the configuration file (the pipeline's settings extractor). When calling `MsiDataset.process_dataset()` directly in Python, two signature defaults differ: `intensity_normalization` defaults to `"tic"` and `detect_background` defaults to `True`. Enable `detect_background` when you want a tissue/background flag; disable it (the config default) if all spots are known to be tissue or to skip the GMM/Otsu step for speed.
 
 ---
 
@@ -197,15 +205,17 @@ Path: `<sample_id>/preprocessing/<modality_name>/<modality_name>_<sample_id>_pro
 
 | Slot | Content |
 |------|---------|
-| `.X` | Interpolated intensity matrix `(N_spots, N_mz)`, sparse or dense `float32`/`float64` |
+| `.X` | Normalised interpolated intensity matrix `(N_spots, N_mz)`, sparse CSR `float32` |
+| `.layers['raw']` | Interpolated intensities before normalisation, sparse CSR `float32` |
 | `.var['mz']` | Consensus m/z values (float32) |
 | `.var['mz_mode']` | Ion mode for each m/z (`"pos"` or `"neg"`) |
 | `.var['lipid_annotation']` | Lipid annotation string (`;`-separated hits, or `"Unannotated"`) |
 | `.obsm['spatial']` | Physical spot coordinates in µm, shape `(N_spots, 2)`, `float32` |
-| `.obsm['raster_coordinates']` | Raster pixel bounding boxes, shape `(N_spots, 2, 2)`, `int32` |
+| `.obsm['raster_coordinates']` | Raster cell bounding-box corners in µm, shape `(N_spots, 2, 2)` as `[[x1, y1], [x2, y2]]` |
 | `.obs['sample_id']` | Sample identifier |
-| `.obs['foreground']` | Boolean mask identifying tissue vs. background spots |
-| `.uns['spot_size']` | Raster pixel size `[x_µm, y_µm]`. **Automatically read from `.imzML` metadata.** If metadata is unavailable, defaults to `[1.0, 1.0]` µm. |
+| `.obs['foreground']` | Boolean mask identifying tissue (`True`) vs. background (`False`) spots (present when `detect_background` is enabled) |
+| `.obs['leiden']` | Per-sample Leiden cluster labels |
+| `.uns['spot_size']` | Raster pixel size `[x_µm, y_µm]`. **Automatically read from `.imzML` metadata.** If metadata is unavailable, defaults to `[1.0, 1.0]` µm. In dual ion mode the size is taken from the positive mode (both modes are expected to share the same raster size). In the merged file this becomes a dict keyed by `sample_id`. |
 
 ### Merged dataset
 

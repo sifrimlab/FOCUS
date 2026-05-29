@@ -77,7 +77,6 @@ The example below covers all three supported modality types and uses every avail
         "remove_background": true,
         "crop_to_tissue": true,
         "gamma": 0.45,
-        "pyramid_levels": 4,
         "force_recomputing": false
       },
       "registration_settings": {
@@ -228,9 +227,9 @@ Additional settings for the chosen registration method. May be an empty object w
     | Parameter | Type | Description |
     |-----------|------|-------------|
     | `mass_tolerance` | int | m/z clustering tolerance in ppm. |
-    | `intensity_normalization` | string | Normalization method: `"tic"`, `"log"`, or `"none"`. |
+    | `intensity_normalization` | string | Normalization method: `"none"` (default), `"tic"`, `"log"`, or `"clr"`. |
     | `min_intensity_threshold` | int or null | Pixels with total ion current below this value are masked. |
-    | `detect_background` | bool | Automatically detect and remove off-tissue background pixels. |
+    | `detect_background` | bool | Detect and flag off-tissue background spots in `obs["foreground"]` (all spots are still written). Default `false`. |
     | `sample_type` | string | Sample type hint for background detection (e.g., `"tissue"`). |
     | `force_recomputing` | bool | Reprocess even if output already exists. |
 
@@ -242,7 +241,6 @@ Additional settings for the chosen registration method. May be an empty object w
     | `remove_background` | bool | Detect and mask off-tissue background regions. |
     | `crop_to_tissue` | bool | Crop the output image tightly around the tissue. |
     | `gamma` | float | Gamma value for power-law intensity correction. Default: `0.45`. |
-    | `pyramid_levels` | int | Number of resolution levels in the output OME-TIFF pyramid. |
     | `force_recomputing` | bool | Reprocess even if output already exists. |
 
 === "Raman Spectroscopy Imaging (`raman`)"

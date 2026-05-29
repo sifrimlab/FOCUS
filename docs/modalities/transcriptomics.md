@@ -75,7 +75,7 @@ dataset_root/
 
 6. **Log1p transform** — when `log1p_transform=True`, `scanpy.pp.log1p` is applied after normalisation.
 
-7. **Leiden clustering** — PCA is computed (up to 50 components, limited by `min(n_obs-1, n_vars-1)`), followed by a kNN neighbourhood graph and Leiden community detection (resolution 0.5). Cluster labels are stored in `.obs['leiden']` as a categorical. Samples with fewer than two spots receive a single cluster label `'0'`. Per-sample Leiden is computed independently to avoid batch effects in visualisation.
+7. **Leiden clustering** — PCA is computed (up to 50 components, limited by `min(n_obs-1, n_vars-1)`), followed by a kNN neighbourhood graph and Leiden community detection (`resolution=0.5`, `flavor="igraph"`, `n_iterations=2`, `directed=False`). Cluster labels are stored in `.obs['leiden']` as a categorical. Samples with fewer than two spots receive a single cluster label `'0'`. Per-sample Leiden is computed independently to avoid batch effects in visualisation.
 
 ---
 
@@ -111,7 +111,7 @@ dataset_root/
 | `force_recomputing` | `bool` | `False` | Reprocess even if cached output files already exist |
 
 !!! note "Defaults for normalisation"
-    `total_counts_normalize` and `log1p_transform` default to `False` in the FOCUS configuration extractor (`_extract_st_settings`). Enable both for standard scanpy-style normalisation before dimensionality reduction.
+    The defaults above (`False`/`False`) are the values applied when running through the configuration file (the `_extract_st_settings` settings extractor). When calling `SpatialTranscriptomic.preprocess_data()` / `SpatialTranscriptomicDataset.process_dataset()` directly in Python, both `total_counts_normalize` and `log1p_transform` default to `True`. Enable both for standard scanpy-style normalisation before dimensionality reduction.
 
 ---
 

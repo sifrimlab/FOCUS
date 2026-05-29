@@ -45,7 +45,6 @@ results = preprocess_modality(
     preprocessing_settings={
         "color_enhancement": True,
         "gamma": 0.45,
-        "pyramid_levels": 4,
         "remove_background": True,
         "crop_to_tissue": True,
         "force_recomputing": False,
@@ -113,7 +112,6 @@ def process_image(
     remove_background: bool = True,
     crop_to_tissue: bool = True,
     background_color: SegmentationBackgroundColor = SegmentationBackgroundColor.WHITE,
-    pyramid_levels: int = 4,
     min_object_coverage: float = 0.01,
     force_recomputing: bool = False,
     gaussian_blur_kernel_size: int = 251,
@@ -134,7 +132,6 @@ Pipeline: load → gamma correction + contrast stretching → background removal
 | `remove_background` | `bool` | `True` | Remove background using Otsu thresholding on a blurred grayscale image. |
 | `crop_to_tissue` | `bool` | `True` | Crop the image to the tissue bounding box. |
 | `background_color` | `SegmentationBackgroundColor` | `WHITE` | Fill color for background regions (`"white"` or `"black"`). |
-| `pyramid_levels` | `int` | `4` | Number of resolution levels in the output OME-TIFF. |
 | `min_object_coverage` | `float` | `0.01` | Minimum tissue area as fraction of total image area (0–1). |
 | `force_recomputing` | `bool` | `False` | Re-run even if output already exists. |
 | `gaussian_blur_kernel_size` | `int` | `251` | Kernel size for Gaussian blur used in background detection. Must be odd. |
@@ -143,6 +140,8 @@ Pipeline: load → gamma correction + contrast stretching → background removal
 | `crop_margin` | `int` | `250` | Pixel margin around the tissue bounding box. |
 | `gamma` | `float` | `0.45` | Gamma value for correction (< 1 brightens, > 1 darkens). |
 | `contrast_saturation` | `float` | `0.35` | Percentage of pixels to saturate during contrast stretching. |
+
+The number of OME-TIFF pyramid levels is not a parameter — it is computed automatically from the image dimensions (smallest level kept within 3,000 × 3,000 px).
 
 Returns `str` — path to the output OME-TIFF.
 
@@ -169,7 +168,6 @@ class MicroscopyImageDataset(BaseDataset):
         remove_background: bool = True,
         crop_to_tissue: bool = True,
         background_color: SegmentationBackgroundColor = SegmentationBackgroundColor.WHITE,
-        pyramid_levels: int = 4,
         min_object_coverage: float = 0.01,
         force_recomputing: bool = False,
         gaussian_blur_kernel_size: int = 251,
@@ -209,7 +207,6 @@ dataset = MicroscopyImageDataset(
 results = dataset.process_dataset(
     color_enhancement=True,
     gamma=0.45,
-    pyramid_levels=4,
     remove_background=True,
     crop_to_tissue=True,
 )
@@ -275,7 +272,7 @@ class MsiDataset(BaseDataset):
         recalibration_reference: dict | None = None,
         min_intensity_threshold: float = 10000.0,
         detect_background: bool = True,
-        sample_type: str = "tissue",
+        sample_type: str = MsiSampleType.TISSUE,  # "tissue"
         force_recomputing: bool = False,
         step_reporter=None,
     ) -> dict[str, str]:
@@ -287,7 +284,7 @@ class MsiDataset(BaseDataset):
 | `lipid_annotation_db` | `str` or `None` | `None` | Path to a CSV or JSON lipid annotation database. Required columns: `db_name`, `ionized_mass`, `ion_mode`. |
 | `mass_tolerance` | `int` | `10` | Adaptive mass tolerance in ppm for m/z consensus clustering. |
 | `frequency_threshold` | `float` | `0.01` | Minimum fraction of spectra in which an m/z must appear to be included in the reference grid. |
-| `intensity_normalization` | `MsiIntensityNormalization` | `"tic"` | Normalization method: `"tic"`, `"log"`, or `"none"`. |
+| `intensity_normalization` | `MsiIntensityNormalization` | `"tic"` | Normalization method: `"tic"`, `"log"`, `"clr"`, or `"none"`. |
 | `recalibration_reference` | `dict` or `None` | `None` | Per-ion-mode reference m/z vectors for recalibration. |
 | `min_intensity_threshold` | `float` | `10000.0` | Minimum peak intensity for recalibration peak selection. |
 | `detect_background` | `bool` | `True` | If `True`, GMM-based tissue/background classification is run. |

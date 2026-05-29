@@ -46,7 +46,7 @@ Each modality undergoes specialized processing tailored to its data characterist
    - Add `crop_margin` pixels on all sides (default: 250 px), clamped to image boundaries
 
 5. **Pyramid Construction and Saving**
-   - Build `pyramid_levels` resolution levels (default: 4) by successive 2× downsampling
+   - Build resolution levels by successive 2× downsampling. The number of levels is **computed automatically** from the image dimensions so the smallest level fits within a 3,000 × 3,000 pixel cap (for GUI rendering); it is not configurable.
    - Write as multi-image BigTIFF OME-TIFF with zlib compression
    - RGB images: interleaved `YXC` layout; single/multi-channel: separate planes per channel
 
@@ -65,8 +65,9 @@ Each modality undergoes specialized processing tailored to its data characterist
 | `min_object_coverage` | `0.01` | Minimum tissue area fraction (0–1) for contour filtering |
 | `crop_to_tissue` | `true` | Crop image to tissue bounding box |
 | `crop_margin` | `250` | Pixel margin added around the tissue bounding box |
-| `pyramid_levels` | `4` | Number of resolution levels in the output OME-TIFF |
 | `force_recomputing` | `false` | Reprocess even if output already exists |
+
+The number of pyramid resolution levels is not a parameter — it is computed automatically from the image size.
 
 **Output Files**:
 ```
@@ -132,15 +133,16 @@ The MSI pipeline operates at the **dataset level**: all samples are processed to
 9. **Intensity Normalization**
    - `"tic"`: divide each spectrum by its total ion count
    - `"log"`: apply log(1 + x) transform
+   - `"clr"`: sparsity-preserving centered log-ratio — log-centers each spectrum over its nonzero entries only, leaving structural zeros at 0
    - `"none"`: keep raw interpolated intensities
 
 10. **Per-Sample Leiden Clustering**
-    - PCA → neighbor graph → Leiden (resolution=0.5) on the normalized matrix
-    - Labels stored in `obs["leiden"]`
+    - PCA (up to 50 components) → neighbor graph → Leiden (`resolution=0.5`, `flavor="igraph"`, `n_iterations=2`) on the normalized matrix
+    - Labels stored in `obs["leiden"]`. The PCA embedding, neighbor graph, and associated metadata are then discarded (only `obs["leiden"]` is kept) to minimize file size
 
 11. **Save Per-Sample AnnData and Merge**
-    - Each sample saved separately with no compression (fast I/O)
-    - All samples concatenated on disk into a single merged h5ad (inner join on features, lzf compression)
+    - Each sample is saved separately (gzip compression)
+    - All samples are concatenated on disk into a single merged h5ad (inner join on features, gzip compression)
     - Merged file's `uns["spot_size"]` updated to a per-sample dict
 
 **Parameters**:
@@ -149,13 +151,15 @@ The MSI pipeline operates at the **dataset level**: all samples are processed to
 |-----------|---------|-------------|
 | `mass_tolerance` | `10` | Mass tolerance in ppm for m/z clustering, recalibration, and annotation |
 | `frequency_threshold` | `0.01` | Minimum fraction of max cluster weight for backbone m/z inclusion |
-| `intensity_normalization` | `"none"` | Normalization method: `"tic"`, `"log"`, or `"none"` |
+| `intensity_normalization` | `"none"` | Normalization method: `"tic"`, `"log"`, `"clr"`, or `"none"` |
 | `recalibration_reference` | `null` | User-supplied reference m/z dict per ion mode; auto-computed if null |
 | `min_intensity_threshold` | `10000.0` | Minimum intensity for a peak to be used in recalibration offset estimation |
 | `detect_background` | `false` | Run background detection to classify tissue vs background spots |
 | `sample_type` | `"tissue"` | Sample type for background detection: `"tissue"` or `"microgrid"` |
 | `lipid_annotation_db` | `null` | Path to lipid annotation database (CSV or JSON with `db_name`, `ionized_mass`, `ion_mode` columns) |
 | `force_recomputing` | `false` | Reprocess even if output already exists |
+
+The defaults above are the values applied when running through the configuration file (the pipeline's settings extractor). When calling `MsiDataset.process_dataset()` directly in Python, two signature defaults differ: `intensity_normalization` defaults to `"tic"` and `detect_background` defaults to `True`.
 
 **Output Files**:
 ```
@@ -294,7 +298,7 @@ Supports any spot-based or cell-based spatial transcriptomics technology (Visium
 
 7. **Per-Sample Leiden Clustering**
    - Requires ≥ 2 spots and ≥ 2 PCA components
-   - PCA (up to 50 components) → neighbor graph → Leiden clustering (resolution=0.5, igraph flavor)
+   - PCA (up to 50 components) → neighbor graph → Leiden clustering (`resolution=0.5`, `flavor="igraph"`, `n_iterations=2`, `directed=False`)
    - Result stored in `obs["leiden"]`
 
 **Dataset-Level (Merged) Processing**:
@@ -323,6 +327,8 @@ After per-sample preprocessing, all samples are merged:
 | `total_counts_normalize` | `false` | Normalize total counts per spot to 10,000 |
 | `log1p_transform` | `false` | Apply log(1 + x) transformation |
 | `force_recomputing` | `false` | Reprocess even if output already exists |
+
+The defaults above are the values applied when running through the configuration file (the pipeline's settings extractor). When calling `SpatialTranscriptomic.preprocess_data()` / `SpatialTranscriptomicDataset.process_dataset()` directly in Python, the `total_counts_normalize` and `log1p_transform` signature defaults are both `True`.
 
 **Output Files**:
 ```

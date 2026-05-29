@@ -70,7 +70,6 @@ The CLI requires a valid JSON configuration file. See [Configuration Reference](
         "remove_background": false,
         "crop_to_tissue": false,
         "gamma": 0.45,
-        "pyramid_levels": 4,
         "force_recomputing": false
       },
       "registration_settings": {},

@@ -40,7 +40,7 @@ Implemented in `_remove_background`:
 7. Contour area filtering using `min_object_coverage` fraction of image area.
 8. Fill background with selected `background_color` (`white` or `black`).
 
-Note on implementation detail: current code calls `skimage.morphology.remove_small_objects(..., max_size=min_object_size)`; this should be interpreted as connected-component cleanup with threshold parameter `min_object_size` in current dependency versions.
+Implementation detail: connected-component cleanup is performed with `skimage.morphology.remove_small_objects(mask, min_size=min_object_size)`, removing foreground components smaller than `min_object_size` pixels.
 
 ---
 
@@ -54,7 +54,7 @@ Bounding box is expanded by `crop_margin` (default 250 px) and clamped to image 
 
 ## 5. OME-TIFF pyramid output
 
-`_save_image_pyramid` writes a BigTIFF with `pyramid_levels` resized levels (default 4), scale factor `0.5^l` at level `l`, using `cv2.INTER_AREA`.
+`_save_image_pyramid` writes a BigTIFF with a scale factor of `0.5^l` at level `l`, using `cv2.INTER_AREA`. The number of levels is not a parameter — `_compute_pyramid_levels` derives it from the image dimensions so the smallest level stays within a 3,000 × 3,000 pixel cap.
 
 Encoding:
 
@@ -71,7 +71,6 @@ Compression is zlib.
 - `remove_background` (default true)
 - `crop_to_tissue` (default true)
 - `background_color` (`white`/`black`, default `white`)
-- `pyramid_levels` (default 4)
 - `min_object_coverage` (default 0.01)
 - `gaussian_blur_kernel_size` (default 251)
 - `min_object_size` (default 500)

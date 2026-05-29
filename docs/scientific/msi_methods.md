@@ -10,7 +10,7 @@ For each spectrum, metadata parsing extracts:
 - physical coordinates (`3DPositionX/Y`, fallback to raster if absent)
 - binary offsets and lengths for m/z and intensity arrays
 
-Supported intensity normalization options are `none`, `tic`, and `log`.
+Supported intensity normalization options are `none`, `tic`, `log`, and `clr`.
 
 ---
 
@@ -133,8 +133,15 @@ Applied after interpolation:
 - `none`: unchanged
 - `tic`: divide row by TIC (rows with TIC=0 use divisor 1)
 - `log`: `log1p`
+- `clr`: sparsity-preserving centered log-ratio. For each spectrum, the log is taken over the nonzero entries only and centered by the mean log over that nonzero support; structural zeros are left at 0, so sparsity is preserved.
 
 Raw interpolated matrix is preserved in `.layers['raw']`; normalized matrix in `.X`.
+
+---
+
+## 6b. Per-sample clustering
+
+After normalization, PCA (up to 50 components) → neighbor graph → Leiden (`resolution=0.5`, `flavor="igraph"`, `n_iterations=2`) is computed per sample and stored in `.obs['leiden']`. The PCA embedding and neighbor graph are then discarded; only the cluster labels are persisted.
 
 ---
 

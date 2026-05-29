@@ -66,12 +66,11 @@ Key defaults to review:
 | Modality | Parameter | Default |
 |----------|-----------|---------|
 | `st` | `min_count_per_spot` | `null` (disabled) |
-| `st` | `total_counts_normalize` | `true` |
-| `st` | `log1p_transform` | `true` |
+| `st` | `total_counts_normalize` | `false` |
+| `st` | `log1p_transform` | `false` |
 | `msi` | `mass_tolerance` | `10` ppm |
-| `msi` | `intensity_normalization` | `"tic"` |
+| `msi` | `intensity_normalization` | `"none"` |
 | `microscopy_image` | `gamma` | `0.45` |
-| `microscopy_image` | `pyramid_levels` | `4` |
 
 ### 4. Alignment Settings
 
@@ -81,10 +80,9 @@ For each non-reference modality, select the alignment strategy:
 - **Pre-aligned** — Skip the alignment GUI for this modality; assume the reference modality's coordinates are already expressed in the target modality's coordinate frame.
 
 !!! info "When to use Pre-aligned"
-    **Pre-aligned is only applicable when:**
-    - The reference modality is spot-based (`st` or `msi`)
-    - The target modality is image-based (e.g., `microscopy_image`)
-    - The reference spots' coordinates are **already expressed in the target image's pixel coordinates**
+    **Pre-aligned is applicable when:**
+    - The reference modality is spot-based (`st` or `msi`) — this is the constraint FOCUS enforces
+    - The reference spots' coordinates are **already expressed in the target modality's coordinate frame** (most commonly an image's pixel coordinates, e.g. `microscopy_image`)
     
     **Example:** Your reference is a spatial transcriptomics (ST) dataset with spot coordinates that are already in the pixel frame of an H&E microscopy image (not in micrometers). In this case, you can select `alignment_strategy: "pre_aligned"` for the H&E target, and FOCUS will skip the manual alignment step, using the existing coordinates directly for registration.
     
@@ -150,6 +148,8 @@ The alignment GUI displays the reference and target modalities side by side in t
    - **Translate**: Click and drag the reference modality to move it across the target
    - **Rotate**: Use the rotation control to rotate the reference around its centroid
    - **Scale**: Scroll the mouse wheel to scale the reference relative to the target
+   - **Flip**: Mirror the reference horizontally or vertically
+   - **Corner distortion**: Drag an individual corner (the others stay fixed) to apply a free-form, perspective-style warp
 
 3. **Fine-Tune the Alignment**:
    - Use the Camera Control mode to zoom and pan for detailed inspection

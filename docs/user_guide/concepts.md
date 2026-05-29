@@ -50,13 +50,7 @@ The reference modality is typically chosen as the modality with the lowest spati
 
 ## Alignment
 
-**Alignment** is the process of establishing spatial correspondence between two modalities by visually overlaying the reference modality onto the target. In FOCUS, alignment is performed interactively using a web-based GUI that displays the reference and target modality side by side. The user adjusts the reference modality's position, rotation, and scale (via drag controls) until it aligns with the target. FOCUS records the transformation, enabling the registration stage to compute the spatial mapping:
-
-$$
-\begin{pmatrix} x' \\ y' \end{pmatrix} = A \begin{pmatrix} x \\ y \end{pmatrix} + \mathbf{b}
-$$
-
-where $A$ is a $2 \times 2$ matrix encoding rotation, scaling, and shear, and $\mathbf{b}$ is a translation vector. The resulting transform is stored as an additional coordinate key in the reference modality AnnData (`.obsm['{non_ref_name}_spatial']`), expressing each reference spot's location in the non-reference modality's coordinate space.
+**Alignment** is the process of establishing spatial correspondence between two modalities by visually overlaying the reference modality onto the target. In FOCUS, alignment is performed interactively using a web-based GUI that displays the reference modality overlaid on the fixed target modality. The user transforms the reference modality as a whole — translation, rotation, scaling, horizontal/vertical flip, and free per-corner distortion (dragging one corner while the others stay fixed) — until it aligns with the target. Because corners can be dragged independently, the mapping is a free-form (perspective-style) warp rather than a rigid or affine transform, so FOCUS does not fit a parametric transform matrix: it stores the resulting mapped coordinates directly as an additional coordinate key in the reference modality AnnData (`.obsm['{non_ref_name}_spatial']`), expressing each reference spot's location in the non-reference modality's coordinate space. The registration stage then uses these coordinates to map features between modalities.
 
 ---
 

@@ -227,7 +227,10 @@ REGISTRATION_COMPATIBILITY = {
 	RegistrationType.NONE: None,
 }
 
-# Maps alignment strategy to compatible target modality types (None = all types)
+# Maps alignment strategy to the compatible *reference* modality types for that strategy
+# (None = all types). PRE_ALIGNED requires a spot-based reference, since the reference's
+# own coordinates must already be expressible in the target's frame; the target may be any
+# type. Validated against the reference modality in utils.py.
 ALIGNMENT_STRATEGY_COMPATIBILITY = {
 	AlignmentStrategy.MANUAL: None,
 	AlignmentStrategy.PRE_ALIGNED: [ModalityType.MSI, ModalityType.ST],

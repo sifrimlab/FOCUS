@@ -27,9 +27,13 @@ This matrix is the direct input for registration.
 
 Interactive browser-based direct mapping (`DirectMappingAligner` + `DirectMappingAlignmentGUI`).
 
-- The GUI displays the moving layer over a fixed layer.
-- Users confirm final mapped coordinates.
-- No affine matrix is fit from landmarks; the confirmed mapped coordinates are used directly.
+- The GUI displays the moving **reference** layer over the fixed **target** layer.
+- The user transforms the reference layer as a whole: translation, rotation, scaling, horizontal/vertical flip, and free per-corner distortion (dragging one corner while the others stay fixed). The corner distortion makes the mapping a free-form / projective warp rather than a similarity or affine transform.
+- Users confirm the final mapped coordinates.
+- No parametric matrix (rigid or affine) is fit from landmarks; because the warp is free-form, the confirmed mapped coordinates are persisted directly.
+
+!!! note "Internal naming"
+    In `DirectMappingAligner` the constructor argument named `reference_modality` is given the pipeline's **non-reference** modality (the fixed frame), and `target_modality` is given the pipeline's **reference** modality (the moving layer). The orchestrator deliberately swaps them (`_run_alignment`), so the class-internal vocabulary is inverted relative to the pipeline terms used throughout this page. This page uses pipeline terms: *reference* = moving, *target* = fixed.
 
 ### `pre_aligned`
 
@@ -50,21 +54,19 @@ Current config validation additionally enforces:
 
 ## 3. Data pathways by modality pair
 
-FOCUS supports the following alignment pathways:
+What the GUI returns depends on the **reference (moving)** modality type; whether the result is stored as coordinates or a crop depends on the **target (fixed)** modality type. The pathways, written as (reference type → target type), are:
 
-- **IMAGE -> IMAGE** (`microscopy_image`/`raman` to image): GUI returns corner coordinates used for cropping.
-- **IMAGE -> SPOT**: GUI returns mapped spot coordinates.
-- **SPOT -> SPOT**: GUI returns mapped spot coordinates.
-
-`SPOT -> IMAGE` in the current implementation is not executed in `_run_alignment` (the branch is marked not implemented in `DirectMappingAligner.align_dataset`).
+- **spot → spot** and **spot → image**: the GUI returns the mapped reference-spot coordinates; they are stored as `obsm['{target_name}_spatial']` on the reference's aligned AnnData. This covers the normal configurations, including a spot reference (`msi`/`st`) aligned against a microscopy or Raman image.
+- **image → image**: the GUI returns the reference image's corner coordinates, which are used to crop the reference to the overlapping region (OME-TIFF output).
+- **image → spot**: **not implemented** — this is the branch guarded in `DirectMappingAligner.align_dataset` (`is_ref_spot and is_target_image` in the class's internal, inverted vocabulary). It corresponds to an image-based reference paired with a spot target, which is an atypical configuration since the reference must be spot-based for MuData compilation.
 
 ---
 
 ## 4. Coordinate scaling
 
-For image payloads, GUI interaction runs on the lowest OME-TIFF pyramid level. If
+When the fixed target modality is an image, GUI interaction runs on its lowest OME-TIFF pyramid level, and the mapped coordinates (which are expressed in the target's coordinate space) are rescaled back to full resolution before persistence. If
 
-- \((H_0, W_0)\): full-resolution dimensions
+- \((H_0, W_0)\): full-resolution dimensions of the target image
 - \((H_L, W_L)\): displayed-level dimensions
 
 then scale factors are:
@@ -100,34 +102,34 @@ This conversion is for visualization only; alignment outputs are stored as coord
 
 ## 6. Output artifacts
 
-### Spot-target alignment outputs
+### Spot-reference alignment outputs
 
-Per sample:
+The aligned file is written on the **reference** modality and named after it. For a spot-based reference (the normal case), per sample:
 
 ```text
-{dataset_path}/{sample_id}/alignment/{target_name}_{sample_id}_processed_aligned.h5ad
+{dataset_path}/{sample_id}/alignment/{reference_name}_{sample_id}_processed_aligned.h5ad
 ```
 
-Contains target-native `obsm['spatial']` plus newly added pair key:
+It is built from the reference's preprocessed AnnData, so it contains the reference-native `obsm['spatial']` plus, for each target it was aligned against, the pair key:
 
 ```python
-obsm[f"{reference_name}_spatial"]
+obsm[f"{target_name}_spatial"]
 ```
 
-In orchestrated pipeline usage, this key corresponds to reference coordinates expressed in non-reference space.
+This key holds the reference coordinates expressed in that target (non-reference) modality's space. Multiple targets accumulate as multiple keys on the same reference AnnData.
 
 Merged:
 
 ```text
-{dataset_path}/merged/alignment/{target_name}_merged_processed_aligned.h5ad
+{dataset_path}/merged/alignment/{reference_name}_merged_processed_aligned.h5ad
 ```
 
-### Image-target alignment outputs
+### Image-reference alignment outputs
 
-Per sample cropped OME-TIFF:
+When an image-based reference is aligned against an image target, the reference is cropped to the overlapping region and saved as a per-sample OME-TIFF:
 
 ```text
-{dataset_path}/{sample_id}/alignment/{target_name}_{sample_id}_processed_aligned.ome.tiff
+{dataset_path}/{sample_id}/alignment/{reference_name}_{sample_id}_processed_aligned.ome.tiff
 ```
 
 ---

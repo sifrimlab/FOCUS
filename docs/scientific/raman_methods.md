@@ -42,7 +42,7 @@ Flow:
 3. Reload corrected channels and assemble corrected tensor.
 4. Global min-max normalize corrected tensor to `[0,1]`.
 
-Channels are parallelized with `ThreadPoolExecutor(max_workers)`.
+Channels are parallelized with `ThreadPoolExecutor(max_workers)`. The BaSiCpy subprocess is forced onto CPU by setting `JAX_PLATFORM_NAME=cpu` in its environment, so a GPU is not used for this step.
 
 ---
 

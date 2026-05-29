@@ -51,7 +51,7 @@ The modality name (e.g. `he_image`) must match the name declared in the FOCUS co
 
 4. **Crop to tissue** — the tight bounding box of the non-background region is computed, expanded by `crop_margin` pixels on all sides (clamped to image boundaries), and the image is cropped. Skipped when `crop_to_tissue=False`.
 
-5. **OME-TIFF pyramid construction** — the processed float32 image is downsampled by successive factors of 2 (area interpolation) to produce `pyramid_levels` resolution levels. Each level is stored as an independent IFD in a BigTIFF container with zlib compression and a full OME-XML metadata block in the first IFD. RGB images are written as interleaved photometric RGB; multi/single-channel images as separate `minisblack` planes.
+5. **OME-TIFF pyramid construction** — the processed float32 image is downsampled by successive factors of 2 (area interpolation). The number of resolution levels is **computed automatically** from the image dimensions so that the smallest pyramid level fits within a 3,000 × 3,000 pixel cap (for efficient GUI rendering); it is not user-configurable. Each level is stored as an independent IFD in a BigTIFF container with zlib compression and a full OME-XML metadata block in the first IFD. RGB images are written as interleaved photometric RGB; multi/single-channel images as separate `minisblack` planes.
 
 ---
 
@@ -70,8 +70,10 @@ The modality name (e.g. `he_image`) must match the name declared in the FOCUS co
 | `min_object_coverage` | `float` | `0.01` | Minimum tissue contour area as a fraction of total image area | `0.0` – `1.0` |
 | `crop_to_tissue` | `bool` | `True` | Crop to the bounding box of the tissue region | `True`, `False` |
 | `crop_margin` | `int` | `250` | Pixel margin added around the tissue bounding box | Non-negative integer |
-| `pyramid_levels` | `int` | `4` | Number of resolution levels in the output OME-TIFF | `1` – `8` |
 | `force_recomputing` | `bool` | `False` | Reprocess even if a cached output file already exists | `True`, `False` |
+
+!!! note "Pyramid levels are not configurable"
+    The number of OME-TIFF resolution levels is computed automatically from the image size (so the smallest level stays within 3,000 × 3,000 px). There is no `pyramid_levels` parameter.
 
 ---
 
@@ -113,7 +115,7 @@ The preprocessing step produces a single multi-resolution OME-TIFF per sample at
 | Value range | `[0, 1]` |
 | Compression | zlib |
 | Container | BigTIFF |
-| Pyramid levels | Configurable (default: 4) |
+| Pyramid levels | Computed automatically (smallest level ≤ 3,000 × 3,000 px) |
 | Downsampling factor | 0.5× per level (area interpolation) |
 | Metadata | OME-XML in first IFD; physical pixel size stored when available |
 | RGB images | Interleaved `photometric=rgb` |
@@ -145,7 +147,6 @@ modalities:
       min_object_coverage: 0.01
       crop_to_tissue: true
       crop_margin: 250
-      pyramid_levels: 4
     registration_type: feature_extraction
     registration_settings:
       patch_size: 224

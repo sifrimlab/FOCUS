@@ -48,7 +48,7 @@ Raw Data  ──►  Preprocessing  ──►  Alignment  ──►  Registratio
 ```
 
 1. **Preprocessing** — modality-specific quality control, normalisation, background removal, and storage in a standardised format.
-2. **Alignment** — an interactive web GUI lets you manually register corresponding landmarks between modalities. Each sample is handled individually.
+2. **Alignment** — an interactive web GUI lets you visually overlay the reference modality onto each target modality (translate, rotate, scale, flip, and corner-distort) to record their spatial correspondence. Each sample is handled individually.
 3. **Registration** — computationally maps features from one modality onto the coordinate space of another using either deep-learning patch embeddings (requires GPU) or Gaussian-weighted spot interpolation.
 4. **Compilation** — all aligned and registered modalities are merged into a single MuData (`.h5mu`) file.
 

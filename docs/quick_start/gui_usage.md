@@ -82,12 +82,14 @@ graph LR
 - **Color Enhancement**: Enable/disable gamma correction and contrast stretching
 - **Background Removal**: Enable/disable and set threshold
 - **Crop to Tissue**: Enable/disable with margin size
-- **Resolution Level**: Pyramid level for processing
+
+!!! note
+    The number of OME-TIFF pyramid levels is computed automatically from the image size and is not a GUI setting.
 
 **MSI (Mass Spectrometry Imaging):**
 - **Ion Mode**: Positive/Negative/Both
 - **Mass Range**: m/z range to process
-- **Intensity Normalization**: TIC/Max/None
+- **Intensity Normalization**: None/TIC/Log/CLR
 - **Background Detection**: Enable/disable GMM-based detection
 - **Recalibration**: Enable/disable m/z recalibration
 - **Lipid Annotation**: Enable/disable lipid database matching
@@ -390,7 +392,6 @@ The JSON configuration file contains:
         "remove_background": true,
         "crop_to_tissue": true,
         "gamma": 0.45,
-        "pyramid_levels": 4,
         "force_recomputing": false
       },
       "registration_settings": {},

@@ -35,11 +35,26 @@ Samples that are present in the reference but not in target $T$ (or vice versa) 
 
 ---
 
+## Supported alignment directions
+
+The reference is the moving layer and the target is the fixed frame. The combinations FOCUS can align depend on the modality types of the two:
+
+| Reference (moving) | Target (fixed) | Result |
+|--------------------|----------------|--------|
+| spot (`msi`/`st`) | spot (`msi`/`st`) | `obsm['{target}_spatial']` written to the reference's aligned `.h5ad` |
+| spot (`msi`/`st`) | image (`microscopy_image`/`raman`) | `obsm['{target}_spatial']` written to the reference's aligned `.h5ad` |
+| image | image | reference cropped to the overlapping region, saved as OME-TIFF |
+| image | spot | **not implemented** |
+
+In normal use the reference is spot-based (required for MuData compilation), so the first two rows are the common cases — including the typical MSI/ST reference aligned against a microscopy or Raman image. An image-based reference paired with a spot target is the only combination that is not implemented.
+
+---
+
 ## Alignment Strategies
 
 ### `manual` (default)
 
-The interactive alignment GUI is launched in the browser. The user drags the reference modality (as a whole) to align it visually with the target modality, then clicks **Confirm**. The GUI advances automatically to the next sample. Note: the transformation is rigid, so the reference modality can be translated, rotated, or scaled as a whole, but individual spots cannot be moved independently.
+The interactive alignment GUI is launched in the browser. The user transforms the reference modality (as a whole) to align it visually with the fixed target modality, then clicks **Confirm**. The GUI advances automatically to the next sample. The reference layer can be translated, rotated, scaled, flipped (horizontally or vertically), and freely distorted by dragging individual corners (a perspective-style warp). The layer is always transformed as a whole — individual spots cannot be moved one at a time — but because corners can be dragged independently the warp is non-uniform across the field. Since the mapping is free-form rather than a fixed parametric transform, FOCUS reads the resulting mapped coordinates back directly; it does not fit a rigid or affine matrix.
 
 **Use when:** the two modalities were acquired on different instruments or at different times, i.e., they have independent coordinate systems. This is the typical case for MSI + microscopy, Raman + MSI, or any cross-instrument combination.
 
@@ -52,7 +67,7 @@ No GUI is launched. The pipeline copies `obsm['spatial']` from the **reference**
 **Limitation:** only one target modality can use `pre_aligned`, since the reference spots can be expressed in only one coordinate system at a time. If there are two or more targets, all but one must use `manual` alignment.
 
 !!! warning
-    Pre-Alignment can only be used for spot-based modalities; it is not supported for image-based modalities.
+    `pre_aligned` constrains the **reference** modality, not the target. The reference must be spot-based (`msi` or `st`), because its `obsm['spatial']` coordinates are the ones reused. The **target may be any modality type** (`msi`, `st`, `microscopy_image`, or `raman`), as long as the reference spots are already expressed in that target's coordinate frame.
 
 ---
 
@@ -76,9 +91,9 @@ The alignment GUI is organized into two main sections:
 - For spot modalities, spots are colour‑coded by Leiden cluster to help identify tissue regions
 
 **Right Panel: Control Tools**
-- Switch between **Camera Control** (pan/zoom the view) and **Transformation Control** (translate, rotate, or scale the reference)
+- Switch between **Camera Control** (pan/zoom the view) and **Transformation Control** (translate, rotate, scale, flip, or corner-distort the reference)
 - In Camera mode the mouse moves the point‑of‑view without affecting the transformation
-- In Transformation mode the mouse drags translate the reference; the mouse wheel changes the scaling component
+- In Transformation mode the mouse drags translate the reference and the mouse wheel changes the scale; rotation, horizontal/vertical flip, and per-corner distortion are applied through the panel controls
 - Reset the transformation to its original state
 - Show/hide specific spot clusters (for spot‑based modalities)
 - Confirm alignment button to save the transform
@@ -87,18 +102,20 @@ The alignment GUI is organized into two main sections:
 
 ### Per-sample aligned files
 
-For **spot targets** (`msi`, `st`): the per-sample target AnnData is updated with a new obsm key:
+The aligned outputs are written on the **reference** modality, named after it. The file type depends on the reference modality type.
+
+For a **spot-based reference** (`msi`, `st`) — the normal case — alignment produces one accumulating AnnData per sample:
 
 ```
-{dataset_path}/{sample_id}/alignment/{target_name}_{sample_id}_processed_aligned.h5ad
+{dataset_path}/{sample_id}/alignment/{ref_name}_{sample_id}_processed_aligned.h5ad
 ```
 
-The key `obsm['{ref_name}_spatial']` contains the reference spot coordinates expressed in the target modality's space. The target's own `obsm['spatial']` is preserved unchanged.
+This file is built from the reference's preprocessed AnnData, so its own `obsm['spatial']` is preserved. For each target it is aligned against, a new key `obsm['{target_name}_spatial']` is added, containing the reference spot coordinates expressed in that target modality's space.
 
-For **image targets** (`microscopy_image`, `raman`): the reference image is cropped to the user-defined bounding box and saved as a new OME-TIFF:
+For an **image-based reference** aligned against an image target (the rare image→image case), the reference is cropped to the overlapping region and saved as a new OME-TIFF instead:
 
 ```
-{dataset_path}/{sample_id}/alignment/{target_name}_{sample_id}_processed_aligned.ome.tiff
+{dataset_path}/{sample_id}/alignment/{ref_name}_{sample_id}_processed_aligned.ome.tiff
 ```
 
 ### Merged aligned file
@@ -106,14 +123,14 @@ For **image targets** (`microscopy_image`, `raman`): the reference image is crop
 After all per-sample alignments are complete, the per-sample AnnData files are concatenated:
 
 ```
-{dataset_path}/merged/alignment/{target_name}_merged_processed_aligned.h5ad
+{dataset_path}/merged/alignment/{ref_name}_merged_processed_aligned.h5ad
 ```
 
 This merged file is the input to the registration stage.
 
 ### obsm key accumulation
 
-If the reference is aligned against multiple targets sequentially, all `obsm` keys are accumulated in the same target AnnData. For example, aligning reference `st` against both `msi` and `microscopy` produces a `st` aligned AnnData that contains both `obsm['msi_spatial']` and `obsm['microscopy_spatial']`.
+If the reference is aligned against multiple targets sequentially, all `obsm` keys accumulate in the same reference AnnData. For example, aligning reference `st` against both `msi` and `microscopy` produces an `st` aligned AnnData that contains both `obsm['msi_spatial']` and `obsm['microscopy_spatial']`.
 
 ---
 

@@ -73,6 +73,9 @@ dataset_root/
 
 3. **BaSiC illumination correction** — raw tiles are corrected channel-by-channel for uneven illumination using [BaSiCpy](https://github.com/peng-lab/BaSiCPy). Each channel is written to a temporary `.npy` file, corrected in the `FOCUS_BaSiCpy` environment, and reloaded. Channels are processed in parallel up to `max_workers` threads. Corrected tiles are globally normalised to `[0, 1]` and cached to disk.
 
+    !!! note "CPU-only backend"
+        The BaSiCpy subprocess is forced to run on CPU by setting `JAX_PLATFORM_NAME=cpu` in its environment. A GPU, if present, is not used for this step.
+
 4. **Background / tissue segmentation** — the BaSiC-corrected tiles are quickly stitched using distance-transform blending. PCA is applied to the `(H×W, C)` spectral matrix to obtain a single-component grayscale image, which is enhanced with CLAHE. Otsu thresholding with a multiplicative factor (`otsu_threshold_factor`) determines the tissue mask. Small objects below `min_object_size` pixels are removed; holes are filled; contours smaller than `bg_min_area_fraction × image_area` are discarded. The tile masks are back-projected from the mosaic and applied to the corrected tiles (background pixels zeroed).
 
 5. **Per-tile spectral cleaning via RamanSPy** — the segmented tiles are processed through a fixed RamanSPy pipeline: Whitaker-Hayes despiking, Savitzky-Golay denoising (`savgol_window`, `savgol_polyorder`), IASLS baseline correction, and min-max normalisation. Zero-variance spectra (e.g. pure background pixels) are excluded and restored as zeros after processing. Tiles are processed in parallel across `max_workers` workers. Results are cached to disk.

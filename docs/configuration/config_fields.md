@@ -240,8 +240,9 @@ Example:
 | `min_object_coverage` | float | `0.01` |
 | `crop_to_tissue` | bool | `true` |
 | `crop_margin` | int | `250` |
-| `pyramid_levels` | int | `4` |
 | `force_recomputing` | bool | `false` |
+
+The number of OME-TIFF pyramid levels is not a configurable field — it is computed automatically from the image dimensions.
 
 Example:
 
@@ -258,7 +259,6 @@ Example:
   "min_object_coverage": 0.01,
   "crop_to_tissue": true,
   "crop_margin": 250,
-  "pyramid_levels": 4,
   "force_recomputing": false
 }
 ```
@@ -271,13 +271,19 @@ Example:
 |---|---|---|
 | `mass_tolerance` | int | `10` |
 | `frequency_threshold` | float | `0.01` |
-| `intensity_normalization` | string | `"tic"` |
+| `intensity_normalization` | string | `"none"` |
 | `min_intensity_threshold` | float | `10000.0` |
-| `detect_background` | bool | `true` |
+| `detect_background` | bool | `false` |
 | `sample_type` | string | `"tissue"` |
 | `recalibration_reference` | dict or null | `null` |
 | `lipid_annotation_db` | string or null | `null` |
 | `force_recomputing` | bool | `false` |
+
+- `intensity_normalization` allowed values: `"none"`, `"tic"`, `"log"`, `"clr"`.
+- `sample_type` allowed values: `"tissue"`, `"microgrid"`.
+- `lipid_annotation_db`: path to a CSV or JSON file with columns `db_name`, `ionized_mass`, `ion_mode`.
+
+The example below enables TIC normalization and background detection explicitly; these are not the defaults.
 
 Example:
 
@@ -487,7 +493,6 @@ Example:
         "min_object_coverage": 0.01,
         "crop_to_tissue": true,
         "crop_margin": 250,
-        "pyramid_levels": 4,
         "force_recomputing": false
       },
       "registration_settings": {

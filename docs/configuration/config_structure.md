@@ -120,7 +120,6 @@ This page documents the **canonical structure** and the set of config fields tha
   "min_object_coverage": 0.01,
   "crop_to_tissue": true,
   "crop_margin": 250,
-  "pyramid_levels": 4,
   "force_recomputing": false
 }
 ```
@@ -285,7 +284,6 @@ This page documents the **canonical structure** and the set of config fields tha
         "min_object_coverage": 0.01,
         "crop_to_tissue": true,
         "crop_margin": 250,
-        "pyramid_levels": 4,
         "force_recomputing": false
       },
       "registration_settings": {

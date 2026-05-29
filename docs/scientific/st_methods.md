@@ -83,7 +83,7 @@ Leiden clustering is run only when the sample has sufficient dimensionality:
 n_{pcs} = \min(50, N-1, G-1)
 \]
 
-- if \(N \ge 2\) and \(n_{pcs} \ge 2\): PCA -> neighbors -> Leiden (`resolution=0.5`, `flavor='igraph'`)
+- if \(N \ge 2\) and \(n_{pcs} \ge 2\): PCA -> neighbors -> Leiden (`resolution=0.5`, `flavor='igraph'`, `n_iterations=2`, `directed=False`)
 - otherwise: all observations get cluster label `'0'`
 
 ### 3.7 Output metadata and persistence

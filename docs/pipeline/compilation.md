@@ -16,7 +16,7 @@ If these conditions are not met, the pipeline skips compilation and the final ou
 When compilation runs, it combines two inputs for each target modality:
 
 - The **reference modality** preprocessed output (its own `obsm['spatial']` and feature matrix).
-- Each **target modality** registered output (e.g. `obsm['{ref_name}_spatial']` and registered feature matrix).
+- Each **target modality** registered output (its `obsm['spatial']`, already expressed in the reference coordinate frame, and the registered feature matrix).
 
 It then merges them into one MuData object with the following structure:
 
