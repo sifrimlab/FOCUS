@@ -1334,8 +1334,8 @@ class MsiSample(BaseSample):
 class MsiDataset(BaseDataset):
 
 	_LEIDEN_RESOLUTION = 0.5
-	_H5AD_COMPRESSION = "lzf"
-	_H5AD_INTERMEDIATE_COMPRESSION = None  # No compression for per-sample files (fastest I/O for concat_on_disk)
+	_H5AD_COMPRESSION = "gzip"
+	_H5AD_INTERMEDIATE_COMPRESSION = "gzip"  # per-sample files; matches project-wide convention
 
 	def __init__(self, path: str, samples: list[MsiSample], lipid_annotation_db: str | None = None) -> None:
 		'''
@@ -1490,6 +1490,13 @@ class MsiDataset(BaseDataset):
 		merged_mz, merged_w = results[0]
 		for i in range(1, len(results)):
 			merged_mz, merged_w = merge_chunks(merged_mz, merged_w, results[i][0], results[i][1], mass_tolerance)
+
+		# merge_chunks can leave adjacent centroids closer than mass_tolerance at chunk
+		# boundaries / overlap regions. Re-run the weighted sliding-window consolidation
+		# on the merged result so consecutive reference peaks are guaranteed >= tolerance.
+		if merged_mz.size > 1:
+			order = np.argsort(merged_mz)
+			merged_mz, merged_w = cluster_unique_mz_chunk(merged_mz[order], merged_w[order], mass_tolerance)
 
 		# Guard: return empty array if clustering produced no results
 		if merged_w.size == 0:
@@ -2102,12 +2109,16 @@ class MsiDataset(BaseDataset):
 					elif intensity_normalization == MsiIntensityNormalization.LOG:
 						merged_intensities = np.log1p(merged_intensities)
 					elif intensity_normalization == MsiIntensityNormalization.CLR:
-						nonzero_vals = merged_intensities[merged_intensities > 0]
-						delta = nonzero_vals.min() / 2.0 if nonzero_vals.size > 0 else 1.0
-						x = merged_intensities.copy()
-						x[x == 0] = delta
-						log_x = np.log(x)
-						merged_intensities = log_x - log_x.mean(axis=1, keepdims=True)
+						# Sparsity-preserving CLR: center the log-intensities over each
+						# row's nonzero (observed) support only, leaving structural zeros
+						# at exactly 0 so the matrix stays sparse.
+						x = merged_intensities
+						nz = x > 0
+						log_x = np.log(x, where=nz, out=np.zeros_like(x))
+						counts = nz.sum(axis=1, keepdims=True)
+						counts[counts == 0] = 1
+						row_mean = log_x.sum(axis=1, keepdims=True) / counts
+						merged_intensities = np.where(nz, log_x - row_mean, 0.0)
 
 					norm_by_mode[mode] = merged_intensities
 
@@ -2166,6 +2177,14 @@ class MsiDataset(BaseDataset):
 				else:
 					adata.obs['leiden'] = '0'
 				adata.obs['leiden'] = pd.Categorical(adata.obs['leiden'])
+
+				# Only obs['leiden'] is consumed downstream (alignment GUI). PCA embedding,
+				# neighbor graphs, and PCs are recomputed on demand and are pure storage waste.
+				adata.obsm.pop('X_pca', None)
+				adata.varm.pop('PCs', None)
+				adata.obsp.clear()                 # 'distances', 'connectivities'
+				adata.uns.pop('neighbors', None)
+				adata.uns.pop('pca', None)
 
 				output_file = MODALITY_PREPROCESSING(self.dataset_source_path, sample.sample_id, sample.modality_name, 'h5ad')
 				for f in write_futures:
