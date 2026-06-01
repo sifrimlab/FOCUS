@@ -13,10 +13,12 @@ The preprocessing pipeline reads tile metadata and spectral axis information dir
 
 ## Prerequisites
 
-FOCUS ships an installation script that creates the required conda environments:
+FOCUS's installation script creates the required conda environments automatically — it
+scans the `tools/` directory and builds one `FOCUS_<Name>` environment per subfolder. No
+extra flag is needed:
 
 ```bash
-bash install.sh --raman
+bash install.sh          # Windows: install.bat
 ```
 
 This creates two environments:
@@ -27,7 +29,7 @@ This creates two environments:
 | `FOCUS_ASHLAR` | Multi-cycle tile stitching using ASHLAR |
 
 !!! note "Java requirement"
-    ASHLAR requires **Java 21** at runtime. Ensure `java` is on `PATH` before running the pipeline.
+    ASHLAR requires Java. The installer installs OpenJDK (via `conda install -c conda-forge openjdk`) into the `FOCUS_ASHLAR` environment automatically, so you do **not** need a system-level Java installation.
 
 Both environments are invoked by FOCUS as subprocesses via `conda run`; no manual activation is needed.
 
@@ -105,20 +107,20 @@ dataset_root/
 
 ## Registration
 
-!!! warning "Only `spot_interpolation` is supported (sub-optimal)"
-    At the moment, Raman registration uses `spot_interpolation`, which is not ideal for image-based modalities. This approach treats the continuous spectral image as discrete spot data and aggregates spectral channels via Gaussian-weighted averaging around anchor spot locations. The result is information loss: the rich spatial context available in the hyperspectral image is reduced to simple weighted averages.
+!!! warning "`raman_pixel_interpolation` is a temporary solution"
+    Raman registration uses the dedicated `raman_pixel_interpolation` mode. It treats each pixel of the hyperspectral OME-TIFF as a spot and computes a Gaussian-weighted average of the spectral channels of the pixels within each anchor spot's footprint. This is a **stopgap** rather than a learned representation.
 
-    **Why spot_interpolation is currently used**: There is currently no specialized feature extraction technique tailored for Raman spectroscopy imaging. Unlike microscopy, which benefits from general-purpose vision models (e.g., Prov-GigaPath), Raman spectral data requires dedicated domain-specific models to extract meaningful embeddings.
+    **Why pixel interpolation is currently used**: there is currently no specialized feature extraction technique tailored for Raman spectroscopy imaging. Unlike microscopy, which benefits from general-purpose vision models (e.g., Prov-GigaPath), Raman spectral data would require a dedicated domain-specific model to extract meaningful embeddings.
 
-    **Future direction**: As specialized feature extraction methods for Raman spectroscopy become available, FOCUS will adopt a dedicated `feature_extraction` process for Raman registration, similar to microscopy images. This will enable richer, more information-preserving registration.
+    **Future direction**: as specialized feature extraction methods for Raman spectroscopy become available, FOCUS intends to adopt a dedicated `feature_extraction` process for Raman registration, similar to microscopy images. This will enable richer, more information-preserving registration.
 
-For now, use:
+Use:
 
 ```yaml
-registration_type: spot_interpolation
+registration_type: raman_pixel_interpolation
 ```
 
-This will map anchor spots from the reference modality onto the Raman coordinate space and compute Gaussian-weighted averages of the spectral channels within each anchor spot's footprint.
+This maps anchor spots from the reference modality onto the Raman pixel coordinate space and computes Gaussian-weighted averages of the spectral channels within each anchor spot's footprint. See [Registration](../pipeline/registration.md#raman_pixel_interpolation) for details.
 
 ---
 
@@ -137,7 +139,7 @@ The ASHLAR stitching step produces a multi-resolution OME-TIFF per sample at:
 | Compression | zlib |
 | Pixel metadata | Physical size in µm per axis embedded in OME-XML |
 | Pyramid | Multi-resolution levels for efficient viewer access |
-| Spot size | **Automatically extracted from LIF metadata** (pixel size in µm). If unavailable, defaults to `[1.0, 1.0]` µm. Used during `spot_interpolation` registration. |
+| Spot size | **Automatically extracted from LIF metadata** (pixel size in µm). If unavailable, defaults to `[1.0, 1.0]` µm. Used during `raman_pixel_interpolation` registration. |
 
 Channel names in the OME-XML correspond to the wavenumber array computed from the LIF metadata, enabling direct spectral axis access in downstream viewers. The physical pixel size (stored as `PhysicalSizeX` and `PhysicalSizeY` in OME-XML) is automatically extracted and used as the `spot_size` during registration.
 
@@ -156,5 +158,5 @@ modalities:
       bg_min_area_fraction: 0.05
       min_object_size: 500
       max_workers: 8
-    registration_type: spot_interpolation
+    registration_type: raman_pixel_interpolation
 ```

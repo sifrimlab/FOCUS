@@ -58,7 +58,7 @@ What the GUI returns depends on the **reference (moving)** modality type; whethe
 
 - **spot → spot** and **spot → image**: the GUI returns the mapped reference-spot coordinates; they are stored as `obsm['{target_name}_spatial']` on the reference's aligned AnnData. This covers the normal configurations, including a spot reference (`msi`/`st`) aligned against a microscopy or Raman image.
 - **image → image**: the GUI returns the reference image's corner coordinates, which are used to crop the reference to the overlapping region (OME-TIFF output).
-- **image → spot**: **not implemented** — this is the branch guarded in `DirectMappingAligner.align_dataset` (`is_ref_spot and is_target_image` in the class's internal, inverted vocabulary). It corresponds to an image-based reference paired with a spot target, which is an atypical configuration since the reference must be spot-based for MuData compilation.
+- **image → spot**: **not implemented** — this is the branch guarded in `DirectMappingAligner.align_dataset` (`is_ref_spot and is_target_image` in the class's internal, inverted vocabulary; recall the orchestrator passes the pipeline reference as the class's `target_modality`, so this decodes to *pipeline reference = image, target = spot*). It corresponds to an image-based reference paired with a spot target, which is an atypical configuration since the reference must be spot-based for MuData compilation. The guard currently **prints a warning and returns no aligned output** for the pair rather than raising; downstream stages then have no aligned coordinates to consume.
 
 ---
 
@@ -81,7 +81,9 @@ Mapped GUI coordinates are rescaled component-wise before persistence:
 x_\text{full}=x_\text{gui}\,s_x,\qquad y_\text{full}=y_\text{gui}\,s_y
 \]
 
-For spot payloads, coordinates are already in physical space and scaling factors are 1.
+In code the factors are stored row-major as `[H₀/H_L, W₀/W_L]` (y-scale first), and applied as
+`x *= factors[1]`, `y *= factors[0]`. For spot payloads, coordinates are already in physical space
+and scaling factors are 1.
 
 ---
 
@@ -96,7 +98,11 @@ For image modalities, display payload construction (`_image_to_rgb_uint8`) is:
 - 3-channel -> unchanged
 - 4+ channels -> NMF reduction to 3 components
 
-This conversion is for visualization only; alignment outputs are stored as coordinates/crops.
+For the 4+-channel case the pixel-by-channel matrix \(V\in\mathbb{R}_{\ge0}^{P\times C}\) is factorized
+as \(V \approx WH\) with \(W\in\mathbb{R}_{\ge0}^{P\times3}\), \(H\in\mathbb{R}_{\ge0}^{3\times C}\) by
+non-negative matrix factorization (`init='nndsvda'`, fixed seed), minimizing
+\(\lVert V-WH\rVert_F^2\); the three \(W\) components are mapped to RGB. This conversion is for
+visualization only; alignment outputs are stored as coordinates/crops.
 
 ---
 

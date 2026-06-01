@@ -26,10 +26,12 @@ This page covers the most common errors encountered when installing and running 
 **Symptom:** The install script prints a message such as:
 
 ```
-CUDA not detected. Installing CPU-only PyTorch.
+No CUDA detected — installing CPU-only PyTorch.
 ```
 
-**Cause:** The script queries `nvcc --version`, `nvidia-smi`, and common HPC module environment variables to detect the CUDA toolkit version. If none of these are available at install time, it falls back to a CPU-only build.
+(On an HPC node where no CUDA toolkit is found, the message is instead `Falling back to CPU-only PyTorch for now.`)
+
+**Cause:** The script queries `nvcc --version`, the `CUDA_HOME`/`CUDA_PATH`/`CUDA_ROOT` environment variables, loaded HPC modules, and `nvidia-smi` to detect the CUDA toolkit version. If none of these are available at install time, it falls back to a CPU-only build.
 
 **Fix:**
 
@@ -59,20 +61,32 @@ If you have a GPU and want to use `feature_extraction` registration:
 
 **Symptom:** FOCUS starts but fails when preprocessing a `raman` modality with an error about a missing conda environment or a missing command.
 
-**Cause:** The auxiliary environments for Raman processing are optional and must be created explicitly during installation.
+**Cause:** Raman processing runs BaSiC illumination correction and ASHLAR stitching in dedicated
+auxiliary conda environments (`FOCUS_BaSiCpy`, `FOCUS_ASHLAR`). If one of these environments was
+not created during installation, Raman preprocessing fails when it tries to invoke it.
 
 **Fix:**
 
-Run the install script and confirm both prompts with `y`:
+The install script creates these environments automatically — one `FOCUS_<name>` environment for
+each subdirectory of `tools/` (`BaSiCpy` and `ASHLAR`); there are no interactive prompts. First
+confirm whether they exist:
 
 ```bash
-bash install.sh
-# When prompted:
-# "Install FOCUS_BaSiCpy environment for Raman BaSiC illumination correction? [y/N]" → y
-# "Install FOCUS_ASHLAR environment for Raman ASHLAR stitching? [y/N]" → y
+conda env list
+# Expect to see: FOCUS, FOCUS_BaSiCpy, FOCUS_ASHLAR
 ```
 
-Also ensure **Java 21** or later is installed and on `PATH`, as ASHLAR requires it.
+If `FOCUS_BaSiCpy` or `FOCUS_ASHLAR` is missing, the tool-environment setup failed during
+installation (commonly a network or conda error). Re-run the installer and watch its output for that
+step:
+
+```bash
+bash install.sh        # macOS/Linux
+install.bat            # Windows
+```
+
+ASHLAR needs Java, but you do not need to install it yourself: the installer provisions OpenJDK
+(from conda-forge) inside the `FOCUS_ASHLAR` environment automatically.
 
 ---
 
@@ -110,9 +124,9 @@ All configuration errors are caught by `parse_config` before any computation sta
 
 ---
 
-### `'...' must be <type>, got <type>`
+### `'<key>' in <context> must be <type>, got <type>`
 
-**Cause:** A field has the wrong JSON type. For example, passing `"true"` (string) instead of `true` (boolean), or `"10"` (string) instead of `10` (number).
+**Cause:** A field has the wrong JSON type. For example, passing `"true"` (string) instead of `true` (boolean), or `"10"` (string) instead of `10` (number). The message names the offending key and its context, e.g. `'perform_alignment' in config must be bool, got str.`
 
 **Fix:** Correct the value's JSON type. Common pitfalls:
 
@@ -196,14 +210,15 @@ dataset_path/
 | `registration_type` | Compatible modality types |
 |---|---|
 | `feature_extraction` | `microscopy_image` only |
-| `spot_interpolation` | `msi`, `st`, `raman` |
+| `spot_interpolation` | `msi`, `st` |
+| `raman_pixel_interpolation` | `raman` |
 | `none` | any |
 
 **Fix:** Adjust `"registration_type"` to a value compatible with the modality's `"type"`.
 
 ---
 
-### `'pre_aligned' cannot be set on the reference modality`
+### `Alignment strategy 'pre_aligned' cannot be set on the reference modality`
 
 **Cause:** You set `"alignment_strategy": "pre_aligned"` on the modality that is also the `reference_modality`. The reference is the coordinate system anchor — it cannot itself be pre-aligned to anything.
 
@@ -211,7 +226,7 @@ dataset_path/
 
 ---
 
-### `'pre_aligned' requires a spot-based reference modality`
+### `Alignment strategy 'pre_aligned' requires a spot-based reference modality`
 
 **Cause:** `"alignment_strategy": "pre_aligned"` requires the reference modality to be spot-based (`msi` or `st`), because pre-alignment assumes the reference's spot coordinates are already expressed in the target modality's coordinate space. Image-based reference modalities (`microscopy_image`, `raman`) have no discrete spot locations and cannot be used with `pre_aligned`.
 
@@ -295,7 +310,10 @@ dataset_path/
 
 **Cause:** The GPU does not have enough VRAM to run the Prov-GigaPath model on the number of patches required by the image.
 
-**What you cannot change:** The patch size is fixed at 224 × 224 pixels — this is a hard requirement of the Prov-GigaPath model and changing it would produce incorrect embeddings. The internal batch size is also not user-configurable.
+**What not to change:** `patch_size` defaults to 224 and is exposed in `registration_settings`, but
+you should leave it at 224 — Prov-GigaPath expects a 224 × 224 input, so reducing it to save memory
+degrades the embeddings rather than being a supported memory knob. The internal batch size (32) **is**
+fixed and not user-configurable, so it cannot be lowered to reduce VRAM either.
 
 **What you can try:**
 
@@ -309,20 +327,26 @@ dataset_path/
 
 ---
 
-### `RuntimeError: No CUDA GPUs are available`
+### `feature_extraction` Registration Is Extremely Slow (No GPU Detected)
 
-**Cause:** `feature_extraction` registration is enabled but PyTorch was installed without CUDA support, or no GPU is visible to the process.
+**Cause:** `feature_extraction` does not hard-require a GPU — it selects CUDA when available and
+otherwise falls back to CPU. Running Prov-GigaPath on CPU works but is impractically slow for
+real images, so a slow `feature_extraction` stage usually means no GPU was visible to the process
+(PyTorch installed without CUDA support, or no GPU allocated).
 
-**Fix:**
+**Fix (to enable GPU acceleration):**
 
 1. Verify GPU visibility: `nvidia-smi`
 2. Verify PyTorch sees the GPU:
    ```python
    import torch
-   print(torch.cuda.is_available())
+   print(torch.cuda.is_available())   # Should be True for GPU acceleration
    ```
 3. If PyTorch shows `False`, reinstall with CUDA support (see [CUDA Not Detected](#cuda-not-detected-cpu-only-pytorch-installed)).
 4. On HPC systems, ensure you have requested a GPU node: `#SBATCH --gres=gpu:1`
+
+If a GPU is genuinely unavailable, set `"registration_type": "none"` for the image modality and work
+with the aligned OME-TIFF outputs directly rather than waiting on CPU feature extraction.
 
 ---
 
@@ -407,14 +431,9 @@ Remove any comments (JSON does not support `//` or `/* */` comments).
 
 ### Large Files Cause Memory Errors During Preprocessing
 
-**Cause:** FOCUS processes one sample at a time — no more than one sample is ever fully loaded in RAM simultaneously — so peak RAM usage scales with the size of a single sample, not the whole dataset. Large tissue sections (high-resolution MSI or Raman data in particular) can individually require very large amounts of RAM.
+**Cause:** FOCUS processes one sample at a time — no more than one sample is ever fully loaded in RAM simultaneously — so peak RAM usage scales with the size of a *single* sample, not the whole dataset. Large, high-resolution sections (MSI or Raman in particular) can individually require many tens of gigabytes of RAM.
 
-**Expected RAM usage:**
-
-- **Typical tissue samples:** 40–50 GB RAM during preprocessing.
-- **Large tissue samples:** up to ~100 GB RAM may be required to process a single sample without errors.
-
-**Fix:** Run FOCUS on a machine with sufficient RAM. There is no configuration parameter that reduces peak RAM usage for a given sample — the memory footprint is determined by the data itself. If the available RAM is insufficient, move the dataset to a machine (or HPC node) with more memory.
+**Fix:** Run FOCUS on a machine with enough RAM for your largest single sample. There is no configuration parameter that reduces peak RAM usage for a given sample — the memory footprint is determined by the data itself. If the available RAM is insufficient, move the dataset to a machine (or HPC node) with more memory.
 
 ---
 

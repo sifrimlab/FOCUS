@@ -61,7 +61,10 @@ graph LR
 #### Dataset Settings
 - **Dataset Path**: Displayed from setup stage
 - **Reference Modality**: Select which modality serves as the coordinate reference
-- **Output Directory**: Where results will be saved (default: `<dataset_path>/merged`)
+
+Outputs are always written back under `dataset_path` (the final dataset lands at
+`<dataset_path>/merged/multimodal_dataset.h5mu`); there is no separate output-directory
+field.
 
 #### Modality Configuration
 
@@ -111,7 +114,6 @@ graph LR
 
 **Preprocessing:**
 - **Force Recomputing**: Reprocess all files even if cached
-- **Parallel Processing**: Number of CPU cores to use
 
 **Alignment:**
 - **Perform Alignment**: Enable/disable alignment stage
@@ -126,19 +128,14 @@ graph LR
 **Feature Extraction Settings (GPU only):**
 - **Patch Size**: Size of image patches (default: 224)
 - **Background Color**: White or black background handling
-- **Min/Max Rescale**: Normalize patch intensities
 
-**Spot Interpolation Settings:**
-- **K Neighbors**: Number of nearest neighbors
-- **Max Distance**: Maximum interpolation distance
-- **Weighting**: Distance weighting function
+Spot-interpolation registration is parameter-free in the GUI — the interpolation
+neighbourhood is derived automatically from each modality's spot size.
 
 #### Advanced Settings
 
-- **Logging Level**: Debug/Info/Warning/Error
-- **Temp Directory**: Location for temporary files
-- **Cache Directory**: Location for cached intermediate results
-- **HuggingFace Token**: Required for feature extraction registration
+- **HuggingFace Token**: Required for `feature_extraction` registration (used to
+  download the Prov-GigaPath model weights)
 
 **Actions:**
 1. Configure all desired modalities
@@ -206,9 +203,9 @@ graph LR
 - Preprocessed files for each modality
 - Aligned coordinate files
 - Registered feature matrices
-- Final MuData file
-- Log files
-- Configuration file (saved copy)
+- Final MuData file (`<dataset_path>/merged/multimodal_dataset.h5mu`)
+- The run log file (`<dataset_path>/focus.log`)
+- Configuration file (`<dataset_path>/focus_config.json`)
 
 **Actions:**
 1. Review output file list
@@ -404,29 +401,6 @@ The JSON configuration file contains:
 
 See [Configuration Reference](../configuration/config_fields.md) for detailed field explanations.
 
-## GUI Settings and Preferences
-
-### Display Settings
-
-- **Theme**: Light/Dark mode toggle
-- **Font Size**: Adjust interface text size
-- **Language**: English (default)
-- **Animations**: Enable/disable interface animations
-
-### Performance Settings
-
-- **CPU Cores**: Limit CPU usage
-- **Memory Limit**: Set maximum memory usage
-- **Cache Size**: Control disk cache size
-- **GPU Selection**: Choose specific GPU (multi-GPU systems)
-
-### Advanced Settings
-
-- **Logging Level**: Debug/Info/Warning/Error
-- **Temp Directory**: Custom temporary file location
-- **Proxy Settings**: Configure network proxy
-- **Timeout Settings**: Adjust network timeouts
-
 ## Troubleshooting GUI Issues
 
 ### Common Problems
@@ -448,9 +422,10 @@ See [Configuration Reference](../configuration/config_fields.md) for detailed fi
 
 ### Logs and Debugging
 
-- **GUI Logs**: Located in `~/.focus/gui_logs/`
-- **Pipeline Logs**: In dataset directory under `logs/`
-- **Browser Console**: Press F12 in browser for frontend errors
+- **Run log**: A single log file is written to `<dataset_path>/focus.log` (always at
+  DEBUG level). Start the GUI with `focus --debug` to also show DEBUG output, including
+  werkzeug HTTP request logs, in the terminal.
+- **Browser Console**: Press F12 in the browser for frontend errors
 - **Network Tab**: Check API requests/responses
 
 ### Error Messages
@@ -493,47 +468,6 @@ See [Configuration Reference](../configuration/config_fields.md) for detailed fi
 3. **Zoom for Precision**: Use maximum zoom for critical areas
 4. **Verify Coverage**: Ensure entire tissue is aligned
 
-## Keyboard Shortcuts
-
-| Shortcut | Action |
-|----------|--------|
-| `Ctrl+O` | Load configuration |
-| `Ctrl+N` | New configuration |
-| `Ctrl+R` | Start pipeline (same as **Start Processing** button) |
-| `Ctrl+Q` | Quit GUI |
-| `Ctrl+F` | Search in logs |
-| `Ctrl++` | Zoom in |
-| `Ctrl+-` | Zoom out |
-| `Ctrl+0` | Reset zoom |
-
-*Note: Configuration is automatically saved as you make changes; no manual save action is required.*
-
-## Browser Compatibility
-
-| Browser | Supported | Notes |
-|---------|-----------|-------|
-| Chrome | ✅ | Recommended |
-| Firefox | ✅ | Full support |
-| Safari | ✅ | macOS only |
-| Edge | ✅ | Chromium-based |
-| Opera | ✅ | Chromium-based |
-| Internet Explorer | ❌ | Not supported |
-
-## Mobile/Tablet Access
-
-- **Not officially supported** but may work on tablets
-- **Minimum screen size**: 1024x768 pixels
-- **Touch support**: Basic functionality available
-- **Recommended**: Use desktop/laptop for full functionality
-
-## Accessibility Features
-
-- **Keyboard Navigation**: Full keyboard support
-- **Screen Reader**: ARIA labels for all elements
-- **High Contrast**: Available in display settings
-- **Font Scaling**: Adjustable text size
-- **Color Blind**: Alternative color schemes available
-
 ## Next Steps
 
 Now that you're familiar with the GUI:
@@ -541,7 +475,7 @@ Now that you're familiar with the GUI:
 1. **Try the CLI**: Explore [CLI Usage](cli_usage.md) for automated execution
 2. **Learn Configuration**: Deep dive into [Configuration Reference](../configuration/config_fields.md)
 3. **Understand Pipeline**: Read about [Pipeline Stages](../pipeline/preprocessing.md)
-4. **Run Examples**: Try with sample datasets
+4. **Prepare your data**: See [Preparing Your Data](../user_guide/data_preparation.md)
 
 ## Support
 

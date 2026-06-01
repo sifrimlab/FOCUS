@@ -112,13 +112,15 @@ Place exactly one `.lif` (Leica Image Format) file per sample inside the modalit
 Multi-tile LIF files are fully supported. FOCUS assembles the individual tiles into a single mosaic image using ASHLAR and applies BaSiCpy flat-field correction before writing the output OME-TIFF.
 
 !!! warning "Raman requires auxiliary conda environments"
-    The Raman preprocessing stage depends on two additional conda environments: `FOCUS_BaSiCpy` and `FOCUS_ASHLAR`. These are **not** created by the default `install.sh` invocation. Run the installer with the `--raman` flag to include them:
+    The Raman preprocessing stage depends on two additional conda environments,
+    `FOCUS_BaSiCpy` and `FOCUS_ASHLAR`. These are created automatically by the default
+    installer — `install.sh` (or `install.bat`) scans the `tools/` directory and builds
+    one `FOCUS_<Name>` environment per subfolder, installing OpenJDK into `FOCUS_ASHLAR`
+    for tile stitching. No extra flag is required.
 
-    ```bash
-    bash install.sh --raman
-    ```
-
-    If these environments are absent, FOCUS will raise an error when it encounters a Raman modality.
+    If these environments are absent (for example, after a partial install), re-run the
+    installer with `--reinstall`. FOCUS raises an error when it encounters a Raman
+    modality and the environments are missing.
 
 ---
 
@@ -145,7 +147,7 @@ Place exactly one AnnData file (`.h5ad`) per sample inside the modality director
 
 | Slot | Description |
 |------|-------------|
-| `.uns['spot_size']` | Physical spot diameter in µm: scalar, list `[w, h]`, or 1-D array. **Required field**. If absent, FOCUS applies default `[1.0, 1.0]` µm. This field is automatically extracted by FOCUS during preprocessing and used during registration. |
+| `.uns['spot_size']` | Physical spot size in µm: scalar, list `[w, h]`, or 1-D array (normalised internally to a float32 `(2,)` array). **Optional but strongly recommended.** If absent, FOCUS falls back to `[1.0, 1.0]` µm — which makes the physical footprint used during registration meaningless, so provide the real spot size whenever possible. Used during the registration stage. |
 
 If `.X` is a dense array, FOCUS will convert it to sparse CSR automatically during loading.
 
@@ -175,6 +177,9 @@ If you want FOCUS to propagate spatial region labels (e.g., tissue compartments,
 - Coordinates are interpreted as pixel values in the same coordinate space as the image.
 
 The annotation modality and file type are declared in the config under the `spatial_annotations` key (see the [Configuration guide](configuration.md)).
+
+!!! warning "Alignment required for non-reference annotation modalities"
+    If the annotation modality is **not** the reference modality, you must enable `perform_alignment`. The transfer reads the aligned coordinates produced by the alignment stage to place each spot into the GeoJSON's pixel space; without alignment, validation fails.
 
 !!! tip "Exporting from QuPath"
     QuPath's *Annotations → Export as GeoJSON* produces a file that is directly compatible with FOCUS. Make sure to check "Include classification" when exporting so that `classification.name` is populated.

@@ -50,10 +50,14 @@ FOCUS is an end-to-end pipeline for integrating spatial multiomics data from mul
 
 **1. Install FOCUS**
 
+FOCUS is installed from source — clone the repository and run the installer, which
+creates a `FOCUS` conda environment and registers the `focus` command:
+
 ```bash
-conda create -n focus python=3.11
-conda activate focus
-pip install focus-spatial
+git clone https://github.com/sifrimlab/FOCUS.git
+cd FOCUS
+bash install.sh          # Windows: install.bat
+conda activate FOCUS
 ```
 
 See the full [Installation Guide](installation.md) for container and HPC options.
@@ -65,7 +69,7 @@ Organize raw files into the standard directory layout:
 ```
 dataset/
 ├── sample_001/
-│   ├── microscopy/   # .tiff or .czi
+│   ├── microscopy/   # .tiff / .tif / .ome.tiff / .czi
 │   ├── msi/          # pos/ and/or neg/ with .imzML + .ibd
 │   ├── raman/        # .lif
 │   └── st/           # .h5ad
@@ -80,18 +84,19 @@ See [Directory Structure](overview.md#directory-structure-convention) for the fu
 === "GUI"
 
     ```bash
-    focus-gui
+    focus
     ```
 
-    Open `http://localhost:5050` in your browser, load or build a configuration, then press **Run**.
+    Running `focus` with no arguments starts the web GUI. Open `http://localhost:5050`
+    in your browser, load or build a configuration, then press **Start Processing**.
 
 === "CLI"
 
     ```bash
-    focus run --config my_config.json
+    focus --config my_config.json
     ```
 
-    All four pipeline stages run automatically. Results are written to `dataset/merged/multimodal_dataset.h5mu`.
+    All pipeline stages run automatically. Results are written to `dataset/merged/multimodal_dataset.h5mu`.
 
 ---
 

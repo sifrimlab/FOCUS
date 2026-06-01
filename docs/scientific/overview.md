@@ -56,7 +56,8 @@ where row \(i\) corresponds to reference observation \(i\).
 For each target modality \(T\), FOCUS computes a feature vector at each aligned reference location.
 
 - `feature_extraction` (`microscopy_image`): deep patch embeddings (Prov-GigaPath).
-- `spot_interpolation` (`msi`, `st`, current `raman`): Gaussian-weighted interpolation over local target spots.
+- `spot_interpolation` (`msi`, `st`): Gaussian-weighted interpolation over local target spots.
+- `raman_pixel_interpolation` (`raman`): the same Gaussian interpolation over hyperspectral OME-TIFF pixels (temporary, pending a Raman-specific feature extractor).
 
 Generic interpolation form:
 
@@ -74,6 +75,10 @@ Compilation to MuData is conditional:
 
 - Reference modality is spot-based (`msi` or `st`), and
 - At least one non-reference modality has `registration_type != "none"`.
+
+These two conditions are equivalent to the "`perform_registration` is `true` **and** the reference
+modality is spot-based" gate described in [Compilation](../pipeline/compilation.md), since
+`perform_registration` is effectively "at least one modality is registered".
 
 When compiled, modalities share a harmonized observation index and top-level spatial metadata.
 

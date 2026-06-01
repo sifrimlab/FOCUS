@@ -26,7 +26,7 @@ class MainGUI:
 	Main FOCUS GUI backend.
 
 	Serves a Vue.js frontend for interactive config building and pipeline monitoring.
-	Runs on localhost:5000.
+	Runs on localhost:5050 by default (see start()).
 	"""
 
 	def __init__(self, debug: bool = False):

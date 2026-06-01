@@ -1,394 +1,250 @@
 # Installation Guide
 
+FOCUS is distributed as a **source repository**, not a PyPI package. You install it
+by cloning the repository and running the provided installer, which creates a conda
+environment named `FOCUS` and registers a single `focus` command. There is no
+`pip install focus` from PyPI.
+
+This page is an overview. For full, platform-specific detail see:
+
+- [Host Machine Install](deployment/local.md) — the recommended path for most users
+- [Containers (Docker / Podman / Singularity)](deployment/containers.md)
+- [HPC & Headless Servers](deployment/hpc.md)
+
+---
+
 ## System Requirements
 
-### Minimum Requirements
+| Component | Requirement | Notes |
+|-----------|-------------|-------|
+| **Operating System** | Windows 10/11, macOS 12+, Linux (Ubuntu 20.04+) | |
+| **Python** | 3.11 | Created and managed for you by conda |
+| **Conda** | Miniconda or Anaconda | Required — the installer builds a conda env |
+| **RAM** | 64 GB recommended; up to ~100 GB for large tissue samples | Peak usage scales with a single sample, not the whole dataset |
+| **Storage** | 20 GB+ free | For the conda environments and intermediate outputs |
+
+### GPU (optional)
+
+GPU acceleration is required **only** for the `feature_extraction` registration type,
+which downloads and runs the Prov-GigaPath deep-learning model. All other pipeline
+stages run on CPU.
 
 | Component | Requirement | Notes |
 |-----------|-------------|-------|
-| **Operating System** | Windows 10/11, macOS 10.15+, Linux (Ubuntu 20.04+, CentOS 7+) | |
-| **CPU** | x86_64 or ARM64 | Apple Silicon supported |
-| **RAM** | 64 GB recommended; up to 100 GB for large tissue samples | Peak usage scales with a single sample, not the full dataset |
-| **Storage** | 20GB free space | For conda environments and data |
-| **Python** | 3.11 | Automatically installed |
-| **Conda** | Miniconda or Anaconda | Required for environment management |
+| **GPU** | NVIDIA with CUDA 11.8+ | AMD/Intel GPUs and Apple Silicon (no CUDA/MPS) are not supported for this stage |
+| **Driver** | Recent NVIDIA driver | The installer auto-detects the CUDA version and picks the matching PyTorch wheel |
 
-### GPU Requirements (Optional)
+---
 
-For **feature extraction registration** using deep learning:
+## Method 1: Host Machine Installation (recommended)
 
-| Component | Requirement | Notes |
-|-----------|-------------|-------|
-| **GPU** | NVIDIA GPU with CUDA support | AMD/Intel GPUs not supported |
-| **CUDA** | CUDA 11.8+ | |
-| **Driver** | Latest NVIDIA drivers | |
-| **VRAM** | 8GB+ recommended | For large images |
+### Step 1 — Install conda
 
-> **Note**: GPU acceleration is **optional**. All other pipeline stages run on CPU and work without GPU.
+If conda is not already available, install [Miniconda](https://docs.conda.io/en/latest/miniconda.html)
+or [Anaconda](https://www.anaconda.com/download).
 
-## Installation Methods
+!!! tip "Windows users"
+    Use the **Anaconda Prompt** (or a PowerShell session with conda initialised) for
+    every step below. The plain Command Prompt does not have conda on its PATH.
 
-FOCUS can be installed in several ways:
-
-1. **Host Machine Installation** (Recommended for most users)
-2. **Container Deployment** (For reproducibility and HPC)
-3. **Manual Installation** (For developers)
-
-## Method 1: Host Machine Installation
-
-### Step 1: Install Conda
-
-FOCUS requires Conda for environment management. Install [Miniconda](https://docs.conda.io/en/latest/miniconda.html) or [Anaconda](https://www.anaconda.com/download):
-
-**Linux/macOS:**
-```bash
-# Download and install Miniconda
-wget https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh
-bash Miniconda3-latest-Linux-x86_64.sh
-
-# Follow the installer prompts
-source ~/.bashrc  # or restart your terminal
-```
-
-**Windows:**
-1. Download the [Miniconda installer](https://docs.conda.io/en/latest/miniconda.html)
-2. Run the installer with default settings
-3. Open **Anaconda Prompt** (not regular Command Prompt)
-
-### Step 2: Clone FOCUS Repository
+### Step 2 — Clone the repository
 
 ```bash
 git clone https://github.com/sifrimlab/FOCUS.git
 cd FOCUS
 ```
 
-### Step 3: Run Installation Script
+### Step 3 — Run the install script
 
-**Linux/macOS:**
-```bash
-bash install.sh
-```
+=== "macOS / Linux"
 
-**Windows:**
-```batch
-install.bat
-```
+    ```bash
+    bash install.sh
+    ```
 
-The installation script will:
-1. Create a `FOCUS` conda environment with all dependencies
-2. Register the `focus` command for easy access
-3. Optionally create auxiliary environments for Raman processing (`FOCUS_ASHLAR`, `FOCUS_BaSiCpy`)
+=== "Windows"
 
-### Step 4: Activate Environment
+    ```bat
+    install.bat
+    ```
+
+The script:
+
+1. Verifies conda is available.
+2. Detects your system CUDA version (via `nvcc`, `nvidia-smi`, or Lmod module
+   variables) and installs a matching PyTorch build from `download.pytorch.org/whl/`.
+   PyTorch is **not** listed in `requirements.txt`; it is installed separately so the
+   CUDA-bundled wheels do not conflict with the system CUDA on HPC nodes.
+3. Creates a `FOCUS` conda environment (Python 3.11) and installs the dependencies
+   from `requirements.txt`.
+4. Installs the `focus` package in editable mode (`pip install -e .`), registering the
+   `focus` command.
+5. Scans the `tools/` directory and creates one auxiliary environment per subfolder —
+   currently `FOCUS_ASHLAR` and `FOCUS_BaSiCpy` (both Python 3.11), used for Raman
+   spectroscopy preprocessing. OpenJDK is installed into `FOCUS_ASHLAR` automatically.
+
+These auxiliary environments are created by the default installer invocation; no extra
+flag is needed.
+
+### Step 4 — Activate the environment
 
 ```bash
 conda activate FOCUS
 ```
 
-### Step 5: Verify Installation
+### Step 5 — Verify
 
 ```bash
 focus --help
 ```
 
-You should see the FOCUS help message.
+You should see the FOCUS usage message listing the `--config` and `--debug` options.
+
+---
 
 ## Method 2: Container Deployment
 
-### Docker/Podman Installation
-
-#### Prerequisites
-
-- [Docker Desktop](https://www.docker.com/products/docker-desktop) or [Podman](https://podman.io/)
-- Docker/Podman must be running
-
-#### Build Container Image
+FOCUS ships a `Dockerfile`, a Singularity/Apptainer definition (`focus.def`), and
+launcher scripts (`focus-container.sh` for macOS/Linux/WSL2, `focus-container.ps1`
+for Windows PowerShell). Containers are ideal for reproducibility, machines without
+conda, and HPC.
 
 ```bash
-docker build -t focus .
-# or
-podman build -t focus .
+# Build and run the GUI (opens http://localhost:5050)
+bash focus-container.sh --build --mount /path/to/your/data
+
+# CLI mode — everything after `--` is passed to the focus command inside the container
+bash focus-container.sh --mount /path/to/your/data -- --config /path/to/your/data/project/focus_config.json
 ```
 
-#### Run FOCUS Container
+See [Containers (Docker / Podman / Singularity)](deployment/containers.md) for the full
+flag reference, GPU options, Windows/PowerShell usage, and Singularity/Apptainer builds.
 
-Use the provided launcher script:
+---
+
+## Reinstalling and Updating
+
+To wipe and recreate all environments from scratch:
+
+=== "macOS / Linux"
+
+    ```bash
+    bash install.sh --reinstall
+    ```
+
+=== "Windows"
+
+    ```bat
+    install.bat --reinstall
+    ```
+
+`--reinstall` is the only flag the install scripts accept. To update an existing
+checkout:
 
 ```bash
-bash focus-container.sh --mount /path/to/your/data
+cd FOCUS
+git pull origin main
+bash install.sh --reinstall    # or install.bat --reinstall on Windows
 ```
 
-**Options:**
-- `--mount`: Mount your data directory (required)
-- `--runtime`: Specify container runtime (`docker`, `podman`, `singularity`)
-- `--gpu`: Enable GPU support
-- `--build`: Build image before running
+---
 
-**Examples:**
+## GPU and PyTorch on HPC
+
+The installer auto-detects CUDA and installs a matching PyTorch build. On HPC clusters
+you may need to `module load cuda` before running it, or pin a known-good PyTorch
+version via the `TORCH_VERSION` environment variable:
 
 ```bash
-# GUI mode
-bash focus-container.sh --mount /data/mylab
-
-# CLI mode with config file
-bash focus-container.sh --mount /data/mylab -- --config /data/mylab/project/focus_config.json
-
-# With GPU support
-bash focus-container.sh --gpu --mount /data/mylab
+module load cuda
+TORCH_VERSION=2.9.0 bash install.sh --reinstall
 ```
 
-### Singularity/Apptainer Installation (HPC)
+`TORCH_VERSION` is the only FOCUS-specific environment variable, and it is only read at
+install time. See [Local Installation — Troubleshooting PyTorch / CUDA on HPC](deployment/local.md#troubleshooting-pytorch-cuda-on-hpc)
+for CUDA detection details and the SIGBUS workaround.
 
-#### Prerequisites
+A HuggingFace token is required the first time the `feature_extraction` registration is
+used, to download the Prov-GigaPath model weights. Provide it via the `huggingface_token`
+field in your config, or in the GUI configuration panel.
 
-- Singularity 3.8+ or Apptainer 1.1+
-- Root access may be required for building
+---
 
-#### Build Container Image
+## Developer (manual) installs
 
-```bash
-singularity build focus.sif focus.def
-# or
-apptainer build focus.sif focus.def
-```
+The install scripts already perform an editable install (`pip install -e .`), so a
+separate manual procedure is rarely needed. If you do install by hand into your own
+environment, remember that **PyTorch, torchvision, timm, and huggingface-hub are not in
+`requirements.txt`** — they are installed by `install.sh` from the CUDA-matched wheel
+index. A bare `pip install -r requirements.txt && pip install -e .` will leave the
+`feature_extraction` stage non-functional until you install a matching PyTorch build
+yourself (see the [PyTorch / CUDA notes](deployment/local.md#troubleshooting-pytorch-cuda-on-hpc)).
 
-#### Run FOCUS Container
+---
 
-```bash
-# CLI mode
-singularity run --bind /scratch/mylab focus.sif --config /scratch/mylab/project/focus_config.json
+## Preparing Your Data
 
-# GUI mode (requires SSH tunnel)
-singularity run --bind /scratch/mylab focus.sif
-```
-
-## Method 3: Manual Installation (Developers)
-
-### Step 1: Create Conda Environment
-
-```bash
-conda create -n FOCUS python=3.11
-conda activate FOCUS
-```
-
-### Step 2: Install Dependencies
-
-```bash
-# Install core dependencies
-pip install -r requirements.txt
-
-# Install FOCUS in development mode
-pip install -e .
-```
-
-### Step 3: Install Optional Dependencies
-
-For Raman processing:
-```bash
-# Create auxiliary environments
-conda create -n FOCUS_ASHLAR python=3.9
-conda create -n FOCUS_BaSiCpy python=3.11
-
-# Install ASHLAR in FOCUS_ASHLAR environment
-conda activate FOCUS_ASHLAR
-pip install ashlar
-
-# Install BaSiC in FOCUS_BaSiCpy environment  
-conda activate FOCUS_BaSiCpy
-pip install basicpy
-```
-
-## Platform-Specific Instructions
-
-### Windows
-
-1. **Use Anaconda Prompt**: Always use **Anaconda Prompt** (not regular Command Prompt or PowerShell)
-2. **Install Conda**: Download and install [Miniconda for Windows](https://docs.conda.io/en/latest/miniconda.html)
-3. **Run Installation**:
-   ```batch
-   install.bat
-   ```
-4. **Container Usage**: Use the PowerShell script:
-   ```powershell
-   .\focus-container.ps1 -Mount C:\data\mylab
-   ```
-
-### macOS
-
-1. **Install Xcode Tools**: Ensure Xcode command line tools are installed:
-   ```bash
-   xcode-select --install
-   ```
-2. **Install Conda**: Use the macOS Miniconda installer
-3. **GPU Limitations**: Feature extraction registration is not supported on Apple Silicon (no CUDA)
-
-### Linux (Desktop)
-
-1. **Install Dependencies**:
-   ```bash
-   # Ubuntu/Debian
-   sudo apt update
-   sudo apt install git wget
-   
-   # CentOS/RHEL
-   sudo yum install git wget
-   ```
-2. **Install Conda**: Follow standard Miniconda installation
-3. **GPU Setup**: Install NVIDIA drivers and CUDA toolkit for GPU support
-
-### HPC/Headless Servers
-
-1. **Use Singularity**: Most HPC clusters support Singularity/Apptainer
-2. **Build Locally**: Build the container on your local machine and transfer the `.sif` file
-3. **Batch Jobs**: Use the provided SLURM example for batch processing
-4. **SSH Tunneling**: For GUI access on remote servers:
-   ```bash
-   # On local machine
-   ssh -L 5050:localhost:5050 username@hpc-cluster
-   
-   # On HPC cluster
-   singularity run --bind /scratch/mylab focus.sif
-   ```
-
-## Post-Installation Setup
-
-### Environment Variables
-
-FOCUS automatically sets up required environment variables during installation. No manual configuration needed.
-
-### HuggingFace Token (Optional)
-
-For **feature extraction registration**, you need a HuggingFace token:
-
-1. Create an account at [https://huggingface.co/](https://huggingface.co/)
-2. Generate a token in your account settings
-3. The token will be requested when you run feature extraction registration
-
-> **Note**: The token is only used to download the Prov-GigaPath model and is cached locally after first use.
-
-### Data Directory Structure
-
-Prepare your data directory following the [expected structure](overview.md#directory-structure-convention):
+FOCUS expects a two-level directory layout under your `dataset_path`: each first-level
+subdirectory is a sample, and each second-level subdirectory must be named exactly
+after a modality `name` in your config (case-sensitive).
 
 ```
-dataset_path/
+<dataset_path>/
 ├── sample_001/
-│   ├── microscopy/		# Raw microscopy images
-│   └── msi/			# Raw MSI data
-├── sample_002/
-│   ├── microscopy/
-│   └── msi/
-└── ...
+│   ├── microscopy/      # .tiff / .tif / .ome.tiff / .ome.tif / .czi
+│   ├── msi/             # pos/ (and optionally neg/), each with .imzML + .ibd
+│   ├── raman/           # .lif
+│   └── st/              # .h5ad
+└── sample_002/
+    └── ...
 ```
 
-## Troubleshooting Installation
+FOCUS writes its outputs (including the final `merged/multimodal_dataset.h5mu`) back
+into `dataset_path`; you do not create output directories yourself. See
+[Preparing Your Data](user_guide/data_preparation.md) for the full per-modality file
+requirements.
 
-### Common Issues
-
-**Issue: `conda: command not found`**
-- **Solution**: Restart your terminal or run `source ~/.bashrc` (Linux/macOS)
-- **Windows**: Use Anaconda Prompt instead of regular Command Prompt
-
-**Issue: Installation script fails**
-- **Solution**: Run with `--reinstall` flag:
-  ```bash
-  bash install.sh --reinstall
-  ```
-
-**Issue: Docker/Podman permission denied**
-- **Solution**: Add your user to the docker group:
-  ```bash
-  sudo usermod -aG docker $USER
-  newgrp docker
-  ```
-
-**Issue: GPU not detected in container**
-- **Solution**: Use the `--gpu` flag and ensure NVIDIA Container Toolkit is installed
-
-### Logs and Debugging
-
-- **Installation logs**: Check `focus_install.log` in the FOCUS directory
-- **Pipeline logs**: Located in your dataset directory under `logs/`
-- **Verbose mode**: Add `-v` flag to see detailed output
+---
 
 ## Uninstallation
 
-### Host Installation
-
 ```bash
-# Deactivate and remove conda environment
 conda deactivate
 conda env remove -n FOCUS
 conda env remove -n FOCUS_ASHLAR
 conda env remove -n FOCUS_BaSiCpy
-
-# Remove FOCUS directory
 rm -rf FOCUS
 ```
 
-### Container Installation
+For containers, remove the image (`docker rmi focus` / `podman rmi focus`) and any
+`focus.sif` file.
 
-```bash
-# Remove container images
-docker rmi focus
-podman rmi focus
-rm focus.sif
+---
 
-# Remove FOCUS directory
-rm -rf FOCUS
-```
+## Troubleshooting
 
-## Updating FOCUS
+**`conda: command not found`** — restart your terminal or `source ~/.bashrc` (Linux/macOS);
+on Windows use the Anaconda Prompt.
 
-### Host Installation
+**Install script fails or the env is broken** — re-run with `bash install.sh --reinstall`
+(`install.bat --reinstall` on Windows).
 
-```bash
-cd FOCUS
-git pull origin main
-bash install.sh --reinstall
-```
+**`focus: command not found`** — make sure you ran `conda activate FOCUS`; if the package
+step failed, re-run the installer with `--reinstall`.
 
-### Container Installation
+**PyTorch crashes on import / CUDA not detected on HPC** — see
+[Local Installation — Troubleshooting PyTorch / CUDA on HPC](deployment/local.md#troubleshooting-pytorch-cuda-on-hpc).
 
-```bash
-cd FOCUS
-git pull origin main
-bash focus-container.sh --build --mount /path/to/data
-```
+See the [Troubleshooting Guide](troubleshooting.md) for more.
 
-## Verification
-
-After installation, verify everything works:
-
-```bash
-# Activate environment
-conda activate FOCUS
-
-# Check FOCUS command
-focus --help
-
-# Test with sample data (if available)
-focus --config /path/to/sample_config.json
-```
+---
 
 ## Next Steps
 
-Now that FOCUS is installed, you can:
+1. **Try the GUI** — run `focus` to start the interactive interface at `http://localhost:5050`.
+2. **Use the CLI** — see the [CLI Usage Guide](quick_start/cli_usage.md) and
+   [CLI Reference](user_guide/cli_reference.md).
+3. **Prepare your data** — see [Preparing Your Data](user_guide/data_preparation.md).
+4. **Learn configuration** — read [Config Structure](configuration/config_structure.md).
 
-1. **Try the GUI**: Run `focus` to start the interactive interface
-2. **Explore CLI**: Check the [CLI Usage Guide](quick_start/cli_usage.md)
-3. **Learn Configuration**: Read about [Configuration Files](configuration/config_structure.md)
-4. **Run Examples**: Try with sample datasets if available
-
-## Support
-
-If you encounter issues:
-
-1. **Check logs**: Review installation and pipeline logs
-2. **Consult documentation**: See [Troubleshooting Guide](troubleshooting.md)
-3. **GitHub Issues**: Report bugs on the GitHub repository
-4. **Community**: Ask questions in GitHub discussions
-
-## License
-
-FOCUS is released under the MIT License. See the [LICENSE](https://github.com/sifrimlab/FOCUS/blob/main/LICENSE) on GitHub for details.
+FOCUS is released under the MIT License.

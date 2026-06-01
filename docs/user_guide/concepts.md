@@ -58,10 +58,11 @@ The reference modality is typically chosen as the modality with the lowest spati
 
 **Registration** is the third pipeline stage. It uses the alignment transforms computed in the previous stage to map the feature content of each modality onto the reference coordinate grid, producing one AnnData per modality in which every observation corresponds to the same reference spot.
 
-FOCUS implements two registration strategies:
+FOCUS implements three registration strategies, one per non-reference workflow:
 
-- **Feature extraction** (image modalities): a square patch centered at each reference spot is extracted from the OME-TIFF and encoded by a pretrained vision model into a dense embedding vector.
-- **Spot interpolation** (omics modalities): reference spot coordinates are expressed in the target modality's coordinate space; the feature vector at each reference location is computed as a Gaussian-weighted average of the $k$ nearest target spots.
+- **Feature extraction** (`microscopy_image`): a square patch centered at each reference spot is extracted from the OME-TIFF and encoded by a pretrained vision model (Prov-GigaPath) into a dense embedding vector.
+- **Spot interpolation** (`msi`, `st`): reference spot coordinates are expressed in the target modality's coordinate space; the feature vector at each reference location is a Gaussian-weighted average of the target spots that fall within the reference spot's footprint.
+- **Raman pixel interpolation** (`raman`): the same Gaussian footprint interpolation applied to the pixels of the hyperspectral OME-TIFF — a temporary approach pending a Raman-specific feature extractor.
 
 See the [Registration](../pipeline/registration.md) page for algorithm details.
 
@@ -116,7 +117,7 @@ FOCUS supports:
 **`spot_size`** is the physical footprint of a single spot or pixel, expressed as $[\text{width}, \text{height}]$ in micrometers ($\mu\text{m}$). It is the canonical keyword for spot/pixel dimensions throughout FOCUS:
 
 - Stored in `.uns['spot_size']` of every omics AnnData file as a `float32` array of shape `(2,)`
-- Used during spot interpolation registration to set the radius of the Gaussian kernel: a larger `spot_size` includes more neighboring spots in the weighted average
+- Used during spot/pixel interpolation registration (`spot_interpolation`, `raman_pixel_interpolation`) to set the footprint and the radius of the Gaussian kernel: a larger `spot_size` includes more neighboring spots/pixels in the weighted average
 - Carried forward to the final MuData `.uns['spot_size']`, where it reflects the reference modality's spot dimensions
 
 **Automatic vs. manual specification:**

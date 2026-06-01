@@ -107,14 +107,14 @@ The final output is written to `{dataset_path}/merged/multimodal_dataset.h5mu`.
 
 | Attribute | Type | Description |
 |-----------|------|-------------|
-| `.mod['{modality_name}']` | AnnData | Registered AnnData for each modality (schema as in Section 3) |
-| `.obsm['spatial']` | float32 ndarray | Shared reference coordinates, shape $(n_\text{ref\_total},\ 2)$ |
+| `.mod['{modality_name}']` | AnnData | Per-modality AnnData (schema as in Section 3), **except** that `obsm['spatial']` and `uns['spot_size']` are removed (they live at the top level) and `var_names` are namespaced as `{modality}:{name}` |
+| `.obsm['spatial']` | float32 ndarray | Shared reference coordinates, shape $(n_\text{obs},\ 2)$ |
 | `.obs['sample_id']` | categorical | Shared sample identifiers across all modalities |
 | `.obs['spatial_annotation']` | categorical | Region labels transferred from GeoJSON annotations (present only when annotation transfer is enabled) |
-| `.uns['spot_size']` | dict | Spot-size metadata copied from the reference merged AnnData (typically per-sample values) |
+| `.uns['spot_size']` | float32 ndarray | Length-2 `[width, height]` in µm, copied verbatim from the reference (anchor) merged AnnData; present only if the reference had it |
 
 !!! note "Observation alignment"
-    `.obs_names` in each included `.mod` AnnData are harmonized so that `.mod['{modality_name}'][i]` and `.mod['{other_modality}'][i]` refer to the same reference spot location. Modalities with mismatched observation counts are skipped during MuData compilation.
+    `.obs_names` in each included `.mod` AnnData are harmonized so that `.mod['{modality_name}'][i]` and `.mod['{other_modality}'][i]` refer to the same reference spot location. A modality is included only if its rows align to the reference — its observation count must match and its `sample_id` sequence must match the reference element-wise; otherwise it is skipped with a warning. Reference spots that are uncovered (all-zero features) in any modality are dropped from every modality, so `n_obs` may be smaller than the reference spot count. See [Compilation](../pipeline/compilation.md).
 
 ---
 
@@ -139,9 +139,9 @@ sample_ids = mdata.obs["sample_id"]
 # Spatial region annotations (if annotations were enabled)
 annotations = mdata.obs["spatial_annotation"]
 
-# Downstream analysis with squidpy
+# Downstream analysis with squidpy (feature names are namespaced as {modality}:{name})
 import squidpy as sq
-sq.pl.spatial_scatter(mdata.mod["st"], color="leiden")
+sq.pl.spatial_scatter(mdata.mod["st"], color="st:leiden")
 
 # Access feature embeddings from microscopy registration
 microscopy_embeddings = mdata.mod["microscopy"].X  # (n_spots, 1536)

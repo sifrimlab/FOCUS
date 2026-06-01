@@ -65,17 +65,21 @@ dataset_root/
 
 1. **Load and validate** — the first `.h5ad` file in the sample directory is loaded. FOCUS asserts that `.obsm['spatial']` exists and casts it to `float32`. The spot size is read from `.uns['spot_size']` and normalised to a `(2,)` `float32` array; missing values default to `[1.0, 1.0]`. The expression matrix `.X` is converted to sparse CSR format if it is not already sparse.
 
-2. **QC metric computation** — mitochondrial genes are identified by the `MT-` prefix (case-insensitive). `scanpy.pp.calculate_qc_metrics` computes per-spot `n_counts`, `n_genes_by_counts`, `total_counts`, and `pct_counts_mt`, which are stored in `.obs`.
+2. **Mitochondrial flag** — mitochondrial genes are flagged in `.var['mt']` by a case-insensitive `MT-`/`MT.` name prefix (datasets keyed by Ensembl IDs are not flagged).
 
-3. **Spot filtering** — spots failing any of the four optional count/gene thresholds are removed with `scanpy.pp.filter_cells`. All thresholds default to `None` (disabled). Observation names are prefixed with `<sample_id>_` to ensure uniqueness across samples.
+3. **Spot filtering** — spots failing any of the four optional count/gene thresholds are removed with `scanpy.pp.filter_cells`. All thresholds default to `None` (disabled).
 
-4. **Raw counts preservation** — filtered raw counts are stored in `.layers['raw']` before any normalisation. This layer is used when concatenating samples to ensure cross-sample normalisation is applied to consistent raw counts.
+4. **QC metric computation** — `scanpy.pp.calculate_qc_metrics(qc_vars=['mt'], percent_top=None)` runs on the retained spots, with mitochondrial genes still present so `pct_counts_mt` is meaningful. Per-spot (`n_genes_by_counts`, `total_counts`, `pct_counts_mt`, ...) and per-gene (`n_cells_by_counts`, ...) metrics are stored as inspectable metadata.
 
-5. **Total counts normalisation** — when `total_counts_normalize=True`, `scanpy.pp.normalize_total` scales each spot to a library size of 10 000 counts (`target_sum=1e4`).
+5. **Mitochondrial gene removal (optional)** — when `remove_mitochondrial_genes=True`, the genes flagged in `.var['mt']` are dropped. Off by default: in spatial data a high mitochondrial fraction is often biological rather than a low-quality artefact. Observation names are then prefixed with `<sample_id>_` to ensure uniqueness across samples.
 
-6. **Log1p transform** — when `log1p_transform=True`, `scanpy.pp.log1p` is applied after normalisation.
+6. **Raw counts preservation** — filtered, post-feature-selection raw counts are stored in `.layers['raw']` before any normalisation (FOCUS cross-modality convention).
 
-7. **Leiden clustering** — PCA is computed (up to 50 components, limited by `min(n_obs-1, n_vars-1)`), followed by a kNN neighbourhood graph and Leiden community detection (`resolution=0.5`, `flavor="igraph"`, `n_iterations=2`, `directed=False`). Cluster labels are stored in `.obs['leiden']` as a categorical. Samples with fewer than two spots receive a single cluster label `'0'`. Per-sample Leiden is computed independently to avoid batch effects in visualisation.
+7. **Total counts normalisation (optional)** — when `total_counts_normalize=True`, `scanpy.pp.normalize_total` scales each spot to a library size of 10 000 counts (`target_sum=1e4`). Off by default — `.X` stays raw unless requested.
+
+8. **Log1p transform (optional)** — when `log1p_transform=True`, `scanpy.pp.log1p` is applied after normalisation.
+
+9. **Leiden clustering** — labels are used only to colour spots during alignment. Clustering runs on a throwaway, internally normalised + log1p copy of the counts (so labels are meaningful regardless of the output `.X` normalisation): PCA (up to 50 components, limited by `min(n_obs-1, n_vars-1)`) → kNN graph → Leiden (`resolution=0.5`, `flavor="igraph"`, `n_iterations=2`, `directed=False`). Only `.obs['leiden']` is kept — PCA/neighbour intermediates are **not** persisted, keeping the file small. Samples with fewer than two spots (or too few PCs) receive a single label `'0'`. Per-sample Leiden is computed independently to avoid batch effects in visualisation.
 
 ---
 
@@ -96,6 +100,9 @@ dataset_root/
 |------|------|---------|-------------|
 | `min_spots_per_gene` | `float` or `None` | `None` | Minimum fraction of spots per sample expressing a gene for it to be retained; must be in `(0, 1)` |
 | `min_count_spots_ratio_per_gene` | `float` or `None` | `None` | Minimum ratio of total counts to expressed spots per gene; unexpressed genes are skipped |
+| `remove_mitochondrial_genes` | `bool` | `False` | Opt-in. Drop mitochondrial genes (`MT-`/`MT.` prefix) from the feature set. Applied per sample. |
+
+> FOCUS deliberately preserves every gene with sufficient signal in at least one sample (to keep rare cell-type markers) and does **not** subset to highly variable genes — the full filtered panel is carried through to registration.
 
 ### Normalisation and transform
 
@@ -135,9 +142,9 @@ When another spot-based modality (MSI or another ST instance) is the reference, 
 
 | Scenario | Recommended reference |
 |----------|-----------------------|
-| Spot-based modalities only (ST + MSI, ST + Raman) | The modality with lowest spatial resolution (coarser spot grid). ST with `spot_interpolation` for targets. |
-| Visium-centric analysis (no high-res image) | Spatial transcriptomics (`none` or `spot_interpolation` for other spot-based modalities) |
-| MSI or Raman as primary spatial grid | MSI or Raman (other spot-based modalities register via `spot_interpolation`) |
+| Spot-based modalities only (ST + MSI) | The spot modality with the lowest spatial resolution (coarser grid); the other registers via `spot_interpolation`. |
+| Visium-centric analysis (no high-res image) | Spatial transcriptomics. Other spot modalities register via `spot_interpolation`; use `none` if ST stands alone. |
+| Dataset also includes Raman or microscopy | A spot-based modality (ST or MSI) must be the reference. Image-based modalities register as **targets** (`raman_pixel_interpolation` for Raman, `feature_extraction` for microscopy). An image-based modality cannot be the reference when a spot-based modality is present, because a mixed image-reference / spot-target pipeline is not supported. |
 
 The reference modality defines the output coordinate space and the number of observation slots in the final multimodal dataset.
 

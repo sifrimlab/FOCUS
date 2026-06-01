@@ -973,6 +973,7 @@ class MsiSample(BaseSample):
 			if n_peaks[i] < 2 or tic[i] <= 0:
 				continue
 			p = iv / tic[i]
+
 			p = p[p > 0]
 			entropy[i] = -np.sum(p * np.log2(p))
 
@@ -1350,7 +1351,7 @@ class MsiDataset(BaseDataset):
 			List of MsiSample objects.
 		lipid_annotation_db : str | None
 			Path to the lipid annotation database. If None, no lipid annotation will be performed.
-			The file can be a CSV or a JSON and it must contain three columns: name, ionized_mass, ion_mode.
+			The file can be a CSV or a JSON and it must contain three columns: db_name, ionized_mass, ion_mode.
 		'''
 
 		super().__init__(path, samples)
@@ -1748,10 +1749,10 @@ class MsiDataset(BaseDataset):
 	def process_dataset(self,
 						mass_tolerance: int = 10,
 						frequency_threshold: float = 0.01,
-						intensity_normalization: MsiIntensityNormalization = MsiIntensityNormalization.TIC,
+						intensity_normalization: str = MsiIntensityNormalization.NONE,
 						recalibration_reference: dict[MsiIonMode, np.ndarray] | None = None,
 						min_intensity_threshold: float = 10000.0,
-						detect_background: bool = True,
+						detect_background: bool = False,
 						sample_type: str = MsiSampleType.TISSUE,
 						force_recomputing: bool = False,
 						step_reporter=None
@@ -1766,7 +1767,11 @@ class MsiDataset(BaseDataset):
 		frequency_threshold : float
 			Frequency threshold for filtering M/Z values.
 		intensity_normalization : MsiIntensityNormalization
-			Type of intensity normalization to apply.
+			Type of intensity normalization to apply, one of 'none', 'tic', 'log',
+			'clr', or 'global_scaling'. All methods are applied independently per
+			ion mode. 'tic' divides each spectrum by its total ion current (rows sum
+			to 1); 'global_scaling' rescales each spectrum to the mean total ion
+			current of the ion mode, preserving absolute intensity scale.
 		recalibration_reference : dict[MsiIonMode, np.ndarray] | None
 			Reference M/Z vectors for recalibration per ion mode.
 		min_intensity_threshold : float
@@ -2119,6 +2124,19 @@ class MsiDataset(BaseDataset):
 						counts[counts == 0] = 1
 						row_mean = log_x.sum(axis=1, keepdims=True) / counts
 						merged_intensities = np.where(nz, log_x - row_mean, 0.0)
+					elif intensity_normalization == MsiIntensityNormalization.GLOBAL_SCALING:
+						# Global scaling: rescale every spectrum to the mean total ion
+						# current of this ion mode. Like TIC it removes per-spot total-
+						# intensity variation, but instead of forcing each spectrum to
+						# sum to 1 it scales each spot's total to the global mean,
+						# preserving an interpretable absolute intensity range.
+						tic = merged_intensities.sum(axis=1, keepdims=True)  # per-spot totals (this mode)
+						mean_tic = tic.mean()                                # global average over spots
+						if mean_tic == 0:
+							mean_tic = 1.0
+						scaling = tic / mean_tic                             # per-spot scaling factor
+						scaling[scaling == 0] = 1.0                          # empty spots stay all-zero
+						merged_intensities = merged_intensities / scaling
 
 					norm_by_mode[mode] = merged_intensities
 

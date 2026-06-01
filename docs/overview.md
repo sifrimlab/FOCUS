@@ -16,7 +16,7 @@ Raw Data → [1] Preprocessing → [2] Alignment → [3] Registration → [4] Co
 
 ### Stage 1 — Preprocessing
 
-Preprocessing converts raw instrument output into a standardized, quality-controlled representation. Each modality is handled by a dedicated processor that applies domain-appropriate algorithms: background subtraction and pyramid tiling for microscopy images, m/z consensus alignment and intensity normalization for MSI, BaSiC illumination correction and ASHLAR tile stitching for Raman, and leiden clustering with mitochondrial-gene filtering for spatial transcriptomics. The output of this stage is either an OME-TIFF pyramid (for image modalities) or an AnnData `.h5ad` file (for omics modalities), stored under `{sample_id}/preprocessing/{modality_name}/`.
+Preprocessing converts raw instrument output into a standardized, quality-controlled representation. Each modality is handled by a dedicated processor that applies domain-appropriate algorithms: background subtraction and pyramid tiling for microscopy images, m/z consensus alignment and intensity normalization for MSI, BaSiC illumination correction and ASHLAR tile stitching for Raman, and count/gene filtering with leiden clustering (and mitochondrial QC metrics) for spatial transcriptomics. The output of this stage is either an OME-TIFF pyramid (for image modalities) or an AnnData `.h5ad` file (for omics modalities), stored under `{sample_id}/preprocessing/{modality_name}/`.
 
 ### Stage 2 — Alignment
 
@@ -24,17 +24,20 @@ Alignment establishes the spatial correspondence between each non-reference moda
 
 ### Stage 3 — Registration
 
-Registration uses the alignment transforms computed in Stage 2 to map the feature content of each modality onto the reference coordinate system. Two strategies are available, each suited to a different modality type. **Feature extraction** is used for microscopy images: patches centered at each reference spot location are extracted from the OME-TIFF and encoded into dense embedding vectors by a pretrained vision model (Prov-GigaPath, 1536-dimensional). **Spot interpolation** is used for sparse omics modalities (MSI, ST) and currently for Raman: reference spot coordinates are expressed in the target modality's coordinate space (via the alignment transform), and a Gaussian-weighted average of the nearest target spots/pixels is computed, yielding an interpolated feature vector at each reference location. Both strategies produce a per-modality AnnData file with `.obsm['spatial']` aligned to the reference frame.
+Registration uses the alignment transforms computed in Stage 2 to map the feature content of each modality onto the reference coordinate system. Three strategies are available, each tied to a modality type. **Feature extraction** (`microscopy_image`): patches centered at each reference spot location are extracted from the OME-TIFF and encoded into dense embedding vectors by a pretrained vision model (Prov-GigaPath, 1536-dimensional). **Spot interpolation** (`msi`, `st`): reference spot coordinates are expressed in the target modality's coordinate space (via the alignment transform), and a Gaussian-weighted average of the target spots within each reference spot's footprint yields an interpolated feature vector at each reference location. **Raman pixel interpolation** (`raman`): the same Gaussian footprint interpolation applied to the pixels of the hyperspectral OME-TIFF — a temporary approach pending a Raman-specific feature extractor. All three produce a per-modality AnnData file with `.obsm['spatial']` aligned to the reference frame.
 
 ### Stage 4 — Compilation (conditional)
 
 **MuData assembly occurs only when both conditions are met:**
 - **Reference modality is spot-based** (MSI or ST)
-- **Registration stage is active** (i.e., at least one modality has `registration_type` other than `"none"`)
+- **Registration stage is active** (i.e., `perform_registration` is `true`)
 
-If compilation runs, it reads all per-modality registered AnnData files and assembles them into a single MuData object (`.h5mu`) stored at `{dataset_path}/merged/multimodal_dataset.h5mu`. Observation indices are harmonized across modalities so that row $i$ in every modality AnnData corresponds to the same reference spot. If spatial annotations (GeoJSON regions) are provided, region labels are transferred to `.obs['spatial_annotation']` at this stage.
+If compilation runs, it reads all per-modality registered AnnData files and assembles them into a single MuData object (`.h5mu`) stored at `{dataset_path}/merged/multimodal_dataset.h5mu`. Observation indices are harmonized across modalities so that row $i$ in every modality AnnData corresponds to the same reference spot; reference spots left uncovered (all-zero features) in any modality are dropped from all of them. If spatial annotations were transferred, compilation **promotes** the existing `.obs['spatial_annotation']` label to the top level of the MuData object. See [Compilation](pipeline/compilation.md) for the full procedure.
 
-**If registration is inactive (all modalities have `registration_type: "none"`),** the pipeline stops after alignment and annotation transfer (if enabled). Outputs are stored in `merged/aligned/` or `merged/annotation/` respectively.
+**If registration is inactive (all modalities have `registration_type: "none"`),** the pipeline stops after alignment and annotation transfer (if enabled). Outputs are stored in `merged/alignment/` or `merged/annotations/` respectively.
+
+!!! note "Annotation transfer is a separate stage"
+    When `spatial_annotations` is configured, region labels are transferred in a dedicated stage that runs **after alignment** (so the pipeline reports five stages, not four). That stage writes `.obs['spatial_annotation']` onto the reference modality file and runs even when registration and compilation are inactive — it is **not** performed during compilation. Compilation, when it runs, only promotes the already-written label. See [Spatial Annotation Transfer](scientific/annotation_transfer.md) for details.
 
 **If the reference modality is image-based,** FOCUS currently does not support compiling mixed image and spot modalities. All non-reference modalities must also be image-based. Per-sample cropped images are produced (one per target), but no merged dataset is created.
 
@@ -46,11 +49,11 @@ If compilation runs, it reads all per-modality registered AnnData files and asse
 |-------------------|-------------|--------------|---------------------|
 | `microscopy_image` | `.tiff` / `.tif` / `.czi` | OME-TIFF pyramid | `feature_extraction` (GPU) |
 | `msi` | `.imzML` + `.ibd` | AnnData `.h5ad` | `spot_interpolation` (CPU) |
-| `raman` | `.lif` | OME-TIFF hyperspectral | `spot_interpolation` (CPU) |
+| `raman` | `.lif` | OME-TIFF hyperspectral | `raman_pixel_interpolation` (CPU) |
 | `st` | AnnData `.h5ad` | AnnData `.h5ad` | `spot_interpolation` (CPU) or `none` |
 
 !!! note "GPU requirement"
-    Feature extraction registration for `microscopy_image` requires an NVIDIA GPU with CUDA. All other stages, including spot interpolation for Raman, MSI, and ST, run on CPU.
+    Feature extraction registration for `microscopy_image` requires an NVIDIA GPU with CUDA. All other stages, including `spot_interpolation` (MSI, ST) and `raman_pixel_interpolation` (Raman) registration, run on CPU.
 
 ---
 
@@ -72,13 +75,15 @@ FOCUS expects input data and writes intermediate and final outputs according to 
 │   ├── preprocessing/
 │   │   └── <modality_name>/           # Preprocessed OME-TIFF or .h5ad
 │   ├── alignment/                     # Aligned reference .h5ad per sample
-│   └── registration/                  # Registered .h5ad per modality per sample
+│   ├── registration/                  # Registered .h5ad per modality per sample
+│   └── annotations/                   # Annotated reference .h5ad per sample (if spatial_annotations enabled)
 ├── <sample_id_2>/
 │   └── ...
 └── merged/
     ├── preprocessing/                 # Merged preprocessing outputs
     ├── alignment/                     # Merged alignment outputs
     ├── registration/                  # Merged registration outputs
+    ├── annotations/                   # Merged annotated reference output (if spatial_annotations enabled)
     └── multimodal_dataset.h5mu        # Final MuData output
 ```
 

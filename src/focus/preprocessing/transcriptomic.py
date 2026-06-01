@@ -102,8 +102,9 @@ class SpatialTranscriptomic(BaseSample):
         max_count_per_spot: int | None = None,
         min_genes_per_spot: int | None = None,
         max_genes_per_spot: int | None = None,
-        total_counts_normalize: bool = True,
-        log1p_transform: bool = True,
+        remove_mitochondrial_genes: bool = False,
+        total_counts_normalize: bool = False,
+        log1p_transform: bool = False,
         force_recomputing: bool = False
         ) -> str:
         '''
@@ -111,18 +112,23 @@ class SpatialTranscriptomic(BaseSample):
 
         Pipeline:
         1. Load and validate data
-        2. QC metrics (mitochondrial genes)
-        3. Filter spots by count/gene thresholds
-        4. Store filtered raw counts in .layers["raw"]
-        5. Normalize .X (total counts + log1p)
-        6. Leiden clustering → .obs["leiden"]
-        7. Save (gzip-compressed)
+        2. Flag mitochondrial genes (.var["mt"])
+        3. Filter spots by count/gene thresholds (opt-in)
+        4. Compute QC metrics (scanpy.pp.calculate_qc_metrics) on the retained spots
+        5. Optionally remove mitochondrial genes (opt-in, uses the .var["mt"] QC flag)
+        6. Store filtered raw counts in .layers["raw"]
+        7. Normalize .X (total counts + log1p, both opt-in)
+        8. Leiden clustering on an internal normalized representation → .obs["leiden"]
+           (clustering intermediates such as PCA / neighbour graph are not persisted)
+        9. Save (gzip-compressed)
 
         Output AnnData structure:
-        - .X: normalized counts (sparse CSR)
-        - .layers["raw"]: filtered raw counts pre-normalization (sparse CSR)
+        - .X: counts (raw unless total_counts_normalize / log1p_transform are set; sparse CSR)
+        - .layers["raw"]: filtered, post-feature-selection raw counts (sparse CSR)
         - .obs["sample_id"]: categorical sample identifier
-        - .obs["leiden"]: categorical cluster labels
+        - .obs["leiden"]: categorical cluster labels (used for alignment colouring)
+        - .obs QC metrics (total_counts, n_genes_by_counts, pct_counts_mt, ...) from
+          scanpy.pp.calculate_qc_metrics
         - .obsm["spatial"]: float32 spatial coordinates
         - .uns["spot_size"]: float32 array of shape (2,)
 
@@ -136,6 +142,11 @@ class SpatialTranscriptomic(BaseSample):
             Minimum genes detected per spot to retain.
         max_genes_per_spot : int | None
             Maximum genes detected per spot to retain.
+        remove_mitochondrial_genes : bool
+            When True, drop mitochondrial genes (flagged in .var["mt"] by an
+            ``MT-``/``MT.`` name prefix, case-insensitive) from the feature set.
+            Off by default: in spatial data a high mitochondrial fraction can be a
+            genuine biological signal rather than a low-quality artefact.
         total_counts_normalize : bool
             Whether to normalize total counts per spot.
         log1p_transform : bool
@@ -168,11 +179,11 @@ class SpatialTranscriptomic(BaseSample):
         # 1. Load and validate
         adata = self.load_data()
 
-        # 2. QC metrics
-        adata.var['mt'] = adata.var_names.str.upper().str.startswith('MT-')
-        sc.pp.calculate_qc_metrics(adata, qc_vars=['mt'], inplace=True)
+        # 2. Flag mitochondrial genes (case-insensitive 'MT-'/'MT.' prefix).
+        # Note: name-based detection; datasets keyed by Ensembl IDs won't be flagged.
+        adata.var['mt'] = adata.var_names.str.upper().str.match(r'^MT[-\.]')
 
-        # 3. Filter spots
+        # 3. Filter spots (all thresholds opt-in)
         if min_count_per_spot is not None:
             sc.pp.filter_cells(adata, min_counts=min_count_per_spot)
         if max_count_per_spot is not None:
@@ -182,40 +193,67 @@ class SpatialTranscriptomic(BaseSample):
         if max_genes_per_spot is not None:
             sc.pp.filter_cells(adata, max_genes=max_genes_per_spot)
 
+        # 4. QC metrics on the retained spots, with mitochondrial genes still present
+        # so pct_counts_mt is meaningful. percent_top=None keeps the output lean.
+        sc.pp.calculate_qc_metrics(adata, qc_vars=['mt'], percent_top=None, inplace=True)
+
+        # 5. Optional QC-based gene filter: drop mitochondrial genes (opt-in).
+        if remove_mitochondrial_genes:
+            adata = adata[:, ~adata.var['mt'].to_numpy()].copy()
+
         # Make observation names unique across samples
         if not all(obs_name.startswith(f"{self.sample_id}_") for obs_name in adata.obs_names):
             adata.obs_names = [f"{self.sample_id}_{obs_name}" for obs_name in adata.obs_names]
 
-        # 4. Store filtered raw counts before normalization (preserves sparse format)
+        # 6. Store filtered, post-feature-selection raw counts (FOCUS convention).
         adata.layers['raw'] = adata.X.copy()
 
-        # 5. Normalize
+        # 7. Per-sample Leiden labels for alignment colouring. Computed on an internal
+        # normalized representation so labels are meaningful regardless of the output
+        # normalization flags; PCA / neighbour-graph intermediates are not persisted.
+        leiden_labels = self._compute_leiden_labels(adata)
+
+        # 8. Normalize the output .X (both steps opt-in; defaults leave .X as raw counts)
         if total_counts_normalize:
             sc.pp.normalize_total(adata, target_sum=self._NORMALIZE_TARGET_SUM, inplace=True)
         if log1p_transform:
             sc.pp.log1p(adata)
 
-        # 6. Leiden clustering
-        if adata.n_obs >= 2:
-            n_pcs = min(50, adata.n_obs - 1, adata.n_vars - 1)
-            if n_pcs >= 2:
-                sc.pp.pca(adata, n_comps=n_pcs)
-                sc.pp.neighbors(adata)
-                sc.tl.leiden(adata, resolution=self._LEIDEN_RESOLUTION, key_added='leiden',
-                             flavor='igraph', n_iterations=2, directed=False)
-            else:
-                adata.obs['leiden'] = '0'
-        else:
-            adata.obs['leiden'] = '0'
-
-        # 7. Set metadata
+        # 9. Set metadata
         adata.obs['sample_id'] = pd.Categorical([self.sample_id] * adata.n_obs)
-        adata.obs['leiden'] = pd.Categorical(adata.obs['leiden'])
+        adata.obs['leiden'] = pd.Categorical(leiden_labels)
         adata.obsm["spatial"] = np.asarray(adata.obsm["spatial"], dtype=np.float32)
 
         # Save with compression
         write_h5ad_compat(adata, output_file, compression=self._H5AD_COMPRESSION)
         return output_file
+
+    def _compute_leiden_labels(self, adata: ad.AnnData) -> np.ndarray:
+        '''
+        Compute per-sample Leiden cluster labels for alignment-stage spot colouring.
+
+        Clustering runs on a throwaway, internally normalized + log1p copy of the raw
+        counts, so the labels are meaningful even when the output .X is left as raw
+        counts (normalization is opt-in). Only the labels are returned — the PCA
+        embedding and neighbour graph are discarded and never written to disk.
+
+        Returns a length-n_obs array of string cluster labels (all '0' when the sample
+        is too small to cluster).
+        '''
+        n_obs = adata.n_obs
+        n_pcs = min(50, n_obs - 1, adata.n_vars - 1)
+        if n_obs < 2 or n_pcs < 2:
+            return np.array(['0'] * n_obs, dtype=object)
+
+        counts = adata.layers['raw'] if 'raw' in adata.layers else adata.X
+        tmp = ad.AnnData(X=counts.copy())
+        sc.pp.normalize_total(tmp, target_sum=self._NORMALIZE_TARGET_SUM, inplace=True)
+        sc.pp.log1p(tmp)
+        sc.pp.pca(tmp, n_comps=n_pcs)
+        sc.pp.neighbors(tmp)
+        sc.tl.leiden(tmp, resolution=self._LEIDEN_RESOLUTION, key_added='leiden',
+                     flavor='igraph', n_iterations=2, directed=False)
+        return tmp.obs['leiden'].to_numpy()
 
 
 class SpatialTranscriptomicDataset(BaseDataset):
@@ -239,8 +277,9 @@ class SpatialTranscriptomicDataset(BaseDataset):
         max_genes_per_spot: int | None = None,
         min_spots_per_gene: float | None = None,
         min_count_spots_ratio_per_gene: float | None = None,
-        total_counts_normalize: bool = True,
-        log1p_transform: bool = True,
+        remove_mitochondrial_genes: bool = False,
+        total_counts_normalize: bool = False,
+        log1p_transform: bool = False,
         force_recomputing: bool = False,
         step_reporter=None
     ) -> dict[str, str]:
@@ -248,14 +287,16 @@ class SpatialTranscriptomicDataset(BaseDataset):
         Process and combine multiple spatial transcriptomic samples.
 
         Pipeline:
-        1. Preprocess each sample individually (spot filtering, normalization, per-sample Leiden)
+        1. Preprocess each sample individually (spot filtering, optional mito-gene
+           removal, per-sample Leiden)
         2. Concatenate using raw counts from .layers["raw"]
         3. Cross-sample gene filtering
-        4. Store .layers["raw"] (post-gene-filter, pre-normalization)
-        5. Normalize .X on the merged data
-        6. Preserve per-sample Leiden labels (batch-effect-free, for per-sample visualization)
-        7. Build .uns["spot_size"] = {sample_id: [float32, float32]}
-        8. Save (gzip-compressed)
+        4. Recompute QC metrics on the merged matrix (so .obs/.var QC are accurate)
+        5. Store .layers["raw"] (post-gene-filter, pre-normalization)
+        6. Normalize .X on the merged data (opt-in)
+        7. Preserve per-sample Leiden labels (batch-effect-free, for per-sample visualization)
+        8. Build .uns["spot_size"] = {sample_id: [float32, float32]}
+        9. Save (gzip-compressed)
 
         Parameters
         ----------
@@ -271,6 +312,9 @@ class SpatialTranscriptomicDataset(BaseDataset):
             Minimum fraction of spots per sample expressing a gene to retain it (0-1).
         min_count_spots_ratio_per_gene : float | None
             Minimum ratio of total counts to expressed spots per gene.
+        remove_mitochondrial_genes : bool
+            When True, drop mitochondrial genes (flagged by an ``MT-``/``MT.`` name
+            prefix) per sample before merging. Off by default.
         total_counts_normalize : bool
             Whether to normalize total counts per spot.
         log1p_transform : bool
@@ -314,6 +358,7 @@ class SpatialTranscriptomicDataset(BaseDataset):
                 max_count_per_spot=max_count_per_spot,
                 min_genes_per_spot=min_genes_per_spot,
                 max_genes_per_spot=max_genes_per_spot,
+                remove_mitochondrial_genes=remove_mitochondrial_genes,
                 total_counts_normalize=total_counts_normalize,
                 log1p_transform=log1p_transform,
                 force_recomputing=force_recomputing
@@ -366,6 +411,11 @@ class SpatialTranscriptomicDataset(BaseDataset):
             reporter.message(f"Filtering genes by count/spot ratio (min_count_spots_ratio_per_gene={min_count_spots_ratio_per_gene})...")
             combined = self._filter_genes_by_count_ratio(combined, min_count_spots_ratio_per_gene)
             reporter.message(f"{combined.n_vars} genes after min_count_spots_ratio_per_gene={min_count_spots_ratio_per_gene}")
+
+        # Recompute QC metrics on the final merged matrix (raw counts) so .obs/.var QC
+        # reflect the retained spots and genes; per-sample QC predates cross-sample filtering.
+        combined.var['mt'] = combined.var_names.str.upper().str.match(r'^MT[-\.]')
+        sc.pp.calculate_qc_metrics(combined, qc_vars=['mt'], percent_top=None, inplace=True)
 
         # Store raw counts after gene filtering (preserves sparse format)
         combined.layers['raw'] = combined.X.copy()
@@ -464,6 +514,7 @@ def _extract_st_settings(settings):
         'max_genes_per_spot': settings.get(STPreprocessingParams.MAX_GENES_PER_SPOT, None),
         'min_spots_per_gene': settings.get(STPreprocessingParams.MIN_SPOTS_PER_GENE, None),
         'min_count_spots_ratio_per_gene': settings.get(STPreprocessingParams.MIN_COUNT_SPOTS_RATIO_PER_GENE, None),
+        'remove_mitochondrial_genes': settings.get(STPreprocessingParams.REMOVE_MITOCHONDRIAL_GENES, False),
         'total_counts_normalize': settings.get(STPreprocessingParams.TOTAL_COUNTS_NORMALIZE, False),
         'log1p_transform': settings.get(STPreprocessingParams.LOG1P_TRANSFORM, False),
         'force_recomputing': settings.get(STPreprocessingParams.FORCE_RECOMPUTING, False),

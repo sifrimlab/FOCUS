@@ -130,10 +130,11 @@ The MSI pipeline operates at the **dataset level**: all samples are processed to
    - Each original peak distributes its intensity to reference bins within `mass_tolerance` ppm using inverse-distance weighting
    - Produces a dense (N_spots × N_features) float32 matrix
 
-9. **Intensity Normalization**
-   - `"tic"`: divide each spectrum by its total ion count
+9. **Intensity Normalization** (applied independently per ion mode)
+   - `"tic"`: divide each spectrum by its total ion count (each spectrum sums to 1)
    - `"log"`: apply log(1 + x) transform
    - `"clr"`: sparsity-preserving centered log-ratio — log-centers each spectrum over its nonzero entries only, leaving structural zeros at 0
+   - `"global_scaling"`: rescale each spectrum to the mean total ion count of its ion mode (each spectrum's total becomes the mean TIC) — like `"tic"` but preserves an interpretable absolute intensity scale instead of forcing a sum of 1
    - `"none"`: keep raw interpolated intensities
 
 10. **Per-Sample Leiden Clustering**
@@ -151,7 +152,7 @@ The MSI pipeline operates at the **dataset level**: all samples are processed to
 |-----------|---------|-------------|
 | `mass_tolerance` | `10` | Mass tolerance in ppm for m/z clustering, recalibration, and annotation |
 | `frequency_threshold` | `0.01` | Minimum fraction of max cluster weight for backbone m/z inclusion |
-| `intensity_normalization` | `"none"` | Normalization method: `"tic"`, `"log"`, `"clr"`, or `"none"` |
+| `intensity_normalization` | `"none"` | Normalization method (per ion mode): `"tic"`, `"log"`, `"clr"`, `"global_scaling"`, or `"none"` |
 | `recalibration_reference` | `null` | User-supplied reference m/z dict per ion mode; auto-computed if null |
 | `min_intensity_threshold` | `10000.0` | Minimum intensity for a peak to be used in recalibration offset estimation |
 | `detect_background` | `false` | Run background detection to classify tissue vs background spots |
@@ -277,29 +278,34 @@ Supports any spot-based or cell-based spatial transcriptomics technology (Visium
    - Normalize `uns["spot_size"]` to a float32 array of shape (2,): `[width, height]`; defaults to `[1.0, 1.0]` if not present
    - Convert `.X` to sparse CSR format
 
-2. **QC Metrics Computation**
-   - Flag mitochondrial genes: genes whose names start with `MT-` (case-insensitive uppercase comparison)
-   - Compute per-spot QC metrics via `scanpy.pp.calculate_qc_metrics` (adds `n_genes_by_counts`, `total_counts`, `pct_counts_mt`, etc. to `.obs`)
+2. **Mitochondrial Flag**
+   - Flag mitochondrial genes in `.var["mt"]` by a case-insensitive `MT-`/`MT.` name prefix (name-based; Ensembl-ID inputs are not flagged)
 
 3. **Spot Filtering** (all filters optional)
    - `min_count_per_spot` / `max_count_per_spot`: filter by total UMI count
    - `min_genes_per_spot` / `max_genes_per_spot`: filter by number of detected genes
    - All thresholds default to `null` (no filtering)
 
-4. **Observation Name Prefixing**
-   - Prefix all observation names with `<sample_id>_` if not already prefixed, ensuring uniqueness when samples are merged
+4. **QC Metrics Computation**
+   - `scanpy.pp.calculate_qc_metrics(qc_vars=["mt"], percent_top=None)` on the retained spots (mito genes still present, so `pct_counts_mt` is meaningful)
+   - Adds per-spot (`n_genes_by_counts`, `total_counts`, `pct_counts_mt`, ...) and per-gene (`n_cells_by_counts`, ...) metrics as inspectable metadata
 
-5. **Raw Count Preservation**
-   - Store the filtered (but unnormalized) count matrix in `.layers["raw"]`
+5. **Mitochondrial Gene Removal** (optional)
+   - When `remove_mitochondrial_genes=true`, drop the `.var["mt"]`-flagged genes from the feature set. Off by default (high mito fraction is often biological in spatial data)
+   - Observation names are then prefixed with `<sample_id>_` to ensure uniqueness across samples
 
-6. **Normalization** (both optional, default off)
+6. **Raw Count Preservation**
+   - Store the filtered, post-feature-selection (unnormalized) count matrix in `.layers["raw"]`
+
+7. **Normalization** (both optional, default off)
    - Total count normalization: scale each spot to `target_sum = 10,000`
    - log(1 + x) transformation
+   - With both off (the default), `.X` stays raw; downstream stages consume it as-is
 
-7. **Per-Sample Leiden Clustering**
-   - Requires ≥ 2 spots and ≥ 2 PCA components
-   - PCA (up to 50 components) → neighbor graph → Leiden clustering (`resolution=0.5`, `flavor="igraph"`, `n_iterations=2`, `directed=False`)
-   - Result stored in `obs["leiden"]`
+8. **Per-Sample Leiden Clustering**
+   - Labels colour spots during alignment; only `.obs["leiden"]` is kept
+   - Computed on a throwaway, internally normalized + log1p copy (so labels are meaningful even when `.X` is raw): PCA (up to 50 components) → neighbor graph → Leiden (`resolution=0.5`, `flavor="igraph"`, `n_iterations=2`, `directed=False`)
+   - PCA/neighbour-graph intermediates are **not** persisted; samples with < 2 spots (or too few PCs) get label `'0'`
 
 **Dataset-Level (Merged) Processing**:
 
@@ -310,9 +316,11 @@ After per-sample preprocessing, all samples are merged:
 3. **Cross-sample gene filtering** (both optional):
    - `min_spots_per_gene`: a gene must be expressed in ≥ this fraction of spots in ≥ 5% of samples
    - `min_count_spots_ratio_per_gene`: a gene's (total counts / expressed spots) ratio must exceed this value in ≥ 5% of samples; samples where the gene is absent are excluded from the denominator
-4. Store post-filter raw counts in `.layers["raw"]`
-5. Normalize merged `.X` (same `total_counts_normalize` and `log1p_transform` flags)
-6. Per-sample Leiden labels from individual processing are preserved in `.obs["leiden"]`
+   - Note: the design preserves every gene with signal in ≥ 1 sample (rare cell-type markers); FOCUS does not subset to highly variable genes
+4. Recompute QC metrics on the merged matrix so `.obs`/`.var` QC reflect the retained spots/genes
+5. Store post-filter raw counts in `.layers["raw"]`
+6. Normalize merged `.X` (same opt-in `total_counts_normalize` / `log1p_transform` flags)
+7. Per-sample Leiden labels from individual processing are preserved in `.obs["leiden"]`
 
 **Parameters**:
 
@@ -324,11 +332,13 @@ After per-sample preprocessing, all samples are merged:
 | `max_genes_per_spot` | `null` | Maximum detected genes per spot to retain |
 | `min_spots_per_gene` | `null` | Minimum fraction of spots per sample expressing a gene (0–1) |
 | `min_count_spots_ratio_per_gene` | `null` | Minimum ratio of total counts to expressed spots per gene |
+| `remove_mitochondrial_genes` | `false` | Opt-in. Drop mitochondrial genes (`MT-`/`MT.` prefix) from the feature set |
 | `total_counts_normalize` | `false` | Normalize total counts per spot to 10,000 |
 | `log1p_transform` | `false` | Apply log(1 + x) transformation |
 | `force_recomputing` | `false` | Reprocess even if output already exists |
 
-The defaults above are the values applied when running through the configuration file (the pipeline's settings extractor). When calling `SpatialTranscriptomic.preprocess_data()` / `SpatialTranscriptomicDataset.process_dataset()` directly in Python, the `total_counts_normalize` and `log1p_transform` signature defaults are both `True`.
+All filtering and normalization steps are opt-in; the Python method signatures use the
+same defaults as the config extractor.
 
 **Output Files**:
 ```
@@ -343,8 +353,8 @@ The defaults above are the values applied when running through the configuration
 
 | Slot | Description |
 |------|-------------|
-| `.X` | Normalized counts (sparse CSR); raw counts if no normalization applied |
-| `.layers["raw"]` | Filtered raw counts before normalization (sparse CSR) |
+| `.X` | Counts (sparse CSR); raw unless `total_counts_normalize`/`log1p_transform` are set |
+| `.layers["raw"]` | Filtered, post-feature-selection raw counts (sparse CSR) |
 | `.obs["sample_id"]` | Categorical sample identifier |
 | `.obs["leiden"]` | Categorical per-sample Leiden cluster labels |
 | `.obs` (QC columns) | `n_genes_by_counts`, `total_counts`, `pct_counts_mt`, etc. from `calculate_qc_metrics` |

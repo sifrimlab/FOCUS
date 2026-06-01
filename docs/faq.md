@@ -20,9 +20,11 @@ Choose the modality with the **lowest spatial resolution** (largest spots) as yo
 
 ### Do I need a GPU?
 
-Only for `feature_extraction` registration, which uses the Prov-GigaPath deep-learning model to extract patch embeddings from microscopy images. All other pipeline stages — preprocessing, alignment, `spot_interpolation` registration, annotation transfer, and MuData compilation — run on CPU.
+A GPU is only useful for `feature_extraction` registration, which runs the Prov-GigaPath deep-learning model to extract patch embeddings from microscopy images. All other pipeline stages — preprocessing, alignment, `spot_interpolation` and `raman_pixel_interpolation` registration, annotation transfer, and MuData compilation — run on CPU.
 
-If you do not have a GPU, set `"registration_type": "spot_interpolation"` for all non-reference modalities (where the modality type is `msi`, `st`, or `raman`), and set `"registration_type": "none"` for microscopy modalities.
+`feature_extraction` itself is not strictly GPU-only: it uses the GPU when one is available and otherwise falls back to CPU. However, Prov-GigaPath on CPU is impractically slow for real images, so a CUDA GPU is **strongly recommended** whenever you use `feature_extraction`.
+
+If you do not have a GPU, use `"registration_type": "spot_interpolation"` for `msi`/`st` modalities and `"raman_pixel_interpolation"` for `raman`, and set `"registration_type": "none"` for microscopy modalities (working with the aligned OME-TIFFs directly).
 
 ---
 
@@ -204,7 +206,8 @@ MuData compilation is skipped if any of these conditions apply:
 1. The reference modality is image-based (`microscopy_image` or `raman`). MuData requires a spot-based reference.
 2. `"perform_registration"` is `false`.
 3. Fewer than two modalities have completed registration.
-4. A merged registration file is missing or has an observation count mismatch with the anchor.
+4. A merged registration file is missing, or its rows do not align to the reference (anchor) — its observation count or its per-row `sample_id` sequence does not match. Such modalities are skipped, which can leave fewer than two.
+5. Every reference spot was dropped because it is uncovered (all-zero features) in at least one modality.
 
 Check `focus.log` for a line beginning with `"Skipping MuData compilation"` or `"Only one modality available"`.
 
@@ -237,7 +240,9 @@ Yes. The `run()` function accepts an optional `progress_callback` argument. The 
 
 ### Does FOCUS support Apple Silicon (M-series Macs)?
 
-FOCUS runs on Apple Silicon under Rosetta 2 or natively via conda's `osx-arm64` packages. `feature_extraction` registration uses PyTorch, which supports the MPS backend on Apple Silicon. However, the Prov-GigaPath model integration currently targets CUDA explicitly — if you are on Apple Silicon and need `feature_extraction`, open an issue on GitHub.
+FOCUS runs on Apple Silicon via conda's `osx-arm64` packages. Preprocessing, alignment, the spot/pixel interpolation registrations, annotation transfer, and compilation all work normally.
+
+For `feature_extraction`, the registration code selects a CUDA GPU when present and otherwise falls back to **CPU** — it does not use the Metal (MPS) backend. So on Apple Silicon, `feature_extraction` runs on the CPU, which is functional but impractically slow for real images. If you need fast `feature_extraction`, run it on a CUDA GPU; otherwise prefer `"registration_type": "none"` for microscopy on Apple Silicon and work with the aligned OME-TIFFs.
 
 ---
 

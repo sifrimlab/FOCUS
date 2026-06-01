@@ -26,7 +26,7 @@ The final output structure depends on your pipeline configuration:
 
 **Final Output:**
 - **Primary:** Merged aligned files in `merged/alignment/`
-- If annotation transfer is enabled: `merged/annotation/`
+- If annotation transfer is enabled: `merged/annotations/`
 - **No MuData file is created**
 - Per-sample preprocessing and alignment files available
 
@@ -57,8 +57,7 @@ FOCUS writes all outputs back into `dataset_path`. Nothing is written outside of
 │   │   ├── microscopy/
 │   │   │   └── microscopy_sample_001_processed.ome.tiff
 │   │   ├── msi/
-│   │   │   ├── msi_sample_001_pos_processed.h5ad
-│   │   │   └── msi_sample_001_neg_processed.h5ad   ← dual ion mode only
+│   │   │   └── msi_sample_001_processed.h5ad        ← single file; dual ion mode is combined here, distinguished by .var['mz_mode']
 │   │   └── st/
 │   │       └── st_sample_001_processed.h5ad
 │   │
@@ -88,6 +87,9 @@ FOCUS writes all outputs back into `dataset_path`. Nothing is written outside of
 │   │   ├── msi_merged_processed_aligned_registered.h5ad
 │   │   └── microscopy_merged_processed_aligned_registered.h5ad
 │   │
+│   ├── annotations/
+│   │   └── st_merged_annotated.h5ad                ← if spatial_annotations enabled
+│   │
 │   └── multimodal_dataset.h5mu                     ← FINAL OUTPUT
 │
 └── focus.log
@@ -108,7 +110,9 @@ FOCUS writes all outputs back into `dataset_path`. Nothing is written outside of
 !!! note "Conditional Output"
     The file `merged/multimodal_dataset.h5mu` is only created when **both** conditions are met:
     - The reference modality is spot-based (`msi` or `st`)
-    - At least one non-reference modality has registration enabled
+    - `perform_registration` is `true`
+
+    Additionally, at least two modalities must pass row-alignment validation during compilation, otherwise no file is written. See [Compilation](../pipeline/compilation.md).
     
     See [Output Scenarios](#output-scenarios) above to understand which outputs are created for your pipeline configuration.
 
@@ -135,28 +139,41 @@ st = mdata.mod["st"]       # AnnData for spatial transcriptomics
 msi = mdata.mod["msi"]    # AnnData for MSI
 ```
 
-### AnnData Contents per Modality
+### Contents of the MuData
 
-After registration, each AnnData modality in the MuData contains:
+Spatial coordinates and spot size are stored **once at the top level** of the MuData, not on each modality:
 
 | Slot | Content |
 |------|---------|
-| `.X` | Feature matrix (expression counts, ion intensities, etc.) |
-| `.obs` | Spot/pixel metadata, including `sample_id` and spatial annotation labels (if enabled) |
-| `.var` | Feature metadata (gene names, m/z values, etc.) |
-| `.obsm['spatial']` | (n_obs × 2) array of spatial coordinates in the reference modality's coordinate space |
-| `.uns['spot_size']` | Physical spot/pixel size in µm (1-D float32 array of length 2). For spot-based modalities (MSI, Raman, ST), this is automatically extracted during preprocessing from input metadata; defaults to `[1.0, 1.0]` if unavailable. Not used for microscopy_image modalities. |
+| `mdata.obsm['spatial']` | (n_obs × 2) `float32` array of spot coordinates in the reference modality's coordinate space |
+| `mdata.obs['sample_id']` | Sample identifier per spot, shared across all modalities |
+| `mdata.obs['spatial_annotation']` | Region labels, present only when annotation transfer is enabled |
+| `mdata.uns['spot_size']` | Physical spot size in µm, a length-2 `float32` array copied from the reference modality. Present only if the reference had it. |
+
+Each per-modality AnnData (`mdata.mod['<modality>']`) contains:
+
+| Slot | Content |
+|------|---------|
+| `.X` | Feature matrix (expression counts, ion intensities, embeddings, etc.) |
+| `.obs` | Spot/pixel metadata, including `sample_id` |
+| `.var` | Feature metadata, with **namespaced** names of the form `{modality}:{name}` (e.g. `st:CD3E`, `msi:0`) |
+
+!!! note "Feature names are namespaced"
+    During compilation every feature name is rewritten to `{modality}:{name}` to keep names collision-free across modalities. Query features with the prefixed name (e.g. `st:CD3E`), not the bare one. See [Compilation](../pipeline/compilation.md) for details.
+
+!!! note "Spot count may be smaller than the reference grid"
+    Compilation drops reference spots that are uncovered (all-zero features) in any modality, so the MuData's `n_obs` can be lower than the reference spot count. See [Compilation](../pipeline/compilation.md).
 
 ### Example: Spatial Plotting with squidpy
 
 ```python
 import squidpy as sq
 
-# Spatial scatter plot coloured by a gene
+# Spatial scatter plot coloured by a gene (feature names are namespaced)
 sq.pl.spatial_scatter(
     mdata.mod["st"],
-    color="CD3E",
-    spot_size=mdata.mod["st"].uns["spot_size"][0],
+    color="st:CD3E",
+    spot_size=mdata.uns["spot_size"][0],
 )
 ```
 

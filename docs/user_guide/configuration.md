@@ -193,7 +193,8 @@ The computational method used to map this modality's features onto the reference
 | Value | Behaviour | Compatible modality types |
 |-------|-----------|--------------------------|
 | `"none"` | No registration. This modality is aligned but **not** included in the final MuData output. | All |
-| `"spot_interpolation"` | Gaussian-weighted interpolation of spot-based data. Runs on CPU. | `msi`, `st`, `raman` |
+| `"spot_interpolation"` | Gaussian-weighted interpolation of spot-based data. Runs on CPU. | `msi`, `st` |
+| `"raman_pixel_interpolation"` | Gaussian-weighted interpolation over the hyperspectral OME-TIFF pixels (temporary; no Raman feature extractor exists yet). Runs on CPU. | `raman` |
 | `"feature_extraction"` | Prov-GigaPath patch embeddings (deep learning). Requires an NVIDIA GPU and a HuggingFace token. | `microscopy_image` |
 
 ### `processing_settings` _(required, object)_
@@ -218,6 +219,7 @@ Additional settings for the chosen registration method. May be an empty object w
     | `max_genes_per_spot` | int or null | Maximum number of detected genes per spot. |
     | `min_spots_per_gene` | int or null | Genes detected in fewer spots are removed. |
     | `min_count_spots_ratio_per_gene` | float or null | Minimum fraction of spots expressing a gene. |
+    | `remove_mitochondrial_genes` | bool | Opt-in. Drop mitochondrial genes (`MT-`/`MT.` prefix) from the feature set. Off by default (high mito can be biological in spatial data). |
     | `total_counts_normalize` | bool | Normalize each spot to a total count of 10,000. |
     | `log1p_transform` | bool | Apply log1p transformation after normalisation. |
     | `force_recomputing` | bool | Reprocess even if output already exists. |
@@ -227,7 +229,7 @@ Additional settings for the chosen registration method. May be an empty object w
     | Parameter | Type | Description |
     |-----------|------|-------------|
     | `mass_tolerance` | int | m/z clustering tolerance in ppm. |
-    | `intensity_normalization` | string | Normalization method: `"none"` (default), `"tic"`, `"log"`, or `"clr"`. |
+    | `intensity_normalization` | string | Normalization method (per ion mode): `"none"` (default), `"tic"`, `"log"`, `"clr"`, or `"global_scaling"` (rescales each spectrum to the mean total ion current, preserving absolute scale). |
     | `min_intensity_threshold` | int or null | Pixels with total ion current below this value are masked. |
     | `detect_background` | bool | Detect and flag off-tissue background spots in `obs["foreground"]` (all spots are still written). Default `false`. |
     | `sample_type` | string | Sample type hint for background detection (e.g., `"tissue"`). |

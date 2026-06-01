@@ -201,6 +201,7 @@ class STPreprocessingParams(_AbstractEnum):
 	MAX_GENES_PER_SPOT = "max_genes_per_spot"
 	MIN_SPOTS_PER_GENE = "min_spots_per_gene"
 	MIN_COUNT_SPOTS_RATIO_PER_GENE = "min_count_spots_ratio_per_gene"
+	REMOVE_MITOCHONDRIAL_GENES = "remove_mitochondrial_genes"
 	TOTAL_COUNTS_NORMALIZE = "total_counts_normalize"
 	LOG1P_TRANSFORM = "log1p_transform"
 	FORCE_RECOMPUTING = "force_recomputing"
@@ -250,6 +251,7 @@ class MsiIntensityNormalization(_AbstractEnum):
 	TIC = "tic"
 	LOG = "log"
 	CLR = "clr"
+	GLOBAL_SCALING = "global_scaling"
 	NONE = "none"
 
 class DecompositionMethod(_AbstractEnum):
@@ -277,6 +279,7 @@ DISPLAY_NAMES: dict[str, str] = {
 	MsiIntensityNormalization.TIC:  "TIC",
 	MsiIntensityNormalization.LOG:  "Log",
 	MsiIntensityNormalization.CLR:  "CLR",
+	MsiIntensityNormalization.GLOBAL_SCALING: "Global Scaling",
 	MsiIntensityNormalization.NONE: "None",
 	# Background colour
 	SegmentationBackgroundColor.WHITE: "White",

@@ -99,8 +99,11 @@ Structure:
 
 Fields:
 
-- `modality_name` (`string`): Modality containing `.geojson` files.
+- `modality_name` (`string`): Name of a declared modality whose per-sample directory contains the `.geojson` files. Exactly one `.geojson` file must be present per sample.
 - `file_type` (`string`): Currently only `"geojson"`.
+
+!!! warning "Alignment required for non-reference annotation modalities"
+    If `modality_name` is **not** the reference modality, `perform_alignment` must be `true`. Transferring annotations from a non-reference modality relies on the aligned coordinates (`obsm['{modality_name}_spatial']`) that the alignment stage produces; validation fails otherwise.
 
 ---
 
@@ -194,9 +197,11 @@ Example:
 - **Required**: No
 - **Default**: `"none"`
 - **Allowed values**:
-  - `"none"`
-  - `"feature_extraction"` (microscopy only)
-  - `"spot_interpolation"` (MSI, ST, Raman)
+  - `"none"` (any modality; skips registration)
+  - `"feature_extraction"` (`microscopy_image` only)
+  - `"spot_interpolation"` (`msi`, `st`)
+  - `"raman_pixel_interpolation"` (`raman`)
+- Compatibility is enforced: an incompatible `registration_type`/modality-type pairing raises a validation error.
 
 Example:
 
@@ -279,7 +284,7 @@ Example:
 | `lipid_annotation_db` | string or null | `null` |
 | `force_recomputing` | bool | `false` |
 
-- `intensity_normalization` allowed values: `"none"`, `"tic"`, `"log"`, `"clr"`.
+- `intensity_normalization` allowed values: `"none"`, `"tic"`, `"log"`, `"clr"`, `"global_scaling"` (all applied per ion mode). `"tic"` makes each spectrum sum to 1; `"global_scaling"` rescales each spectrum to the mean total ion current of its ion mode, preserving absolute intensity scale.
 - `sample_type` allowed values: `"tissue"`, `"microgrid"`.
 - `lipid_annotation_db`: path to a CSV or JSON file with columns `db_name`, `ionized_mass`, `ion_mode`.
 
@@ -341,9 +346,12 @@ Example:
 | `max_genes_per_spot` | int or null | `null` |
 | `min_spots_per_gene` | float or null | `null` |
 | `min_count_spots_ratio_per_gene` | float or null | `null` |
+| `remove_mitochondrial_genes` | bool | `false` |
 | `total_counts_normalize` | bool | `false` |
 | `log1p_transform` | bool | `false` |
 | `force_recomputing` | bool | `false` |
+
+- `remove_mitochondrial_genes`: when `true`, drops mitochondrial genes (flagged by a case-insensitive `MT-`/`MT.` name prefix) from the feature set. Off by default — in spatial data a high mitochondrial fraction is often biological rather than a low-quality artefact.
 
 Example:
 
@@ -355,6 +363,7 @@ Example:
   "max_genes_per_spot": null,
   "min_spots_per_gene": null,
   "min_count_spots_ratio_per_gene": null,
+  "remove_mitochondrial_genes": false,
   "total_counts_normalize": true,
   "log1p_transform": true,
   "force_recomputing": false
@@ -387,7 +396,23 @@ Example:
 
 ### `spot_interpolation`
 
-Compatible modality types: `msi`, `st`, `raman`.
+Compatible modality types: `msi`, `st`.
+
+| Field | Type | Default |
+|---|---|---|
+| `force_recomputing` | bool | `false` |
+
+Example:
+
+```json
+"registration_settings": {
+  "force_recomputing": false
+}
+```
+
+### `raman_pixel_interpolation`
+
+Compatible modality type: `raman`. Uses the same Gaussian footprint interpolation as `spot_interpolation`, applied to the pixels of the hyperspectral OME-TIFF. See [Registration](../pipeline/registration.md#raman_pixel_interpolation).
 
 | Field | Type | Default |
 |---|---|---|
@@ -461,7 +486,7 @@ Example:
       "type": "raman",
       "alignment_strategy": "manual",
       "alignment_force_recomputing": false,
-      "registration_type": "spot_interpolation",
+      "registration_type": "raman_pixel_interpolation",
       "processing_settings": {
         "savgol_window": 7,
         "savgol_polyorder": 3,

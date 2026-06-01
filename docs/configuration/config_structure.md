@@ -32,7 +32,7 @@ This page documents the **canonical structure** and the set of config fields tha
       "type": "microscopy_image | msi | raman | st",
       "alignment_strategy": "manual | pre_aligned",
       "alignment_force_recomputing": false,
-      "registration_type": "none | feature_extraction | spot_interpolation",
+      "registration_type": "none | feature_extraction | spot_interpolation | raman_pixel_interpolation",
       "processing_settings": {},
       "registration_settings": {}
     }
@@ -82,7 +82,7 @@ This page documents the **canonical structure** and the set of config fields tha
 | `type` | string | One of `microscopy_image`, `msi`, `raman`, `st`. |
 | `alignment_strategy` | string | `manual` or `pre_aligned`. |
 | `alignment_force_recomputing` | boolean | Re-run alignment for this modality even when cached outputs exist. Default `false`. |
-| `registration_type` | string | `none`, `feature_extraction`, or `spot_interpolation`. |
+| `registration_type` | string | `none`, `feature_extraction`, `spot_interpolation`, or `raman_pixel_interpolation`. |
 | `processing_settings` | object | Modality-specific preprocessing settings. |
 | `registration_settings` | object | Registration-specific settings (empty object allowed). |
 
@@ -99,7 +99,8 @@ This page documents the **canonical structure** and the set of config fields tha
 |---|---|---|
 | `none` | Skip registration for this modality | all |
 | `feature_extraction` | Patch embedding registration (Prov-GigaPath) | `microscopy_image` |
-| `spot_interpolation` | Gaussian-weighted spot interpolation | `msi`, `st`, `raman` |
+| `spot_interpolation` | Gaussian-weighted spot interpolation | `msi`, `st` |
+| `raman_pixel_interpolation` | Gaussian-weighted pixel interpolation over the hyperspectral OME-TIFF | `raman` |
 
 ---
 
@@ -164,6 +165,7 @@ This page documents the **canonical structure** and the set of config fields tha
   "max_genes_per_spot": null,
   "min_spots_per_gene": null,
   "min_count_spots_ratio_per_gene": null,
+  "remove_mitochondrial_genes": false,
   "total_counts_normalize": false,
   "log1p_transform": false,
   "force_recomputing": false
@@ -252,7 +254,7 @@ This page documents the **canonical structure** and the set of config fields tha
       "type": "raman",
       "alignment_strategy": "manual",
       "alignment_force_recomputing": false,
-      "registration_type": "spot_interpolation",
+      "registration_type": "raman_pixel_interpolation",
       "processing_settings": {
         "savgol_window": 7,
         "savgol_polyorder": 3,
@@ -303,6 +305,6 @@ This page documents the **canonical structure** and the set of config fields tha
 - `reference_modality` must match one modality `name` exactly.
 - Every sample directory must include every configured modality directory.
 - `feature_extraction` requires `microscopy_image`, CUDA-capable GPU, and `huggingface_token`.
-- `spot_interpolation` is used for `msi`, `st`, and currently `raman`.
+- `spot_interpolation` is used for `msi` and `st`; `raman` uses `raman_pixel_interpolation`.
 - `pre_aligned` is only valid for non-reference modalities when coordinates are already co-registered.
-- Compilation to `.h5mu` occurs only when reference is spot-based (`msi`/`st`) and at least one modality runs registration.
+- Compilation to `.h5mu` occurs only when the reference is spot-based (`msi`/`st`) and `perform_registration` is enabled.

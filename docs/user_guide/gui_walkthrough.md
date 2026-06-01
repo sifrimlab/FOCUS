@@ -93,7 +93,8 @@ For each non-reference modality, select the alignment strategy:
 For each non-reference modality, select the registration type and fill in any additional settings:
 
 - **None** — Align only; exclude from the final MuData.
-- **Spot interpolation** — Gaussian-weighted interpolation (CPU). Suitable for `msi`, `st`, and `raman`.
+- **Spot interpolation** — Gaussian-weighted spot interpolation (CPU). For `msi` and `st`.
+- **Raman pixel interpolation** — the same Gaussian footprint interpolation applied to the hyperspectral OME-TIFF pixels (CPU). For `raman`.
 - **Feature extraction** — Prov-GigaPath patch embeddings (GPU required). Only available for `microscopy_image`.
 
 If any modality uses **Feature extraction**, a HuggingFace token field will appear at the top of the configuration panel.

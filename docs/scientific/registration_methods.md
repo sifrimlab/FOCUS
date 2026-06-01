@@ -16,12 +16,16 @@ Applicable modality type: `microscopy_image`.
 
 For each aligned reference location \((x_i, y_i)\) in image coordinates:
 
-1. Extract square patch of side `patch_size` (default 224 px).
-2. Clamp top-left patch origin to image bounds.
-3. Zero-pad only if edge extraction yields smaller patch.
-4. Detect background-only patches (>=99% pixels near configured background color).
+1. Extract square patch of side `patch_size` (default 224 px), centered on \((x_i,y_i)\).
+2. Clamp the top-left origin to image bounds: \(x_0=\max(0,\min(x_0, W-\texttt{patch\_size}))\)
+   (and analogously \(y_0\)).
+3. Zero-pad only if edge extraction still yields a smaller patch.
+4. Detect background-only patches: a patch is flagged background when at least 99 % of its pixels
+   match the configured background color, where a pixel matches iff
+   `np.isclose(pixel, bg_color, atol=1e-3)` holds across all channels (i.e. count of matching
+   pixels \(\ge 0.99\cdot\) patch area).
 5. Encode non-background patches with Prov-GigaPath.
-6. Insert zero vectors for background-only patches so row count remains \(N_R\).
+6. Insert zero vectors for background-only patches so the row count remains \(N_R\).
 
 This preserves strict alignment between reference rows and registered rows.
 
@@ -61,7 +65,7 @@ Per-sample AnnData:
 
 ## 3. Spot Interpolation (`spot_interpolation`)
 
-Applicable modality types: `msi`, `st`, `raman`.
+Applicable modality types: `msi`, `st`.
 
 ### 3.1 Geometric setup
 
@@ -111,7 +115,40 @@ Per-sample output AnnData has:
 
 ---
 
-## 4. Merge and cache behavior
+## 4. Raman Pixel Interpolation (`raman_pixel_interpolation`)
+
+Applicable modality type: `raman`.
+
+Raman preprocessing produces a hyperspectral OME-TIFF (one channel per Raman shift), not a spot table. This engine adapts the interpolation of §3 to pixel data.
+
+### 4.1 Geometric setup
+
+1. Each Raman pixel at grid position \((\text{col},\text{row})\) is treated as a target point with coordinate \((x,y)=(\text{col},\text{row})\) and feature vector equal to its spectral intensities across channels.
+2. An adaptive pixel bounding box is computed around the anchor spots (extended by half a spot size plus a 2-pixel margin) so only the relevant sub-region of the OME-TIFF is loaded. Channel names are taken from the OME-XML metadata (fallback `Channel_N`).
+
+### 4.2 Kernel and interpolation
+
+Identical to §3.2: the same `SpotInterpolationRegistration._interpolate_features` Gaussian kernel is reused, with the loaded pixels as targets. Anchor rows with no pixel in the footprint are left at zeros.
+
+### 4.3 Output semantics
+
+Per-sample output AnnData has:
+
+- `.X`: interpolated spectra, shape \((N_R, C)\)
+- `.obsm['spatial']`: anchor coordinates in the Raman pixel frame
+- `.var`: indexed by spectral channel name
+
+### 4.4 Status
+
+This is a **temporary** approach. No feature-extraction model specific to Raman hyperspectral imaging is known to exist (unlike microscopy, served by Prov-GigaPath), so Gaussian pixel interpolation is used as a stopgap. A dedicated `feature_extraction` path for Raman is intended once a suitable model is available.
+
+### 4.5 Parameters
+
+- `force_recomputing` (default false)
+
+---
+
+## 5. Merge and cache behavior
 
 Both registration engines:
 
@@ -125,13 +162,13 @@ Both registration engines:
 
 ---
 
-## 5. Compatibility matrix
+## 6. Compatibility matrix
 
-| Modality type | `feature_extraction` | `spot_interpolation` | `none` |
-|---|---:|---:|---:|
-| `microscopy_image` | yes | no | yes |
-| `msi` | no | yes | yes |
-| `raman` | no | yes | yes |
-| `st` | no | yes | yes |
+| Modality type | `feature_extraction` | `spot_interpolation` | `raman_pixel_interpolation` | `none` |
+|---|---:|---:|---:|---:|
+| `microscopy_image` | yes | no | no | yes |
+| `msi` | no | yes | no | yes |
+| `raman` | no | no | yes | yes |
+| `st` | no | yes | no | yes |
 
-Reference modality itself is not registered; it defines the row index used by all registered targets.
+Compatibility is enforced during config validation; an incompatible `registration_type`/modality pairing raises a `ValueError`. The reference modality itself is not registered; it defines the row index used by all registered targets.

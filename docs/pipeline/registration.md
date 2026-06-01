@@ -2,172 +2,91 @@
 
 ## Overview
 
-The registration stage in FOCUS performs feature-based mapping between aligned modalities, enabling comprehensive multi-modal analysis. This stage aligns spatial coordinates and adjusts resolution by merging target modality spots to match the reference's spatial resolution, allowing each modality to retain its own feature space while enabling spatial alignment for integrated analysis.
+Registration maps the **feature content** of each non-reference modality onto the **reference (anchor) spots**, so that every modality ends up indexed by the same reference observations. The reference modality is **not** registered — it defines the row index that all registered targets are aligned to.
 
-## Registration Methods
+For each non-reference modality, the mode is chosen by its `registration_type`. The spot coordinates used as the registration target come from the alignment stage, which wrote `obsm['{modality}_spatial']` (the reference spots expressed in that modality's coordinate frame) onto the reference AnnData. A modality with `registration_type: "none"` is skipped.
 
-FOCUS supports two primary registration methods:
+Registration runs per sample and then merges the per-sample results:
 
-### 1. Feature Extraction Registration
-
-**Use Case**: Mapping microscopy images to spot-based reference
-
-**Method**: Deep learning patch embeddings using Prov-GigaPath model
-
-**Requirements**:
-- NVIDIA GPU with CUDA
-- HuggingFace token (for model download)
-- Microscopy image modality as target
-
-**Process**:
-1. Extract patches at reference spot locations
-2. Compute feature embeddings for each patch
-3. Filter background patches
-4. Construct feature matrix
-5. Normalize features
-
-### 2. Spot Interpolation Registration
-
-**Use Case**: Mapping spot-based modalities (MSI, ST) to any reference
-
-**Method**: Gaussian-weighted interpolation of features
-
-**Requirements**:
-- CPU-only (no GPU required)
-- Spot-based modality as target
-- Aligned coordinate systems
-
-**Process**:
-1. Identify k-nearest neighbors in target
-2. Compute distance-weighted features
-3. Interpolate features to reference coordinates
-4. Construct feature matrix
-5. Normalize features
-
-## Feature Extraction Registration
-
-### Technical Implementation
-
-**Model Architecture**:
-- **Backbone**: Prov-GigaPath (HuggingFace)
-- **Input**: 224×224 RGB patches
-- **Output**: 1536-dimensional embeddings
-- **Normalization**: ImageNet statistics
-
-**Patch Extraction**:
-- Centered at reference spot coordinates
-- Background filtering (Otsu thresholding)
-- Batch processing for efficiency
-
-**Feature Construction**:
-```
-Reference Spots × Patch Embeddings → Feature Matrix
+```text
+# per sample
+{dataset_path}/{sample_id}/registration/{modality}_{sample_id}_processed_aligned_registered.h5ad
+# merged across samples
+{dataset_path}/merged/registration/{modality}_merged_processed_aligned_registered.h5ad
 ```
 
-### Configuration Parameters
+---
+
+## Selecting a mode
+
+`registration_type` is set per modality and is **validated against the modality type** — an incompatible pairing raises a `ValueError` before processing starts.
+
+| `registration_type` | Compatible modality types | Hardware |
+|---|---|---|
+| `feature_extraction` | `microscopy_image` | GPU (CUDA) |
+| `spot_interpolation` | `msi`, `st` | CPU |
+| `raman_pixel_interpolation` | `raman` | CPU |
+| `none` | any (skips registration) | — |
+
+FOCUS therefore has **three** registration modes, one per non-image-reference workflow. They are described below.
+
+---
+
+## `feature_extraction`
+
+Used for microscopy images. Each reference spot is described by a deep-learning embedding of the image patch centered on it.
+
+**Algorithm**
+
+1. Read the aligned reference coordinates `obsm['{modality}_spatial']` (the patch centers, in image pixel space).
+2. For each center, extract a `patch_size`×`patch_size` patch, clamping the patch origin to the image bounds and zero-padding only if an edge patch would be smaller.
+3. Mark a patch as **background** if **≥99 % of its pixels match the configured `background_color`** (white `[1,1,1]` or black `[0,0,0]`). Background patches are not sent to the model.
+4. Encode the non-background patches with **Prov-GigaPath** (`hf_hub:prov-gigapath/prov-gigapath`, loaded via `timm`, run under `torch.inference_mode()`), producing a **1536-dimensional** embedding per patch. Input patches are normalized with ImageNet statistics (μ = (0.485, 0.456, 0.406), σ = (0.229, 0.224, 0.225)); inference runs on CUDA when available, in batches of 32.
+5. Scatter the embeddings back into a full `(N_ref, 1536)` matrix; **background patches keep an all-zero embedding** so the row count stays aligned to the reference. (These all-zero rows are what the [compilation](compilation.md) coverage filter later drops.)
+
+No normalization is applied to the output embeddings.
+
+**Requirements:** an NVIDIA GPU with CUDA, and a `huggingface_token` in the config (for the model download).
+
+**Output AnnData:** `X` = `(N_ref, 1536)` embeddings; `obsm['spatial']` = anchor centers; `obs['sample_id']`.
+
+**Configuration**
 
 ```json
 {
   "registration_type": "feature_extraction",
   "registration_settings": {
     "patch_size": 224,
+    "background_color": "white",
     "force_recomputing": false
   }
 }
 ```
 
-**Parameter Details**:
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `patch_size` | int | `224` | Patch side length in pixels. Prov-GigaPath expects 224. |
+| `background_color` | string | `"white"` | `"white"` or `"black"` — the color counted toward the ≥99 % background test. |
+| `force_recomputing` | bool | `false` | Recompute even if a valid cache exists. |
 
-| Parameter | Type | Default | Range | Description                         |
-|-----------|------|---------|-------|-------------------------------------|
-| `patch_size` | int | 224 | — | Size of extracted patches (must be 224 for Prov-GigaPath) |
-| `force_recomputing` | bool | false | — | Bypass cache                        |
+---
 
-### Processing Steps
+## `spot_interpolation`
 
-1. **Patch Extraction**
-   - Load reference AnnData with aligned coordinates
-   - Extract patches at `obsm['{target}_spatial']` locations
-   - Handle edge cases (near image boundaries)
+Used for spot-based omics modalities (MSI, ST). Each reference spot's feature vector is a Gaussian-weighted average of the target spots that fall within the reference spot's footprint.
 
-2. **Background Filtering**
-   - Compute mean intensity per patch
-   - Apply Otsu threshold
-   - Filter low-intensity patches
+**Algorithm** — for each anchor spot at `(cx, cy)` (in the target's frame) with spot size `(sx, sy)`:
 
-3. **Feature Extraction**
-   - Load Prov-GigaPath model
-   - Process patches in batches
-   - Extract 1536-d embeddings
+1. Query the target spots within a circular pre-neighborhood of radius `r = √((sx/2)² + (sy/2)²)` using a `cKDTree`.
+2. Keep only those inside the axis-aligned rectangle `|dx| ≤ sx/2` and `|dy| ≤ sy/2`.
+3. Weight each kept target by a Gaussian of its distance, `w = exp(−(dx² + dy²) / (2σ²))`, with bandwidth `σ = √(sx·sy) / 2`, and normalize the weights to sum to 1.
+4. Take the weighted average of the target feature vectors.
 
-4. **Feature Matrix Construction**
-   - Create matrix: Spots × Features
-   - Handle missing patches (NaN)
-   - Store in AnnData format
+This is a **footprint average, not a fixed-k nearest-neighbor** scheme. If no target spot falls inside the footprint, the reference row is left as an **all-zero vector**. Any `layers` on the target are interpolated with the same kernel.
 
-5. **Normalization**
-   - Min-max scaling (if enabled)
-   - Store features (with optional scaling)
+**Output AnnData:** `X` = `(N_ref, D)` interpolated features; `obsm['spatial']` = anchor coordinates; `obs['sample_id']`; the target's `var` is propagated.
 
-### Output Structure
-
-```
-<dataset_path>/<sample_id>/registration/<target_mod>/
-└── <sample_id>_processed_aligned_registered.h5ad	# Registered features
-```
-
-**AnnData Structure**:
-- `X`: Feature matrix (Spots × 1536)
-
-### Performance Considerations
-
-**GPU Requirements**:
-- **VRAM**: ~8GB minimum
-- **CUDA**: 11.8+
-- **Drivers**: Latest NVIDIA drivers
-
-**Processing Time**:
-- ~1-5 seconds per patch
-- Depends on GPU capabilities
-
-**Memory Usage**:
-- GPU memory: ~8GB required
-- CPU memory: Minimal
-- Disk: ~1GB per 1000 patches
-
-### Error Handling
-
-**Common Issues**:
-- **GPU not available**: Verify CUDA installation and run `nvidia-smi`
-- **Out of memory**: Close other GPU processes; if still failing, the GPU does not have enough VRAM for `feature_extraction`
-- **Model download failed**: Check HuggingFace token
-- **Invalid coordinates**: Verify alignment stage
-
-**Recovery**:
-```bash
-# Force recompute after fixing an issue
-jq '.registration_settings.force_recomputing = true' config.json > config_fixed.json
-```
-
-## Spot Interpolation Registration
-
-### Technical Implementation
-
-**Algorithm**: Gaussian-weighted k-nearest neighbors interpolation
-
-**Distance Metric**: Euclidean distance in physical coordinates
-
-**Weighting Function**:
-```
-weight_i = exp(-distance_i² / (2 * sigma²))
-```
-
-**Interpolation Formula**:
-```
-feature_j = Σ (weight_i * target_feature_i) / Σ weight_i
-```
-
-### Configuration Parameters
+**Configuration**
 
 ```json
 {
@@ -178,293 +97,56 @@ feature_j = Σ (weight_i * target_feature_i) / Σ weight_i
 }
 ```
 
-**Parameter Details**:
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `force_recomputing` | bool | `false` | Recompute even if a valid cache exists. |
 
-| Parameter | Type | Default | Range | Description |
-|-----------|------|---------|-------|-------------|
-| `force_recomputing` | bool | false | - | Bypass cache |
+The interpolation footprint and bandwidth are derived automatically from the anchor `spot_size`; there are no manual kernel parameters.
 
-### Processing Steps
+---
 
-1. **Coordinate Loading**
-   - Load reference AnnData with aligned coordinates
-   - Load target AnnData with features
-   - Extract coordinate systems
+## `raman_pixel_interpolation`
 
-2. **Neighbor Search**
-   - Build KD-tree from target coordinates
-   - For each reference spot select all the target spots whose center is within the reference spot size.
+Used for Raman. Raman preprocessing produces a **hyperspectral OME-TIFF** (an ASHLAR-stitched image with one channel per Raman shift), not a spot table, so this dedicated engine adapts the interpolation to pixel data.
 
-3. **Feature Interpolation**
-   - Compute distance weights
-   - Apply weighting function
-   - Interpolate features
+!!! warning "Temporary solution"
+    `raman_pixel_interpolation` is a **stopgap**. To the author's knowledge there is currently **no feature-extraction model tailored to Raman hyperspectral imaging** — unlike microscopy, which is served well by a general-purpose pathology vision model (Prov-GigaPath). Until such a model exists, FOCUS registers Raman by Gaussian-averaging the spectral pixels inside each reference spot's footprint. When a suitable Raman feature extractor becomes available, FOCUS intends to add a dedicated `feature_extraction` path for Raman, analogous to microscopy.
 
-4. **Feature Matrix Construction**
-   - Create matrix: Reference Spots × Target Features
-   - Store interpolation metadata
+**Algorithm**
 
-### Output Structure
+1. Treat each Raman **pixel as a spot**: its position is the pixel grid coordinate `(col, row) = (x, y)` (the same convention the alignment step used), and its feature vector is the pixel's spectral intensities across channels.
+2. Compute an **adaptive bounding box** around the anchor spots (extended by half a spot plus a 2-pixel margin) so the engine loads only the relevant sub-region of the OME-TIFF instead of the whole image. Channel names are read from the OME-XML metadata (falling back to `Channel_N`).
+3. Run the **same Gaussian footprint interpolation** as [`spot_interpolation`](#spot_interpolation), using the loaded pixels as the target spots.
 
-```
-<dataset_path>/<sample_id>/registration/<target_mod>/
-└── <sample_id>_processed_aligned_registered.h5ad	# Registered features
-```
+**Output AnnData:** `X` = `(N_ref, C)` interpolated spectra; `obsm['spatial']` = anchor coordinates; `obs['sample_id']`; `var` indexed by channel name.
 
-**AnnData Structure**:
-- `X`: Interpolated feature matrix
+**Configuration**
 
-### Performance Considerations
-
-**CPU Requirements**:
-- Multi-threaded implementation
-- Scales with resolution difference between target and reference
-- Memory-efficient
-
-**Processing Time**:
-- ~0.1-1 seconds per spot
-- Parallel processing across spots
-- O(n log n) complexity
-
-**Memory Usage**:
-- Scales with dataset size
-- KD-tree construction: O(n)
-- Query memory: O(k)
-
-## Registration Data Flow
-
-### Input Requirements
-
-For registration to work, FOCUS requires:
-
-1. **Completed Alignment**: Successful alignment stage
-2. **Valid Coordinates**: Aligned coordinate systems
-3. **Compatible Modalities**: Supported registration pairs
-4. **Feature Data**: Target modality must have features
-
-### Supported Registration Combinations
-
-| Reference Type | Target Type | Method | Notes |
-|----------------|-------------|--------|-------|
-| SPOT | IMAGE | Feature Extraction | Requires GPU |
-| SPOT | SPOT | Spot Interpolation | CPU-only |
-| IMAGE | SPOT | Not supported | - |
-| IMAGE | IMAGE | Not supported | - |
-
-**Type Definitions**:
-- **IMAGE**: Microscopy, Raman
-- **SPOT**: MSI, Spatial Transcriptomics
-
-!!! warning "Raman modality handling"
-    In the current FOCUS release, Raman data are treated as a **SPOT** modality for registration, so the `spot_interpolation` method is used. Future releases will add dedicated `feature_extraction` support for hyperspectral Raman images.
-
-### Output Files
-
-```
-<dataset_path>/<sample_id>/registration/<target_modality>/
-└── <sample_id>_processed_aligned_registered.h5ad	# Registered features
-```
-
-### Merged Registration Files
-
-After all samples for a target modality are processed, the per-sample files are merged:
-
-```
-<dataset_path>/merged/registration/<target_modality>/
-└── <target_modality>_merged_processed_aligned_registered.h5ad	# Combined features
-```
-
-## Multi-Modal Registration
-
-### Registration Chaining
-
-FOCUS supports chaining multiple registrations:
-
-```mermaid
-graph LR
-    A[Reference Spots] -->|Feature Extraction| B[Image Features]
-    A[Reference Spots] -->|Spot Interpolation| C[Target Spots]
-```
-
-**Example Configuration**:
 ```json
 {
-  "modalities": [
-    {
-      "name": "microscopy",
-      "type": "microscopy_image",
-      "registration_type": "feature_extraction",
-      "registration_settings": {
-        "patch_size": 224,
-        "force_recomputing": true
-      }
-    },
-    {
-      "name": "msi",
-      "type": "msi",
-      "registration_type": "spot_interpolation",
-      "registration_settings": {
-        "force_recomputing": true
-      }
-    }
-  ]
+  "registration_type": "raman_pixel_interpolation",
+  "registration_settings": {
+    "force_recomputing": false
+  }
 }
 ```
 
-### Feature Space Integration
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `force_recomputing` | bool | `false` | Recompute even if a valid cache exists. |
 
-After registration, features are integrated into common space:
+---
 
-```
-MuData Structure:
-├── microscopy: [Spots × 1536 patch features]
-├── msi: [Spots × N m/z features]
-├── st: [Spots × M gene features]
-└── obs: [Spots × metadata]
-```
+## Caching
 
-## Configuration Best Practices
+- **Per sample:** a cached registration file is reused only when its observation count matches the anchor's; otherwise it is recomputed.
+- **Merged:** the merged file is reused only when every per-sample file was cached and the active sample set is unchanged.
+- `force_recomputing: true` bypasses both caches for that modality.
 
-### Method Selection
+---
 
-**Use Feature Extraction When**:
-- GPU available
-- Image-to-spot registration needed
-- High accuracy required
-- Patch-level features desired
+## Next steps
 
-**Use Spot Interpolation When**:
-- CPU-only environment
-- Spot-to-spot registration
-- Fast processing needed
-- Simple feature mapping sufficient
-
-### Parameter Optimization
-
-**Feature Extraction**:
-- Start with default parameters
-- patch_size must be 224 (required by the Prov-GigaPath model)
-
-**Spot Interpolation**:
-
-No manual parameters required.
-
-## Troubleshooting Registration Issues
-
-### Common Problems and Solutions
-
-**Problem**: GPU not detected
-- **Check**: CUDA drivers and nvidia-smi
-- **Solution**: Install CUDA toolkit
-
-**Problem**: Out of GPU memory
-- **Check**: Other processes consuming VRAM (`nvidia-smi`)
-- **Solution**: Close other GPU processes; if VRAM is still insufficient, the GPU does not meet the minimum requirement for `feature_extraction`
-
-**Problem**: Model download failed
-- **Check**: HuggingFace token
-- **Solution**: Verify token and network
-
-**Problem**: No features registered
-- **Check**: Alignment completion
-- **Solution**: Verify alignment output files
-- **Alternative**: Rerun alignment stage
-
-### Debugging Techniques
-
-**Enable Debug Logging**:
-```json
-{
-  "logging_level": "DEBUG"
-}
-```
-
-**Check Intermediate Files**:
-```bash
-# List registration outputs
-ls -la <dataset_path>/registration/
-
-# Check file sizes
-du -sh <dataset_path>/registration/*
-```
-
-**Validate Coordinates**:
-```python
-import anndata
-
-# Load aligned data
-aligned = anndata.read_h5ad("aligned.h5ad")
-
-# Check coordinates
-print("Reference coordinates:", aligned.obsm['spatial'][:5])
-print("Target coordinates:", aligned.obsm['msi_spatial'][:5])
-```
-
-**Test Registration Programmatically**:
-```python
-from focus.registration import SpotInterpolationRegistration
-
-registrar = SpotInterpolationRegistration("/data/project")
-result = registrar.register_dataset(
-    anchor_files={"sample_001": "aligned.h5ad"},
-    target_files={"sample_001": "msi_processed.h5ad"},
-    anchor_name="microscopy",
-    target_name="msi",
-)
-```
-
-## Advanced Registration Techniques
-
-### Custom Feature Extraction
-
-Extend with custom models:
-
-```python
-from focus.registration import FeatureExtractorRegistration
-
-class CustomFeatureExtractor(FeatureExtractorRegistration):
-    def _extract_features(self, image_path, coordinates):
-        # Custom feature extraction logic
-        # Return: features (n_spots × n_features)
-        return custom_features
-
-# Use in configuration
-registrar = CustomFeatureExtractor("/data/project", hf_token="...")
-```
-
-### Dimensionality Reduction
-
-Apply dimensionality reduction to registered features:
-
-```python
-import scanpy as sc
-
-# Load registered data
-registered = anndata.read_h5ad("registered.h5ad")
-
-# Compute PCA
-sc.pp.pca(registered, n_comps=50)
-
-# Compute UMAP
-sc.pp.neighbors(registered)
-sc.tl.umap(registered)
-
-# Visualize
-sc.pl.umap(registered, color=["feature_1", "feature_2"])
-```
-
-## Next Steps
-
-After successful registration:
-
-1. **Review Registration**: Check quality metrics and feature distributions
-2. **Proceed to Compilation**: Continue to [MuData Compilation](compilation.md)
-3. **Validate Integration**: Perform cross-modality analysis
-4. **Document Results**: Record registration parameters and quality
-
-## Additional Resources
-
-- [MuData Compilation Documentation](compilation.md) - Final pipeline stage
-- [Configuration Reference](../configuration/config_fields.md) - Registration parameters
-- [Alignment Documentation](alignment.md) - Previous stage
-- [Troubleshooting Guide](../troubleshooting.md) - Common issues
+- [MuData Compilation](compilation.md) — assembles the per-modality registered outputs into the final `.h5mu`.
+- [Configuration Reference](../configuration/config_fields.md) — full `registration_type` and `registration_settings` reference.
+- [Alignment](alignment.md) — the preceding stage that produces the `obsm['{modality}_spatial']` coordinates registration relies on.

@@ -74,7 +74,7 @@ Clone the repository and run the install script for your platform. The script wi
 - Check that conda is available and guide you to install it if not.
 - Create a `FOCUS` conda environment with all dependencies.
 - Register the `focus` command so you can run the software from any directory after activating the environment.
-- Optionally create auxiliary `FOCUS_ASHLAR` and `FOCUS_BaSiCpy` environments for Raman spectroscopy processing.
+- Create auxiliary `FOCUS_ASHLAR` and `FOCUS_BaSiCpy` environments (one per subfolder in `tools/`) for Raman spectroscopy processing. These are built by default — no extra flag is needed.
 
 ```bash
 git clone https://github.com/sifrimlab/FOCUS.git
@@ -241,7 +241,7 @@ If you already have a configuration file, you can run the full pipeline non-inte
 focus --config /path/to/your/dataset/focus_config.json
 ```
 
-The configuration file must be a valid JSON file. Its path can be anywhere on the filesystem as long as it is readable. See the GUI for an interactive config builder, or refer to the example in `configs/` for the expected structure.
+The configuration file must be a valid JSON file. Its path can be anywhere on the filesystem as long as it is readable. Use the GUI as an interactive config builder, or see the [configuration documentation](docs/configuration/config_structure.md) for the expected structure.
 
 ---
 

@@ -284,7 +284,7 @@ class MsiDataset(BaseDataset):
 | `lipid_annotation_db` | `str` or `None` | `None` | Path to a CSV or JSON lipid annotation database. Required columns: `db_name`, `ionized_mass`, `ion_mode`. |
 | `mass_tolerance` | `int` | `10` | Adaptive mass tolerance in ppm for m/z consensus clustering. |
 | `frequency_threshold` | `float` | `0.01` | Minimum fraction of spectra in which an m/z must appear to be included in the reference grid. |
-| `intensity_normalization` | `MsiIntensityNormalization` | `"tic"` | Normalization method: `"tic"`, `"log"`, `"clr"`, or `"none"`. |
+| `intensity_normalization` | `MsiIntensityNormalization` | `"tic"` | Normalization method (applied per ion mode): `"tic"`, `"log"`, `"clr"`, `"global_scaling"`, or `"none"`. `"tic"` makes each spectrum sum to 1; `"global_scaling"` rescales each spectrum to the mean total ion current, preserving absolute scale. |
 | `recalibration_reference` | `dict` or `None` | `None` | Per-ion-mode reference m/z vectors for recalibration. |
 | `min_intensity_threshold` | `float` | `10000.0` | Minimum peak intensity for recalibration peak selection. |
 | `detect_background` | `bool` | `True` | If `True`, GMM-based tissue/background classification is run. |
@@ -479,21 +479,23 @@ def preprocess_data(
     max_count_per_spot: int | None = None,
     min_genes_per_spot: int | None = None,
     max_genes_per_spot: int | None = None,
-    total_counts_normalize: bool = True,
-    log1p_transform: bool = True,
+    remove_mitochondrial_genes: bool = False,
+    total_counts_normalize: bool = False,
+    log1p_transform: bool = False,
     force_recomputing: bool = False,
 ) -> str:
     ...
 ```
 
-Pipeline: load → QC metrics (mitochondrial gene fraction) → spot filtering → store raw counts in `.layers["raw"]` → normalize → log1p → Leiden clustering → save as gzip-compressed `.h5ad`.
+Pipeline: load → flag mito genes → spot filtering → QC metrics → optional mito-gene removal → store raw counts in `.layers["raw"]` → optional normalize/log1p → Leiden clustering (on an internal normalized copy) → save as gzip-compressed `.h5ad`.
 
 Output AnnData structure:
 
-- `.X` — normalized counts (sparse CSR)
-- `.layers["raw"]` — filtered raw counts pre-normalization
+- `.X` — counts (sparse CSR); raw unless `total_counts_normalize`/`log1p_transform` are set
+- `.layers["raw"]` — filtered, post-feature-selection raw counts
 - `.obs["sample_id"]` — categorical sample identifier
-- `.obs["leiden"]` — per-sample Leiden cluster labels
+- `.obs["leiden"]` — per-sample Leiden cluster labels (PCA/neighbour intermediates are not persisted)
+- `.obs` / `.var` QC metrics from `calculate_qc_metrics` (`pct_counts_mt`, `n_genes_by_counts`, `n_cells_by_counts`, ...)
 - `.obsm["spatial"]` — float32 spatial coordinates
 - `.uns["spot_size"]` — float32 array of shape `(2,)`
 
@@ -503,12 +505,13 @@ Output AnnData structure:
 | `max_count_per_spot` | `int` or `None` | `None` | Maximum total counts per spot to retain. |
 | `min_genes_per_spot` | `int` or `None` | `None` | Minimum genes detected per spot to retain. |
 | `max_genes_per_spot` | `int` or `None` | `None` | Maximum genes detected per spot to retain. |
-| `total_counts_normalize` | `bool` | `True` | Normalize counts to 10,000 per spot. |
-| `log1p_transform` | `bool` | `True` | Apply log1p transformation after normalization. |
+| `remove_mitochondrial_genes` | `bool` | `False` | Drop mitochondrial genes (`MT-`/`MT.` prefix) from the feature set. |
+| `total_counts_normalize` | `bool` | `False` | Normalize counts to 10,000 per spot. |
+| `log1p_transform` | `bool` | `False` | Apply log1p transformation after normalization. |
 | `force_recomputing` | `bool` | `False` | Re-run even if output already exists. |
 
-!!! note "Default normalization"
-    The `total_counts_normalize` and `log1p_transform` defaults are `True` when calling `preprocess_data()` directly. However, when called via the config file pipeline, they default to `False` unless explicitly set. Always check your config `processing_settings` block.
+All filtering/normalization steps are opt-in; the method-signature defaults match the
+config extractor defaults, so direct calls and config-driven runs behave identically.
 
 ---
 
@@ -526,8 +529,9 @@ class SpatialTranscriptomicDataset(BaseDataset):
         max_genes_per_spot: int | None = None,
         min_spots_per_gene: float | None = None,
         min_count_spots_ratio_per_gene: float | None = None,
-        total_counts_normalize: bool = True,
-        log1p_transform: bool = True,
+        remove_mitochondrial_genes: bool = False,
+        total_counts_normalize: bool = False,
+        log1p_transform: bool = False,
         force_recomputing: bool = False,
         step_reporter=None,
     ) -> dict[str, str]:
@@ -536,13 +540,14 @@ class SpatialTranscriptomicDataset(BaseDataset):
 
 Dataset-level pipeline:
 
-1. Preprocess each sample individually (per-sample spot filtering, normalization, Leiden clustering)
+1. Preprocess each sample individually (spot filtering, optional mito-gene removal, per-sample Leiden)
 2. Concatenate using raw counts from `.layers["raw"]` (outer join, missing genes filled with 0)
 3. Cross-sample gene filtering (`min_spots_per_gene`, `min_count_spots_ratio_per_gene`)
-4. Normalize and log1p-transform the merged dataset
-5. Preserve per-sample Leiden labels
-6. Build `.uns["spot_size"]` as `{sample_id: [float, float]}`
-7. Save as gzip-compressed `.h5ad`
+4. Recompute QC metrics on the merged matrix
+5. Optionally normalize / log1p-transform the merged dataset (opt-in)
+6. Preserve per-sample Leiden labels
+7. Build `.uns["spot_size"]` as `{sample_id: [float, float]}`
+8. Save as gzip-compressed `.h5ad`
 
 Additional parameters beyond per-sample ones:
 
@@ -550,6 +555,8 @@ Additional parameters beyond per-sample ones:
 |-----------|------|---------|-------------|
 | `min_spots_per_gene` | `float` or `None` | `None` | Minimum fraction of spots per sample expressing a gene (0–1). Genes failing in most samples are removed. |
 | `min_count_spots_ratio_per_gene` | `float` or `None` | `None` | Minimum ratio of total counts to expressed spots per gene. |
+
+(`remove_mitochondrial_genes` is shared with the per-sample method and applied per sample.)
 
 Returns `dict[str, str]` with sample IDs and a `"merged"` key.
 

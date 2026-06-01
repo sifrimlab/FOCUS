@@ -41,11 +41,11 @@ Stored as `float32` in `.uns['spot_size']`.
 
 `SpatialTranscriptomic.preprocess_data` executes the following sequence.
 
-### 3.1 QC metric computation
+### 3.1 Mitochondrial gene flag
 
-Mitochondrial genes are flagged by uppercase prefix `MT-`.
-
-`scanpy.pp.calculate_qc_metrics(..., qc_vars=['mt'])` is applied, adding standard QC summaries in `.obs` (for example `n_genes_by_counts`, `total_counts`, `pct_counts_mt`, with Scanpy-version-dependent extras).
+Mitochondrial genes are flagged in `.var['mt']` by a case-insensitive `MT-`/`MT.`
+name prefix. Detection is name-based, so datasets keyed by Ensembl identifiers will
+not be flagged.
 
 ### 3.2 Spot-level filtering (optional)
 
@@ -56,45 +56,73 @@ Filters are applied via `scanpy.pp.filter_cells` when configured:
 - `min_genes_per_spot`
 - `max_genes_per_spot`
 
-Invalid non-positive thresholds are rejected.
+Invalid non-positive thresholds are rejected. All thresholds default to `null` (off).
 
-### 3.3 Observation index standardization
+### 3.3 QC metric computation
 
-Observation names are prefixed with `<sample_id>_` when needed to guarantee uniqueness after merge.
+`scanpy.pp.calculate_qc_metrics(..., qc_vars=['mt'], percent_top=None)` is applied on
+the retained spots, **with mitochondrial genes still present** so that `pct_counts_mt`
+is meaningful. It adds per-spot QC summaries to `.obs` (`n_genes_by_counts`,
+`total_counts`, `pct_counts_mt`, ...) and per-gene summaries to `.var`
+(`n_cells_by_counts`, ...). These metrics are persisted as inspectable metadata and
+drive the optional mitochondrial gene filter below. `percent_top=None` skips the
+`pct_counts_in_top_*` columns to keep the output lean.
 
-### 3.4 Raw-count preservation
+### 3.4 Mitochondrial gene removal (optional, QC-driven)
 
-Filtered, pre-normalization counts are copied to:
+When `remove_mitochondrial_genes=true`, genes flagged in `.var['mt']` are dropped from
+the feature set. This is **off by default**: in spatial data a high mitochondrial
+fraction is frequently a genuine biological signal (e.g. metabolically active regions)
+rather than a low-quality artefact, so mitochondrial content is never discarded unless
+explicitly requested.
 
-```python
-layers['raw']
-```
+### 3.5 Observation index standardization
 
-### 3.5 Optional normalization and transform
+Observation names are prefixed with `<sample_id>_` when needed to guarantee uniqueness
+after merge.
+
+### 3.6 Raw-count preservation
+
+Filtered, post-feature-selection counts are copied to `layers['raw']` (the FOCUS
+cross-modality convention for unnormalized counts) before any normalization.
+
+### 3.7 Optional normalization and transform
+
+Both steps are opt-in and leave `.X` as raw counts by default:
 
 - total-count normalization (`scanpy.pp.normalize_total`, target sum \(10^4\)) when `total_counts_normalize=true`
 - `scanpy.pp.log1p` when `log1p_transform=true`
 
-### 3.6 Per-sample clustering
+Because the downstream alignment and registration stages consume the preprocessing
+output **as-is** (no further normalization), whatever ends up in `.X` is the final
+analysis matrix.
 
-Leiden clustering is run only when the sample has sufficient dimensionality:
+### 3.8 Per-sample clustering
+
+Leiden labels (`.obs['leiden']`) are used only to colour spots during the interactive
+alignment stage. Clustering is computed on a throwaway, internally normalized +
+`log1p` representation of the raw counts, so the labels are meaningful even when the
+output `.X` is left as raw counts. Only the labels are kept — the PCA embedding and
+neighbour graph are **not** persisted, keeping the saved `.h5ad` small.
 
 \[
 n_{pcs} = \min(50, N-1, G-1)
 \]
 
-- if \(N \ge 2\) and \(n_{pcs} \ge 2\): PCA -> neighbors -> Leiden (`resolution=0.5`, `flavor='igraph'`, `n_iterations=2`, `directed=False`)
+- if \(N \ge 2\) and \(n_{pcs} \ge 2\): normalize+log1p (internal copy) -> PCA -> neighbors -> Leiden (`resolution=0.5`, `flavor='igraph'`, `n_iterations=2`, `directed=False`)
 - otherwise: all observations get cluster label `'0'`
 
-### 3.7 Output metadata and persistence
+### 3.9 Output metadata and persistence
 
 Per-sample output sets:
 
 - `.obs['sample_id']` (categorical)
 - `.obs['leiden']` (categorical)
+- per-spot/per-gene QC metrics from §3.3
 - `.obsm['spatial']` as `float32`
+- `.layers['raw']` (unnormalized counts)
 
-Saved as gzip-compressed `.h5ad`.
+Saved as gzip-compressed `.h5ad`. PCA/neighbour-graph intermediates are not written.
 
 ---
 
@@ -159,6 +187,7 @@ Unexpressed genes in a sample are neutral (neither pass nor fail that sample).
 
 After gene filtering:
 
+- QC metrics are **recomputed** on the merged matrix (`calculate_qc_metrics`, `percent_top=None`) so `.obs`/`.var` QC reflect the retained spots and genes (per-sample QC predates cross-sample filtering)
 - post-filter raw counts are stored in `combined.layers['raw']`
 - optional `normalize_total` and `log1p` are applied to merged `.X`
 - `.obs['sample_id']` and `.obs['leiden']` are categorical
@@ -166,6 +195,10 @@ After gene filtering:
 - `.uns['spot_size']` becomes a per-sample dictionary `{sample_id: [sx, sy]}`
 
 Saved as gzip-compressed merged `.h5ad`.
+
+Note: the gene-selection design deliberately retains every gene with sufficient signal
+in at least one sample (to preserve rare cell-type markers). FOCUS does **not** subset
+to highly variable genes — the full filtered panel is carried through to registration.
 
 ---
 
@@ -195,8 +228,9 @@ Config-extracted defaults for ST preprocessing (`_extract_st_settings`):
 - `max_genes_per_spot`: `null`
 - `min_spots_per_gene`: `null`
 - `min_count_spots_ratio_per_gene`: `null`
+- `remove_mitochondrial_genes`: `false`
 - `total_counts_normalize`: `false`
 - `log1p_transform`: `false`
 - `force_recomputing`: `false`
 
-Note: method signatures in lower-level preprocessing functions define `total_counts_normalize=True` and `log1p_transform=True`, but in normal pipeline execution these are overridden by the extracted config defaults above unless explicitly set.
+All filtering and normalization steps are opt-in; no step is forced on by default.

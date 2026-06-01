@@ -155,7 +155,7 @@ If the database is omitted or set to `None`, FOCUS will process the data without
 
 7. **Tissue / background detection** — when `detect_background=True`, three spectral complexity features are computed per spot: Shannon entropy, peak count, and log(TIC). An optional 4th feature (annotation DB hit ratio) is added when a lipid database is provided. For `sample_type="tissue"`, a 2-component Gaussian Mixture Model is fit; BIC determines whether the distribution is unimodal (all spots kept) or bimodal (posterior ≥ 0.5 classifies tissue). Morphological hole-filling and binary opening clean up the spatial mask. For `sample_type="microgrid"`, Otsu thresholding with a 25th-percentile floor is used and spatial cleanup is disabled.
 
-8. **Intensity normalisation** — supported methods are `tic` (divide each spectrum by its total ion current), `log` (log(1 + x) transform), `clr` (sparsity-preserving centered log-ratio — log-centers each spectrum over its nonzero entries only, leaving structural zeros at 0), or `none`. Applied after background detection. The unnormalised interpolated intensities are preserved in `.layers['raw']`.
+8. **Intensity normalisation** — supported methods are `tic` (divide each spectrum by its total ion current, so each spectrum sums to 1), `log` (log(1 + x) transform), `clr` (sparsity-preserving centered log-ratio — log-centers each spectrum over its nonzero entries only, leaving structural zeros at 0), `global_scaling` (rescale each spectrum to the **mean** total ion current of its ion mode — like `tic` but preserves an interpretable absolute intensity scale instead of forcing a sum of 1), or `none`. All methods are applied independently per ion mode. Applied after background detection. The unnormalised interpolated intensities are preserved in `.layers['raw']`.
 
 9. **Per-sample Leiden clustering** — PCA (up to 50 components) → neighbor graph → Leiden (`resolution=0.5`, `flavor="igraph"`, `n_iterations=2`) is computed on the normalised matrix and stored in `.obs['leiden']`. The PCA embedding and neighbor graph are then discarded (only `.obs['leiden']` is kept) to minimise file size.
 
@@ -169,7 +169,7 @@ If the database is omitted or set to `None`, FOCUS will process the data without
 |------|------|---------|-------------|----------------|
 | `mass_tolerance` | `int` | `10` | Mass tolerance in ppm for m/z clustering and interpolation | Positive integer |
 | `frequency_threshold` | `float` | `0.01` | Minimum relative cluster frequency to retain an m/z in the consensus grid | `0.0` – `1.0` |
-| `intensity_normalization` | `str` | `"none"` | Intensity normalisation method | `"none"`, `"tic"`, `"log"`, `"clr"` |
+| `intensity_normalization` | `str` | `"none"` | Intensity normalisation method (applied per ion mode) | `"none"`, `"tic"`, `"log"`, `"clr"`, `"global_scaling"` |
 | `min_intensity_threshold` | `float` | `10000.0` | Minimum peak intensity considered valid during m/z recalibration | Non-negative float |
 | `detect_background` | `bool` | `False` | Detect and flag background spots in the output (`obs["foreground"]`); all spots are still written | `True`, `False` |
 | `sample_type` | `str` | `"tissue"` | Tissue architecture type; controls background detection strategy | `"tissue"`, `"microgrid"` |
