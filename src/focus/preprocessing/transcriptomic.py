@@ -130,7 +130,8 @@ class SpatialTranscriptomic(BaseSample):
         remove_mitochondrial_genes: bool = False,
         total_counts_normalize: bool = False,
         log1p_transform: bool = False,
-        force_recomputing: bool = False
+        force_recomputing: bool = False,
+        step_reporter=None
         ) -> str:
         '''
         Preprocess a single spatial transcriptomic sample.
@@ -180,6 +181,10 @@ class SpatialTranscriptomic(BaseSample):
             Whether to apply log1p transformation.
         force_recomputing : bool
             Whether to force recomputing even if output exists.
+        step_reporter : StepReporter | None
+            Unified reporter for console / log-file / GUI output. When None, a default
+            StepReporter (no GUI callback) is used so the sample can be preprocessed
+            standalone while still logging to the console / log file.
 
         Returns
         -------
@@ -187,10 +192,11 @@ class SpatialTranscriptomic(BaseSample):
             Path to the preprocessed AnnData file.
         '''
 
+        reporter = step_reporter or StepReporter()
         output_file = MODALITY_PREPROCESSING(self.source_path, self.sample_id, self.modality_name, "h5ad")
 
         if not force_recomputing and os.path.exists(output_file):
-            print(f"Sample {self.sample_id} already preprocessed. Using cached results.")
+            reporter.message(f"Sample {self.sample_id} already preprocessed. Using cached results.")
             return output_file
 
         # Validate filter parameters
@@ -205,6 +211,7 @@ class SpatialTranscriptomic(BaseSample):
 
         # 1. Load and validate
         adata = self.load_data()
+        n_spots_total = adata.n_obs
 
         # 2. Flag mitochondrial genes (case-insensitive 'MT-'/'MT.' prefix).
         # Note: name-based detection; datasets keyed by Ensembl IDs won't be flagged.
@@ -219,6 +226,14 @@ class SpatialTranscriptomic(BaseSample):
             sc.pp.filter_cells(adata, min_genes=min_genes_per_spot)
         if max_genes_per_spot is not None:
             sc.pp.filter_cells(adata, max_genes=max_genes_per_spot)
+
+        # Report how many spots survived the (opt-in) spot filters, on every interface.
+        n_spots_retained = adata.n_obs
+        pct_retained = (100.0 * n_spots_retained / n_spots_total) if n_spots_total else 0.0
+        reporter.message(
+            f"Sample {self.sample_id}: retained {n_spots_retained} / {n_spots_total} "
+            f"spots ({pct_retained:.1f}%) after filtering"
+        )
 
         # 4. QC metrics on the retained spots, with mitochondrial genes still present
         # so pct_counts_mt is meaningful. percent_top=None keeps the output lean.
@@ -401,7 +416,8 @@ class SpatialTranscriptomicDataset(BaseDataset):
                 remove_mitochondrial_genes=remove_mitochondrial_genes,
                 total_counts_normalize=total_counts_normalize,
                 log1p_transform=log1p_transform,
-                force_recomputing=force_recomputing
+                force_recomputing=force_recomputing,
+                step_reporter=reporter
             )
 
         # ---- Step 2: Merge and cross-sample processing ----

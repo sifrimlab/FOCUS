@@ -1,5 +1,6 @@
 import os
 import re
+import logging
 
 import tqdm as _tqdm_lib
 
@@ -41,18 +42,37 @@ def _parse_step_label(desc: str) -> tuple[int, int]:
 
 
 class StepReporter:
-	"""Reports sub-step progress from preprocessing methods to the GUI.
+	"""Single, unified reporting interface for the whole pipeline.
 
-	Always prints step descriptions to stdout for CLI usage. When a callback
-	is provided, also fires it with structured progress data for the GUI.
+	Every textual line is fanned out to all *available* sinks through one call:
+	  - console + the focus.log file, via the shared ``focus`` logger;
+	  - the web GUI, via the optional ``callback`` (absent in headless runs).
+
+	Sinks degrade gracefully and independently: the file handler only exists once
+	a dataset path is known (``setup_logging``), the GUI callback only when a GUI is
+	attached, and if no logging handlers are configured at all we fall back to
+	``print`` so the console is never silent. Prefer ``reporter.message(...)`` over
+	bare ``print()`` / ``logging`` so output reaches every interface at once.
 	"""
 
 	def __init__(self, callback=None):
 		self._callback = callback
+		self._logger = logging.getLogger("focus")
+
+	def _emit(self, msg: str, level: int = logging.INFO) -> None:
+		"""Fan a line out to the console + log file (via the 'focus' logger).
+
+		Falls back to ``print`` when the logger has no handlers (e.g. a bare
+		StepReporter() in a script or test that never called ``setup_logging``),
+		so the console is never silent regardless of how FOCUS is launched.
+		"""
+		self._logger.log(level, msg)
+		if not self._logger.hasHandlers():
+			print(msg)
 
 	def step(self, desc: str, current: int = 0, total: int = 0) -> None:
-		"""Announce a named step. Prints to stdout and notifies the GUI."""
-		print(desc)
+		"""Announce a named step on every interface (console, log file, GUI)."""
+		self._emit(desc)
 		self._send(desc, current, total)
 
 	def _send(self, desc: str, current: int, total: int) -> None:
@@ -84,15 +104,22 @@ class StepReporter:
 			yield item
 			self._update(desc, i + 1, n)
 
-	def message(self, msg: str) -> None:
-		"""Send a status message to the GUI message log and print to stdout."""
-		print(msg)
+	def message(self, msg: str, level: int = logging.INFO) -> None:
+		"""Report a status line to every available interface at once.
+
+		Writes to the console and the focus.log file (via the 'focus' logger) and,
+		when a GUI is attached, to the web GUI message log (callback). This is the
+		single unified reporting call — use it instead of print()/logging so a line
+		reaches all sinks, degrading gracefully when one (e.g. the GUI in a headless
+		run, or the log file before setup_logging) is unavailable. Pass ``level`` to
+		emit at a different logging level (e.g. logging.WARNING)."""
+		self._emit(msg, level)
 		if self._callback:
 			self._callback({"message": msg})
 
 	def set_sample(self, sample_id: str, index: int, total: int) -> None:
-		"""Set the current sample context and reset sub-step fields. Fires callback."""
-		print(f"[{index}/{total}] Processing sample: {sample_id}")
+		"""Set the current sample context and reset sub-step fields. Reports on every interface."""
+		self._emit(f"[{index}/{total}] Processing sample: {sample_id}")
 		if self._callback:
 			self._callback({
 				"current_sample": sample_id,
