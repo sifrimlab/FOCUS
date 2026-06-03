@@ -1,4 +1,5 @@
 import os
+import gc
 import anndata as ad
 import numpy as np
 import pandas as pd
@@ -6,10 +7,32 @@ import scanpy as sc
 import scipy.sparse as sp
 
 from focus.constants import MODALITY_PREPROCESSING, MODALITY_PREPROCESSING_MERGED, STPreprocessingParams
-from focus.utils import write_h5ad_compat, read_merged_sample_ids
+from focus.utils import write_h5ad_compat, read_merged_sample_ids, concat_on_disk_compat
 from focus.preprocessing._utils import StepReporter
 from focus.preprocessing.base import BaseSample, BaseDataset
 from focus.preprocessing._registry import ModalityHandler, register_modality
+
+
+def _ensure_sparse_csr(adata: ad.AnnData) -> None:
+    '''
+    Guarantee .X and every layer are stored as CSR sparse matrices, in place and
+    without changing dtype. No-op (no copy) for elements already in CSR format.
+
+    This is the defensive guarantee that preprocessed spatial-transcriptomics output
+    is always written as a sparse matrix, regardless of upstream scanpy operations or
+    the sparse format (CSC/COO) of the input file.
+    '''
+    if not sp.issparse(adata.X):
+        adata.X = sp.csr_matrix(adata.X)
+    elif adata.X.format != "csr":
+        adata.X = adata.X.tocsr()
+
+    for key in list(adata.layers.keys()):
+        layer = adata.layers[key]
+        if not sp.issparse(layer):
+            adata.layers[key] = sp.csr_matrix(layer)
+        elif layer.format != "csr":
+            adata.layers[key] = layer.tocsr()
 
 
 class SpatialTranscriptomic(BaseSample):
@@ -66,9 +89,11 @@ class SpatialTranscriptomic(BaseSample):
         # Normalize spot_size to a float32 array of shape (2,)
         adata.uns["spot_size"] = self._normalize_spot_size(adata.uns.get("spot_size", None))
 
-        # Ensure .X is sparse CSR for memory efficiency
+        # Ensure .X is sparse CSR for memory efficiency (preserve dtype; convert CSC/COO too)
         if not sp.issparse(adata.X):
             adata.X = sp.csr_matrix(adata.X)
+        elif adata.X.format != "csr":
+            adata.X = adata.X.tocsr()
 
         return adata
 
@@ -116,15 +141,17 @@ class SpatialTranscriptomic(BaseSample):
         3. Filter spots by count/gene thresholds (opt-in)
         4. Compute QC metrics (scanpy.pp.calculate_qc_metrics) on the retained spots
         5. Optionally remove mitochondrial genes (opt-in, uses the .var["mt"] QC flag)
-        6. Store filtered raw counts in .layers["raw"]
-        7. Normalize .X (total counts + log1p, both opt-in)
-        8. Leiden clustering on an internal normalized representation → .obs["leiden"]
+        6. Leiden clustering on an internal normalized representation → .obs["leiden"]
            (clustering intermediates such as PCA / neighbour graph are not persisted)
-        9. Save (gzip-compressed)
+        7. Store filtered raw counts in .layers["raw"] (only when normalization is applied;
+           otherwise .X already holds the raw counts, so the layer is omitted to avoid a duplicate)
+        8. Normalize .X (total counts + log1p, both opt-in)
+        9. Save (sparse CSR, gzip-compressed)
 
         Output AnnData structure:
         - .X: counts (raw unless total_counts_normalize / log1p_transform are set; sparse CSR)
-        - .layers["raw"]: filtered, post-feature-selection raw counts (sparse CSR)
+        - .layers["raw"]: filtered, post-feature-selection raw counts (sparse CSR); present only
+          when .X was normalized (when .X is left raw, it doubles as the raw counts)
         - .obs["sample_id"]: categorical sample identifier
         - .obs["leiden"]: categorical cluster labels (used for alignment colouring)
         - .obs QC metrics (total_counts, n_genes_by_counts, pct_counts_mt, ...) from
@@ -201,17 +228,23 @@ class SpatialTranscriptomic(BaseSample):
         if remove_mitochondrial_genes:
             adata = adata[:, ~adata.var['mt'].to_numpy()].copy()
 
-        # Make observation names unique across samples
-        if not all(obs_name.startswith(f"{self.sample_id}_") for obs_name in adata.obs_names):
-            adata.obs_names = [f"{self.sample_id}_{obs_name}" for obs_name in adata.obs_names]
+        # Make observation names unique across samples (vectorized; avoids per-spot Python loops)
+        prefix = f"{self.sample_id}_"
+        if not adata.obs_names.str.startswith(prefix).all():
+            adata.obs_names = prefix + adata.obs_names.astype(str)
 
-        # 6. Store filtered, post-feature-selection raw counts (FOCUS convention).
-        adata.layers['raw'] = adata.X.copy()
-
-        # 7. Per-sample Leiden labels for alignment colouring. Computed on an internal
+        # 6. Per-sample Leiden labels for alignment colouring. Computed on an internal
         # normalized representation so labels are meaningful regardless of the output
         # normalization flags; PCA / neighbour-graph intermediates are not persisted.
+        # Runs before normalization so it reads raw counts straight from .X.
         leiden_labels = self._compute_leiden_labels(adata)
+
+        # 7. Store filtered, post-feature-selection raw counts (FOCUS convention) ONLY when
+        # normalization will modify .X. With no normalization (the default), .X already holds
+        # raw counts, so a separate 'raw' layer would be a wasteful exact duplicate.
+        will_normalize = total_counts_normalize or log1p_transform
+        if will_normalize:
+            adata.layers['raw'] = adata.X.copy()
 
         # 8. Normalize the output .X (both steps opt-in; defaults leave .X as raw counts)
         if total_counts_normalize:
@@ -224,7 +257,8 @@ class SpatialTranscriptomic(BaseSample):
         adata.obs['leiden'] = pd.Categorical(leiden_labels)
         adata.obsm["spatial"] = np.asarray(adata.obsm["spatial"], dtype=np.float32)
 
-        # Save with compression
+        # Guarantee sparse CSR storage, then save with gzip compression
+        _ensure_sparse_csr(adata)
         write_h5ad_compat(adata, output_file, compression=self._H5AD_COMPRESSION)
         return output_file
 
@@ -245,7 +279,7 @@ class SpatialTranscriptomic(BaseSample):
         if n_obs < 2 or n_pcs < 2:
             return np.array(['0'] * n_obs, dtype=object)
 
-        counts = adata.layers['raw'] if 'raw' in adata.layers else adata.X
+        counts = adata.X  # raw counts at call time (Leiden runs before normalization)
         tmp = ad.AnnData(X=counts.copy())
         sc.pp.normalize_total(tmp, target_sum=self._NORMALIZE_TARGET_SUM, inplace=True)
         sc.pp.log1p(tmp)
@@ -253,7 +287,11 @@ class SpatialTranscriptomic(BaseSample):
         sc.pp.neighbors(tmp)
         sc.tl.leiden(tmp, resolution=self._LEIDEN_RESOLUTION, key_added='leiden',
                      flavor='igraph', n_iterations=2, directed=False)
-        return tmp.obs['leiden'].to_numpy()
+        labels = tmp.obs['leiden'].to_numpy()
+        # Free the throwaway normalized copy + PCA / neighbour graph promptly (large for VisiumHD).
+        del tmp
+        gc.collect()
+        return labels
 
 
 class SpatialTranscriptomicDataset(BaseDataset):
@@ -289,14 +327,16 @@ class SpatialTranscriptomicDataset(BaseDataset):
         Pipeline:
         1. Preprocess each sample individually (spot filtering, optional mito-gene
            removal, per-sample Leiden)
-        2. Concatenate using raw counts from .layers["raw"]
-        3. Cross-sample gene filtering
+        2. Concatenate on disk (anndata.concat_on_disk, outer join) so all per-sample files
+           are never held in RAM at once; recover raw counts from the carried 'raw' layer
+           (present only when samples were normalized) or directly from .X otherwise
+        3. Cross-sample gene filtering (single pass over per-sample submatrices)
         4. Recompute QC metrics on the merged matrix (so .obs/.var QC are accurate)
-        5. Store .layers["raw"] (post-gene-filter, pre-normalization)
+        5. Store .layers["raw"] (post-gene-filter, pre-normalization) only when .X is normalized
         6. Normalize .X on the merged data (opt-in)
         7. Preserve per-sample Leiden labels (batch-effect-free, for per-sample visualization)
         8. Build .uns["spot_size"] = {sample_id: [float32, float32]}
-        9. Save (gzip-compressed)
+        9. Save (sparse CSR, gzip-compressed)
 
         Parameters
         ----------
@@ -379,46 +419,66 @@ class SpatialTranscriptomicDataset(BaseDataset):
                 processed_samples["merged"] = merged_file
                 return processed_samples
 
-        # Load per-sample files into memory only when the merged file needs to be built
-        adata_list: list[ad.AnnData] = []
+        # ---- Collect per-sample spot sizes via backed reads (no .X materialized) ----
         spot_sizes: dict[str, np.ndarray] = {}
         for sample in self.samples:
-            adata = sc.read_h5ad(processed_samples[sample.sample_id])
-            spot_sizes[sample.sample_id] = adata.uns.get("spot_size", SpatialTranscriptomic._DEFAULT_SPOT_SIZE.copy())
-            # Revert .X to raw counts for proper cross-sample normalization
-            adata.X = adata.layers['raw']
-            del adata.layers['raw']
-            adata_list.append(adata)
+            a = sc.read_h5ad(processed_samples[sample.sample_id], backed='r')
+            spot_sizes[sample.sample_id] = np.asarray(
+                a.uns.get("spot_size", SpatialTranscriptomic._DEFAULT_SPOT_SIZE.copy()),
+                dtype=np.float32,
+            )
+            if a.file is not None:
+                a.file.close()
 
         reporter.message(f"Concatenating {len(self.samples)} samples...")
-        # Use outer join to preserve genes when panels differ across samples.
-        # Missing genes are filled with 0 counts.
-        combined = ad.concat(adata_list, join="outer", fill_value=0, merge='same')
-        del adata_list  # Free per-sample objects
+        # Memory-efficient on-disk concatenation: streams each per-sample file instead of
+        # holding all of them plus the result in RAM simultaneously. Outer join preserves
+        # genes when panels differ across samples; absent genes are filled with 0 counts.
+        # uns is intentionally dropped (default uns_merge=None) so a per-sample 'log1p' flag
+        # can't suppress the merged log1p below; spot_size is rebuilt from the backed reads.
+        # The per-sample 'raw' layer (present only when those files were normalized) rides
+        # along the concat and is recovered below.
+        sample_files = {s.sample_id: processed_samples[s.sample_id] for s in self.samples}
+        concat_on_disk_compat(
+            sample_files,
+            merged_file,
+            axis=0,
+            join="outer",
+            fill_value=0,
+            merge="same",
+        )
+        combined = sc.read_h5ad(merged_file)
 
-        # Ensure .X is sparse CSR for efficient row-based filter operations.
-        combined.X = combined.X.tocsr() if sp.issparse(combined.X) else sp.csr_matrix(combined.X)
+        # Recover raw counts for cross-sample filtering / normalization. When the per-sample
+        # files were normalized, raw lives in layers['raw']; otherwise .X already holds raw.
+        # NOTE: a stale per-sample cache from a run with different normalization flags could
+        # make this inconsistent — pair any flag change with force_recomputing=True.
+        combined.X = combined.layers.pop('raw', combined.X)
 
-        # ---- Cross-sample gene filtering ----
+        # Ensure .X is sparse CSR for efficient row-based filter operations (preserve dtype).
+        _ensure_sparse_csr(combined)
+        gc.collect()
+
+        # ---- Cross-sample gene filtering (single pass over per-sample submatrices) ----
         reporter.message(f"{combined.n_vars} genes before cross-sample filtering")
-
-        if min_spots_per_gene is not None:
-            reporter.message(f"Filtering genes by expression frequency (min_spots_per_gene={min_spots_per_gene})...")
-            combined = self._filter_genes_by_expression_frequency(combined, min_spots_per_gene)
-            reporter.message(f"{combined.n_vars} genes after min_spots_per_gene={min_spots_per_gene}")
-
-        if min_count_spots_ratio_per_gene is not None:
-            reporter.message(f"Filtering genes by count/spot ratio (min_count_spots_ratio_per_gene={min_count_spots_ratio_per_gene})...")
-            combined = self._filter_genes_by_count_ratio(combined, min_count_spots_ratio_per_gene)
-            reporter.message(f"{combined.n_vars} genes after min_count_spots_ratio_per_gene={min_count_spots_ratio_per_gene}")
+        if min_spots_per_gene is not None or min_count_spots_ratio_per_gene is not None:
+            if min_spots_per_gene is not None:
+                reporter.message(f"Filtering genes by expression frequency (min_spots_per_gene={min_spots_per_gene})...")
+            if min_count_spots_ratio_per_gene is not None:
+                reporter.message(f"Filtering genes by count/spot ratio (min_count_spots_ratio_per_gene={min_count_spots_ratio_per_gene})...")
+            combined = self._filter_genes(combined, min_spots_per_gene, min_count_spots_ratio_per_gene)
+            reporter.message(f"{combined.n_vars} genes after cross-sample filtering")
 
         # Recompute QC metrics on the final merged matrix (raw counts) so .obs/.var QC
         # reflect the retained spots and genes; per-sample QC predates cross-sample filtering.
         combined.var['mt'] = combined.var_names.str.upper().str.match(r'^MT[-\.]')
         sc.pp.calculate_qc_metrics(combined, qc_vars=['mt'], percent_top=None, inplace=True)
 
-        # Store raw counts after gene filtering (preserves sparse format)
-        combined.layers['raw'] = combined.X.copy()
+        # Store raw counts after gene filtering ONLY when normalization will modify .X;
+        # otherwise .X already holds the raw counts, so the layer would be a wasteful duplicate.
+        will_normalize = total_counts_normalize or log1p_transform
+        if will_normalize:
+            combined.layers['raw'] = combined.X.copy()
 
         # ---- Normalize merged dataset ----
         if total_counts_normalize:
@@ -437,62 +497,68 @@ class SpatialTranscriptomicDataset(BaseDataset):
         combined.obsm["spatial"] = np.asarray(combined.obsm["spatial"], dtype=np.float32)
         combined.uns["spot_size"] = {sid: ss.tolist() for sid, ss in spot_sizes.items()}
 
-        # Save with compression
+        # Guarantee sparse CSR storage, then save with gzip compression
         reporter.message("Saving combined dataset...")
+        _ensure_sparse_csr(combined)
         write_h5ad_compat(combined, merged_file, compression=self._H5AD_COMPRESSION)
+        del combined
+        gc.collect()
         processed_samples["merged"] = merged_file
         return processed_samples
 
-    def _filter_genes_by_expression_frequency(self, adata: ad.AnnData, min_spots_per_gene: float) -> ad.AnnData:
+    def _filter_genes(self, adata: ad.AnnData, min_spots_per_gene: float | None,
+                      min_count_spots_ratio: float | None) -> ad.AnnData:
         '''
-        Filter genes that are not expressed in at least min_spots_per_gene fraction of spots
-        in a sufficient number of samples (>= _NUM_SAMPLES_FILTER fraction of total samples).
+        Cross-sample gene filtering in a single pass over the per-sample submatrices.
+
+        Combines two opt-in criteria so each sample's rows are sliced and reduced only once
+        (rather than once per criterion), and the matrix is materialized only once at the end:
+
+        - min_spots_per_gene: keep a gene expressed in at least this fraction of a sample's
+          spots, in >= _NUM_SAMPLES_FILTER of all samples. ceil ensures min_cells >= 1 when the
+          fraction > 0, so genes with zero expression always fail this threshold.
+        - min_count_spots_ratio: keep a gene whose (total counts / expressed spots) meets the
+          threshold, in >= _NUM_SAMPLES_FILTER of the samples where it is actually expressed.
+          Genes absent from a sample are neutral (neither pass nor fail), so they don't inflate
+          the per-gene preserved counts.
+
+        When both criteria are requested a gene must satisfy both. Computing the ratio test on
+        the full matrix is equivalent to running it after the frequency filter: subsetting genes
+        (columns) does not change the per-gene expressed/total counts of the surviving genes.
         Operates on sparse matrices without densification.
         '''
         sample_ids = adata.obs['sample_id'].unique()
         num_samples = len(sample_ids)
-        gene_preserved_counts = np.zeros(adata.n_vars, dtype=int)
+
+        freq_preserved = np.zeros(adata.n_vars, dtype=int)
+        ratio_preserved = np.zeros(adata.n_vars, dtype=int)
 
         for sid in sample_ids:
             sample_mask = (adata.obs['sample_id'] == sid).values
-            X_sample = adata.X[sample_mask, :]
-            # ceil ensures min_cells >= 1 when min_spots_per_gene > 0,
-            # so genes with zero expression always fail this threshold.
-            min_cells = max(1, int(np.ceil(X_sample.shape[0] * min_spots_per_gene)))
+            X_sample = adata.X[sample_mask, :]                          # one slice per sample
             expressed_per_gene = np.asarray((X_sample > 0).sum(axis=0)).flatten()
-            gene_preserved_counts += (expressed_per_gene >= min_cells).astype(int)
+
+            if min_spots_per_gene is not None:
+                min_cells = max(1, int(np.ceil(X_sample.shape[0] * min_spots_per_gene)))
+                freq_preserved += (expressed_per_gene >= min_cells).astype(int)
+
+            if min_count_spots_ratio is not None:
+                total_counts = np.asarray(X_sample.sum(axis=0)).flatten()
+                expressed_mask = expressed_per_gene > 0
+                ratio_ok = np.zeros(adata.n_vars, dtype=bool)
+                ratio_ok[expressed_mask] = (
+                    total_counts[expressed_mask] >= min_count_spots_ratio * expressed_per_gene[expressed_mask]
+                )
+                ratio_preserved += ratio_ok.astype(int)
 
         min_samples_required = np.ceil(self._NUM_SAMPLES_FILTER * num_samples)
-        return adata[:, gene_preserved_counts >= min_samples_required].copy()
+        gene_mask = np.ones(adata.n_vars, dtype=bool)
+        if min_spots_per_gene is not None:
+            gene_mask &= freq_preserved >= min_samples_required
+        if min_count_spots_ratio is not None:
+            gene_mask &= ratio_preserved >= min_samples_required
 
-    def _filter_genes_by_count_ratio(self, adata: ad.AnnData, min_count_spots_ratio: float) -> ad.AnnData:
-        '''
-        Filter genes where the ratio of total counts to expressed spots is below the threshold,
-        in a sufficient number of samples where the gene is actually expressed.
-        Genes absent from a sample are not counted (neither for nor against).
-        Operates on sparse matrices without densification.
-        '''
-        sample_ids = adata.obs['sample_id'].unique()
-        num_samples = len(sample_ids)
-        gene_preserved_counts = np.zeros(adata.n_vars, dtype=int)
-
-        for sid in sample_ids:
-            sample_mask = (adata.obs['sample_id'] == sid).values
-            X_sample = adata.X[sample_mask, :]
-            expressed_counts = np.asarray((X_sample > 0).sum(axis=0)).flatten()
-            total_counts = np.asarray(X_sample.sum(axis=0)).flatten()
-            # Only evaluate the ratio where the gene is actually expressed in this sample.
-            # Unexpressed genes (expressed_counts == 0) are neutral: they neither pass
-            # nor fail the ratio test, so they don't inflate gene_preserved_counts.
-            expressed_mask = expressed_counts > 0
-            ratio_ok = np.zeros(adata.n_vars, dtype=bool)
-            ratio_ok[expressed_mask] = (
-                total_counts[expressed_mask] >= min_count_spots_ratio * expressed_counts[expressed_mask]
-            )
-            gene_preserved_counts += ratio_ok.astype(int)
-
-        min_samples_required = np.ceil(self._NUM_SAMPLES_FILTER * num_samples)
-        return adata[:, gene_preserved_counts >= min_samples_required].copy()
+        return adata[:, gene_mask].copy()
 
 
 # --- Modality Registration ---
