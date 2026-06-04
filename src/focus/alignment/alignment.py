@@ -8,6 +8,7 @@ from focus.constants import ModalityType
 from focus.utils import write_h5ad_compat, concat_on_disk_compat, read_merged_sample_ids
 
 from focus.GUI.direct_mapping_alignment import DirectMappingAlignmentGUI
+from focus.preprocessing._utils import _spatial_uniform_subsample
 
 # Perceptually distinct palette for Leiden cluster coloring (up to 26 clusters, then cycles)
 _DISPLAY_SPOT_CAP = 100_000   # max spots sent to the browser; large payloads crash XHR JSON parsing
@@ -315,8 +316,9 @@ class DirectMappingAligner:
 		]
 
 		if len(full_payload) > _DISPLAY_SPOT_CAP:
-			rng_indices = np.random.choice(len(full_payload), size=_DISPLAY_SPOT_CAP, replace=False)
-			display_payload = [full_payload[i] for i in rng_indices]
+			rng = np.random.default_rng(seed=0)
+			display_indices = _spatial_uniform_subsample(coordinates, _DISPLAY_SPOT_CAP, rng)
+			display_payload = [full_payload[i] for i in display_indices]
 		else:
 			display_payload = full_payload
 
