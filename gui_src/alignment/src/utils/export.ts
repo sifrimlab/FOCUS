@@ -56,12 +56,11 @@ export function computeExportPayload(
     const spotSize = tgtMeta.spot_size!;
     const scale = getScaleFactor();
     const spotSizePx = [spotSize[0] * scale, spotSize[1] * scale];
-    
-    const mappedSpots = spots.map(spot => {
+
+    const mappedSpots = spots.map((spot, i) => {
       const [px, py] = transformPoint(spot.spatial[0], spot.spatial[1]);
-      
       return {
-        id: (spot as any).id || spots.indexOf(spot), // Assuming ID exists or use index
+        id: (spot as any).id ?? i,
         pixel_x: px,
         pixel_y: py
       };
@@ -69,7 +68,8 @@ export function computeExportPayload(
 
     return {
       spots: mappedSpots,
-      spot_size_px: spotSizePx
+      spot_size_px: spotSizePx,
+      transform_matrix: Array.from(mapMatrix),
     };
   }
 
@@ -116,19 +116,19 @@ export function computeExportPayload(
 
   if (refMeta.modality_type === 'SPOT' && tgtMeta.modality_type === 'SPOT') {
     const spots = tgtData as SpotModalityPayload;
-    
-    const mappedSpots = spots.map(spot => {
+
+    const mappedSpots = spots.map((spot, i) => {
       const [refX, refY] = transformPoint(spot.spatial[0], spot.spatial[1]);
-      
       return {
-        id: (spot as any).id || spots.indexOf(spot),
+        id: (spot as any).id ?? i,
         pixel_x: refX,
         pixel_y: refY
       };
     });
 
     return {
-      spots: mappedSpots
+      spots: mappedSpots,
+      transform_matrix: Array.from(mapMatrix),
     };
   }
 

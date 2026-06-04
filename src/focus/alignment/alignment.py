@@ -10,6 +10,8 @@ from focus.utils import write_h5ad_compat, concat_on_disk_compat, read_merged_sa
 from focus.GUI.direct_mapping_alignment import DirectMappingAlignmentGUI
 
 # Perceptually distinct palette for Leiden cluster coloring (up to 26 clusters, then cycles)
+_DISPLAY_SPOT_CAP = 100_000   # max spots sent to the browser; large payloads crash XHR JSON parsing
+
 _CLUSTER_PALETTE = [
 	"#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd",
 	"#8c564b", "#e377c2", "#7f7f7f", "#bcbd22", "#17becf",
@@ -265,7 +267,11 @@ class DirectMappingAligner:
 	# --- GUI Data Preparation ---
 
 	def _prepare_image_data(self, filename: str, modality_name: str):
-		"""Prepare image modality data for the GUI. Returns (metadata, payload, scale_factors)."""
+		"""Prepare image modality data for the GUI.
+
+		Returns (metadata, payload, full_coordinates, scale_factors).
+		full_coordinates is None for IMAGE modalities.
+		"""
 		image, lowest_shape, original_shape = self._load_ome_tiff(filename)
 		payload = Image.fromarray(image)
 		metadata = {
@@ -277,25 +283,43 @@ class DirectMappingAligner:
 			original_shape[0] / lowest_shape[0],
 			original_shape[1] / lowest_shape[1]
 		])
-		return metadata, payload, scale_factors
+		return metadata, payload, None, scale_factors
 
 	def _prepare_spot_data(self, filename: str, modality_name: str):
-		"""Prepare spot modality data for the GUI. Returns (metadata, payload, scale_factors)."""
+		"""Prepare spot modality data for the GUI.
+
+		Returns (metadata, display_payload, full_coordinates, scale_factors).
+
+		display_payload is spatially subsampled to _DISPLAY_SPOT_CAP spots when the dataset is
+		large, so that the browser's JSON parser is never given a response it cannot handle.
+		Each spot dict carries an ``"id"`` field with its original row index so the frontend
+		can reference back to the full dataset.  full_coordinates holds the complete (N, 2)
+		float32 coordinate array and is kept on the backend to apply the alignment transform
+		to all spots after the user confirms.
+		"""
 		coordinates, spot_size, foreground_mask, cluster_labels, color_map = self._load_anndata_spots(filename)
 
 		# Build stable integer mapping for cluster labels (consecutive ints starting at 0)
 		unique_labels = sorted(set(str(l) for l in cluster_labels))
 		label_to_int = {lbl: idx for idx, lbl in enumerate(unique_labels)}
 
-		payload = [
+		full_payload = [
 			{
+				"id": i,
 				"spatial": coord.tolist(),
 				"class": label_to_int[str(label)],
 				"foreground": bool(fg),
 				"color": color_map.get(str(label), _CLUSTER_PALETTE[0])
 			}
-			for coord, label, fg in zip(coordinates, cluster_labels, foreground_mask)
+			for i, (coord, label, fg) in enumerate(zip(coordinates, cluster_labels, foreground_mask))
 		]
+
+		if len(full_payload) > _DISPLAY_SPOT_CAP:
+			rng_indices = np.random.choice(len(full_payload), size=_DISPLAY_SPOT_CAP, replace=False)
+			display_payload = [full_payload[i] for i in rng_indices]
+		else:
+			display_payload = full_payload
+
 		metadata = {
 			"modality_type": "SPOT",
 			"modality_name": modality_name,
@@ -304,10 +328,14 @@ class DirectMappingAligner:
 		}
 		# Spot coordinates are already in physical space, no scaling needed
 		scale_factors = np.array([1.0, 1.0])
-		return metadata, payload, scale_factors
+		return metadata, display_payload, coordinates, scale_factors
 
 	def _prepare_modality_data(self, filename: str, modality_name: str, modality_type: str):
-		"""Dispatch to the appropriate loader based on modality type."""
+		"""Dispatch to the appropriate loader based on modality type.
+
+		Always returns a 4-tuple (metadata, payload, full_coordinates, scale_factors).
+		full_coordinates is None for IMAGE modalities.
+		"""
 		if modality_type in _IMAGE_MODALITIES:
 			return self._prepare_image_data(filename, modality_name)
 		elif modality_type in _SPOT_MODALITIES:
@@ -337,18 +365,19 @@ class DirectMappingAligner:
 								continue
 
 				# Prepare data for both modalities
-				ref_metadata, ref_payload, ref_scale_factors = self._prepare_modality_data(
+				ref_metadata, ref_payload, _, ref_scale_factors = self._prepare_modality_data(
 					self._reference_modality[sample_id],
 					self._reference_modality_name,
 					self._reference_modality_type
 				)
-				tgt_metadata, tgt_payload, _ = self._prepare_modality_data(
+				tgt_metadata, tgt_payload, tgt_full_coords, _ = self._prepare_modality_data(
 					self._target_modality[sample_id],
 					self._target_modality_name,
 					self._target_modality_type
 				)
 
-				# Launch GUI for this sample (blocks until user confirms)
+				# Launch GUI for this sample (blocks until user confirms).
+				# Only the (subsampled) display payload is sent to the browser.
 				alignment_result = self._gui_interface.align_sample(
 					sample_id=sample_id,
 					sample_index=sample_index + 1,
@@ -358,8 +387,11 @@ class DirectMappingAligner:
 					target_payload=tgt_payload
 				)
 
-				# Parse alignment result
-				aligned_coordinates = self._parse_alignment_result(alignment_result, tgt_payload)
+				# Parse alignment result; pass full coordinates so the transform is applied
+				# to every spot in the original dataset, not just the displayed subset.
+				aligned_coordinates = self._parse_alignment_result(
+					alignment_result, tgt_payload, tgt_full_coords
+				)
 
 				if aligned_coordinates is not None:
 					# Scale coordinates from display resolution to original resolution
@@ -377,13 +409,44 @@ class DirectMappingAligner:
 			self._dataset_completed_event.set()
 
 	@staticmethod
-	def _parse_alignment_result(alignment_result: dict, target_payload) -> np.ndarray | None:
-		"""Extract aligned coordinates from the GUI result."""
+	def _parse_alignment_result(
+		alignment_result: dict,
+		target_payload,
+		full_coordinates: np.ndarray | None = None,
+	) -> np.ndarray | None:
+		"""Extract aligned coordinates from the GUI result.
+
+		Parameters
+		----------
+		alignment_result : dict
+			Payload POSTed by the frontend on /confirm.
+		target_payload : list[dict] | Image.Image
+			The display payload that was sent to the browser (may be a subsampled subset).
+		full_coordinates : np.ndarray | None
+			Full (N, 2) float32 coordinate array for SPOT modalities.  When present and the
+			frontend supplies a ``transform_matrix`` key, the 3×3 affine matrix is applied
+			directly to every spot so that the result covers the entire dataset rather than
+			only the displayed subset.
+		"""
+		# Preferred path: frontend sends the 3×3 affine matrix (added when display is
+		# subsampled so that all spots, not just the displayed ones, are transformed).
+		if "transform_matrix" in alignment_result and full_coordinates is not None:
+			mat = np.array(alignment_result["transform_matrix"], dtype=np.float64).reshape(3, 3)
+			n = len(full_coordinates)
+			hom = np.column_stack([full_coordinates.astype(np.float64), np.ones(n)])
+			transformed = (mat @ hom.T).T[:, :2]
+			return transformed.astype(np.float32)
+
 		if "spots" in alignment_result:
 			spots = alignment_result["spots"]
-			num_spots = len(target_payload) if isinstance(target_payload, list) else (
-				max((s.get("id", 0) for s in spots), default=-1) + 1 if spots else 0
-			)
+			# Use the full coordinate count when available so the output array is always
+			# sized to match the AnnData obs dimension, not the (possibly smaller) display subset.
+			if full_coordinates is not None:
+				num_spots = len(full_coordinates)
+			elif isinstance(target_payload, list):
+				num_spots = len(target_payload)
+			else:
+				num_spots = max((s.get("id", 0) for s in spots), default=-1) + 1 if spots else 0
 			if num_spots <= 0:
 				return None
 

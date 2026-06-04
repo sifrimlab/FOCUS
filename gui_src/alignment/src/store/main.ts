@@ -114,6 +114,10 @@ export const useMainStore = defineStore('main', {
         const extractClasses = (data: any, meta: Metadata) => {
             if (meta.modality_type === 'SPOT') {
                 const spots = data as SpotModalityPayload;
+                if (!Array.isArray(spots)) {
+                    console.error('fetchNextSample: SPOT payload is not an array', typeof spots, spots);
+                    return [];
+                }
                 const classes = new Set(spots.map(s => s.class));
                 return Array.from(classes).sort((a, b) => a - b);
             }
