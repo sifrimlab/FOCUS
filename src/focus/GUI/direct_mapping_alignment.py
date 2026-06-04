@@ -1,9 +1,48 @@
-import os, time, threading
+import os, time, math, threading
 from PIL import Image
 from io import BytesIO
 
 from flask import Flask, request, jsonify, send_file, send_from_directory
+from flask.json.provider import DefaultJSONProvider
 from werkzeug.serving import make_server
+
+
+def _replace_nonfinite(obj):
+    """Recursively replace non-finite floats (NaN, ±Infinity) with ``None``.
+
+    JSON has no NaN/Infinity literals, so the result is valid JSON. Only used on
+    the rare payload that actually contains a non-finite value (see
+    :class:`_ValidJSONProvider`).
+    """
+    if isinstance(obj, float):
+        return obj if math.isfinite(obj) else None
+    if isinstance(obj, dict):
+        return {k: _replace_nonfinite(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_replace_nonfinite(v) for v in obj]
+    return obj
+
+
+class _ValidJSONProvider(DefaultJSONProvider):
+    """Flask JSON provider that never emits ``NaN``/``Infinity`` tokens.
+
+    Flask's default provider serializes non-finite floats as the bare tokens
+    ``NaN``/``Infinity``, which are *not* valid JSON. The browser client's
+    ``JSON.parse`` rejects them; axios then returns the unparsed response as a
+    raw string, so the SPOT ``/payload`` (which the GUI expects to be an array)
+    arrives as a string and crashes the client with ``x.map is not a function``.
+    Spot coordinates can legitimately be non-finite (spots without a valid
+    spatial position), so every response is guarded. The clean path stays fast:
+    strict serialization is attempted first and only falls back to sanitizing
+    when a non-finite value is actually present.
+    """
+
+    def dumps(self, obj, **kwargs):
+        try:
+            return super().dumps(obj, allow_nan=False, **kwargs)
+        except ValueError:
+            return super().dumps(_replace_nonfinite(obj), **kwargs)
+
 
 class DirectMappingAlignmentGUI:
     """
@@ -53,7 +92,10 @@ class DirectMappingAlignmentGUI:
         self._basedir = os.path.join(os.path.dirname(__file__), 'alignment')
 
         self.app = Flask(__name__)
-        
+        # Guarantee valid JSON responses (non-finite floats -> null) so the
+        # browser client never receives an unparseable payload.
+        self.app.json = _ValidJSONProvider(self.app)
+
         # Enable CORS
         @self.app.after_request
         def after_request(response):
