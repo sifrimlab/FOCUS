@@ -8,7 +8,7 @@ import scipy.sparse as sp
 
 from focus.constants import MODALITY_PREPROCESSING, MODALITY_PREPROCESSING_MERGED, STPreprocessingParams
 from focus.utils import write_h5ad_compat, read_merged_sample_ids, concat_on_disk_compat
-from focus.preprocessing._utils import StepReporter
+from focus.preprocessing._utils import StepReporter, compute_cluster_labels
 from focus.preprocessing.base import BaseSample, BaseDataset
 from focus.preprocessing._registry import ModalityHandler, register_modality
 
@@ -142,8 +142,10 @@ class SpatialTranscriptomic(BaseSample):
         3. Filter spots by count/gene thresholds (opt-in)
         4. Compute QC metrics (scanpy.pp.calculate_qc_metrics) on the retained spots
         5. Optionally remove mitochondrial genes (opt-in, uses the .var["mt"] QC flag)
-        6. Leiden clustering on an internal normalized representation → .obs["leiden"]
-           (clustering intermediates such as PCA / neighbour graph are not persisted)
+        6. Cluster labels (subset-Leiden + MiniBatchKMeans) on an internal normalized
+           representation → .obs["cluster"] (clustering intermediates such as PCA /
+           neighbour graph are not persisted; large samples are clustered on a
+           spatially-uniform subset to stay fast)
         7. Store filtered raw counts in .layers["raw"] (only when normalization is applied;
            otherwise .X already holds the raw counts, so the layer is omitted to avoid a duplicate)
         8. Normalize .X (total counts + log1p, both opt-in)
@@ -154,7 +156,7 @@ class SpatialTranscriptomic(BaseSample):
         - .layers["raw"]: filtered, post-feature-selection raw counts (sparse CSR); present only
           when .X was normalized (when .X is left raw, it doubles as the raw counts)
         - .obs["sample_id"]: categorical sample identifier
-        - .obs["leiden"]: categorical cluster labels (used for alignment colouring)
+        - .obs["cluster"]: categorical cluster labels (used for alignment colouring)
         - .obs QC metrics (total_counts, n_genes_by_counts, pct_counts_mt, ...) from
           scanpy.pp.calculate_qc_metrics
         - .obsm["spatial"]: float32 spatial coordinates
@@ -248,11 +250,17 @@ class SpatialTranscriptomic(BaseSample):
         if not adata.obs_names.str.startswith(prefix).all():
             adata.obs_names = prefix + adata.obs_names.astype(str)
 
-        # 6. Per-sample Leiden labels for alignment colouring. Computed on an internal
-        # normalized representation so labels are meaningful regardless of the output
-        # normalization flags; PCA / neighbour-graph intermediates are not persisted.
-        # Runs before normalization so it reads raw counts straight from .X.
-        leiden_labels = self._compute_leiden_labels(adata)
+        # 6. Per-sample cluster labels for alignment colouring (subset-Leiden + MiniBatchKMeans).
+        # Computed on an internal normalized representation so labels are meaningful regardless
+        # of the output normalization flags; PCA / neighbour-graph intermediates are not persisted.
+        # Runs before normalization so it reads raw counts straight from .X. Large samples are
+        # clustered on a spatially-uniform subset to stay fast (see compute_cluster_labels).
+        cluster_labels = compute_cluster_labels(
+            adata.X,
+            leiden_resolution=self._LEIDEN_RESOLUTION,
+            normalize_target_sum=self._NORMALIZE_TARGET_SUM,
+            coordinates=adata.obsm.get('spatial'),
+        )
 
         # 7. Store filtered, post-feature-selection raw counts (FOCUS convention) ONLY when
         # normalization will modify .X. With no normalization (the default), .X already holds
@@ -269,44 +277,13 @@ class SpatialTranscriptomic(BaseSample):
 
         # 9. Set metadata
         adata.obs['sample_id'] = pd.Categorical([self.sample_id] * adata.n_obs)
-        adata.obs['leiden'] = pd.Categorical(leiden_labels)
+        adata.obs['cluster'] = pd.Categorical(cluster_labels)
         adata.obsm["spatial"] = np.asarray(adata.obsm["spatial"], dtype=np.float32)
 
         # Guarantee sparse CSR storage, then save with gzip compression
         _ensure_sparse_csr(adata)
         write_h5ad_compat(adata, output_file, compression=self._H5AD_COMPRESSION)
         return output_file
-
-    def _compute_leiden_labels(self, adata: ad.AnnData) -> np.ndarray:
-        '''
-        Compute per-sample Leiden cluster labels for alignment-stage spot colouring.
-
-        Clustering runs on a throwaway, internally normalized + log1p copy of the raw
-        counts, so the labels are meaningful even when the output .X is left as raw
-        counts (normalization is opt-in). Only the labels are returned — the PCA
-        embedding and neighbour graph are discarded and never written to disk.
-
-        Returns a length-n_obs array of string cluster labels (all '0' when the sample
-        is too small to cluster).
-        '''
-        n_obs = adata.n_obs
-        n_pcs = min(50, n_obs - 1, adata.n_vars - 1)
-        if n_obs < 2 or n_pcs < 2:
-            return np.array(['0'] * n_obs, dtype=object)
-
-        counts = adata.X  # raw counts at call time (Leiden runs before normalization)
-        tmp = ad.AnnData(X=counts.copy())
-        sc.pp.normalize_total(tmp, target_sum=self._NORMALIZE_TARGET_SUM, inplace=True)
-        sc.pp.log1p(tmp)
-        sc.pp.pca(tmp, n_comps=n_pcs)
-        sc.pp.neighbors(tmp)
-        sc.tl.leiden(tmp, resolution=self._LEIDEN_RESOLUTION, key_added='leiden',
-                     flavor='igraph', n_iterations=2, directed=False)
-        labels = tmp.obs['leiden'].to_numpy()
-        # Free the throwaway normalized copy + PCA / neighbour graph promptly (large for VisiumHD).
-        del tmp
-        gc.collect()
-        return labels
 
 
 class SpatialTranscriptomicDataset(BaseDataset):
@@ -341,7 +318,7 @@ class SpatialTranscriptomicDataset(BaseDataset):
 
         Pipeline:
         1. Preprocess each sample individually (spot filtering, optional mito-gene
-           removal, per-sample Leiden)
+           removal, per-sample cluster labels)
         2. Concatenate on disk (anndata.concat_on_disk, outer join) so all per-sample files
            are never held in RAM at once; recover raw counts from the carried 'raw' layer
            (present only when samples were normalized) or directly from .X otherwise
@@ -349,7 +326,7 @@ class SpatialTranscriptomicDataset(BaseDataset):
         4. Recompute QC metrics on the merged matrix (so .obs/.var QC are accurate)
         5. Store .layers["raw"] (post-gene-filter, pre-normalization) only when .X is normalized
         6. Normalize .X on the merged data (opt-in)
-        7. Preserve per-sample Leiden labels (batch-effect-free, for per-sample visualization)
+        7. Preserve per-sample cluster labels (batch-effect-free, for per-sample visualization)
         8. Build .uns["spot_size"] = {sample_id: [float32, float32]}
         9. Save (sparse CSR, gzip-compressed)
 
@@ -504,12 +481,12 @@ class SpatialTranscriptomicDataset(BaseDataset):
             reporter.message("Applying log1p transformation...")
             sc.pp.log1p(combined)
 
-        # Per-sample Leiden labels are already in .obs["leiden"] from concatenation
+        # Per-sample cluster labels are already in .obs["cluster"] from concatenation
         # (each sample was clustered independently to avoid batch effects)
 
         # ---- Set output metadata ----
         combined.obs['sample_id'] = pd.Categorical(combined.obs['sample_id'])
-        combined.obs['leiden'] = pd.Categorical(combined.obs['leiden'])
+        combined.obs['cluster'] = pd.Categorical(combined.obs['cluster'])
         combined.obsm["spatial"] = np.asarray(combined.obsm["spatial"], dtype=np.float32)
         combined.uns["spot_size"] = {sid: ss.tolist() for sid, ss in spot_sizes.items()}
 

@@ -2,7 +2,7 @@ import numpy as np
 import scipy.sparse as sp
 import mmap
 import os, tqdm, psutil
-from focus.preprocessing._utils import StepReporter
+from focus.preprocessing._utils import StepReporter, compute_cluster_labels
 from collections import defaultdict
 from sklearn.linear_model import LinearRegression
 from sklearn.mixture import GaussianMixture
@@ -2187,22 +2187,16 @@ class MsiDataset(BaseDataset):
 					uns={'spot_size': spot_size.tolist()}
 				)
 
-				n_pcs = min(50, adata.n_obs - 1, adata.n_vars - 1)
-				if adata.n_obs >= 2 and n_pcs >= 2:
-					sc.pp.pca(adata, n_comps=n_pcs)
-					sc.pp.neighbors(adata, n_neighbors=min(15, adata.n_obs - 1))
-					sc.tl.leiden(adata, resolution=self._LEIDEN_RESOLUTION, flavor="igraph", n_iterations=2, key_added='leiden')
-				else:
-					adata.obs['leiden'] = '0'
-				adata.obs['leiden'] = pd.Categorical(adata.obs['leiden'])
-
-				# Only obs['leiden'] is consumed downstream (alignment GUI). PCA embedding,
-				# neighbor graphs, and PCs are recomputed on demand and are pure storage waste.
-				adata.obsm.pop('X_pca', None)
-				adata.varm.pop('PCs', None)
-				adata.obsp.clear()                 # 'distances', 'connectivities'
-				adata.uns.pop('neighbors', None)
-				adata.uns.pop('pca', None)
+				# Per-sample cluster labels for alignment colouring (subset-Leiden + MiniBatchKMeans).
+				# .X is already normalized here; large samples are clustered on a spatially-uniform
+				# subset to stay fast. Only obs['cluster'] is produced — PCA / neighbour-graph
+				# intermediates run on throwaway copies and are never written to the AnnData.
+				adata.obs['cluster'] = pd.Categorical(compute_cluster_labels(
+					adata.X,
+					leiden_resolution=self._LEIDEN_RESOLUTION,
+					normalize_target_sum=None,
+					coordinates=adata.obsm.get('spatial'),
+				))
 
 				output_file = MODALITY_PREPROCESSING(self.dataset_source_path, sample.sample_id, sample.modality_name, 'h5ad')
 				for f in write_futures:

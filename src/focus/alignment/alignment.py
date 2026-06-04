@@ -216,11 +216,10 @@ class DirectMappingAligner:
 
 		Returns
 		-------
-		tuple of (coordinates, spot_size, foreground_mask, leiden_labels, color_map)
+		tuple of (coordinates, spot_size, foreground_mask, cluster_labels, color_map)
 			coordinates: (N, 2) float32 spatial coordinates
 			spot_size: (2,) float32 spot dimensions [x, y]
-			foreground_mask: (N,) bool foreground indicator
-			leiden_labels: (N,) str cluster labels
+			cluster_labels: (N,) str cluster labels
 			color_map: dict mapping cluster label → hex color
 		"""
 		if not os.path.exists(filename):
@@ -246,19 +245,22 @@ class DirectMappingAligner:
 		else:
 			foreground_mask = np.ones(adata.n_obs, dtype=bool)
 
-		# Leiden clustering labels
-		if 'leiden' in adata.obs:
-			leiden_labels = np.asarray(adata.obs['leiden'].values, dtype=str)
+		# Cluster labels (preprocessing writes 'cluster'; 'leiden'/'clusters' kept as
+		# fallbacks so files processed by older versions still display).
+		if 'cluster' in adata.obs:
+			cluster_labels = np.asarray(adata.obs['cluster'].values, dtype=str)
+		elif 'leiden' in adata.obs:
+			cluster_labels = np.asarray(adata.obs['leiden'].values, dtype=str)
 		elif 'clusters' in adata.obs:
-			leiden_labels = np.asarray(adata.obs['clusters'].values, dtype=str)
+			cluster_labels = np.asarray(adata.obs['clusters'].values, dtype=str)
 		else:
-			leiden_labels = np.zeros(adata.n_obs, dtype=str)
+			cluster_labels = np.zeros(adata.n_obs, dtype=str)
 
 		# Generate color map for the cluster labels
-		color_map = _generate_cluster_colors(leiden_labels)
+		color_map = _generate_cluster_colors(cluster_labels)
 
 		del adata
-		return coordinates, spot_size, foreground_mask, leiden_labels, color_map
+		return coordinates, spot_size, foreground_mask, cluster_labels, color_map
 
 	# --- GUI Data Preparation ---
 
@@ -279,10 +281,10 @@ class DirectMappingAligner:
 
 	def _prepare_spot_data(self, filename: str, modality_name: str):
 		"""Prepare spot modality data for the GUI. Returns (metadata, payload, scale_factors)."""
-		coordinates, spot_size, foreground_mask, leiden_labels, color_map = self._load_anndata_spots(filename)
+		coordinates, spot_size, foreground_mask, cluster_labels, color_map = self._load_anndata_spots(filename)
 
 		# Build stable integer mapping for cluster labels (consecutive ints starting at 0)
-		unique_labels = sorted(set(str(l) for l in leiden_labels))
+		unique_labels = sorted(set(str(l) for l in cluster_labels))
 		label_to_int = {lbl: idx for idx, lbl in enumerate(unique_labels)}
 
 		payload = [
@@ -292,7 +294,7 @@ class DirectMappingAligner:
 				"foreground": bool(fg),
 				"color": color_map.get(str(label), _CLUSTER_PALETTE[0])
 			}
-			for coord, label, fg in zip(coordinates, leiden_labels, foreground_mask)
+			for coord, label, fg in zip(coordinates, cluster_labels, foreground_mask)
 		]
 		metadata = {
 			"modality_type": "SPOT",
