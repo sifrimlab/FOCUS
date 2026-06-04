@@ -142,10 +142,10 @@ class SpatialTranscriptomic(BaseSample):
         3. Filter spots by count/gene thresholds (opt-in)
         4. Compute QC metrics (scanpy.pp.calculate_qc_metrics) on the retained spots
         5. Optionally remove mitochondrial genes (opt-in, uses the .var["mt"] QC flag)
-        6. Cluster labels (subset-Leiden + MiniBatchKMeans) on an internal normalized
-           representation → .obs["cluster"] (clustering intermediates such as PCA /
-           neighbour graph are not persisted; large samples are clustered on a
-           spatially-uniform subset to stay fast)
+        6. Cluster labels (spatial-bin aggregation + Leiden) on an internal normalized
+           representation → .obs["cluster"] (the aggregated matrix and clustering intermediates
+           such as PCA / neighbour graph are not persisted; large samples are coarsened onto a
+           spatial grid — spots in a bin summed into one pseudo-spot — to stay fast)
         7. Store filtered raw counts in .layers["raw"] (only when normalization is applied;
            otherwise .X already holds the raw counts, so the layer is omitted to avoid a duplicate)
         8. Normalize .X (total counts + log1p, both opt-in)
@@ -250,11 +250,12 @@ class SpatialTranscriptomic(BaseSample):
         if not adata.obs_names.str.startswith(prefix).all():
             adata.obs_names = prefix + adata.obs_names.astype(str)
 
-        # 6. Per-sample cluster labels for alignment colouring (subset-Leiden + MiniBatchKMeans).
+        # 6. Per-sample cluster labels for alignment colouring (spatial-bin aggregation + Leiden).
         # Computed on an internal normalized representation so labels are meaningful regardless
-        # of the output normalization flags; PCA / neighbour-graph intermediates are not persisted.
-        # Runs before normalization so it reads raw counts straight from .X. Large samples are
-        # clustered on a spatially-uniform subset to stay fast (see compute_cluster_labels).
+        # of the output normalization flags; the aggregated/normalized matrix and PCA / neighbour
+        # intermediates are throwaway and never persisted. Runs before normalization so it reads
+        # raw counts straight from .X. Large samples are coarsened onto a spatial grid (spots in a
+        # bin summed into one pseudo-spot) to stay fast and signal-rich (see compute_cluster_labels).
         cluster_labels = compute_cluster_labels(
             adata.X,
             leiden_resolution=self._LEIDEN_RESOLUTION,

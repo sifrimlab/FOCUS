@@ -2187,10 +2187,12 @@ class MsiDataset(BaseDataset):
 					uns={'spot_size': spot_size.tolist()}
 				)
 
-				# Per-sample cluster labels for alignment colouring (subset-Leiden + MiniBatchKMeans).
-				# .X is already normalized here; large samples are clustered on a spatially-uniform
-				# subset to stay fast. Only obs['cluster'] is produced — PCA / neighbour-graph
-				# intermediates run on throwaway copies and are never written to the AnnData.
+				# Per-sample cluster labels for alignment colouring (spatial-bin aggregation + Leiden).
+				# .X is already normalized here; large samples are coarsened onto a spatial grid —
+				# spots in a bin are summed (then re-normalized internally so occupancy washes out)
+				# so each pseudo-spot carries enough signal to cluster, which the per-spot intensities
+				# of ultra-high-res MSI do not. Only obs['cluster'] is produced — the summed/normalized
+				# matrix and PCA / neighbour intermediates are throwaway, never written to the AnnData.
 				adata.obs['cluster'] = pd.Categorical(compute_cluster_labels(
 					adata.X,
 					leiden_resolution=self._LEIDEN_RESOLUTION,

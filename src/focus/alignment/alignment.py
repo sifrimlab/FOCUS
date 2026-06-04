@@ -8,10 +8,13 @@ from focus.constants import ModalityType
 from focus.utils import write_h5ad_compat, concat_on_disk_compat, read_merged_sample_ids
 
 from focus.GUI.direct_mapping_alignment import DirectMappingAlignmentGUI
-from focus.preprocessing._utils import _spatial_uniform_subsample
+from focus.preprocessing._utils import _spatial_bin_assignment, _SPATIAL_CAP
+
+# Spot datasets larger than this are coarsened onto a spatial grid before display (large raw
+# payloads crash the browser's XHR JSON parser). _SPATIAL_CAP is shared with preprocessing
+# clustering so both stages build the identical grid — a bin's spots therefore share one label.
 
 # Perceptually distinct palette for Leiden cluster coloring (up to 26 clusters, then cycles)
-_DISPLAY_SPOT_CAP = 100_000   # max spots sent to the browser; large payloads crash XHR JSON parsing
 
 _CLUSTER_PALETTE = [
 	"#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd",
@@ -291,41 +294,68 @@ class DirectMappingAligner:
 
 		Returns (metadata, display_payload, full_coordinates, scale_factors).
 
-		display_payload is spatially subsampled to _DISPLAY_SPOT_CAP spots when the dataset is
-		large, so that the browser's JSON parser is never given a response it cannot handle.
-		Each spot dict carries an ``"id"`` field with its original row index so the frontend
-		can reference back to the full dataset.  full_coordinates holds the complete (N, 2)
-		float32 coordinate array and is kept on the backend to apply the alignment transform
-		to all spots after the user confirms.
+		When the dataset is larger than ``_SPATIAL_CAP`` the display is *coarsened* rather than
+		subsampled: spots are aggregated onto the same uniform spatial grid the preprocessing
+		clustering used, and one dict per occupied bin (positioned at the bin centroid) is sent
+		to the browser. This keeps the payload small while showing a gap-free coarse grid instead
+		of a thinned point cloud. The reported ``spot_size`` becomes the grid pitch so bins render
+		edge-to-edge. The aggregation is display-only — ``full_coordinates`` is the complete,
+		REAL (N, 2) coordinate array, kept on the backend so the user-defined transform is applied
+		to every original spot (not the bins) after confirmation. Nothing here is persisted.
 		"""
 		coordinates, spot_size, foreground_mask, cluster_labels, color_map = self._load_anndata_spots(filename)
 
 		# Build stable integer mapping for cluster labels (consecutive ints starting at 0)
 		unique_labels = sorted(set(str(l) for l in cluster_labels))
 		label_to_int = {lbl: idx for idx, lbl in enumerate(unique_labels)}
+		label_ints = np.array([label_to_int[str(l)] for l in cluster_labels], dtype=np.intp)
 
-		full_payload = [
-			{
-				"id": i,
-				"spatial": coord.tolist(),
-				"class": label_to_int[str(label)],
-				"foreground": bool(fg),
-				"color": color_map.get(str(label), _CLUSTER_PALETTE[0])
-			}
-			for i, (coord, label, fg) in enumerate(zip(coordinates, cluster_labels, foreground_mask))
-		]
+		n_obs = len(coordinates)
+		if n_obs > _SPATIAL_CAP:
+			bin_ids, n_bins, pitch, centroids = _spatial_bin_assignment(coordinates, _SPATIAL_CAP)
 
-		if len(full_payload) > _DISPLAY_SPOT_CAP:
-			rng = np.random.default_rng(seed=0)
-			display_indices = _spatial_uniform_subsample(coordinates, _DISPLAY_SPOT_CAP, rng)
-			display_payload = [full_payload[i] for i in display_indices]
+			# Per-bin majority cluster class (members share one label by construction — the
+			# preprocessing grid is identical — so majority is just a safety net) and majority
+			# foreground. All O(n_obs), vectorized: no per-bin scan over the full array.
+			n_classes = len(unique_labels)
+			class_counts = np.zeros((n_bins, n_classes), dtype=np.int64)
+			np.add.at(class_counts, (bin_ids, label_ints), 1)
+			bin_class = class_counts.argmax(axis=1)
+
+			counts = np.bincount(bin_ids, minlength=n_bins)
+			fg_counts = np.bincount(bin_ids, weights=foreground_mask.astype(np.float64), minlength=n_bins)
+			bin_fg = fg_counts >= (counts / 2.0)
+
+			display_payload = [
+				{
+					"id": b,   # bin index; only used by the dead 'spots' fallback (see below)
+					"spatial": centroids[b].tolist(),
+					"class": int(bin_class[b]),
+					"foreground": bool(bin_fg[b]),
+					"color": color_map.get(unique_labels[bin_class[b]], _CLUSTER_PALETTE[0]),
+				}
+				for b in range(n_bins)
+			]
+			# Grid pitch as the display spot size so bins tile gap-free; fall back to the real
+			# spot size on any axis with zero extent. Display-only — uns['spot_size'] is untouched.
+			display_spot_size = np.where(pitch > 0, pitch, spot_size).astype(np.float32)
 		else:
-			display_payload = full_payload
+			display_payload = [
+				{
+					"id": i,
+					"spatial": coord.tolist(),
+					"class": int(label_ints[i]),
+					"foreground": bool(fg),
+					"color": color_map.get(str(label), _CLUSTER_PALETTE[0])
+				}
+				for i, (coord, label, fg) in enumerate(zip(coordinates, cluster_labels, foreground_mask))
+			]
+			display_spot_size = spot_size
 
 		metadata = {
 			"modality_type": "SPOT",
 			"modality_name": modality_name,
-			"spot_size": spot_size.tolist(),
+			"spot_size": display_spot_size.tolist(),
 			"color_map": color_map
 		}
 		# Spot coordinates are already in physical space, no scaling needed
@@ -440,6 +470,8 @@ class DirectMappingAligner:
 			return transformed.astype(np.float32)
 
 		if "spots" in alignment_result:
+			# Fallback only: SPOT→SPOT / IMAGE→SPOT always send a transform_matrix (handled above),
+			# so this id-indexed path never runs for coarsened displays where "id" is a bin index.
 			spots = alignment_result["spots"]
 			# Use the full coordinate count when available so the output array is always
 			# sized to match the AnnData obs dimension, not the (possibly smaller) display subset.
