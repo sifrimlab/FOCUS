@@ -296,7 +296,7 @@ class DirectMappingAligner:
 
 		When the dataset is larger than ``_SPATIAL_CAP`` the display is *coarsened* rather than
 		subsampled: spots are aggregated onto the same uniform spatial grid the preprocessing
-		clustering used, and one dict per occupied bin (positioned at the bin centroid) is sent
+		clustering used, and one dict per occupied bin (positioned at the grid-cell center) is sent
 		to the browser. This keeps the payload small while showing a gap-free coarse grid instead
 		of a thinned point cloud. The reported ``spot_size`` becomes the grid pitch so bins render
 		edge-to-edge. The aggregation is display-only — ``full_coordinates`` is the complete,
@@ -312,7 +312,7 @@ class DirectMappingAligner:
 
 		n_obs = len(coordinates)
 		if n_obs > _SPATIAL_CAP:
-			bin_ids, n_bins, pitch, centroids = _spatial_bin_assignment(coordinates, _SPATIAL_CAP)
+			bin_ids, n_bins, pitch, centers = _spatial_bin_assignment(coordinates, _SPATIAL_CAP)
 
 			# Per-bin majority cluster class (members share one label by construction — the
 			# preprocessing grid is identical — so majority is just a safety net) and majority
@@ -329,7 +329,7 @@ class DirectMappingAligner:
 			display_payload = [
 				{
 					"id": b,   # bin index; only used by the dead 'spots' fallback (see below)
-					"spatial": centroids[b].tolist(),
+					"spatial": centers[b].tolist(),
 					"class": int(bin_class[b]),
 					"foreground": bool(bin_fg[b]),
 					"color": color_map.get(unique_labels[bin_class[b]], _CLUSTER_PALETTE[0]),

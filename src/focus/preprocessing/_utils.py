@@ -156,6 +156,26 @@ def create_output_directories(path: str, sample_ids: list[str], modality_name: s
 	)
 
 
+def _native_axis_cells(values: np.ndarray, ext_axis: float) -> int:
+	"""Largest number of uniform cells along one axis whose width is still >= the data's native
+	sample spacing, so no interior cell can fall *between* samples and render as an empty gap.
+
+	For a regular raster of ``k`` equally-spaced lines spanning the extent this is ``k - 1`` (cell
+	width == line spacing). Coordinates are quantized to ~1e-6 of the extent first so float jitter
+	from coordinate transforms does not inflate the spacing estimate. Returns ``1`` for a
+	degenerate (single-line / zero-extent) axis.
+	"""
+	if ext_axis <= 0:
+		return 1
+	levels = np.unique(np.round((values - values.min()) / ext_axis * 1e6))
+	if levels.size < 2:
+		return 1
+	step = float(np.median(np.diff(levels)))   # native spacing in the 0..1e6 quantized space
+	if step <= 0:
+		return 1
+	return max(1, int(np.floor(1e6 / step)))
+
+
 def _spatial_bin_assignment(coords: np.ndarray, n_target: int) -> tuple[np.ndarray, int, np.ndarray, np.ndarray]:
 	"""Assign each point to one of ``<= n_target`` occupied cells of a uniform spatial grid.
 
@@ -179,8 +199,11 @@ def _spatial_bin_assignment(coords: np.ndarray, n_target: int) -> tuple[np.ndarr
 	pitch : np.ndarray
 		(2,) float64 cell size ``(ext_x / nx, ext_y / ny)`` — the "computed" spot size used to
 		render bins gap-free. ``0`` on an axis with zero extent (caller supplies a fallback).
-	centroids : np.ndarray
-		(n_bins, 2) float64 mean coordinate of the points in each occupied bin.
+	centers : np.ndarray
+		(n_bins, 2) float64 center of each occupied grid cell (``mins + (ix + 0.5) * pitch``).
+		Bins drawn as ``pitch``-sized squares at these centers tile gap-free; the data centroid
+		would not — it is pulled toward where the points sit in the cell, beating into a regular
+		grid of gaps.
 	"""
 	coords = np.asarray(coords, dtype=np.float64)
 	mins = coords.min(axis=0)
@@ -191,22 +214,36 @@ def _spatial_bin_assignment(coords: np.ndarray, n_target: int) -> tuple[np.ndarr
 	# otherwise drive nx past n_target while ny floors to 1, breaking the cap.
 	nx = min(max(1, int(np.floor(np.sqrt(n_target * ext[0] / ext[1])))), n_target)
 	ny = max(1, int(n_target // nx))
+	# Never lay the grid finer than the data's native sampling: a uniform cell narrower than the
+	# spot spacing can fall *between* samples and stay empty, so the occupied cells render as a
+	# regular grid of gaps. Cap each axis at the number of cells whose width is >= that spacing
+	# (for a regular raster of k lines, k-1). Only ever coarsens (still <= n_target), keeping the
+	# tiling gap-free.
+	nx = max(1, min(nx, _native_axis_cells(coords[:, 0], raw_ext[0])))
+	ny = max(1, min(ny, _native_axis_cells(coords[:, 1], raw_ext[1])))
+	pitch = raw_ext / np.array([nx, ny], dtype=np.float64)
 	ix = np.clip(((coords[:, 0] - mins[0]) / ext[0] * nx).astype(int), 0, nx - 1)
 	iy = np.clip(((coords[:, 1] - mins[1]) / ext[1] * ny).astype(int), 0, ny - 1)
 	flat = ix * ny + iy
 
 	# Compact to occupied cells; return_inverse already yields a 0..n_bins-1 labelling.
-	_, bin_ids = np.unique(flat, return_inverse=True)
+	uniq_flat, bin_ids = np.unique(flat, return_inverse=True)
 	bin_ids = bin_ids.astype(np.intp)
-	n_bins = int(bin_ids.max()) + 1 if bin_ids.size else 0
+	n_bins = int(uniq_flat.size)
 
-	counts = np.bincount(bin_ids, minlength=n_bins).astype(np.float64)
-	centroids = np.zeros((n_bins, 2), dtype=np.float64)
-	np.add.at(centroids, bin_ids, coords)
-	centroids /= np.maximum(counts, 1.0)[:, None]
-
-	pitch = raw_ext / np.array([nx, ny], dtype=np.float64)
-	return bin_ids, n_bins, pitch, centroids
+	# Place each occupied bin at its grid-CELL CENTER (not the data centroid): decode the flat
+	# index with the same encoding flat = ix*ny + iy, then center = mins + (idx + 0.5) * pitch.
+	# Equal-pitch squares drawn at these centers tile edge-to-edge (adjacent cells differ by one
+	# index, so their centers differ by exactly one pitch); the centroid, pulled toward wherever
+	# points sit in the cell, does not tile and beats into a regular grid of gaps. On a zero-extent
+	# axis pitch == 0 so center == mins (the shared coordinate); the caller substitutes the real
+	# spot_size for the rendered square size there.
+	cell_ix = uniq_flat // ny
+	cell_iy = uniq_flat % ny
+	centers = np.empty((n_bins, 2), dtype=np.float64)
+	centers[:, 0] = mins[0] + (cell_ix + 0.5) * pitch[0]
+	centers[:, 1] = mins[1] + (cell_iy + 0.5) * pitch[1]
+	return bin_ids, n_bins, pitch, centers
 
 
 def _bin_sum_matrix(X, bin_ids: np.ndarray, n_bins: int):
