@@ -4,8 +4,8 @@ import scipy.sparse
 from scipy.spatial import cKDTree
 
 from focus.constants import MODALITY_REGISTRATION, MODALITY_REGISTRATION_MERGED
-from focus.constants import ModalityType
-from focus.utils import write_h5ad_compat, read_merged_sample_ids
+from focus.constants import ModalityType, RegistrationType
+from focus.utils import write_h5ad_compat, read_merged_sample_ids, registration_cache_valid
 
 from focus.registration.microscopy_image import MicroscopyImageFeatureExtractor
 
@@ -32,6 +32,8 @@ class FeatureExtractorRegistration:
 	hf_token : str, optional
 		HuggingFace token for downloading pretrained models.
 	"""
+
+	_REGISTRATION_TYPE = RegistrationType.FEATURE_EXTRACTION
 
 	def __init__(self, path: str, hf_token: str = None) -> None:
 		self._path = path
@@ -120,16 +122,18 @@ class FeatureExtractorRegistration:
 				all_cached = False
 				continue
 
-			# Cache check — validate obs count against anchor to detect stale caches
+			# Cache check — validate obs count and registration mode against the anchor to
+			# detect stale caches (wrong size, or a file left by a different registration mode).
 			if os.path.exists(registered_file) and not force_recomputing:
 				cached = anndata.read_h5ad(registered_file)
-				if cached.n_obs == len(patch_centers):
+				if registration_cache_valid(cached, len(patch_centers), self._REGISTRATION_TYPE):
 					logger.info(f"Using cached registration for sample '{sample_id}'")
 					registered_files[sample_id] = registered_file
 					continue
 				logger.warning(
-					f"Cached registration for '{sample_id}' has {cached.n_obs} obs but "
-					f"anchor has {len(patch_centers)}; recomputing."
+					f"Cached registration for '{sample_id}' is stale "
+					f"(obs={cached.n_obs} vs anchor {len(patch_centers)}, "
+					f"type={cached.uns.get('registration_type')} vs {self._REGISTRATION_TYPE}); recomputing."
 				)
 
 			all_cached = False
@@ -162,6 +166,7 @@ class FeatureExtractorRegistration:
 				obsm={'spatial': center_coordinates},
 				obs={'sample_id': [sample_id] * center_coordinates.shape[0]}
 			)
+			adata.uns['registration_type'] = self._REGISTRATION_TYPE
 			write_h5ad_compat(adata, registered_file, compression=_H5AD_COMPRESSION)
 			registered_files[sample_id] = registered_file
 			logger.debug(f"Saved {patch_embeddings.shape[0]} patch embeddings for sample '{sample_id}'")
@@ -207,6 +212,7 @@ class FeatureExtractorRegistration:
 			adata_list.append(adata)
 
 		merged = anndata.concat(adata_list, merge='same')
+		merged.uns['registration_type'] = self._REGISTRATION_TYPE
 
 		write_h5ad_compat(merged, merged_file, compression=_H5AD_COMPRESSION)
 		registered_files["merged"] = merged_file
@@ -235,6 +241,8 @@ class SpotInterpolationRegistration:
 	path : str
 		The path to the dataset folder.
 	"""
+
+	_REGISTRATION_TYPE = RegistrationType.SPOT_INTERPOLATION
 
 	def __init__(self, path: str) -> None:
 		self._path = path
@@ -394,16 +402,18 @@ class SpotInterpolationRegistration:
 			# Also loaded here to validate cache obs count before potentially skipping recomputing.
 			anchor_adata = anndata.read_h5ad(anchor_files[sample_id])
 
-			# Cache check — validate obs count against anchor to detect stale caches
+			# Cache check — validate obs count and registration mode against the anchor to
+			# detect stale caches (wrong size, or a file left by a different registration mode).
 			if os.path.exists(registered_file) and not force_recomputing:
 				cached = anndata.read_h5ad(registered_file)
-				if cached.n_obs == anchor_adata.n_obs:
+				if registration_cache_valid(cached, anchor_adata.n_obs, self._REGISTRATION_TYPE):
 					logger.info(f"Using cached registration for sample '{sample_id}'")
 					registered_files[sample_id] = registered_file
 					continue
 				logger.warning(
-					f"Cached registration for '{sample_id}' has {cached.n_obs} obs but "
-					f"anchor has {anchor_adata.n_obs}; recomputing."
+					f"Cached registration for '{sample_id}' is stale "
+					f"(obs={cached.n_obs} vs anchor {anchor_adata.n_obs}, "
+					f"type={cached.uns.get('registration_type')} vs {self._REGISTRATION_TYPE}); recomputing."
 				)
 
 			all_cached = False
@@ -469,6 +479,7 @@ class SpotInterpolationRegistration:
 
 			# Carry over var metadata from target (gene names, m/z values, etc.)
 			adata.var = target_adata.var.copy()
+			adata.uns['registration_type'] = self._REGISTRATION_TYPE
 
 			write_h5ad_compat(adata, registered_file, compression=_H5AD_COMPRESSION)
 			registered_files[sample_id] = registered_file
@@ -517,6 +528,7 @@ class SpotInterpolationRegistration:
 			adata_list.append(adata)
 
 		merged = anndata.concat(adata_list, merge='same')
+		merged.uns['registration_type'] = self._REGISTRATION_TYPE
 
 		write_h5ad_compat(merged, merged_file, compression=_H5AD_COMPRESSION)
 		registered_files["merged"] = merged_file

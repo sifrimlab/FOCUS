@@ -7,8 +7,8 @@ import numpy as np
 import pandas as pd
 import tifffile
 
-from focus.constants import MODALITY_REGISTRATION, MODALITY_REGISTRATION_MERGED
-from focus.utils import write_h5ad_compat, read_merged_sample_ids
+from focus.constants import MODALITY_REGISTRATION, MODALITY_REGISTRATION_MERGED, RegistrationType
+from focus.utils import write_h5ad_compat, read_merged_sample_ids, registration_cache_valid
 from focus.registration.registration import SpotInterpolationRegistration
 
 logger = logging.getLogger(__name__)
@@ -38,6 +38,8 @@ class RamanPixelInterpolationRegistration:
     path : str
         Path to the dataset folder.
     """
+
+    _REGISTRATION_TYPE = RegistrationType.RAMAN_PIXEL_INTERPOLATION
 
     def __init__(self, path: str) -> None:
         self._path = path
@@ -207,16 +209,18 @@ class RamanPixelInterpolationRegistration:
 
             anchor_adata = anndata.read_h5ad(anchor_files[sample_id])
 
-            # Cache check: validate obs count against anchor to detect stale caches
+            # Cache check: validate obs count and registration mode against the anchor to
+            # detect stale caches (wrong size, or a file left by a different registration mode).
             if os.path.exists(registered_file) and not force_recomputing:
                 cached = anndata.read_h5ad(registered_file)
-                if cached.n_obs == anchor_adata.n_obs:
+                if registration_cache_valid(cached, anchor_adata.n_obs, self._REGISTRATION_TYPE):
                     logger.info(f"Using cached raman pixel registration for sample '{sample_id}'")
                     registered_files[sample_id] = registered_file
                     continue
                 logger.warning(
-                    f"Cached registration for '{sample_id}' has {cached.n_obs} obs but "
-                    f"anchor has {anchor_adata.n_obs}; recomputing."
+                    f"Cached registration for '{sample_id}' is stale "
+                    f"(obs={cached.n_obs} vs anchor {anchor_adata.n_obs}, "
+                    f"type={cached.uns.get('registration_type')} vs {self._REGISTRATION_TYPE}); recomputing."
                 )
 
             all_cached = False
@@ -273,6 +277,7 @@ class RamanPixelInterpolationRegistration:
                 obs={'sample_id': [sample_id] * anchor_coords.shape[0]},
                 var=pd.DataFrame(index=channel_names),
             )
+            adata.uns['registration_type'] = self._REGISTRATION_TYPE
 
             write_h5ad_compat(adata, registered_file, compression=_H5AD_COMPRESSION)
             registered_files[sample_id] = registered_file
@@ -318,6 +323,7 @@ class RamanPixelInterpolationRegistration:
             adata_list.append(adata)
 
         merged = anndata.concat(adata_list, merge='same')
+        merged.uns['registration_type'] = self._REGISTRATION_TYPE
         write_h5ad_compat(merged, merged_file, compression=_H5AD_COMPRESSION)
         registered_files["merged"] = merged_file
         return registered_files

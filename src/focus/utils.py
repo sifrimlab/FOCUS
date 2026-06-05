@@ -468,6 +468,20 @@ def read_merged_sample_ids(path: str) -> set[str] | None:
 		return None
 
 
+def registration_cache_valid(cached_adata, expected_n_obs: int, registration_type: str) -> bool:
+	"""True when a cached registration file can be safely reused.
+
+	A cache is valid only when its observation count matches ``expected_n_obs`` AND it was
+	produced by the same registration mode, recorded in ``uns['registration_type']``. A missing
+	or mismatched stamp counts as invalid, so a file written by a different mode — or before
+	stamping was introduced — is recomputed rather than silently reused. Every registration
+	engine stamps this key on write, so switching a modality's ``registration_type`` always
+	invalidates the previous mode's cache.
+	"""
+	return (cached_adata.n_obs == expected_n_obs
+			and cached_adata.uns.get('registration_type') == registration_type)
+
+
 def write_h5mu_compat(mdata, path, **kwargs) -> None:
 	"""Write MuData to h5mu, converting nullable string arrays to object dtype.
 
