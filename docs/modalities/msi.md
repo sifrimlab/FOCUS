@@ -184,13 +184,19 @@ If the database is omitted or set to `None`, FOCUS will process the data without
 
 ## Registration
 
-!!! warning "Only `spot_interpolation` is compatible"
-    MSI is a spot-based modality. `feature_extraction` is **not** compatible.
+!!! warning "Spot-based registration only"
+    MSI is a spot-based modality, so it supports `spot_interpolation` and `spot_aggregation`. `feature_extraction` is **not** compatible.
 
 `spot_interpolation` performs Gaussian-weighted interpolation: for each anchor spot (from the reference modality), all MSI spots that fall within the anchor's spatial footprint are averaged with Gaussian weights proportional to distance. The result is a new feature vector at each anchor position.
 
 ```yaml
 registration_type: spot_interpolation
+```
+
+`spot_aggregation` uses the same footprint but **sums** the MSI spots inside it instead of averaging them — equal weight, no Gaussian kernel, and no normalization. This accumulates signal under each anchor spot rather than diluting it, which is intended for subcellular-resolution data. See [Registration](../pipeline/registration.md#spot_aggregation).
+
+```yaml
+registration_type: spot_aggregation
 ```
 
 No additional registration settings are required for MSI.

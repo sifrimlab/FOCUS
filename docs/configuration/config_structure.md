@@ -32,7 +32,7 @@ This page documents the **canonical structure** and the set of config fields tha
       "type": "microscopy_image | msi | raman | st",
       "alignment_strategy": "manual | pre_aligned",
       "alignment_force_recomputing": false,
-      "registration_type": "none | feature_extraction | spot_interpolation | raman_pixel_interpolation",
+      "registration_type": "none | feature_extraction | spot_interpolation | spot_aggregation | raman_pixel_interpolation",
       "processing_settings": {},
       "registration_settings": {}
     }
@@ -82,7 +82,7 @@ This page documents the **canonical structure** and the set of config fields tha
 | `type` | string | One of `microscopy_image`, `msi`, `raman`, `st`. |
 | `alignment_strategy` | string | `manual` or `pre_aligned`. |
 | `alignment_force_recomputing` | boolean | Re-run alignment for this modality even when cached outputs exist. Default `false`. |
-| `registration_type` | string | `none`, `feature_extraction`, `spot_interpolation`, or `raman_pixel_interpolation`. |
+| `registration_type` | string | `none`, `feature_extraction`, `spot_interpolation`, `spot_aggregation`, or `raman_pixel_interpolation`. |
 | `processing_settings` | object | Modality-specific preprocessing settings. |
 | `registration_settings` | object | Registration-specific settings (empty object allowed). |
 
@@ -99,7 +99,8 @@ This page documents the **canonical structure** and the set of config fields tha
 |---|---|---|
 | `none` | Skip registration for this modality | all |
 | `feature_extraction` | Patch embedding registration (Prov-GigaPath) | `microscopy_image` |
-| `spot_interpolation` | Gaussian-weighted spot interpolation | `msi`, `st` |
+| `spot_interpolation` | Gaussian-weighted average of the target spots in each anchor footprint | `msi`, `st` |
+| `spot_aggregation` | Equal-weight **sum** of the target spots in each anchor footprint (no normalization); for subcellular-resolution data (e.g. Visium HD) | `msi`, `st` |
 | `raman_pixel_interpolation` | Gaussian-weighted pixel interpolation over the hyperspectral OME-TIFF | `raman` |
 
 ---
@@ -187,6 +188,14 @@ This page documents the **canonical structure** and the set of config fields tha
 ```
 
 ### `spot_interpolation`
+
+```json
+{
+  "force_recomputing": false
+}
+```
+
+### `spot_aggregation`
 
 ```json
 {
@@ -305,6 +314,6 @@ This page documents the **canonical structure** and the set of config fields tha
 - `reference_modality` must match one modality `name` exactly.
 - Every sample directory must include every configured modality directory.
 - `feature_extraction` requires `microscopy_image`, CUDA-capable GPU, and `huggingface_token`.
-- `spot_interpolation` is used for `msi` and `st`; `raman` uses `raman_pixel_interpolation`.
+- `spot_interpolation` and `spot_aggregation` are both used for `msi` and `st` (averaging vs. summing the spots in each footprint); `raman` uses `raman_pixel_interpolation`.
 - `pre_aligned` is only valid for non-reference modalities when coordinates are already co-registered.
 - Compilation to `.h5mu` occurs only when the reference is spot-based (`msi`/`st`) and `perform_registration` is enabled.

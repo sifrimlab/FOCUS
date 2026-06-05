@@ -25,10 +25,11 @@ Registration runs per sample and then merges the per-sample results:
 |---|---|---|
 | `feature_extraction` | `microscopy_image` | GPU (CUDA) |
 | `spot_interpolation` | `msi`, `st` | CPU |
+| `spot_aggregation` | `msi`, `st` | CPU |
 | `raman_pixel_interpolation` | `raman` | CPU |
 | `none` | any (skips registration) | — |
 
-FOCUS therefore has **three** registration modes, one per non-image-reference workflow. They are described below.
+FOCUS therefore has **four** registration modes. They are described below.
 
 ---
 
@@ -105,6 +106,49 @@ The interpolation footprint and bandwidth are derived automatically from the anc
 
 ---
 
+## `spot_aggregation`
+
+Used for spot-based omics modalities (MSI, ST). Each reference spot's feature vector is the **plain sum** of the target spots that fall within the reference spot's footprint — the same footprint as [`spot_interpolation`](#spot_interpolation), but **summed instead of averaged**.
+
+This is intended for **subcellular-resolution** spot modalities (e.g. **Visium HD**), where each native spot carries very little signal: averaging dilutes it, whereas summing **accumulates** the total signal coming from the area a reference spot covers.
+
+**Algorithm** — for each anchor spot at `(cx, cy)` (in the target's frame) with spot size `(sx, sy)`:
+
+1. Query the target spots within a circular pre-neighborhood of radius `r = √((sx/2)² + (sy/2)²)` using a `cKDTree`.
+2. Keep only those inside the axis-aligned rectangle `|dx| ≤ sx/2` and `|dy| ≤ sy/2`.
+3. **Sum** the feature vectors of the kept targets, each with equal weight.
+
+Internally this is built as a sparse `(N_ref, N_target)` 0/1 membership matrix `A` (`A[i,j] = 1` iff target `j` is inside anchor `i`'s footprint) and the aggregation is the sparse product `A @ X`. The computation is **sparse-preserving** — the target matrix is not densified — which matters for high-resolution inputs with many spots.
+
+Key differences from `spot_interpolation`:
+
+- **Sum, not weighted average.** There is no Gaussian kernel and no weighting; every in-footprint target contributes equally.
+- **No normalization is applied.** The summed values are kept as-is and are deliberately **not** divided by the number of contributing spots (footprint occupancy) — dividing would reduce the result back to an average. `.X` and every `layer` are aggregated the same way.
+- Footprints may **overlap**, so a single target spot can contribute to several reference spots.
+
+If no target spot falls inside the footprint, the reference row is left as an **all-zero vector** (dropped later by the [compilation](compilation.md) coverage filter).
+
+**Output AnnData:** `X` = `(N_ref, D)` summed features; `obsm['spatial']` = anchor coordinates; `obs['sample_id']`; the target's `var` is propagated; any target `layers` are summed with the same membership.
+
+**Configuration**
+
+```json
+{
+  "registration_type": "spot_aggregation",
+  "registration_settings": {
+    "force_recomputing": false
+  }
+}
+```
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `force_recomputing` | bool | `false` | Recompute even if a valid cache exists. |
+
+The aggregation footprint is derived automatically from the anchor `spot_size`; there are no manual parameters.
+
+---
+
 ## `raman_pixel_interpolation`
 
 Used for Raman. Raman preprocessing produces a **hyperspectral OME-TIFF** (an ASHLAR-stitched image with one channel per Raman shift), not a spot table, so this dedicated engine adapts the interpolation to pixel data.
@@ -139,7 +183,7 @@ Used for Raman. Raman preprocessing produces a **hyperspectral OME-TIFF** (an AS
 
 ## Caching
 
-- **Per sample:** a cached registration file is reused only when its observation count matches the anchor's; otherwise it is recomputed.
+- **Per sample:** every registered output is stamped with `uns['registration_type']`. A cached file is reused only when **both** its observation count matches the anchor's **and** its stamp matches the modality's current `registration_type`; otherwise it is recomputed. A missing stamp (a file written by an older FOCUS version) or a stamp from a different mode — e.g. after switching a modality from `spot_interpolation` to `spot_aggregation` — is therefore treated as stale and recomputed.
 - **Merged:** the merged file is reused only when every per-sample file was cached and the active sample set is unchanged.
 - `force_recomputing: true` bypasses both caches for that modality.
 

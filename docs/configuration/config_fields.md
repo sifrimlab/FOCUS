@@ -200,6 +200,7 @@ Example:
   - `"none"` (any modality; skips registration)
   - `"feature_extraction"` (`microscopy_image` only)
   - `"spot_interpolation"` (`msi`, `st`)
+  - `"spot_aggregation"` (`msi`, `st`)
   - `"raman_pixel_interpolation"` (`raman`)
 - Compatibility is enforced: an incompatible `registration_type`/modality-type pairing raises a validation error.
 
@@ -397,6 +398,22 @@ Example:
 ### `spot_interpolation`
 
 Compatible modality types: `msi`, `st`.
+
+| Field | Type | Default |
+|---|---|---|
+| `force_recomputing` | bool | `false` |
+
+Example:
+
+```json
+"registration_settings": {
+  "force_recomputing": false
+}
+```
+
+### `spot_aggregation`
+
+Compatible modality types: `msi`, `st`. Sums (rather than averages) the target spots inside each anchor footprint, with no normalization — intended for subcellular-resolution data (e.g. Visium HD). See [Registration](../pipeline/registration.md#spot_aggregation).
 
 | Field | Type | Default |
 |---|---|---|

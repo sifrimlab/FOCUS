@@ -154,7 +154,8 @@ The reference modality defines the output coordinate space and the number of obs
 
 | Registration type | Supported | Notes |
 |-------------------|-----------|-------|
-| `spot_interpolation` | Yes | ST registers onto a reference via Gaussian-weighted interpolation |
+| `spot_interpolation` | Yes | ST registers onto a reference via Gaussian-weighted average of the ST spots in each anchor footprint |
+| `spot_aggregation` | Yes | ST registers onto a reference by **summing** (not averaging) the ST spots in each anchor footprint, with no normalization — for subcellular-resolution data (e.g. Visium HD) |
 | `none` | Yes | No registration; ST coordinates are used as-is (valid when ST is the reference) |
 | `feature_extraction` | No | Not compatible with spot-based modalities |
 

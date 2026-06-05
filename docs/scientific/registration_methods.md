@@ -115,22 +115,62 @@ Per-sample output AnnData has:
 
 ---
 
-## 4. Raman Pixel Interpolation (`raman_pixel_interpolation`)
+## 4. Spot Aggregation (`spot_aggregation`)
+
+Applicable modality types: `msi`, `st`.
+
+Same footprint geometry as §3, but the kept target points are **summed with equal weight** rather than Gaussian-averaged. Intended for subcellular-resolution spot modalities (e.g. Visium HD), where per-spot signal is low and averaging dilutes it; summing accumulates the signal under each reference footprint.
+
+### 4.1 Geometric setup
+
+Identical to §3.1: for each anchor coordinate \(r_i=(r_x,r_y)\) with anchor spot size \((s_x,s_y)\), query target points within radius \(r=\sqrt{(s_x/2)^2+(s_y/2)^2}\) via `cKDTree.query_ball_point`, then keep those inside the axis-aligned rectangle \(|t_{j,x}-r_x|\le s_x/2,\ |t_{j,y}-r_y|\le s_y/2\).
+
+### 4.2 Aggregation
+
+Equal-weight sum over the footprint:
+\[
+\hat{f}(r_i)=\sum_{j\in\mathcal{N}_i} f(t_j)
+\]
+
+There is no kernel and no normalization: weights are implicitly 1, and the sum is **not** divided by \(|\mathcal{N}_i|\) (footprint occupancy) — that division is exactly what distinguishes it from the average in §3.2. Equivalently, with the sparse \(N_R\times N_T\) membership matrix \(A\) where \(A_{ij}=1\) iff \(t_j\in\mathcal{N}_i\),
+\[
+\hat{F}=A\,F,
+\]
+evaluated as a sparse product (the target matrix \(F\) is not densified). Footprints may overlap, so one target may contribute to several reference rows. If \(\mathcal{N}_i=\varnothing\), row \(i\) is left at zeros.
+
+`.X` and every `.layers` entry are aggregated with the same membership matrix \(A\).
+
+### 4.3 Output semantics
+
+Per-sample output AnnData has:
+
+- `.X`: summed target features at anchor rows, shape \((N_R, D_T)\)
+- `.obsm['spatial']`: anchor coordinates in target frame
+- target `.var` and `.var_names` propagated when available
+- any target `.layers` summed identically
+
+### 4.4 Parameters
+
+- `force_recomputing` (default false)
+
+---
+
+## 5. Raman Pixel Interpolation (`raman_pixel_interpolation`)
 
 Applicable modality type: `raman`.
 
 Raman preprocessing produces a hyperspectral OME-TIFF (one channel per Raman shift), not a spot table. This engine adapts the interpolation of §3 to pixel data.
 
-### 4.1 Geometric setup
+### 5.1 Geometric setup
 
 1. Each Raman pixel at grid position \((\text{col},\text{row})\) is treated as a target point with coordinate \((x,y)=(\text{col},\text{row})\) and feature vector equal to its spectral intensities across channels.
 2. An adaptive pixel bounding box is computed around the anchor spots (extended by half a spot size plus a 2-pixel margin) so only the relevant sub-region of the OME-TIFF is loaded. Channel names are taken from the OME-XML metadata (fallback `Channel_N`).
 
-### 4.2 Kernel and interpolation
+### 5.2 Kernel and interpolation
 
 Identical to §3.2: the same `SpotInterpolationRegistration._interpolate_features` Gaussian kernel is reused, with the loaded pixels as targets. Anchor rows with no pixel in the footprint are left at zeros.
 
-### 4.3 Output semantics
+### 5.3 Output semantics
 
 Per-sample output AnnData has:
 
@@ -138,22 +178,23 @@ Per-sample output AnnData has:
 - `.obsm['spatial']`: anchor coordinates in the Raman pixel frame
 - `.var`: indexed by spectral channel name
 
-### 4.4 Status
+### 5.4 Status
 
 This is a **temporary** approach. No feature-extraction model specific to Raman hyperspectral imaging is known to exist (unlike microscopy, served by Prov-GigaPath), so Gaussian pixel interpolation is used as a stopgap. A dedicated `feature_extraction` path for Raman is intended once a suitable model is available.
 
-### 4.5 Parameters
+### 5.5 Parameters
 
 - `force_recomputing` (default false)
 
 ---
 
-## 5. Merge and cache behavior
+## 6. Merge and cache behavior
 
-Both registration engines:
+All registration engines:
 
-- validate per-sample cache by checking `n_obs` against anchor row count
-- recompute on mismatch
+- stamp each output with `uns['registration_type']`
+- validate the per-sample cache by checking **both** `n_obs` against the anchor row count **and** the stamp against the modality's current `registration_type`; a missing or mismatched stamp is treated as stale
+- recompute on mismatch (so switching a modality's `registration_type` invalidates the previous mode's cache)
 - merge per-sample files into
 
 ```text
@@ -162,13 +203,13 @@ Both registration engines:
 
 ---
 
-## 6. Compatibility matrix
+## 7. Compatibility matrix
 
-| Modality type | `feature_extraction` | `spot_interpolation` | `raman_pixel_interpolation` | `none` |
-|---|---:|---:|---:|---:|
-| `microscopy_image` | yes | no | no | yes |
-| `msi` | no | yes | no | yes |
-| `raman` | no | no | yes | yes |
-| `st` | no | yes | no | yes |
+| Modality type | `feature_extraction` | `spot_interpolation` | `spot_aggregation` | `raman_pixel_interpolation` | `none` |
+|---|---:|---:|---:|---:|---:|
+| `microscopy_image` | yes | no | no | no | yes |
+| `msi` | no | yes | yes | no | yes |
+| `raman` | no | no | no | yes | yes |
+| `st` | no | yes | yes | no | yes |
 
 Compatibility is enforced during config validation; an incompatible `registration_type`/modality pairing raises a `ValueError`. The reference modality itself is not registered; it defines the row index used by all registered targets.

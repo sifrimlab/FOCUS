@@ -48,9 +48,9 @@ If compilation runs, it reads all per-modality registered AnnData files and asse
 | Modality type key | Input format | Output format | Registration method |
 |-------------------|-------------|--------------|---------------------|
 | `microscopy_image` | `.tiff` / `.tif` / `.czi` | OME-TIFF pyramid | `feature_extraction` (GPU) |
-| `msi` | `.imzML` + `.ibd` | AnnData `.h5ad` | `spot_interpolation` (CPU) |
+| `msi` | `.imzML` + `.ibd` | AnnData `.h5ad` | `spot_interpolation` or `spot_aggregation` (CPU) |
 | `raman` | `.lif` | OME-TIFF hyperspectral | `raman_pixel_interpolation` (CPU) |
-| `st` | AnnData `.h5ad` | AnnData `.h5ad` | `spot_interpolation` (CPU) or `none` |
+| `st` | AnnData `.h5ad` | AnnData `.h5ad` | `spot_interpolation` or `spot_aggregation` (CPU), or `none` |
 
 !!! note "GPU requirement"
     Feature extraction registration for `microscopy_image` requires an NVIDIA GPU with CUDA. All other stages, including `spot_interpolation` (MSI, ST) and `raman_pixel_interpolation` (Raman) registration, run on CPU.

@@ -193,7 +193,8 @@ The computational method used to map this modality's features onto the reference
 | Value | Behaviour | Compatible modality types |
 |-------|-----------|--------------------------|
 | `"none"` | No registration. This modality is aligned but **not** included in the final MuData output. | All |
-| `"spot_interpolation"` | Gaussian-weighted interpolation of spot-based data. Runs on CPU. | `msi`, `st` |
+| `"spot_interpolation"` | Gaussian-weighted average of the spot-based data in each anchor footprint. Runs on CPU. | `msi`, `st` |
+| `"spot_aggregation"` | Equal-weight **sum** of the spot-based data in each anchor footprint (no normalization); accumulates signal for subcellular-resolution data (e.g. Visium HD). Runs on CPU. | `msi`, `st` |
 | `"raman_pixel_interpolation"` | Gaussian-weighted interpolation over the hyperspectral OME-TIFF pixels (temporary; no Raman feature extractor exists yet). Runs on CPU. | `raman` |
 | `"feature_extraction"` | Prov-GigaPath patch embeddings (deep learning). Requires an NVIDIA GPU and a HuggingFace token. | `microscopy_image` |
 

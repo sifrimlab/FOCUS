@@ -16,7 +16,7 @@ Given modalities \(\{M_k\}\), FOCUS constructs a shared set of observations inde
    - Alignment is interactive (`manual`) or declared as pre-existing (`pre_aligned`) when coordinate systems are already matched.
 3. **Registration matched to modality type**
    - Image modalities use learned patch embeddings (`feature_extraction`).
-   - Spot-based modalities use Gaussian-weighted interpolation (`spot_interpolation`).
+   - Spot-based modalities use Gaussian-weighted interpolation (`spot_interpolation`) or equal-weight summation (`spot_aggregation`).
 4. **Explicit checkpointing by stage**
    - Intermediate outputs are persisted per sample and merged, enabling restart and auditability.
 5. **Open analysis formats**
@@ -56,7 +56,8 @@ where row \(i\) corresponds to reference observation \(i\).
 For each target modality \(T\), FOCUS computes a feature vector at each aligned reference location.
 
 - `feature_extraction` (`microscopy_image`): deep patch embeddings (Prov-GigaPath).
-- `spot_interpolation` (`msi`, `st`): Gaussian-weighted interpolation over local target spots.
+- `spot_interpolation` (`msi`, `st`): Gaussian-weighted average over the target spots in each anchor footprint.
+- `spot_aggregation` (`msi`, `st`): equal-weight sum over the target spots in each anchor footprint (no normalization); accumulates signal for subcellular-resolution data.
 - `raman_pixel_interpolation` (`raman`): the same Gaussian interpolation over hyperspectral OME-TIFF pixels (temporary, pending a Raman-specific feature extractor).
 
 Generic interpolation form:

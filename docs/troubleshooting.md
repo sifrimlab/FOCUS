@@ -211,6 +211,7 @@ dataset_path/
 |---|---|
 | `feature_extraction` | `microscopy_image` only |
 | `spot_interpolation` | `msi`, `st` |
+| `spot_aggregation` | `msi`, `st` |
 | `raman_pixel_interpolation` | `raman` |
 | `none` | any |
 
