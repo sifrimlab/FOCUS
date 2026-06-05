@@ -2,6 +2,26 @@ import timm, torch, huggingface_hub, tqdm
 import numpy as np
 
 from focus.constants import SegmentationBackgroundColor
+from focus.registration._utils import (
+	ensure_hwc3,
+	compute_patch_coordinates,
+	cut_patch_batch,
+	background_mask,
+	resolve_bg_color,
+)
+
+# --- Internal batch-sizing constants (no user-facing configuration) -----------
+# The batch size is chosen automatically from the free GPU memory via an
+# empirical probe; these only bound and seed that estimate.
+_PROBE_BATCH = 8          # patches forwarded once to measure per-sample GPU cost
+_MIN_BATCH = 8            # never go below this on GPU
+_MAX_BATCH = 512          # caps GPU batch *and* the in-flight patch RAM
+_SAFETY_FRACTION = 0.8    # fraction of available GPU memory we allow ourselves
+_CPU_BATCH = 32           # fixed batch when running on CPU (no GPU memory limit)
+
+# torch>=2.0 raises a dedicated OOM error; fall back to RuntimeError otherwise.
+_OOMError = getattr(torch.cuda, "OutOfMemoryError", RuntimeError)
+
 
 class MicroscopyImageFeatureExtractor:
 	def __init__(self, path: str, hf_token: str = None):
@@ -17,212 +37,223 @@ class MicroscopyImageFeatureExtractor:
 		self.patch_encoder.eval()
 		self.patch_encoder.to(self.device)
 
-	def _extract_patches(self, img: np.ndarray, patch_size: int = 224, patch_centers: np.ndarray = None) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+		# ImageNet normalization constants for this pretrained model, kept resident
+		# on the device as broadcastable (1, 3, 1, 1) tensors and applied per batch.
+		self._mean = torch.tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1).to(self.device)
+		self._std = torch.tensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1).to(self.device)
+
+	# ------------------------------------------------------------------ encoding
+
+	def _encode_np_batch(self, patch_batch: np.ndarray) -> np.ndarray:
 		"""
-		Extract patches from an image. If patch_centers is None, extracts non-overlapping patches.
-		If patch_centers is provided, extracts patches centered at those coordinates.
-		
+		Encode a single CPU patch batch and return its embeddings on the CPU.
+
+		This is the one place patches are moved to the GPU. Only ``patch_batch``
+		(at most ``_MAX_BATCH`` patches) is ever resident on the device, so GPU
+		memory is bounded regardless of how many patches the dataset contains.
+
+		Parameters
+		----------
+		patch_batch : np.ndarray
+			``(B, H, W, 3)`` float32 patches in the image's [0, 1] value range.
+
+		Returns
+		-------
+		np.ndarray
+			``(B, embedding_size)`` float32 embeddings.
+		"""
+		# (B, H, W, C) -> (B, C, H, W); .contiguous() so the host buffer can be pinned.
+		x = torch.from_numpy(patch_batch).permute(0, 3, 1, 2).contiguous()
+		if self.device.type == "cuda":
+			x = x.pin_memory()
+		x = x.to(self.device, non_blocking=True)
+		x = (x - self._mean) / self._std
+		with torch.inference_mode():
+			emb = self.patch_encoder(x)
+		return emb.float().cpu().numpy()
+
+	def _forward_with_oom_retry(self, patches: np.ndarray, batch_size: int) -> tuple[np.ndarray, int]:
+		"""
+		Encode ``patches`` (n, H, W, 3), recovering from a CUDA OOM.
+
+		The probe sizes batches conservatively, but cuDNN workspace growth on the
+		first real batch or another process grabbing memory can still trigger an
+		OOM. On OOM we free the cache, halve the working batch size, split, and
+		retry — and return the (possibly reduced) batch size so the caller shrinks
+		subsequent chunks too.
+		"""
+		try:
+			return self._encode_np_batch(patches), batch_size
+		except _OOMError:
+			if self.device.type == "cuda":
+				torch.cuda.empty_cache()
+			new_bs = max(_MIN_BATCH, batch_size // 2)
+			if new_bs >= batch_size:
+				# Can't shrink any further — re-raise rather than spin forever.
+				raise
+			outs = []
+			for s in range(0, patches.shape[0], new_bs):
+				emb, new_bs = self._forward_with_oom_retry(patches[s:s + new_bs], new_bs)
+				outs.append(emb)
+			return np.concatenate(outs, axis=0), new_bs
+
+	def _estimate_batch_size(self, sample_patch: np.ndarray) -> int:
+		"""
+		Conservatively choose a batch size from the free GPU memory.
+
+		Runs one forward pass on ``_PROBE_BATCH`` copies of a representative patch
+		(through the exact path real batches use) to measure the per-sample
+		activation cost, then sizes the batch to ``_SAFETY_FRACTION`` of the memory
+		actually available to us (free device memory plus torch's reusable cache).
+		On CPU there is no such limit, so a fixed batch is used.
+
+		Parameters
+		----------
+		sample_patch : np.ndarray
+			A ``(1, H, W, 3)`` float32 patch used to probe the model.
+
+		Returns
+		-------
+		int
+			The chosen batch size.
+		"""
+		if self.device.type != "cuda":
+			return _CPU_BATCH
+
+		torch.cuda.empty_cache()
+		torch.cuda.reset_peak_memory_stats(self.device)
+		base = torch.cuda.memory_allocated(self.device)  # resident model weights
+
+		trial = np.repeat(sample_patch, _PROBE_BATCH, axis=0)
+		self._encode_np_batch(trial)
+		peak = torch.cuda.max_memory_allocated(self.device)
+
+		per_sample = max(1.0, (peak - base) / _PROBE_BATCH)
+		free, _ = torch.cuda.mem_get_info(self.device)
+		reusable = torch.cuda.memory_reserved(self.device) - torch.cuda.memory_allocated(self.device)
+		available = free + reusable
+
+		batch = int(_SAFETY_FRACTION * available / per_sample)
+		batch = max(_MIN_BATCH, min(_MAX_BATCH, batch))
+		batch -= batch % 8                       # tensor-core friendly
+		batch = max(_MIN_BATCH, batch)
+
+		torch.cuda.empty_cache()
+		return batch
+
+	def _embed_patches_streaming(
+		self,
+		img: np.ndarray,
+		top_left: np.ndarray,
+		bg_color: np.ndarray,
+		patch_size: int,
+		step_reporter,
+		anchor_mode: bool,
+	) -> tuple[np.ndarray, np.ndarray]:
+		"""
+		Stream patches through the encoder in GPU-memory-bounded batches.
+
+		Patches are cut from the resident image on the fly (never materialized as
+		one giant array), background patches are skipped through the network, and
+		only one batch is on the GPU at a time.
+
 		Parameters
 		----------
 		img : np.ndarray
-			The input image as a NumPy array of shape (H, W, C).
+			HWC (3-channel) image to cut patches from.
+		top_left : np.ndarray
+			``(M, 2)`` int32 top-left coordinates of every patch.
+		bg_color : np.ndarray
+			``(3,)`` background color used to detect empty patches.
 		patch_size : int
-			The size of the patches to extract (default is 224).
-		patch_centers : np.ndarray, optional
-			A NumPy array of shape (N, 2) containing the (x, y) coordinates of the patch centers.
-			If None, non-overlapping patches are extracted across the entire image.
-		
+			Side length of each square patch.
+		step_reporter : StepReporter, optional
+			Reports per-patch progress to the GUI.
+		anchor_mode : bool
+			True for anchor-based extraction (one output row per patch; background
+			rows are all-zero). False for free-form extraction (background patches
+			are dropped from the output).
+
 		Returns
 		-------
-		patches : np.ndarray
-			A NumPy array of shape (N, patch_size, patch_size, C) containing the extracted patches.
-		top_left_coordinates : np.ndarray
-			A NumPy array of shape (N, 2) containing the (x, y) coordinates of the top-left corner of each patch.
-		center_coordinates : np.ndarray
-			A NumPy array of shape (N, 2) containing the (x, y) coordinates of the center of each patch.
+		embeddings : np.ndarray
+			``(M, D)`` with zero background rows (anchor mode), or
+			``(n_foreground, D)`` (free-form mode).
+		fg_index : np.ndarray
+			Indices into ``top_left`` of the foreground patches, in output order.
 		"""
-		
-		# Handle different formats
-		if img.ndim == 2:
-			img = img[..., None]
-		h, w, c = img.shape
-		if c == 1:
-			img = np.repeat(img, 3, axis=2)
-		if c == 4:
-			img = img[..., :3]
-		
-		half_patch = patch_size // 2
-		
-		if patch_centers is not None:
-			# Extract patches centered at provided coordinates
-			patch_centers = np.asarray(patch_centers, dtype=np.float32)
-			n_patches = patch_centers.shape[0]
-			
-			patches = []
-			top_left_coords = []
-			center_coords = []
-			
-			for i in range(n_patches):
-				cx, cy = patch_centers[i]
-				
-				# Compute top-left corner
-				x0 = int(cx - half_patch)
-				y0 = int(cy - half_patch)
-				
-				# Clamp to image boundaries
-				x0 = max(0, min(x0, w - patch_size))
-				y0 = max(0, min(y0, h - patch_size))
-				
-				# Extract patch
-				patch = img[y0:y0+patch_size, x0:x0+patch_size, :]
-				
-				# Handle edge cases where patch might be smaller than patch_size
-				if patch.shape[0] < patch_size or patch.shape[1] < patch_size:
-					padded = np.zeros((patch_size, patch_size, 3), dtype=img.dtype)
-					padded[:patch.shape[0], :patch.shape[1], :] = patch
-					patch = padded
-				
-				patches.append(patch)
-				top_left_coords.append([x0, y0])
-				
-				# Compute actual center (might differ slightly from requested if clamped)
-				actual_center_x = x0 + half_patch
-				actual_center_y = y0 + half_patch
-				center_coords.append([actual_center_x, actual_center_y])
-			
-			patches = np.array(patches, dtype=np.float32)
-			top_left_coordinates = np.array(top_left_coords, dtype=np.float32)
-			center_coordinates = np.array(center_coords, dtype=np.float32)
-			
-		else:
-			# Extract non-overlapping patches
-			n_patches_y = h // patch_size
-			n_patches_x = w // patch_size
-			
-			# Crop image to fit exact number of patches
-			h_crop = n_patches_y * patch_size
-			w_crop = n_patches_x * patch_size
-			img = img[:h_crop, :w_crop, :]
-			
-			# Reshape into patches using stride tricks
-			patches = img.reshape(n_patches_y, patch_size, n_patches_x, patch_size, 3)
-			patches = patches.transpose(0, 2, 1, 3, 4)  # (n_y, n_x, h, w, c)
-			patches = patches.reshape(-1, patch_size, patch_size, 3).astype(np.float32)
-			
-			# Generate top-left coordinates
-			y_coords = np.arange(n_patches_y) * patch_size
-			x_coords = np.arange(n_patches_x) * patch_size
-			xx, yy = np.meshgrid(x_coords, y_coords)
-			top_left_coordinates = np.stack([xx.ravel(), yy.ravel()], axis=1).astype(np.float32)
-			
-			# Compute center coordinates
-			center_coordinates = top_left_coordinates + half_patch
-		
-		return patches, top_left_coordinates, center_coordinates
+		n_patches = top_left.shape[0]
 
-	def _filter_empty_patches(self, patches: np.ndarray, topleft_coordinates: np.ndarray, center_coordinates: np.ndarray, background_color: SegmentationBackgroundColor) -> tuple[np.ndarray, np.ndarray]:
-		"""
-		Filter out patches that are empty (background). A patch is considered empty if the 99% of its pixels are
-		the background color.
+		# Probe a representative patch to choose the batch size.
+		sample = cut_patch_batch(img, top_left[:1], patch_size)
+		batch_size = self._estimate_batch_size(sample)
 
-		Parameters
-		----------
-		patches : np.ndarray
-			A NumPy array of shape (N, patch_size, patch_size, C) containing the extracted patches.
-		topleft_coordinates : np.ndarray
-			A NumPy array of shape (N, 2) containing the (x, y) coordinates of the top-left corner of each patch
-			in the original image.
-		center_coordinates : np.ndarray
-			A NumPy array of shape (N, 2) containing the (x, y) coordinates of the center of each patch
-			in the original image.
-		background_color : SegmentationBackgroundColor
-			The background color to use for filtering.
-		
-		Returns
-		----------
-		filtered_patches : np.ndarray
-			A NumPy array containing only the non-empty patches.
-		filtered_coordinates : np.ndarray
-			A NumPy array containing the coordinates of the non-empty patches.
-		"""
-
-		if background_color == SegmentationBackgroundColor.WHITE:
-			bg_color = np.array([1.0, 1.0, 1.0], dtype=np.float32)
-		elif background_color == SegmentationBackgroundColor.BLACK:
-			bg_color = np.array([0.0, 0.0, 0.0], dtype=np.float32)
-		else:
-			raise ValueError(f"Unsupported background color: {background_color}")
-
-		# Calculate the number of background pixels in each patch
-		bg_mask = np.all(np.isclose(patches, bg_color, atol=1e-3), axis=-1)  # shape (N, patch_size, patch_size)
-		bg_pixel_counts = np.sum(bg_mask, axis=(1, 2))  # shape (N,)
-
-		# Determine threshold for filtering (99% background)
-		patch_area = patches.shape[1] * patches.shape[2]
-		threshold = patch_area * 0.99
-
-		# Filter patches and coordinates
-		valid_indices = np.where(bg_pixel_counts < threshold)[0]
-		filtered_patches = patches[valid_indices]
-		filtered_topleft_coordinates = topleft_coordinates[valid_indices]
-		filtered_center_coordinates = center_coordinates[valid_indices]
-
-		return filtered_patches, filtered_topleft_coordinates, filtered_center_coordinates
-
-	def _extract_patch_embeddings(self, patches: np.ndarray, step_reporter=None) -> np.ndarray:
-		"""
-		Extract embeddings from the image patches using a pre-trained model.
-
-		Parameters
-		----------
-		patches : np.ndarray
-			A NumPy array of shape (N, patch_size, patch_size, C) containing the extracted patches.
-		step_reporter : StepReporter, optional
-			If provided, reports per-patch progress to the GUI.
-
-		Returns
-		----------
-		patch_embeddings : np.ndarray
-			A NumPy array of shape (N, embedding_size) containing the patch embeddings.
-		"""
-		n_patches = patches.shape[0]
-
-		# Convert patches to torch tensors
-		patches_tensor = torch.from_numpy(patches).permute(0, 3, 1, 2).to(self.device)  # shape (N, C, H, W)
-
-		# Apply normalization as defined for this pretrained model
-		mean = torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1).to(self.device)
-		std = torch.tensor([0.229, 0.224, 0.225]).view(3, 1, 1).to(self.device)
-		patches_tensor = (patches_tensor - mean) / std
-
-		# Create a Dataset and a DataLoader
-		dataset = torch.utils.data.TensorDataset(patches_tensor)
-		dataloader = torch.utils.data.DataLoader(dataset, batch_size=32, shuffle=False)
-
-		embeddings: list[np.ndarray] = []
-		processed = 0
-
-		# Initialise GUI sub-step with total patch count before the loop starts
 		if step_reporter:
 			step_reporter.step("Extracting patch embeddings", 0, n_patches)
 
-		# Extract embeddings batch by batch, updating GUI progress after each batch
-		with torch.inference_mode():
-			for batch in tqdm.tqdm(dataloader, desc="Extracting patch embeddings", unit="batch"):
-				input_tensor = batch[0].to(self.device)                           # Shape [B, 3, 224, 224]
-				embeddings.append(self.patch_encoder(input_tensor).cpu().numpy()) # Shape [B, 1536]
-				if step_reporter:
-					processed += input_tensor.shape[0]
-					step_reporter.update("Extracting patch embeddings", processed, n_patches)
+		embeddings = None            # anchor: preallocated (M, D); free-form: stays None
+		fg_emb_chunks: list[np.ndarray] = []   # free-form accumulation
+		fg_index_chunks: list[np.ndarray] = []
+		embedding_dim = None
+		fg_count = 0
+		processed = 0
 
-		embeddings: np.ndarray = np.concatenate(embeddings, axis=0)  # Shape [N, 1536]
+		pbar = tqdm.tqdm(total=n_patches, desc="Extracting patch embeddings", unit="patch")
+		start = 0
+		while start < n_patches:
+			end = min(start + batch_size, n_patches)
+			patches = cut_patch_batch(img, top_left[start:end], patch_size)
 
-		# Free memory
-		del mean, std, patches_tensor, dataset, dataloader
-		torch.cuda.empty_cache()
+			# Foreground patches within this chunk (background is skipped/zeroed).
+			fg_local = np.where(~background_mask(patches, bg_color))[0]
 
-		return embeddings
-	
+			if fg_local.size > 0:
+				emb, batch_size = self._forward_with_oom_retry(patches[fg_local], batch_size)
+
+				if embedding_dim is None:
+					embedding_dim = emb.shape[1]
+					if anchor_mode:
+						embeddings = np.zeros((n_patches, embedding_dim), dtype=np.float32)
+
+				global_fg = np.arange(start, end)[fg_local]
+				if anchor_mode:
+					embeddings[global_fg] = emb
+				else:
+					fg_emb_chunks.append(emb)
+				fg_index_chunks.append(global_fg)
+				fg_count += fg_local.size
+
+			processed = end
+			pbar.update(end - start)
+			if step_reporter:
+				step_reporter.update("Extracting patch embeddings", processed, n_patches)
+			start = end
+		pbar.close()
+
+		fg_index = (np.concatenate(fg_index_chunks) if fg_index_chunks
+					else np.zeros((0,), dtype=np.int64))
+
+		# Every patch was background: learn the embedding dim from one dummy
+		# forward so the output keeps the correct width (and row count).
+		if embedding_dim is None:
+			embedding_dim = self._encode_np_batch(sample).shape[1]
+
+		if anchor_mode:
+			if embeddings is None:
+				embeddings = np.zeros((n_patches, embedding_dim), dtype=np.float32)
+			assert embeddings.shape[0] == n_patches, (embeddings.shape, n_patches)
+		else:
+			embeddings = (np.concatenate(fg_emb_chunks, axis=0) if fg_emb_chunks
+						  else np.zeros((0, embedding_dim), dtype=np.float32))
+			assert embeddings.shape[0] == fg_count == fg_index.shape[0]
+
+		if self.device.type == "cuda":
+			torch.cuda.empty_cache()
+
+		return embeddings, fg_index
+
+	# ------------------------------------------------------------------- public
+
 	def extract_features(
 		self,
 		image: np.ndarray,
@@ -234,23 +265,27 @@ class MicroscopyImageFeatureExtractor:
 		'''
 		Use the patch extractor to compute patch embeddings for the image.
 
-		When ``patch_centers`` is provided (anchor-based registration), the output always
-		contains exactly one row per input center.  Background-only patches receive a zero
-		embedding vector so that the observation count stays aligned with the anchor modality
-		(required for MuData compilation).  Only valid patches are actually forwarded through
-		the neural network for efficiency.
+		Patches are streamed (cut on the fly) from the resident image and encoded
+		in GPU-memory-bounded batches whose size is chosen automatically, so both
+		RAM and GPU memory stay flat as the patch count grows into the millions.
 
-		When ``patch_centers`` is None, non-overlapping patches are extracted across the
-		image foreground and background patches are removed (original behaviour).
+		When ``patch_centers`` is provided (anchor-based registration), the output
+		contains exactly one row per input center.  Background-only patches receive
+		a zero embedding vector so the observation count stays aligned with the
+		anchor modality (required for MuData compilation).  Only valid patches are
+		actually forwarded through the neural network for efficiency.
+
+		When ``patch_centers`` is None, non-overlapping patches are extracted across
+		the image foreground and background patches are removed (original behaviour).
 
 		Parameters
 		----------
 		image : np.ndarray
 			The input microscopy image as a NumPy array of shape (H, W, C).
 		patch_centers : np.ndarray, optional
-			A NumPy array of shape (N, 2) containing the (x, y) coordinates of the patch
-			centers to extract.  If None, non-overlapping patches are extracted across the
-			entire image foreground.
+			A NumPy array of shape (N, 2) containing the (x, y) coordinates of the
+			patch centers to extract.  If None, non-overlapping patches are extracted
+			across the entire image foreground.
 		background_color : SegmentationBackgroundColor
 			The color used to identify background pixels.
 		patch_size : int
@@ -264,44 +299,22 @@ class MicroscopyImageFeatureExtractor:
 		center_coordinates : np.ndarray
 			Shape (N, 2) — actual centre pixel positions for each patch.
 		'''
-
-		patches, topleft_coordinates, center_coordinates = self._extract_patches(image, patch_size, patch_centers)
-		n_patches = patches.shape[0]
+		img = ensure_hwc3(image)
+		top_left, center_coordinates = compute_patch_coordinates(img.shape, patch_size, patch_centers)
+		n_patches = top_left.shape[0]
 
 		if n_patches == 0:
 			return np.zeros((0, 0), dtype=np.float32), center_coordinates
 
-		if patch_centers is not None:
-			# Anchor-based extraction: preserve one row per anchor spot.
-			# Identify background-only patches to skip during encoding.
-			if background_color == SegmentationBackgroundColor.WHITE:
-				bg_color = np.array([1.0, 1.0, 1.0], dtype=np.float32)
-			elif background_color == SegmentationBackgroundColor.BLACK:
-				bg_color = np.array([0.0, 0.0, 0.0], dtype=np.float32)
-			else:
-				raise ValueError(f"Unsupported background color: {background_color}")
+		bg_color = resolve_bg_color(background_color)
+		anchor_mode = patch_centers is not None
 
-			bg_mask = np.all(np.isclose(patches, bg_color, atol=1e-3), axis=-1)  # (N, H, W)
-			bg_pixel_counts = np.sum(bg_mask, axis=(1, 2))                        # (N,)
-			patch_area = patches.shape[1] * patches.shape[2]
-			valid_indices = np.where(bg_pixel_counts < patch_area * 0.99)[0]
+		patch_embeddings, fg_index = self._embed_patches_streaming(
+			img, top_left, bg_color, patch_size, step_reporter, anchor_mode
+		)
 
-			if len(valid_indices) == 0:
-				# All patches are background — infer embedding size from a single forward pass
-				# then return an all-zero matrix so obs count is preserved.
-				dummy_emb = self._extract_patch_embeddings(patches[:1])
-				return np.zeros((n_patches, dummy_emb.shape[1]), dtype=np.float32), center_coordinates
-
-			# Encode only valid patches (efficiency), then scatter into full-size array.
-			valid_embeddings = self._extract_patch_embeddings(patches[valid_indices], step_reporter=step_reporter)
-			patch_embeddings = np.zeros((n_patches, valid_embeddings.shape[1]), dtype=np.float32)
-			patch_embeddings[valid_indices] = valid_embeddings
+		if anchor_mode:
+			# One row per anchor spot (background rows are zero); centers unchanged.
 			return patch_embeddings, center_coordinates
-
-		else:
-			# Free-form (non-overlapping) extraction: remove background patches as before.
-			patches, topleft_coordinates, center_coordinates = self._filter_empty_patches(
-				patches, topleft_coordinates, center_coordinates, background_color
-			)
-			patch_embeddings = self._extract_patch_embeddings(patches, step_reporter=step_reporter)
-			return patch_embeddings, center_coordinates
+		# Free-form: keep only foreground rows and their centers, in matching order.
+		return patch_embeddings, center_coordinates[fg_index]
