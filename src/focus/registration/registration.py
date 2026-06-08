@@ -120,6 +120,7 @@ class FeatureExtractorRegistration:
 			else:
 				logger.error(f"No spatial coordinates found for sample '{sample_id}', skipping.")
 				all_cached = False
+				del anchor_adata
 				continue
 
 			# Cache check — validate obs count and registration mode against the anchor to
@@ -129,12 +130,14 @@ class FeatureExtractorRegistration:
 				if registration_cache_valid(cached, len(patch_centers), self._REGISTRATION_TYPE):
 					logger.info(f"Using cached registration for sample '{sample_id}'")
 					registered_files[sample_id] = registered_file
+					del cached, anchor_adata
 					continue
 				logger.warning(
 					f"Cached registration for '{sample_id}' is stale "
 					f"(obs={cached.n_obs} vs anchor {len(patch_centers)}, "
 					f"type={cached.uns.get('registration_type')} vs {self._REGISTRATION_TYPE}); recomputing."
 				)
+				del cached
 
 			all_cached = False
 
@@ -170,6 +173,15 @@ class FeatureExtractorRegistration:
 			write_h5ad_compat(adata, registered_file, compression=_H5AD_COMPRESSION)
 			registered_files[sample_id] = registered_file
 			logger.debug(f"Saved {patch_embeddings.shape[0]} patch embeddings for sample '{sample_id}'")
+
+			# Free the full-resolution image and this sample's embeddings before the next
+			# sample loads its own image — these are the largest per-sample allocations.
+			del image_data, patch_embeddings, center_coordinates, adata, anchor_adata
+
+		# Drop the pretrained model so its parameters become collectable; the caller
+		# (orchestrator._run_registration) then empties the CUDA cache via release_memory.
+		if feature_extractor is not None:
+			del feature_extractor
 
 		# Merge across samples
 		registered_files = self._merge_samples(
@@ -485,7 +497,9 @@ class SpotInterpolationRegistration:
 			registered_files[sample_id] = registered_file
 			logger.debug(f"Saved registration for sample '{sample_id}': {registered_features.shape}")
 
-			del anchor_adata, target_adata
+			# Free the densified target matrix and interpolated outputs (the largest
+			# per-sample allocations) before the next sample.
+			del anchor_adata, target_adata, target_features, registered_features, registered_layers, adata
 
 		# Merge across samples
 		registered_files = self._merge_samples(

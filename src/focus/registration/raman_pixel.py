@@ -283,7 +283,8 @@ class RamanPixelInterpolationRegistration:
             registered_files[sample_id] = registered_file
             logger.debug(f"Saved raman pixel registration for '{sample_id}': {registered_features.shape}")
 
-            del anchor_adata, pixel_coords, pixel_features
+            # Free the loaded Raman pixels and interpolated output before the next sample.
+            del anchor_adata, pixel_coords, pixel_features, registered_features, adata
 
         registered_files = self._merge_samples(
             registered_files, target_name,

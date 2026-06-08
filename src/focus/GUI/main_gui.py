@@ -364,6 +364,16 @@ class MainGUI:
 		def reset():
 			self._config = {}
 			self._pipeline_status = _default_status()
+			# Drop the finished worker-thread reference and reclaim memory so starting a new
+			# project begins from a clean slate. Only clear the thread when it isn't running,
+			# so a reset during an active run can't orphan the running pipeline.
+			if self._pipeline_thread is not None and not self._pipeline_thread.is_alive():
+				self._pipeline_thread = None
+			try:
+				from focus.utils import release_memory
+				release_memory()
+			except Exception:
+				pass
 			return jsonify({"message": "Reset complete"})
 
 	# ── Pipeline thread ───────────────────────────────────────────────────
@@ -390,6 +400,18 @@ class MainGUI:
 			self._pipeline_status["error"] = str(e)
 			self._pipeline_status["message"] = f"Error: {e}"
 			traceback.print_exc()
+
+		finally:
+			# Reclaim everything the run allocated the instant the worker thread ends.
+			# The orchestrator's stage locals are now unreferenced; force collection of the
+			# cyclic garbage AnnData/MuData/torch leave behind and return the freed pages to
+			# the OS, so "start a new project" begins from a clean slate. Best-effort: cleanup
+			# must never mask a pipeline error or crash the thread.
+			try:
+				from focus.utils import release_memory
+				release_memory()
+			except Exception:
+				pass
 
 	def _on_progress(self, status: dict):
 		"""Callback from orchestrator to update pipeline status."""

@@ -10,7 +10,7 @@ from focus.constants import (
 	AlignmentStrategy, AnnotationsParameters, AnnotationFileType,
 	MODALITY_ANNOTATION, MODALITY_ANNOTATION_MERGED, DISPLAY_NAMES,
 )
-from focus.utils import write_h5ad_compat, concat_on_disk_compat, write_h5mu_compat
+from focus.utils import write_h5ad_compat, concat_on_disk_compat, write_h5mu_compat, release_memory
 from focus.preprocessing import preprocess_modality
 from focus.preprocessing._utils import StepReporter
 from focus.alignment.alignment import DirectMappingAligner
@@ -100,6 +100,10 @@ def run(config: dict, progress_callback=None) -> dict:
 				pre_per_modality.setdefault(mod_name, []).append(path)
 	if pre_merged or pre_per_modality:
 		output_files["preprocessing"] = {"merged": pre_merged, "per_modality": pre_per_modality}
+
+	# Preprocessing is done — every per-sample AnnData was read from and written to disk
+	# inside preprocess_modality and is already out of scope. Reclaim before the next stage.
+	release_memory(gpu=False)
 
 	# Compute effective force_recomputing flags, cascading upstream changes downstream:
 	# preprocessing force → alignment force → registration force
@@ -195,6 +199,9 @@ def run(config: dict, progress_callback=None) -> dict:
 		mudata_path = _compile_mudata(config, modality_files, registered_files, annotation_files)
 		if mudata_path:
 			output_files["multimodal"] = {"merged": [mudata_path], "per_modality": {}}
+		# Covers _compile_mudata's early-return paths (all spots filtered / <2 modalities),
+		# which skip its internal release.
+		release_memory(gpu=False)
 
 	logger.info("=" * 60)
 	logger.info("FOCUS pipeline completed successfully.")
@@ -371,6 +378,11 @@ def _run_alignment(config: dict, modality_files: dict, report, n_stages: int,
 
 		logger.info(f"Alignment complete for '{mod_name}': {len(aligned_files[mod_name])} files")
 
+		# Drop this pair's aligner (and its accumulated _aligned_coordinates / GUI
+		# payloads) before the next pair. Its interactive server has already shut down.
+		del aligner
+		release_memory(gpu=False)
+
 	return aligned_files
 
 
@@ -427,30 +439,42 @@ def _run_annotation_transfer(
 
 		logger.info(f"[{i}/{total_samples}] Sample '{sample_id}': reading reference file...")
 		ref_path = modality_files[ref_name][sample_id]
-		ref_sample = anndata.read_h5ad(ref_path, backed='r')
-		logger.info(f"[{i}/{total_samples}] Sample '{sample_id}': {ref_sample.n_obs} obs — extracting coordinates...")
+		ref_sample = None
+		ann_sample = None
+		try:
+			ref_sample = anndata.read_h5ad(ref_path, backed='r')
+			logger.info(f"[{i}/{total_samples}] Sample '{sample_id}': {ref_sample.n_obs} obs — extracting coordinates...")
 
-		if ann_mod_name == ref_name:
-			coords_sample = np.asarray(ref_sample.obsm['spatial'])
-		else:
-			ann_sample = anndata.read_h5ad(aligned_files[ann_mod_name][sample_id], backed='r')
-			coords_sample = np.asarray(ann_sample.obsm[f'{ann_mod_name}_spatial'])
-			ann_sample.file.close()
+			if ann_mod_name == ref_name:
+				coords_sample = np.asarray(ref_sample.obsm['spatial'])
+			else:
+				ann_sample = anndata.read_h5ad(aligned_files[ann_mod_name][sample_id], backed='r')
+				coords_sample = np.asarray(ann_sample.obsm[f'{ann_mod_name}_spatial'])
+				ann_sample.file.close()
+				ann_sample = None
 
-		sids_sample = np.asarray(ref_sample.obs['sample_id'])
-		logger.info(f"[{i}/{total_samples}] Sample '{sample_id}': running spatial query on {len(coords_sample)} points...")
-		ann_labels = transfer_annotations(coords_sample, sids_sample, annotation_paths)
-		n_annotated = int(np.sum(ann_labels != None))  # noqa: E711
-		logger.info(f"[{i}/{total_samples}] Sample '{sample_id}': {n_annotated}/{len(coords_sample)} spots annotated — writing output...")
-		ref_sample.obs['spatial_annotation'] = pd.Categorical(ann_labels)
+			sids_sample = np.asarray(ref_sample.obs['sample_id'])
+			logger.info(f"[{i}/{total_samples}] Sample '{sample_id}': running spatial query on {len(coords_sample)} points...")
+			ann_labels = transfer_annotations(coords_sample, sids_sample, annotation_paths)
+			n_annotated = int(np.sum(ann_labels != None))  # noqa: E711
+			logger.info(f"[{i}/{total_samples}] Sample '{sample_id}': {n_annotated}/{len(coords_sample)} spots annotated — writing output...")
+			ref_sample.obs['spatial_annotation'] = pd.Categorical(ann_labels)
 
-		sample_out = MODALITY_ANNOTATION(dataset_path, sample_id, ref_name, "h5ad")
-		os.makedirs(os.path.dirname(sample_out), exist_ok=True)
-		write_h5ad_compat(ref_sample, sample_out)
-		ref_sample.file.close()
-		result[sample_id] = sample_out
-		per_sample_annotated.append(sample_out)
-		logger.info(f"[{i}/{total_samples}] Sample '{sample_id}': done.")
+			sample_out = MODALITY_ANNOTATION(dataset_path, sample_id, ref_name, "h5ad")
+			os.makedirs(os.path.dirname(sample_out), exist_ok=True)
+			write_h5ad_compat(ref_sample, sample_out)
+			result[sample_id] = sample_out
+			per_sample_annotated.append(sample_out)
+			logger.info(f"[{i}/{total_samples}] Sample '{sample_id}': done.")
+		finally:
+			# Guarantee the backed HDF5 handles are released even if the spatial
+			# query or the write raises — otherwise an mmap/file handle leaks per sample.
+			for _h in (ann_sample, ref_sample):
+				if _h is not None:
+					try:
+						_h.file.close()
+					except Exception:
+						pass
 
 	# --- Merge annotated per-sample files ---
 	if per_sample_annotated:
@@ -471,6 +495,7 @@ def _run_annotation_transfer(
 		result["merged"] = merged_out
 		logger.info(f"Annotated merged reference saved to {merged_out}")
 
+	release_memory(gpu=False)
 	return result
 
 
@@ -582,6 +607,12 @@ def _run_registration(config: dict, modality_files: dict, aligned_files: dict, s
 
 		logger.info(f"Registration complete for '{mod_name}'")
 
+		# Free the engine (and, for FeatureExtraction, the pretrained GigaPath model it
+		# loaded) plus any cached GPU blocks before the next modality / stage. Reached only
+		# on paths that bound `engine` — the two `continue`s above skip it.
+		del engine
+		release_memory(gpu=True)
+
 	return registered_files
 
 
@@ -665,13 +696,16 @@ def _compile_mudata(
 	# Build modality dict for MuData
 	mod_dict: dict[str, anndata.AnnData] = {}
 
-	# Add anchor modality
-	ref_ad = anchor_adata.copy()
-	if 'spatial' in ref_ad.obsm:
-		del ref_ad.obsm['spatial']
-	if 'spot_size' in ref_ad.uns:
-		del ref_ad.uns['spot_size']
-	mod_dict[ref_name] = ref_ad
+	# Add anchor modality. Reuse anchor_adata directly rather than copying it: the shared
+	# spatial / sample_id / spot_size values were already captured above as independent
+	# objects (np.asarray with a dtype change, .copy(), .to_numpy()), so dropping these keys
+	# in place leaves them intact, and we avoid holding a second full copy of the anchor
+	# matrix. Nothing reads the original anchor_adata after this point.
+	if 'spatial' in anchor_adata.obsm:
+		del anchor_adata.obsm['spatial']
+	if 'spot_size' in anchor_adata.uns:
+		del anchor_adata.uns['spot_size']
+	mod_dict[ref_name] = anchor_adata
 
 	# Add registered non-anchor modalities. We do NOT overwrite obs_names yet —
 	# obs_name synchronisation happens after the zero-vector filter so the
@@ -697,6 +731,7 @@ def _compile_mudata(
 				f"Observation count mismatch for '{mod_name}': "
 				f"{reg_adata.n_obs} vs anchor {n_anchor_obs}. Skipping in MuData."
 			)
+			del reg_adata
 			continue
 
 		# Verify row alignment against the anchor by comparing per-row sample_id.
@@ -708,6 +743,7 @@ def _compile_mudata(
 				f"Registered modality '{mod_name}' has no obs['sample_id']; cannot verify "
 				"row alignment with anchor. Skipping in MuData."
 			)
+			del reg_adata
 			continue
 		reg_sample_ids = reg_adata.obs['sample_id'].astype(str).to_numpy()
 		if not np.array_equal(reg_sample_ids, anchor_sample_ids):
@@ -715,6 +751,7 @@ def _compile_mudata(
 				f"Sample-ID sequence mismatch between anchor '{ref_name}' and '{mod_name}'. "
 				"Refusing to compile with misaligned rows; skipping this modality."
 			)
+			del reg_adata
 			continue
 
 		if 'spatial' in reg_adata.obsm:
@@ -793,4 +830,8 @@ def _compile_mudata(
 	write_h5mu_compat(mdata, output_path)
 	logger.info(f"MuData saved to {output_path} with {len(mod_dict)} modalities, {n_anchor_obs} observations")
 
+	# Drop the compiled MuData and every modality AnnData it holds (anchor + all registered
+	# modalities are resident at once here) before returning to the orchestrator.
+	del mdata, mod_dict
+	release_memory(gpu=False)
 	return output_path

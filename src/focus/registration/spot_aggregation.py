@@ -289,7 +289,9 @@ class SpotAggregationRegistration:
             registered_files[sample_id] = registered_file
             logger.debug(f"Saved registration for sample '{sample_id}': {registered_features.shape}")
 
-            del anchor_adata, target_adata
+            # Free the membership matrix and aggregated outputs (the largest per-sample
+            # allocations) before the next sample.
+            del anchor_adata, target_adata, membership, registered_features, registered_layers, adata
 
         # Merge across samples
         registered_files = self._merge_samples(
