@@ -1,0 +1,8 @@
+# Dependencies for building the FOCUS documentation site (MkDocs).
+# Used by .github/workflows/docs.yml and for local previews:
+#   pip install -r docs/requirements.txt
+#   mkdocs serve
+#
+# mkdocs-material pulls in mkdocs and pymdown-extensions, and provides the
+# material.extensions.emoji.* extension referenced in mkdocs.yml (needs >= 9.4).
+mkdocs-material>=9.5

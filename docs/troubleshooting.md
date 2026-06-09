@@ -16,8 +16,8 @@ This page covers the most common errors encountered when installing and running 
 
 1. Install [Miniconda](https://docs.conda.io/en/latest/miniconda.html) for your platform.
 2. Close and reopen your terminal so that the shell profile changes take effect.
-3. On Windows, use an **Anaconda Prompt** rather than a plain `cmd` or PowerShell window.
-4. Re-run `bash install.sh` (macOS/Linux) or `install.bat` (Windows).
+3. On Windows, use an **Anaconda Prompt (PowerShell)** rather than a plain `cmd` or a PowerShell window without conda initialised.
+4. Re-run `bash install.sh` (macOS/Linux) or `.\install.ps1` (Windows; `install.bat` also works).
 
 ---
 
@@ -82,7 +82,7 @@ step:
 
 ```bash
 bash install.sh        # macOS/Linux
-install.bat            # Windows
+.\install.ps1          # Windows (PowerShell; install.bat also works)
 ```
 
 ASHLAR needs Java, but you do not need to install it yourself: the installer provisions OpenJDK

@@ -84,55 +84,54 @@ bash focus-container.sh --runtime singularity --gpu --mount /scratch/mylab -- --
 
 ---
 
-## SLURM Batch Script Example
+## SLURM Batch Script
 
-Save the following as `submit_focus.sh` and submit with `sbatch submit_focus.sh`:
+The repository ships a ready-to-use, parameterised batch script at
+[`slurm/submit_focus.sbatch`](https://github.com/sifrimlab/FOCUS/blob/main/slurm/submit_focus.sbatch).
+Submit it directly:
 
 ```bash
-#!/bin/bash
-#SBATCH --job-name=focus_pipeline
-#SBATCH --nodes=1
-#SBATCH --ntasks=1
-#SBATCH --cpus-per-task=16
-#SBATCH --mem=64G
-#SBATCH --gres=gpu:1          # remove this line if not using feature_extraction
-#SBATCH --time=24:00:00
-#SBATCH --output=focus_%j.log
+sbatch slurm/submit_focus.sbatch
 
-# Load required modules
-module load singularity        # or: apptainer
-module load cuda               # only needed if using feature_extraction
-
-# Run the pipeline in CLI mode
-singularity run \
-    --bind /scratch/$USER \
-    --nv \
-    /scratch/$USER/focus.sif \
-    --config /scratch/$USER/myproject/focus_config.json
+# Override config / SIF paths without editing the file:
+sbatch --export=ALL,FOCUS_CONFIG=/scratch/$USER/proj/config.json,FOCUS_SIF=/scratch/$USER/focus.sif \
+       slurm/submit_focus.sbatch
 ```
+
+### What the script contains
+
+The script runs FOCUS in CLI mode and is organised into two clearly marked
+blocks — switch by commenting one and uncommenting the other:
+
+- **Option A — Singularity/Apptainer container** (the default): loads the
+  `singularity`/`apptainer` and `cuda` modules, then `... run --bind "$FOCUS_WORKDIR" --nv "$FOCUS_SIF" --config "$FOCUS_CONFIG"`.
+- **Option B — host install** (conda env from `install.sh`): sources the conda
+  hook, `conda activate FOCUS`, then `focus --config "$FOCUS_CONFIG"`.
+
+It requests these resources (tune them to your data — see
+[Performance Tuning](#performance-tuning)):
+
+| Directive | Default | Notes |
+|---|---|---|
+| `--cpus-per-task` | `16` | Raman preprocessing parallelism (config `max_workers`) |
+| `--mem` | `64G` | MSI preprocessing peaks at ~40–100 GB per sample |
+| `--gres=gpu:1` | on | Only needed for `feature_extraction`; remove it (and `--nv`) for CPU-only runs |
+| `--time` | `24:00:00` | Wall-clock limit |
+| `--output` | `focus_%j.log` | SLURM log (`%j` = job ID) |
+
+Three paths are overridable from the command line (via `--export`, shown above)
+without editing the file: **`FOCUS_CONFIG`** (the config JSON), **`FOCUS_SIF`**
+(the `.sif` image, Option A), and **`FOCUS_WORKDIR`** (the directory bind-mounted
+into the container, default `/scratch/$USER`).
 
 !!! note "Removing GPU allocation"
     If your pipeline does not use `feature_extraction` registration, remove `#SBATCH --gres=gpu:1` and the `--nv` flag. All other pipeline stages (preprocessing, alignment, interpolation-based registration, compilation) run on CPU.
 
-### Host-install variant (no container)
-
-```bash
-#!/bin/bash
-#SBATCH --job-name=focus_pipeline
-#SBATCH --nodes=1
-#SBATCH --ntasks=1
-#SBATCH --cpus-per-task=16
-#SBATCH --mem=64G
-#SBATCH --gres=gpu:1
-#SBATCH --time=24:00:00
-#SBATCH --output=focus_%j.log
-
-module load miniconda3
-module load cuda
-
-conda activate FOCUS
-focus --config /scratch/$USER/myproject/focus_config.json
-```
+!!! tip "Dry-run the directives"
+    Check the script's SLURM directives without scheduling a job:
+    ```bash
+    sbatch --test-only slurm/submit_focus.sbatch
+    ```
 
 ---
 

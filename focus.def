@@ -1,7 +1,20 @@
 # ── FOCUS Singularity / Apptainer definition ─────────────────────────────────
 #
-# Build:
-#   singularity build focus.sif focus.def       (requires root or --fakeroot)
+# CPU-only PyTorch is baked in by default. For a CUDA build pass the
+# TORCH_INDEX build arg (Apptainer >= 1.1 / SingularityCE >= 3.11):
+#
+# Build (CPU — default):
+#   singularity build --build-arg TORCH_INDEX=https://download.pytorch.org/whl/cpu focus.sif focus.def
+#   apptainer  build --build-arg TORCH_INDEX=https://download.pytorch.org/whl/cpu focus.sif focus.def
+#   # (a bare `apptainer build focus.sif focus.def` also works and defaults to CPU)
+#
+# Build (GPU — pick the index matching your target CUDA, e.g. CUDA 12.8+):
+#   apptainer build --build-arg TORCH_INDEX=https://download.pytorch.org/whl/cu128 focus.sif focus.def
+#   # other indices: cu126, cu124, cu121, cu118 — see install.sh resolve_torch_index
+#   # The cuXXX wheel bundles CUDA internally; pass --nv at runtime for GPU access.
+#
+# Plain build (requires root or --fakeroot):
+#   singularity build focus.sif focus.def
 #   apptainer build focus.sif focus.def
 #
 # Run (GUI):
@@ -46,8 +59,27 @@ From: python:3.11-slim
     python3 -m venv /opt/focus-env
     /opt/focus-env/bin/pip install --no-cache-dir --upgrade pip
 
-    # Install dependencies then the FOCUS package
+    # Install the general dependencies
     /opt/focus-env/bin/pip install --no-cache-dir -r /opt/focus/requirements.txt
+
+    # ── PyTorch ecosystem (torch, torchvision, timm, huggingface-hub) ────────
+    # Installed from the wheel index in TORCH_INDEX (build arg, default CPU),
+    # NOT from requirements.txt — same strategy as install.sh. On older
+    # Singularity without build-arg support the {{ }} template stays literal,
+    # so anything that is not a pytorch.org URL falls back to the CPU index.
+    TORCH_INDEX="{{ TORCH_INDEX }}"
+    case "$TORCH_INDEX" in
+        *download.pytorch.org*) : ;;
+        *) TORCH_INDEX="https://download.pytorch.org/whl/cpu" ;;
+    esac
+    echo "FOCUS: installing PyTorch from ${TORCH_INDEX}"
+    /opt/focus-env/bin/pip install --no-cache-dir torch torchvision --index-url "${TORCH_INDEX}"
+    /opt/focus-env/bin/pip show torch       | awk '/^Version:/ {print "torch=="$2}'       >  /tmp/torch-constraints.txt
+    /opt/focus-env/bin/pip show torchvision | awk '/^Version:/ {print "torchvision=="$2}' >> /tmp/torch-constraints.txt
+    /opt/focus-env/bin/pip install --no-cache-dir timm huggingface-hub -c /tmp/torch-constraints.txt
+    rm -f /tmp/torch-constraints.txt
+
+    # Install the FOCUS package
     /opt/focus-env/bin/pip install --no-cache-dir -e /opt/focus
 
 %runscript

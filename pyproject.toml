@@ -37,6 +37,8 @@ dependencies = [
     "flask",
     "dask",
     "shapely",
+    "igraph",
+    "leidenalg",
 ]
 
 [project.scripts]

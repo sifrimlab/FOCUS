@@ -64,11 +64,18 @@ cd FOCUS
 
 === "Windows"
 
-    ```bat
-    install.bat
+    Open an **Anaconda Prompt (PowerShell)** and run:
+
+    ```powershell
+    .\install.ps1
     ```
 
-The script:
+    `install.ps1` is the full Windows installer and does everything `install.sh`
+    does, including CUDA detection and the CUDA-matched PyTorch install. A
+    `install.bat` shim that forwards to it is also provided, so `install.bat`
+    works from a classic Command Prompt.
+
+The script (`install.sh` / `install.ps1`):
 
 1. Verifies conda is available.
 2. Detects your system CUDA version (via `nvcc`, `nvidia-smi`, or Lmod module
@@ -113,11 +120,16 @@ conda, and HPC.
 # Build and run the GUI (opens http://localhost:5050)
 bash focus-container.sh --build --mount /path/to/your/data
 
+# Build a GPU image (bakes in a CUDA PyTorch build) and run with GPU access
+bash focus-container.sh --build --gpu --mount /path/to/your/data -- --config /path/to/your/data/project/focus_config.json
+
 # CLI mode — everything after `--` is passed to the focus command inside the container
 bash focus-container.sh --mount /path/to/your/data -- --config /path/to/your/data/project/focus_config.json
 ```
 
-See [Containers (Docker / Podman / Singularity)](deployment/containers.md) for the full
+The images bundle PyTorch — CPU by default, or a CUDA build when you pass `--gpu`
+to `--build` (or set the `TORCH_INDEX` build arg directly). See
+[Containers (Docker / Podman / Singularity)](deployment/containers.md) for the full
 flag reference, GPU options, Windows/PowerShell usage, and Singularity/Apptainer builds.
 
 ---
@@ -134,17 +146,19 @@ To wipe and recreate all environments from scratch:
 
 === "Windows"
 
-    ```bat
-    install.bat --reinstall
+    ```powershell
+    .\install.ps1 -Reinstall
+    # or, from a Command Prompt: install.bat --reinstall
     ```
 
-`--reinstall` is the only flag the install scripts accept. To update an existing
-checkout:
+`--reinstall` (`-Reinstall` in PowerShell) is the only flag the install scripts
+accept. To update an existing checkout:
 
 ```bash
 cd FOCUS
 git pull origin main
-bash install.sh --reinstall    # or install.bat --reinstall on Windows
+bash install.sh --reinstall          # macOS / Linux
+# Windows: .\install.ps1 -Reinstall  (or install.bat --reinstall)
 ```
 
 ---
@@ -158,10 +172,11 @@ version via the `TORCH_VERSION` environment variable:
 ```bash
 module load cuda
 TORCH_VERSION=2.9.0 bash install.sh --reinstall
+# Windows (PowerShell): $env:TORCH_VERSION='2.9.0'; .\install.ps1 -Reinstall
 ```
 
 `TORCH_VERSION` is the only FOCUS-specific environment variable, and it is only read at
-install time. See [Local Installation — Troubleshooting PyTorch / CUDA on HPC](deployment/local.md#troubleshooting-pytorch-cuda-on-hpc)
+install time (both `install.sh` and `install.ps1` honour it). See [Local Installation — Troubleshooting PyTorch / CUDA on HPC](deployment/local.md#troubleshooting-pytorch-cuda-on-hpc)
 for CUDA detection details and the SIGBUS workaround.
 
 A HuggingFace token is required the first time the `feature_extraction` registration is
@@ -175,8 +190,9 @@ field in your config, or in the GUI configuration panel.
 The install scripts already perform an editable install (`pip install -e .`), so a
 separate manual procedure is rarely needed. If you do install by hand into your own
 environment, remember that **PyTorch, torchvision, timm, and huggingface-hub are not in
-`requirements.txt`** — they are installed by `install.sh` from the CUDA-matched wheel
-index. A bare `pip install -r requirements.txt && pip install -e .` will leave the
+`requirements.txt`** — they are installed by `install.sh` / `install.ps1` (and by the
+container images) from the CUDA-matched wheel index. A bare
+`pip install -r requirements.txt && pip install -e .` will leave the
 `feature_extraction` stage non-functional until you install a matching PyTorch build
 yourself (see the [PyTorch / CUDA notes](deployment/local.md#troubleshooting-pytorch-cuda-on-hpc)).
 
@@ -227,7 +243,7 @@ For containers, remove the image (`docker rmi focus` / `podman rmi focus`) and a
 on Windows use the Anaconda Prompt.
 
 **Install script fails or the env is broken** — re-run with `bash install.sh --reinstall`
-(`install.bat --reinstall` on Windows).
+(`.\install.ps1 -Reinstall`, or `install.bat --reinstall`, on Windows).
 
 **`focus: command not found`** — make sure you ran `conda activate FOCUS`; if the package
 step failed, re-run the installer with `--reinstall`.

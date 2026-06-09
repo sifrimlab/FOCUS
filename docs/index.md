@@ -56,7 +56,7 @@ creates a `FOCUS` conda environment and registers the `focus` command:
 ```bash
 git clone https://github.com/sifrimlab/FOCUS.git
 cd FOCUS
-bash install.sh          # Windows: install.bat
+bash install.sh          # Windows (PowerShell): .\install.ps1
 conda activate FOCUS
 ```
 

@@ -4,9 +4,13 @@ FOCUS is an end-to-end preprocessing, alignment, and registration pipeline for *
 
 No programming is required to use FOCUS. The entire pipeline is driven by a JSON configuration file that can be built interactively through a web-based GUI.
 
+📖 **Full documentation: [sifrimlab.github.io/FOCUS](https://sifrimlab.github.io/FOCUS/)** — installation, user guide, per-modality docs, scientific methods, and deployment guides.
+
 ---
 
 ## Table of Contents
+
+- [Documentation](https://sifrimlab.github.io/FOCUS/)
 
 - [Supported Modalities](#supported-modalities)
 - [Pipeline Overview](#pipeline-overview)
@@ -95,17 +99,19 @@ bash install.sh --reinstall
 
 ### Windows
 
-Open an **Anaconda Prompt** or **PowerShell with conda initialised** and run:
+Open an **Anaconda Prompt (PowerShell)** and run the PowerShell installer:
 
-```bat
-install.bat
+```powershell
+.\install.ps1
 ```
 
 Or with the reinstall flag:
 
-```bat
-install.bat --reinstall
+```powershell
+.\install.ps1 -Reinstall
 ```
+
+`install.ps1` mirrors `install.sh`: it detects your CUDA version and installs the matching PyTorch wheel. A `install.bat` shim that forwards to it is also provided, so from a classic Command Prompt `install.bat` / `install.bat --reinstall` work too.
 
 > **Tip:** If `conda` is not found, install [Miniconda for Windows](https://docs.conda.io/en/latest/miniconda.html), then open a new **Anaconda Prompt** and retry.
 
@@ -269,6 +275,15 @@ apptainer build focus.sif focus.def
 
 > Building from `focus.def` does not require Docker; it bootstraps directly from `python:3.11-slim`.
 
+Both images bake in a **CPU** PyTorch build by default. For GPU images, pass the `TORCH_INDEX` build arg matching your CUDA (the wheel bundles CUDA, so no CUDA base image is needed):
+
+```bash
+docker build --build-arg TORCH_INDEX=https://download.pytorch.org/whl/cu128 -t focus:gpu .
+apptainer build --build-arg TORCH_INDEX=https://download.pytorch.org/whl/cu128 focus.sif focus.def
+```
+
+The `focus-container.sh --build --gpu` shortcut selects the CUDA index automatically. See [Container Deployment](docs/deployment/containers.md) for details.
+
 ---
 
 ### macOS and Linux (Docker · Podman · Singularity)
@@ -302,6 +317,8 @@ bash focus-container.sh --runtime singularity --mount /data/mylab -- --config /d
 bash focus-container.sh --gpu --mount /data/mylab -- --config /data/mylab/project/focus_config.json
 ```
 
+> The image must contain a CUDA PyTorch build for the GPU to be used — build it with `--build --gpu` (see below), or via the `TORCH_INDEX` build arg.
+
 **Mount multiple directories:**
 
 ```bash
@@ -311,7 +328,11 @@ bash focus-container.sh --mount /data/images --mount /data/omics -- --config /da
 **Build and run in one step:**
 
 ```bash
+# CPU image
 bash focus-container.sh --build --mount /data/mylab
+
+# GPU image (bakes in a CUDA PyTorch build, then runs with GPU access)
+bash focus-container.sh --build --gpu --mount /data/mylab -- --config /data/mylab/project/focus_config.json
 ```
 
 ---
@@ -376,23 +397,21 @@ singularity run --bind /scratch/mylab focus.sif
 # Open http://localhost:5050 in your local browser
 ```
 
-**Submitting a batch job (SLURM example):**
+**Submitting a batch job (SLURM):**
+
+The repo ships a ready-to-use, parameterised batch script, [`slurm/submit_focus.sbatch`](slurm/submit_focus.sbatch) (Singularity + GPU by default, with a commented host-install variant):
 
 ```bash
-#!/bin/bash
-#SBATCH --job-name=focus
-#SBATCH --cpus-per-task=8
-#SBATCH --mem=32G
-#SBATCH --gres=gpu:1          # remove if not using feature_extraction
+sbatch slurm/submit_focus.sbatch
 
-singularity run \
-  --bind /scratch/mylab \
-  --nv \
-  focus.sif \
-  --config /scratch/mylab/project/focus_config.json
+# Override the config / image paths without editing the file:
+sbatch --export=ALL,FOCUS_CONFIG=/scratch/$USER/proj/config.json,FOCUS_SIF=/scratch/$USER/focus.sif \
+       slurm/submit_focus.sbatch
 ```
 
-> The `--nv` flag passes NVIDIA GPU access to the Singularity container.
+See the [HPC & Headless Servers](docs/deployment/hpc.md) guide for the full breakdown of the script's resource directives and overridable variables.
+
+> The `--nv` flag (set in the script) passes NVIDIA GPU access to the Singularity container; drop it and `#SBATCH --gres=gpu:1` for CPU-only runs.
 
 ---
 
@@ -400,7 +419,7 @@ singularity run \
 
 | Feature | Windows 10/11 | macOS | Linux (desktop) | Linux (headless / HPC) |
 |---|:---:|:---:|:---:|:---:|
-| Host install (`install.sh` / `install.bat`) | ✓ | ✓ | ✓ | ✓ |
+| Host install (`install.sh` / `install.ps1`) | ✓ | ✓ | ✓ | ✓ |
 | GUI mode | ✓ | ✓ | ✓ | via SSH tunnel |
 | CLI mode | ✓ | ✓ | ✓ | ✓ |
 | Docker / Podman container | ✓ | ✓ | ✓ | ✓ |

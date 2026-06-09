@@ -47,11 +47,16 @@ cd FOCUS
 
 === "Windows"
 
-    Open an **Anaconda Prompt** and run:
+    Open an **Anaconda Prompt (PowerShell)** and run the PowerShell installer:
 
-    ```bat
-    install.bat
+    ```powershell
+    .\install.ps1
     ```
+
+    `install.ps1` is the full Windows installer — it performs the same CUDA
+    detection and CUDA-matched PyTorch installation as `install.sh`. A
+    `install.bat` shim is also provided (it simply forwards to `install.ps1`),
+    so `install.bat` still works from a classic Command Prompt.
 
 ### What the script does
 
@@ -94,8 +99,9 @@ To wipe and recreate all environments from scratch (e.g. after a dependency upda
 
 === "Windows"
 
-    ```bat
-    install.bat --reinstall
+    ```powershell
+    .\install.ps1 -Reinstall
+    # or, from a Command Prompt: install.bat --reinstall
     ```
 
 ---

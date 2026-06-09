@@ -18,7 +18,7 @@ scans the `tools/` directory and builds one `FOCUS_<Name>` environment per subfo
 extra flag is needed:
 
 ```bash
-bash install.sh          # Windows: install.bat
+bash install.sh          # Windows (PowerShell): .\install.ps1
 ```
 
 This creates two environments:

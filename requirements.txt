@@ -20,5 +20,6 @@ tqdm
 psutil
 flask
 dask
+shapely
 igraph
 leidenalg

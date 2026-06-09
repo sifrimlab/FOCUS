@@ -1,0 +1,59 @@
+name: CI
+
+# Installs FOCUS the way a user would and runs lightweight checks so that
+# packaging / import breakage is caught before release. Mirrors the CPU
+# container install path (deps + CPU PyTorch + editable install).
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install system libraries (OpenCV runtime)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libgl1 libglib2.0-0
+
+      - name: Install FOCUS and dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          # torch/torchvision/timm/huggingface-hub are deliberately kept out of
+          # requirements.txt and pyproject.toml (see install.sh). Install the CPU
+          # wheels here so the feature_extraction modules import.
+          pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+          pip install timm huggingface-hub
+          pip install -e .
+
+      - name: Lint (ruff — real-error subset)
+        run: |
+          pip install ruff
+          # Catch syntax errors and undefined names (genuine breakage), not style.
+          ruff check --select=E9,F63,F7,F82 src
+
+      - name: Import & CLI smoke test
+        run: |
+          python -c "import focus; print('imported focus OK')"
+          python -c "import focus.registration.microscopy_image; print('torch stack OK')"
+          focus --help

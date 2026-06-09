@@ -15,8 +15,11 @@
 #                        default: current working directory
 #   -i, --image    IMAGE docker/podman image name (default: focus)
 #   -s, --sif      FILE  singularity .sif file     (default: ./focus.sif)
-#   --gpu                pass GPU flags (--gpus all / --nv)
-#   --build              build the image/sif before running
+#   --gpu                pass GPU flags (--gpus all / --nv) at run time; with
+#                        --build it also bakes a CUDA PyTorch build into the image
+#   --build              build the image/sif before running (CPU torch by
+#                        default; CUDA when --gpu is also set; override the
+#                        baked wheel index with the TORCH_INDEX env var)
 #   -h, --help           print this help
 #
 # Examples:
@@ -99,14 +102,26 @@ done
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 if [[ $BUILD -eq 1 ]]; then
+    # PyTorch wheel index baked into the image: CPU by default, CUDA when
+    # --gpu is requested at build time. Override explicitly with TORCH_INDEX.
+    # (See install.sh resolve_torch_index for the cuXXX → CUDA-version mapping.)
+    if [[ -n "${TORCH_INDEX:-}" ]]; then
+        BUILD_TORCH_INDEX="$TORCH_INDEX"
+    elif [[ $GPU -eq 1 ]]; then
+        BUILD_TORCH_INDEX="https://download.pytorch.org/whl/cu128"
+    else
+        BUILD_TORCH_INDEX="https://download.pytorch.org/whl/cpu"
+    fi
+
     case "$RUNTIME" in
         docker|podman)
-            info "Building image '$IMAGE'..."
-            "$RUNTIME" build -t "$IMAGE" "$SCRIPT_DIR"
+            info "Building image '$IMAGE' (TORCH_INDEX=$BUILD_TORCH_INDEX)..."
+            "$RUNTIME" build --build-arg "TORCH_INDEX=$BUILD_TORCH_INDEX" -t "$IMAGE" "$SCRIPT_DIR"
             ;;
         singularity|apptainer)
-            info "Building SIF '$SIF'..."
-            "$RUNTIME" build "$SIF" "$SCRIPT_DIR/focus.def"
+            info "Building SIF '$SIF' (TORCH_INDEX=$BUILD_TORCH_INDEX)..."
+            # --build-arg requires Apptainer >= 1.1 / SingularityCE >= 3.11.
+            "$RUNTIME" build --build-arg "TORCH_INDEX=$BUILD_TORCH_INDEX" "$SIF" "$SCRIPT_DIR/focus.def"
             ;;
     esac
 fi

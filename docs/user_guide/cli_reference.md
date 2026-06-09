@@ -188,6 +188,21 @@ focus
 
 ### SLURM batch job example
 
+The repository ships a ready-to-use, parameterised batch script,
+[`slurm/submit_focus.sbatch`](https://github.com/sifrimlab/FOCUS/blob/main/slurm/submit_focus.sbatch),
+covering both the Singularity container and host-install paths. Submit it with:
+
+```bash
+sbatch slurm/submit_focus.sbatch
+
+# Override the config / image paths without editing the file:
+sbatch --export=ALL,FOCUS_CONFIG=/scratch/$USER/proj/config.json slurm/submit_focus.sbatch
+```
+
+See [HPC & Headless Servers — SLURM Batch Script](../deployment/hpc.md#slurm-batch-script)
+for the full breakdown of its directives and overridable variables. A minimal
+host-install job looks like:
+
 ```bash
 #!/bin/bash
 #SBATCH --job-name=focus
@@ -195,6 +210,8 @@ focus
 #SBATCH --mem=64G
 #SBATCH --gres=gpu:1          # remove this line if not using feature_extraction
 
+# 'conda activate' needs the shell hook in a non-interactive job:
+source "$(conda info --base)/etc/profile.d/conda.sh"
 conda activate FOCUS
 focus --config /scratch/mylab/project/focus_config.json
 ```
@@ -224,6 +241,7 @@ For parallel processing on SLURM, use a job array:
 CONFIGS=(/data/cohort/*/focus_config.json)
 CONFIG="${CONFIGS[$SLURM_ARRAY_TASK_ID]}"
 
+source "$(conda info --base)/etc/profile.d/conda.sh"
 conda activate FOCUS
 focus --config "$CONFIG"
 ```

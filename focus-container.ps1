@@ -18,8 +18,11 @@
 #                                      default: current directory
 #   -Image     IMAGE                   docker/podman image  (default: focus)
 #   -Port      INT                     GUI port             (default: 5050)
-#   -Gpu                               pass GPU flags (--gpus all)
-#   -Build                             build image before running
+#   -Gpu                               pass GPU flags (--gpus all) at run time;
+#                                      with -Build also bakes a CUDA PyTorch build
+#   -Build                             build image before running (CPU torch by
+#                                      default; CUDA when -Gpu is also set;
+#                                      override with the TORCH_INDEX env var)
 #
 # Examples:
 #   # GUI mode
@@ -109,8 +112,17 @@ foreach ($arg in $FocusArgs) {
 # ── Build ─────────────────────────────────────────────────────────────────────
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 if ($Build) {
-    Write-Info "Building image '$Image'..."
-    & $Runtime build -t $Image $ScriptDir
+    # PyTorch wheel index baked into the image: CPU by default, CUDA when -Gpu
+    # is requested at build time. Override explicitly with the TORCH_INDEX env var.
+    if ($env:TORCH_INDEX) {
+        $BuildTorchIndex = $env:TORCH_INDEX
+    } elseif ($Gpu) {
+        $BuildTorchIndex = "https://download.pytorch.org/whl/cu128"
+    } else {
+        $BuildTorchIndex = "https://download.pytorch.org/whl/cpu"
+    }
+    Write-Info "Building image '$Image' (TORCH_INDEX=$BuildTorchIndex)..."
+    & $Runtime build --build-arg "TORCH_INDEX=$BuildTorchIndex" -t $Image $ScriptDir
     if ($LASTEXITCODE -ne 0) { Write-Err "Image build failed." }
 }
 

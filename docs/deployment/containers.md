@@ -26,14 +26,17 @@ FOCUS ships a `Dockerfile`, a Singularity/Apptainer definition file (`focus.def`
     podman build -t focus .
     ```
 
-    The image is based on `python:3.11-slim`, installs system libraries (`libgl1`, `libglib2.0-0`, `libgomp1`, `libsm6`, `libxext6`) for OpenCV and OpenMP, then installs the FOCUS Python dependencies and the `focus` package itself.
+    The image is based on `python:3.11-slim`, installs system libraries (`libgl1`, `libglib2.0-0`, `libgomp1`, `libsm6`, `libxext6`) for OpenCV and OpenMP, then installs the FOCUS Python dependencies, **the PyTorch ecosystem (torch, torchvision, timm, huggingface-hub)**, and the `focus` package itself. PyTorch is installed from the wheel index given by the `TORCH_INDEX` build arg, which defaults to the CPU index — so `feature_extraction` works out of the box on CPU.
 
-    !!! note "CPU-only by default"
-        The default `Dockerfile` builds a CPU-only image. For GPU (CUDA) support, replace the base image with a CUDA-enabled variant, for example:
+    !!! note "GPU (CUDA) images"
+        The PyTorch wheels at `download.pytorch.org` bundle the CUDA runtime inside the wheel, so a CUDA build runs on the same `python:3.11-slim` base — no CUDA base image needed. Pass the `TORCH_INDEX` build arg matching your target CUDA:
 
-        ```dockerfile
-        FROM pytorch/pytorch:2.1.0-cuda12.1-cudnn8-runtime
+        ```bash
+        # CUDA 12.8+ (other indices: cu126, cu124, cu121, cu118)
+        docker build --build-arg TORCH_INDEX=https://download.pytorch.org/whl/cu128 -t focus:gpu .
         ```
+
+        Then run with `--gpus all` (Docker/Podman). The `focus-container.sh --build --gpu` shortcut selects the CUDA index automatically. See `install.sh` `resolve_torch_index` for the CUDA-version → index mapping.
 
     The container runs as an unprivileged user (`focususer`, UID 1000) and exposes port `5050`.
 
@@ -56,7 +59,15 @@ FOCUS ships a `Dockerfile`, a Singularity/Apptainer definition file (`focus.def`
 
         On HPC clusters where you cannot build locally, build on a machine with root access (or in a VM) and then copy `focus.sif` to the cluster.
 
-    The definition installs FOCUS into a dedicated venv at `/opt/focus-env/`. The `%runscript` directive maps `singularity run ... focus.sif [args]` directly to `focus [args]`.
+    The definition installs FOCUS into a dedicated venv at `/opt/focus-env/`, including a CPU PyTorch build by default. The `%runscript` directive maps `singularity run ... focus.sif [args]` directly to `focus [args]`.
+
+    !!! note "GPU (CUDA) SIF images"
+        Pass the `TORCH_INDEX` build arg to bake in a CUDA PyTorch build (requires Apptainer ≥ 1.1 / SingularityCE ≥ 3.11), then run with `--nv`:
+
+        ```bash
+        apptainer build --build-arg TORCH_INDEX=https://download.pytorch.org/whl/cu128 focus.sif focus.def
+        apptainer run --nv --bind /scratch/$USER focus.sif --config /scratch/$USER/project/focus_config.json
+        ```
 
 ---
 
@@ -107,7 +118,7 @@ bash focus-container.sh --mount /path/to/your/data -- --config /path/to/your/dat
 bash focus-container.sh --gpu --mount /data/mylab -- --config /data/mylab/project/focus_config.json
 ```
 
-This passes `--gpus all` to Docker/Podman or `--nv` to Singularity/Apptainer.
+This passes `--gpus all` to Docker/Podman or `--nv` to Singularity/Apptainer at run time. **The image must contain a CUDA PyTorch build** for the GPU to be used — build it with `--gpu` as well (see *Build and run in one step* below), or via the `TORCH_INDEX` build arg.
 
 **Mount multiple directories:**
 
@@ -118,8 +129,14 @@ bash focus-container.sh --mount /data/images --mount /data/omics -- --config /da
 **Build and run in one step:**
 
 ```bash
+# CPU image
 bash focus-container.sh --build --mount /data/mylab
+
+# GPU image (bakes in a CUDA PyTorch build, then runs with GPU access)
+bash focus-container.sh --build --gpu --mount /data/mylab -- --config /data/mylab/project/focus_config.json
 ```
+
+Override the baked PyTorch wheel index explicitly with the `TORCH_INDEX` environment variable, e.g. `TORCH_INDEX=https://download.pytorch.org/whl/cu126 bash focus-container.sh --build --gpu ...`.
 
 ---
 

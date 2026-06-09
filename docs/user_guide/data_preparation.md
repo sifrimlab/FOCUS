@@ -114,7 +114,7 @@ Multi-tile LIF files are fully supported. FOCUS assembles the individual tiles i
 !!! warning "Raman requires auxiliary conda environments"
     The Raman preprocessing stage depends on two additional conda environments,
     `FOCUS_BaSiCpy` and `FOCUS_ASHLAR`. These are created automatically by the default
-    installer — `install.sh` (or `install.bat`) scans the `tools/` directory and builds
+    installer — `install.sh` (or `install.ps1` on Windows) scans the `tools/` directory and builds
     one `FOCUS_<Name>` environment per subfolder, installing OpenJDK into `FOCUS_ASHLAR`
     for tile stitching. No extra flag is required.
 

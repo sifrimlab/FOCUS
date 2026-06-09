@@ -209,6 +209,11 @@ gui_src/**/.vite/
 gui_src/**/*.tsbuildinfo
 gui_src/**/dist/
 
+# macOS
+.DS_Store
+**/.DS_Store
+._*
+
 # Graphify data
 graphify-out/
 
