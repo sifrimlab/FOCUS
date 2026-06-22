@@ -14,9 +14,11 @@ from focus.utils import write_h5ad_compat, concat_on_disk_compat, write_h5mu_com
 from focus.preprocessing import preprocess_modality
 from focus.preprocessing._utils import StepReporter
 from focus.alignment.alignment import DirectMappingAligner
-from focus.registration.registration import FeatureExtractorRegistration, SpotInterpolationRegistration
-from focus.registration.spot_aggregation import SpotAggregationRegistration
-from focus.registration.raman_pixel import RamanPixelInterpolationRegistration
+# NOTE: the registration engines are imported lazily inside _run_registration() rather
+# than here, because focus.registration.microscopy_image imports torch / timm /
+# huggingface_hub at module load. Keeping these out of the module top lets callers that
+# only need the alignment stage (e.g. scripts/align_only.py via _run_alignment) import
+# this module without pulling in the PyTorch / GigaPath stack.
 
 logger = logging.getLogger("focus.orchestrator")
 
@@ -517,6 +519,13 @@ def _run_registration(config: dict, modality_files: dict, aligned_files: dict, s
 	dict
 		{modality_name: {sample_id: registered_file_path}}
 	"""
+	# Imported here (not at module top) so that importing this module to run only the
+	# alignment stage does not load torch / timm / huggingface_hub. See the import note
+	# at the top of this file.
+	from focus.registration.registration import FeatureExtractorRegistration, SpotInterpolationRegistration
+	from focus.registration.spot_aggregation import SpotAggregationRegistration
+	from focus.registration.raman_pixel import RamanPixelInterpolationRegistration
+
 	dataset_path = config[ConfigParameters.DATASET_PATH]
 	modalities = config[ConfigParameters.MODALITIES]
 	ref_name = config[ConfigParameters.REFERENCE_MODALITY]

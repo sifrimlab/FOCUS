@@ -127,7 +127,7 @@ def setup_logging(dataset_path: str | None = None, debug: bool = False) -> loggi
 	return logger
 
 
-def parse_config(config: dict) -> dict:
+def parse_config(config: dict, require_raw_inputs: bool = True) -> dict:
 	"""
 	Validate the FOCUS configuration dictionary and apply defaults.
 
@@ -138,6 +138,17 @@ def parse_config(config: dict) -> dict:
 	----------
 	config : dict
 		Raw configuration loaded from JSON.
+	require_raw_inputs : bool, default True
+		Whether to verify that the on-disk resources consumed only by stages
+		*other than* alignment are present. The full pipeline (``main.py``) leaves
+		this ``True``. Set it to ``False`` for an alignment-only run that starts
+		from already-preprocessed files, where none of these are needed: it skips
+		the per-(sample, modality) raw input directory check and the MSI
+		lipid-annotation database check (preprocessing inputs), the HuggingFace
+		token requirement (a registration credential), and the GeoJSON
+		annotation-file existence check (an annotation input). All structural,
+		type, naming, reference, and alignment-strategy compatibility checks run
+		regardless of this flag.
 
 	Returns
 	-------
@@ -241,25 +252,29 @@ def parse_config(config: dict) -> dict:
 	if len(sample_ids) == 0:
 		raise ValueError(f"No sample directories found in '{dataset_path}'.")
 
-	for modality in config[ConfigParameters.MODALITIES]:
-		mod_name = modality[ModalityParameters.NAME]
-		for sample_id in sample_ids:
-			sample_modality_dir = os.path.join(dataset_path, sample_id, mod_name)
-			if not os.path.isdir(sample_modality_dir):
-				raise FileNotFoundError(
-					f"Missing modality directory for sample '{sample_id}': {sample_modality_dir}"
-				)
+	# Raw per-(sample, modality) input directories and the MSI lipid database are
+	# consumed only by preprocessing; an alignment-only run from preprocessed files
+	# needs neither, so skip these existence checks when require_raw_inputs is False.
+	if require_raw_inputs:
+		for modality in config[ConfigParameters.MODALITIES]:
+			mod_name = modality[ModalityParameters.NAME]
+			for sample_id in sample_ids:
+				sample_modality_dir = os.path.join(dataset_path, sample_id, mod_name)
+				if not os.path.isdir(sample_modality_dir):
+					raise FileNotFoundError(
+						f"Missing modality directory for sample '{sample_id}': {sample_modality_dir}"
+					)
 
-		# Check modality-specific support files
-		mod_type = modality[ModalityParameters.TYPE]
-		settings = modality[ModalityParameters.PROCESSING_SETTINGS]
+			# Check modality-specific support files
+			mod_type = modality[ModalityParameters.TYPE]
+			settings = modality[ModalityParameters.PROCESSING_SETTINGS]
 
-		if mod_type == ModalityType.MSI:
-			lipid_db = settings.get(MsiPreprocessingParams.LIPID_ANNOTATION_DB)
-			if lipid_db is not None and not os.path.isfile(lipid_db):
-				raise FileNotFoundError(
-					f"Lipid annotation database not found for modality '{mod_name}': {lipid_db}"
-				)
+			if mod_type == ModalityType.MSI:
+				lipid_db = settings.get(MsiPreprocessingParams.LIPID_ANNOTATION_DB)
+				if lipid_db is not None and not os.path.isfile(lipid_db):
+					raise FileNotFoundError(
+						f"Lipid annotation database not found for modality '{mod_name}': {lipid_db}"
+					)
 
 	# --- Step 9: Registration type compatibility ---
 	for modality in config[ConfigParameters.MODALITIES]:
@@ -317,16 +332,20 @@ def parse_config(config: dict) -> dict:
 		)
 
 	# --- Step 10: HuggingFace token requirement ---
-	needs_hf_token = any(
-		m[ModalityParameters.REGISTRATION_TYPE] == RegistrationType.FEATURE_EXTRACTION
-		for m in config[ConfigParameters.MODALITIES]
-	)
-	if needs_hf_token:
-		hf_token = config[ConfigParameters.HUGGINGFACE_TOKEN]
-		if not hf_token or not isinstance(hf_token, str):
-			raise ValueError(
-				"'huggingface_token' is required when any modality uses 'feature_extraction' registration."
-			)
+	# The token is only used to download the registration feature extractor; an
+	# alignment-only run never registers, so skip the requirement when
+	# require_raw_inputs is False.
+	if require_raw_inputs:
+		needs_hf_token = any(
+			m[ModalityParameters.REGISTRATION_TYPE] == RegistrationType.FEATURE_EXTRACTION
+			for m in config[ConfigParameters.MODALITIES]
+		)
+		if needs_hf_token:
+			hf_token = config[ConfigParameters.HUGGINGFACE_TOKEN]
+			if not hf_token or not isinstance(hf_token, str):
+				raise ValueError(
+					"'huggingface_token' is required when any modality uses 'feature_extraction' registration."
+				)
 
 	# --- Step 11: spatial_annotations ---
 	config.setdefault(ConfigParameters.SPATIAL_ANNOTATIONS, None)
@@ -350,7 +369,9 @@ def parse_config(config: dict) -> dict:
 				f"Supported types: {AnnotationFileType.list()}"
 			)
 
-		if ann_file_type == AnnotationFileType.GEOJSON:
+		# The per-sample GeoJSON files are an annotation-transfer input; skip the
+		# existence check for an alignment-only run (require_raw_inputs False).
+		if require_raw_inputs and ann_file_type == AnnotationFileType.GEOJSON:
 			for sample_id in sample_ids:
 				mod_dir = os.path.join(dataset_path, sample_id, ann_mod_name)
 				geojson_files = [f for f in os.listdir(mod_dir) if f.endswith('.geojson')]
