@@ -63,9 +63,11 @@ class RamanPixelInterpolationRegistration:
         -------
         coords : np.ndarray (N, 2) float32
             Pixel (x, y) coordinates for every loaded pixel, in the same
-            pixel-space used by the alignment step.
+            pixel-space used by the alignment step. Empty (N == 0) when the
+            bounding box falls entirely outside the image (no overlap).
         features : np.ndarray (N, C) float32
-            Spectral intensities per pixel.
+            Spectral intensities per pixel. Empty (N == 0), with C equal to the
+            channel count, when the bounding box falls entirely outside the image.
         channel_names : list[str]
             Name for each spectral channel (from OME metadata or 'Channel_N').
         """
@@ -130,8 +132,17 @@ class RamanPixelInterpolationRegistration:
         y_max = min(H, y_max)
 
         if x_min >= x_max or y_min >= y_max:
-            raise ValueError(
-                f"Bounding box {bbox} is empty or outside image bounds ({W}x{H}) for {filename}"
+            # The requested region lies entirely outside the image: the anchor spots do not
+            # overlap the Raman tissue at all. Return an empty pixel set (with the correct
+            # channel width) so the caller can assign zero spectral vectors instead of crashing.
+            logger.debug(
+                f"Bounding box {bbox} lies outside image bounds ({W}x{H}) for {filename}; "
+                f"no Raman pixels overlap the requested region."
+            )
+            return (
+                np.empty((0, 2), dtype=np.float32),   # coords
+                np.empty((0, C), dtype=np.float32),   # features (width = channel count)
+                channel_names,
             )
 
         # Crop to bbox and build pixel grid
@@ -264,12 +275,24 @@ class RamanPixelInterpolationRegistration:
                 f"Raman bbox {bbox}: {pixel_coords.shape[0]} pixels, {pixel_features.shape[1]} channels."
             )
 
-            registered_features = SpotInterpolationRegistration._interpolate_features(
-                anchor_coordinates=anchor_coords,
-                anchor_spot_size=spot_size,
-                target_coordinates=pixel_coords,
-                target_features=pixel_features,
-            )
+            if pixel_coords.shape[0] == 0:
+                # The anchor spots fall entirely outside the Raman image: there is no tissue
+                # overlap, so assign zero spectral vectors (mirrors how _interpolate_features
+                # treats non-overlapping spots for spot-based targets).
+                logger.warning(
+                    f"Sample '{sample_id}': all {anchor_coords.shape[0]} anchor spots fall outside "
+                    f"the Raman image bounds; assigning zero spectral vectors (no overlap)."
+                )
+                registered_features = np.zeros(
+                    (anchor_coords.shape[0], len(channel_names)), dtype=np.float32
+                )
+            else:
+                registered_features = SpotInterpolationRegistration._interpolate_features(
+                    anchor_coordinates=anchor_coords,
+                    anchor_spot_size=spot_size,
+                    target_coordinates=pixel_coords,
+                    target_features=pixel_features,
+                )
 
             adata = anndata.AnnData(
                 X=registered_features,
