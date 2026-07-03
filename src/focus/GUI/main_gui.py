@@ -570,6 +570,9 @@ def _build_schema() -> dict:
 			RegistrationType.SPOT_AGGREGATION: {
 				"force_recomputing": {"type": "bool", "default": False},
 			},
+			RegistrationType.RAMAN_PIXEL_INTERPOLATION: {
+				"force_recomputing": {"type": "bool", "default": False},
+			},
 			RegistrationType.NONE: {},
 		},
 	}
