@@ -497,10 +497,20 @@ class DirectMappingAligner:
 		# Preferred path: frontend sends the 3×3 affine matrix (added when display is
 		# subsampled so that all spots, not just the displayed ones, are transformed).
 		if "transform_matrix" in alignment_result and full_coordinates is not None:
-			mat = np.array(alignment_result["transform_matrix"], dtype=np.float64).reshape(3, 3)
+			# The frontend serialises a gl-matrix mat3, which is COLUMN-MAJOR, so it must be
+			# reshaped column-first (order="F"). A plain row-major reshape(3, 3) would build the
+			# TRANSPOSE of the true matrix — transposing the linear part and, critically, pushing
+			# the translation into the homogeneous row where it is silently dropped. That is
+			# harmless only when the translation is ~0 (no flip, origin-anchored data); a flip
+			# needs a large repositioning translation, so dropping it sends every spot into the
+			# negative quadrant (off-image -> empty registered features).
+			mat = np.array(alignment_result["transform_matrix"], dtype=np.float64).reshape(3, 3, order="F")
 			n = len(full_coordinates)
 			hom = np.column_stack([full_coordinates.astype(np.float64), np.ones(n)])
-			transformed = (mat @ hom.T).T[:, :2]
+			out = (mat @ hom.T).T                     # (n, 3) homogeneous
+			w = out[:, 2:3]
+			w[w == 0] = 1.0                           # guard; affine transforms keep w == 1
+			transformed = out[:, :2] / w              # divide-through handles projective ('distort') too
 			return transformed.astype(np.float32)
 
 		if "spots" in alignment_result:
