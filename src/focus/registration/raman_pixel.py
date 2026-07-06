@@ -8,7 +8,7 @@ import pandas as pd
 import tifffile
 
 from focus.constants import MODALITY_REGISTRATION, MODALITY_REGISTRATION_MERGED, RegistrationType
-from focus.utils import write_h5ad_compat, read_merged_sample_ids, registration_cache_valid
+from focus.utils import write_h5ad_compat, read_merged_sample_ids, registration_cache_valid, hw_from_axes
 from focus.registration.registration import SpotInterpolationRegistration
 
 logger = logging.getLogger(__name__)
@@ -162,9 +162,14 @@ class RamanPixelInterpolationRegistration:
         """Return (H, W) of the full-resolution OME-TIFF without loading pixel data."""
         with tifffile.TiffFile(filename) as tif:
             series = tif.series[0]
-            shape = series.levels[0].shape if len(series.levels) > 1 else series.shape
-        # shape is (..., H, W); last two dims are always Y and X
-        return int(shape[-2]), int(shape[-1])
+            if len(series.levels) > 1:
+                shape = series.levels[0].shape
+                axes = getattr(series.levels[0], "axes", "") or getattr(series, "axes", "")
+            else:
+                shape = series.shape
+                axes = getattr(series, "axes", "")
+        # Identify (Y, X) from OME axes metadata (shared with the alignment image loader).
+        return hw_from_axes(shape, axes)
 
     def register_dataset(
         self,

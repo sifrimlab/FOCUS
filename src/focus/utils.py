@@ -20,6 +20,21 @@ from focus.constants import (
 from focus.preprocessing._utils import validate_path_readable, discover_sample_ids
 
 
+def hw_from_axes(shape, axes: str | None) -> tuple[int, int]:
+	"""Return (height, width) = (Y, X) sizes from a shape tuple using its OME 'axes' string.
+
+	Falls back to the last two dimensions (OME canonical order places Y, X last) when the
+	axes string is absent or does not label both Y and X against ``shape``. Correct for both
+	channel-first ('CYX', e.g. Raman) and channel-last ('YXC', e.g. RGB microscopy) layouts,
+	so display->full-resolution scale factors are derived from the real spatial axes rather
+	than a positional guess.
+	"""
+	a = (axes or "").upper()
+	if len(a) == len(shape) and "Y" in a and "X" in a:
+		return int(shape[a.index("Y")]), int(shape[a.index("X")])
+	return int(shape[-2]), int(shape[-1])
+
+
 def available_cpus():
 	try:
 		# Linux: respects affinity (Slurm, cpuset cgroups, taskset)

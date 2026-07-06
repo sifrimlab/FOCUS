@@ -5,7 +5,7 @@ from sklearn.decomposition import NMF
 
 from focus.constants import MODALITY_ALIGNMENT, MODALITY_ALIGNMENT_MERGED
 from focus.constants import ModalityType
-from focus.utils import write_h5ad_compat, concat_on_disk_compat, read_merged_sample_ids
+from focus.utils import write_h5ad_compat, concat_on_disk_compat, read_merged_sample_ids, hw_from_axes
 
 from focus.GUI.direct_mapping_alignment import DirectMappingAlignmentGUI
 from focus.preprocessing._utils import _spatial_bin_assignment, _SPATIAL_CAP
@@ -38,20 +38,42 @@ def _generate_cluster_colors(labels: np.ndarray) -> dict[str, str]:
 	return {label: _CLUSTER_PALETTE[i % len(_CLUSTER_PALETTE)] for i, label in enumerate(unique_labels)}
 
 
-def _image_to_rgb_uint8(image_data: np.ndarray, lowest_shape: tuple, original_shape: tuple) -> tuple[np.ndarray, tuple, tuple]:
+def _image_to_rgb_uint8(image_data: np.ndarray, axes: str | None) -> np.ndarray:
 	"""
-	Convert loaded image data to RGB uint8 for GUI display.
+	Convert loaded image data to an RGB uint8 (H, W, 3) array for GUI display.
+
+	The channel / Y / X axes are located from the OME-TIFF ``axes`` metadata rather than
+	guessed positionally, so multi-channel channel-first images (e.g. Raman 'CYX') and
+	channel-last RGB images (e.g. 'YXC') are both handled correctly.
 
 	Handles:
+	- collapsing extra axes (T, Z, …) by taking their first index
 	- dtype conversion to uint8
-	- channel axis detection and transposition to HWC
+	- moving the channel axis last (HWC)
 	- 1 channel (grayscale) → RGB by triplication
 	- 2 channels → pad with zeros to 3
 	- 3 channels → keep as-is
 	- 4+ channels → NMF reduction to 3 components
-
-	Returns (image_rgb_uint8, lowest_shape_hwc, original_shape_hwc).
 	"""
+	# The colour axis is 'C' (separate channels, e.g. Raman) or 'S' (samples-per-pixel of an
+	# interleaved RGB, how tifffile labels microscopy). Use the axes string only when it lines
+	# up with the array; otherwise fall back to the positional heuristic further below.
+	_COLOUR = ("C", "S")
+	axes = (axes or "").upper()
+	use_axes = len(axes) == image_data.ndim and "Y" in axes and "X" in axes
+
+	if use_axes:
+		# Collapse any non-spatial, non-colour axes (T, Z, …) by selecting the first index,
+		# until the array is at most 3-D (Y, X[, colour]).
+		while image_data.ndim > 3:
+			drop = next((i for i, ax in enumerate(axes) if ax not in ("Y", "X", *_COLOUR)), 0)
+			image_data = np.take(image_data, 0, axis=drop)
+			axes = axes[:drop] + axes[drop + 1:]
+	else:
+		# No usable axes metadata: squeeze leading singleton dims to get to ≤ 3-D.
+		while image_data.ndim > 3 and image_data.shape[0] == 1:
+			image_data = image_data[0]
+
 	# Convert to uint8 if needed.
 	# Always use min-max normalisation: never assume a specific input range such as
 	# [0, 1] for float32, because tifffile may return SubIFD data in any numeric
@@ -70,15 +92,18 @@ def _image_to_rgb_uint8(image_data: np.ndarray, lowest_shape: tuple, original_sh
 			arr = image_data.astype(np.float32)
 			image_data = ((arr - dmin) / (dmax - dmin) * 255.0).astype(np.uint8)
 
-	# Ensure HWC format
+	# Ensure (H, W, colour): move the colour axis last.
 	if image_data.ndim == 2:
 		# Grayscale → (H, W, 1)
 		image_data = image_data[:, :, np.newaxis]
-	elif image_data.ndim == 3 and np.argmin(image_data.shape) == 0:
-		# Channels-first → HWC
+	elif use_axes:
+		colour = [i for i, ax in enumerate(axes) if ax in _COLOUR]
+		c = colour[0] if colour else int(np.argmin(image_data.shape))
+		if c != image_data.ndim - 1:
+			image_data = np.moveaxis(image_data, c, -1)
+	elif image_data.ndim == 3 and int(np.argmin(image_data.shape)) == 0:
+		# No usable axes metadata: fall back to the channels-first positional heuristic.
 		image_data = np.transpose(image_data, (1, 2, 0))
-		lowest_shape = (lowest_shape[1], lowest_shape[2], lowest_shape[0])
-		original_shape = (original_shape[1], original_shape[2], original_shape[0])
 
 	n_channels = image_data.shape[-1]
 
@@ -104,7 +129,7 @@ def _image_to_rgb_uint8(image_data: np.ndarray, lowest_shape: tuple, original_sh
 			W = np.zeros_like(W, dtype=np.uint8)
 		image_data = W.reshape(h, w, 3)
 
-	return image_data, lowest_shape, original_shape
+	return image_data
 
 
 class DirectMappingAligner:
@@ -159,20 +184,26 @@ class DirectMappingAligner:
 
 	# --- Data Loading ---
 
-	def _load_ome_tiff(self, filename: str) -> tuple[np.ndarray, tuple, tuple]:
+	def _load_ome_tiff(self, filename: str) -> tuple[np.ndarray, tuple[int, int], tuple[int, int]]:
 		"""
-		Load an OME-TIFF file, returning the lowest pyramid level as RGB uint8.
+		Load an OME-TIFF file, returning the lowest pyramid level as RGB uint8 for display
+		plus the true (H, W) of both the display level and the full-resolution level.
 
 		Handles SubIFD-based pyramids (new format, written with subifds + ome=True),
 		direct SubIFD page access (fallback when series.levels doesn't expose SubIFDs),
 		and multi-series pyramids (old format with a separate series per level).
 
+		The (H, W) dimensions are derived from the OME ``axes`` metadata (via
+		``hw_from_axes``), so they are correct for both channel-first ('CYX', e.g. Raman)
+		and channel-last ('YXC', e.g. RGB microscopy) layouts. This is what makes the
+		display->full-resolution ``scale_factors`` accurate for multi-channel images.
+
 		Returns
 		-------
-		tuple of (image_rgb, lowest_shape, original_shape)
+		tuple of (image_rgb, (H_low, W_low), (H_full, W_full))
 			image_rgb: uint8 array (H, W, 3) at lowest pyramid resolution
-			lowest_shape: (H_low, W_low[, C]) shape of the loaded level
-			original_shape: (H_orig, W_orig[, C]) shape of the full-resolution level
+			(H_low, W_low): height/width of the loaded (display) level
+			(H_full, W_full): height/width of the full-resolution level
 		"""
 		if not os.path.exists(filename):
 			raise FileNotFoundError(f"File not found: {filename}")
@@ -180,12 +211,14 @@ class DirectMappingAligner:
 		with tifffile.TiffFile(filename) as tif:
 			series0 = tif.series[0]
 			original_shape = series0.shape
+			original_axes = getattr(series0, "axes", "") or ""
 
 			# Priority 1: SubIFD pyramid via series.levels (modern tifffile with ome=True + subifds)
 			if len(series0.levels) > 1:
 				lowest = series0.levels[-1]
 				image_data = lowest.asarray()
 				lowest_shape = lowest.shape
+				lowest_axes = getattr(lowest, "axes", "") or original_axes
 
 			# Priority 2: direct SubIFD page access — handles ome=True + subifds written by
 			# tifffile versions that don't expose SubIFDs through series.levels
@@ -193,28 +226,28 @@ class DirectMappingAligner:
 				lowest_page = tif.pages[0].pages[-1]
 				image_data = lowest_page.asarray()
 				lowest_shape = image_data.shape
+				lowest_axes = getattr(lowest_page, "axes", "") or ""
 
 			# Priority 3: separate top-level series per pyramid level (old ome_types format)
 			elif len(tif.series) > 1:
 				lowest = tif.series[-1]
 				image_data = lowest.asarray()
 				lowest_shape = lowest.shape
+				lowest_axes = getattr(lowest, "axes", "") or original_axes
 
 			# Priority 4: single-level file (no pyramid at all)
 			else:
 				image_data = series0.asarray()
 				lowest_shape = series0.shape
+				lowest_axes = original_axes
 
-		# Squeeze leading singleton OME dimensions (e.g. T=1, Z=1 from TZCYX)
-		# so that all shapes are ≤ 3D before passing to _image_to_rgb_uint8.
-		while image_data.ndim > 3 and image_data.shape[0] == 1:
-			image_data = image_data[0]
-		while len(lowest_shape) > 3 and lowest_shape[0] == 1:
-			lowest_shape = lowest_shape[1:]
-		while len(original_shape) > 3 and original_shape[0] == 1:
-			original_shape = original_shape[1:]
+		# Identify the true (H, W) of each level from OME axes metadata — never positional
+		# guessing — so the scale is correct regardless of channel-axis position/count.
+		H_full, W_full = hw_from_axes(original_shape, original_axes)
+		H_low, W_low = hw_from_axes(lowest_shape, lowest_axes)
 
-		return _image_to_rgb_uint8(image_data, lowest_shape, original_shape)
+		image_rgb = _image_to_rgb_uint8(image_data, lowest_axes)
+		return image_rgb, (H_low, W_low), (H_full, W_full)
 
 	def _load_anndata_spots(self, filename: str) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, dict]:
 		"""
@@ -276,16 +309,17 @@ class DirectMappingAligner:
 		Returns (metadata, payload, full_coordinates, scale_factors).
 		full_coordinates is None for IMAGE modalities.
 		"""
-		image, lowest_shape, original_shape = self._load_ome_tiff(filename)
+		image, (H_low, W_low), (H_full, W_full) = self._load_ome_tiff(filename)
 		payload = Image.fromarray(image)
 		metadata = {
 			"modality_type": "IMAGE",
 			"modality_name": modality_name,
-			"image_shape": [int(lowest_shape[0]), int(lowest_shape[1])]
+			"image_shape": [int(H_low), int(W_low)]
 		}
+		# Display (lowest level) -> full-resolution scale, per axis [y_scale, x_scale].
 		scale_factors = np.array([
-			original_shape[0] / lowest_shape[0],
-			original_shape[1] / lowest_shape[1]
+			H_full / H_low,
+			W_full / W_low
 		])
 		return metadata, payload, None, scale_factors
 
