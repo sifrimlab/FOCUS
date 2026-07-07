@@ -24,7 +24,8 @@ class MicroscopyImage(BaseSample):
 	and prepare it for alignment/registration.
 
 	Input: TIFF (.tiff, .tif, .ome.tiff, .ome.tif), qpTIFF (.qptiff), or CZI (.czi)
-	Output: multi-resolution OME-TIFF (float32, zlib-compressed)
+	Output: multi-resolution OME-TIFF, stored in the source file's dtype
+	(uint8/uint16 passthrough, float sources stay float32), zlib-compressed with predictor.
 	"""
 
 	# Default processing parameters (all configurable via process_image)
@@ -35,6 +36,7 @@ class MicroscopyImage(BaseSample):
 	_GAMMA = 0.45
 	_CONTRAST_SATURATION = 0.35
 	_MAX_PYRAMID_PIXELS = 3000 * 3000  # pixel cap for the smallest pyramid level (GUI rendering)
+	_DETECTION_MAX_PIXELS = 3000 * 3000  # pixel cap for the tissue-detection proxy (independent of the pyramid cap)
 
 	def __init__(self, source_path: str, sample_id: str, modality_name: str) -> None:
 		super().__init__(source_path, sample_id, modality_name)
@@ -56,10 +58,11 @@ class MicroscopyImage(BaseSample):
 					return os.path.join(directory, f)
 		return None
 
-	def _load_image(self, file: str) -> np.ndarray:
+	def _load_image(self, file: str) -> tuple[np.ndarray, np.dtype]:
 		"""
 		Load an image from a supported file format.
-		Returns a float32 array normalized to [0, 1] with shape (H, W, C).
+		Returns a float32 array normalized to [0, 1] with shape (H, W, C),
+		plus the original on-disk dtype (used to pick the output storage dtype).
 
 		Dispatches to the appropriate loader based on file extension.
 		"""
@@ -71,22 +74,27 @@ class MicroscopyImage(BaseSample):
 		else:
 			return self._load_tiff(file)
 
-	def _load_tiff(self, file: str) -> np.ndarray:
+	def _load_tiff(self, file: str) -> tuple[np.ndarray, np.dtype]:
 		"""
-		Read a TIFF/OME-TIFF file and return as float32 [0,1] with channels last (H, W, C).
+		Read a TIFF/OME-TIFF file and return as float32 [0,1] with channels last (H, W, C),
+		plus the original on-disk dtype.
 		"""
 		with tifffile.TiffFile(file) as f:
 			image = f.asarray()
 
+		input_dtype = image.dtype
 		image = self._normalize_image(image)
-		return image
+		return image, input_dtype
 
-	def _load_czi(self, file: str) -> np.ndarray:
+	def _load_czi(self, file: str) -> tuple[np.ndarray, np.dtype]:
 		"""
-		Read a CZI file and return as float32 [0,1] with channels last (H, W, C).
+		Read a CZI file and return as float32 [0,1] with channels last (H, W, C),
+		plus the original on-disk dtype.
 		"""
 		with czifile.CziFile(file) as czi:
 			image = czi.asarray()
+
+		input_dtype = image.dtype
 
 		# Squeeze extra dimensions (CZI can have 5+ dims)
 		if image.ndim > 3:
@@ -96,11 +104,12 @@ class MicroscopyImage(BaseSample):
 				image = image[0]
 
 		image = self._normalize_image(image)
-		return image
+		return image, input_dtype
 
-	def _load_qptiff(self, file: str) -> np.ndarray:
+	def _load_qptiff(self, file: str) -> tuple[np.ndarray, np.dtype]:
 		"""
-		Read a qpTIFF file and return as float32 [0,1] with channels last (H, W, C).
+		Read a qpTIFF file and return as float32 [0,1] with channels last (H, W, C),
+		plus the original on-disk dtype.
 
 		qpTIFF files (e.g. Akoya Vectra/PhenoImager) embed the full-resolution image
 		alongside a downsampled pyramid and small auxiliary images (thumbnail, macro,
@@ -116,8 +125,9 @@ class MicroscopyImage(BaseSample):
 				print(f"INFO: qpTIFF file has {len(levels)} candidate resolutions across series; using the highest-resolution one ({h}x{w}).")
 			image = levels[best_index].asarray()
 
+		input_dtype = image.dtype
 		image = self._normalize_image(image)
-		return image
+		return image, input_dtype
 
 	@staticmethod
 	def _normalize_image(image: np.ndarray) -> np.ndarray:
@@ -163,7 +173,34 @@ class MicroscopyImage(BaseSample):
 			return 1
 		return math.ceil(math.log(total / MicroscopyImage._MAX_PYRAMID_PIXELS, 4)) + 1
 
-	def _save_image_pyramid(self, img: np.ndarray, output_file: str) -> str:
+	# Maps the resolved on-disk storage dtype to the OME-XML Pixels "type" attribute.
+	# ome_types expects the OME PixelType spelling ("float", not "float32").
+	_OME_PIXEL_TYPE = {
+		np.dtype(np.uint8): "uint8",
+		np.dtype(np.uint16): "uint16",
+		np.dtype(np.float32): "float",
+	}
+
+	@staticmethod
+	def _resolve_storage_dtype(input_dtype: np.dtype) -> np.dtype:
+		"""Map the source image's dtype to the dtype used to store the output OME-TIFF."""
+		input_dtype = np.dtype(input_dtype)
+		if np.issubdtype(input_dtype, np.floating):
+			return np.dtype(np.float32)
+		if input_dtype in (np.dtype(np.uint8), np.dtype(np.uint16)):
+			return input_dtype
+		# Uncommon integer depths (int16, uint32, ...): fall back to a safe high-precision default.
+		return np.dtype(np.uint16)
+
+	@staticmethod
+	def _quantize_to_dtype(img_float01: np.ndarray, dtype: np.dtype) -> np.ndarray:
+		"""Convert a float32 [0, 1] array to the given storage dtype."""
+		if dtype == np.dtype(np.float32):
+			return img_float01.astype(np.float32)
+		max_val = np.iinfo(dtype).max
+		return np.clip(np.round(img_float01 * max_val), 0, max_val).astype(dtype)
+
+	def _save_image_pyramid(self, img: np.ndarray, output_file: str, input_dtype: np.dtype) -> str:
 		"""
 		Saves an RGB/multi-channel image as a multi-resolution OME-TIFF containing
 		multiple independent images, one for each resolution level.
@@ -173,14 +210,24 @@ class MicroscopyImage(BaseSample):
 		The number of levels is computed automatically so the smallest level
 		does not exceed _MAX_PYRAMID_PIXELS total pixels.
 
+		Pixel data is generated and resampled in float32 for quality, then quantized
+		to the resolved storage dtype (matching the source file's bit depth) only at
+		write time, with the TIFF predictor matched to that dtype.
+
 		Parameters
 		----------
 		img : np.ndarray
 			The input image as a NumPy array of shape (H, W, C) or (H, W) and dtype float32.
 		output_file : str
 			The path to the output OME-TIFF file.
+		input_dtype : np.dtype
+			The dtype of the original source image, used to pick the output storage dtype.
 		"""
 		assert img.dtype == np.float32, "Expecting float32 array"
+
+		storage_dtype = self._resolve_storage_dtype(input_dtype)
+		predictor = 3 if storage_dtype == np.dtype(np.float32) else 2
+		ome_type = self._OME_PIXEL_TYPE[storage_dtype]
 
 		# Normalize to [H,W,C] shape
 		if img.ndim == 2:
@@ -212,7 +259,7 @@ class MicroscopyImage(BaseSample):
 				image_block = Image(
 					id=f"Image:{i}", name=f"ResolutionLevel_{i}",
 					pixels=Pixels(
-						id=f"Pixels:{i}", dimension_order="XYCZT", type="float",
+						id=f"Pixels:{i}", dimension_order="XYCZT", type=ome_type,
 						size_x=W, size_y=H, size_z=1, size_c=1, size_t=1, interleaved=True,
 						channels=[Channel(id=f"Channel:{i}:0", name="RGB", samples_per_pixel=3)],
 						planes=[Plane(the_c=0, the_z=0, the_t=0)],
@@ -225,7 +272,7 @@ class MicroscopyImage(BaseSample):
 				image_block = Image(
 					id=f"Image:{i}", name=f"ResolutionLevel_{i}",
 					pixels=Pixels(
-						id=f"Pixels:{i}", dimension_order="XYCZT", type="float",
+						id=f"Pixels:{i}", dimension_order="XYCZT", type=ome_type,
 						size_x=W, size_y=H, size_z=1, size_c=CC, size_t=1,
 						channels=[Channel(id=f"Channel:{i}:{c}", name=f"Channel_{c}") for c in range(CC)],
 						planes=[Plane(the_c=c, the_z=0, the_t=0) for c in range(CC)],
@@ -242,46 +289,46 @@ class MicroscopyImage(BaseSample):
 			for c, level_img in enumerate(pyramid_data):
 				if is_rgb:
 					description = xml_metadata if c == 0 else None
-					# OpenCV resize (H, W, 3) float32
+					data = self._quantize_to_dtype(level_img, storage_dtype)
 					tif.write(
-						level_img,
+						data,
 						description=description,
 						photometric='rgb',
 						metadata={'axes': 'YXC'},
-						compression="zlib"
+						compression="zlib",
+						predictor=predictor
 					)
 				else:
 					# Write each channel slice separately as minisblack
 					for ch_idx in range(C):
 						ch_img = level_img[:, :, ch_idx]
+						data = self._quantize_to_dtype(ch_img, storage_dtype)
 						description = xml_metadata if c == 0 and ch_idx == 0 else None
 						tif.write(
-							ch_img,
+							data,
 							description=description,
 							photometric='minisblack',
 							metadata={'axes': 'YX'},
-							compression="zlib"
+							compression="zlib",
+							predictor=predictor
 						)
 
 		return output_file
 
-	def _remove_background(self, image: np.ndarray,
-		background_color: SegmentationBackgroundColor = SegmentationBackgroundColor.WHITE,
+	def _detect_tissue_mask(self, image: np.ndarray,
 		min_object_coverage: float = 0.01,
 		blur_kernel_size: int = 251,
 		min_object_size: int = 500,
 		clip_percentile: int = 99
 	) -> np.ndarray:
 		"""
-		Remove background from an image, preserving tissue areas larger than
-		image_area * min_object_coverage.
+		Segment tissue vs. background (Otsu-based) on `image` at its current resolution,
+		preserving tissue areas larger than image_area * min_object_coverage.
 
 		Parameters
 		----------
 		image : np.ndarray
 			Input RGB float32 image of shape (H, W, 3) in [0, 1].
-		background_color : SegmentationBackgroundColor
-			Color to fill the background with.
 		min_object_coverage : float
 			Minimum tissue area relative to image area.
 		blur_kernel_size : int
@@ -294,15 +341,8 @@ class MicroscopyImage(BaseSample):
 		Returns
 		-------
 		np.ndarray
-			Image with background replaced.
+			Boolean tissue mask, same (H, W) as `image`.
 		"""
-		if background_color == SegmentationBackgroundColor.WHITE:
-			bg_fill = np.float32([1.0, 1.0, 1.0])
-		elif background_color == SegmentationBackgroundColor.BLACK:
-			bg_fill = np.float32([0.0, 0.0, 0.0])
-		else:
-			raise ValueError(f"Unsupported background color: {background_color}")
-
 		# Ensure blur kernel is odd
 		if blur_kernel_size % 2 == 0:
 			blur_kernel_size += 1
@@ -354,52 +394,115 @@ class MicroscopyImage(BaseSample):
 			print("Warning: No contours found; cannot refine background mask.")
 		del seg_uint8
 
+		return segmentation_mask
+
+	def _compute_tissue_mask(self, image: np.ndarray,
+		min_object_coverage: float = 0.01,
+		blur_kernel_size: int = 251,
+		min_object_size: int = 500,
+		clip_percentile: int = 99
+	) -> tuple[np.ndarray, float]:
+		"""
+		Detect the tissue mask on a downsampled proxy for speed on very large images.
+
+		Segmentation (Gaussian blur, Otsu threshold, morphological cleanup) is run on a
+		proxy capped at _DETECTION_MAX_PIXELS rather than the full-resolution image, since
+		a tissue/background boundary is a smooth, low-frequency shape that doesn't need
+		full-resolution input to locate accurately.
+
+		Returns
+		-------
+		tuple of (mask, scale)
+			mask : boolean tissue mask at `scale` resolution relative to `image`.
+			scale : proxy_size / full_size, in (0, 1]. 1.0 means no downsampling occurred.
+		"""
+		import math
+		H, W = image.shape[:2]
+		scale = min(1.0, math.sqrt(self._DETECTION_MAX_PIXELS / (H * W)))
+		if scale < 1.0:
+			proxy = cv2.resize(image, (max(1, round(W * scale)), max(1, round(H * scale))), interpolation=cv2.INTER_AREA)
+			if proxy.ndim == 2:
+				proxy = proxy[..., np.newaxis]
+			k = max(3, int(round(blur_kernel_size * scale)) | 1)  # odd, matches physical blur extent
+			m = max(1, int(round(min_object_size * scale * scale)))  # area scales with scale**2
+		else:
+			proxy, k, m = image, blur_kernel_size, min_object_size
+		mask = self._detect_tissue_mask(proxy, min_object_coverage, k, m, clip_percentile)
+		return mask, scale
+
+	def _remove_background(self, image: np.ndarray, mask: np.ndarray, scale: float,
+		background_color: SegmentationBackgroundColor = SegmentationBackgroundColor.WHITE
+	) -> np.ndarray:
+		"""
+		Apply a tissue mask to a full-resolution image, filling non-tissue pixels with
+		the background color.
+
+		Parameters
+		----------
+		image : np.ndarray
+			Input RGB float32 image of shape (H, W, 3) in [0, 1].
+		mask : np.ndarray
+			Boolean tissue mask at `scale` resolution relative to `image` (see `_compute_tissue_mask`).
+		scale : float
+			proxy_size / full_size for `mask`, in (0, 1]. 1.0 means `mask` already matches `image`.
+		background_color : SegmentationBackgroundColor
+			Color to fill the background with.
+
+		Returns
+		-------
+		np.ndarray
+			Image with background replaced.
+		"""
+		if background_color == SegmentationBackgroundColor.WHITE:
+			bg_fill = np.float32([1.0, 1.0, 1.0])
+		elif background_color == SegmentationBackgroundColor.BLACK:
+			bg_fill = np.float32([0.0, 0.0, 0.0])
+		else:
+			raise ValueError(f"Unsupported background color: {background_color}")
+
+		if scale < 1.0:
+			H, W = image.shape[:2]
+			mask = cv2.resize(mask.astype(np.uint8), (W, H), interpolation=cv2.INTER_NEAREST).astype(bool)
+
 		# Apply mask: keep tissue, fill background
 		output = np.empty_like(image)
-		output[segmentation_mask] = image[segmentation_mask]
-		output[~segmentation_mask] = bg_fill
+		output[mask] = image[mask]
+		output[~mask] = bg_fill
 
 		return output
 
-	def _crop_image(self, image: np.ndarray,
-		background_color: SegmentationBackgroundColor = SegmentationBackgroundColor.WHITE,
+	def _crop_image(self, image: np.ndarray, mask: np.ndarray, scale: float,
 		margin: int = 250
 	) -> np.ndarray:
 		"""
-		Crop the image to the bounding box of the tissue area plus a margin.
+		Crop the image to the bounding box of the tissue mask plus a margin.
 
 		Parameters
 		----------
 		image : np.ndarray
 			Input RGB float32 image of shape (H, W, 3).
-		background_color : SegmentationBackgroundColor
-			Color used to identify the background.
+		mask : np.ndarray
+			Boolean tissue mask at `scale` resolution relative to `image` (see `_compute_tissue_mask`).
+		scale : float
+			proxy_size / full_size for `mask`, in (0, 1]. 1.0 means `mask` already matches `image`.
 		margin : int
-			Pixel margin to add around the bounding box.
+			Pixel margin to add around the bounding box (in full-resolution pixels).
 
 		Returns
 		-------
 		np.ndarray
 			Cropped image.
 		"""
-		if background_color == SegmentationBackgroundColor.WHITE:
-			bg_color = np.float32([1.0, 1.0, 1.0])
-		elif background_color == SegmentationBackgroundColor.BLACK:
-			bg_color = np.float32([0.0, 0.0, 0.0])
-		else:
-			raise ValueError(f"Unsupported background color: {background_color}")
-
-		# Build non-background mask
-		bg_mask = np.all(np.isclose(image, bg_color, atol=1e-3), axis=-1)
-		non_bg_mask = ~bg_mask
-
-		rows = np.any(non_bg_mask, axis=1)
-		cols = np.any(non_bg_mask, axis=0)
+		rows = np.any(mask, axis=1)
+		cols = np.any(mask, axis=0)
 		if not np.any(rows) or not np.any(cols):
 			raise ValueError("The image appears to be entirely background; cannot crop.")
 
 		ymin, ymax = np.where(rows)[0][[0, -1]]
 		xmin, xmax = np.where(cols)[0][[0, -1]]
+
+		if scale < 1.0:
+			ymin, ymax, xmin, xmax = (int(round(v / scale)) for v in (ymin, ymax, xmin, xmax))
 
 		ymin = max(0, ymin - margin)
 		ymax = min(image.shape[0] - 1, ymax + margin)
@@ -410,7 +513,8 @@ class MicroscopyImage(BaseSample):
 
 	def preview_image(self) -> np.ndarray:
 		"""Load and return a preview of the microscopy image as float32 (H, W, C)."""
-		return self._load_image(self.filename)
+		image, _ = self._load_image(self.filename)
+		return image
 
 	def process_image(self,
 		color_enhancement: bool = True,
@@ -472,13 +576,13 @@ class MicroscopyImage(BaseSample):
 
 		# 1. Load
 		reporter.step(f"1/5 - Loading image from {self.filename}")
-		image = self._load_image(self.filename)
+		image, input_dtype = self._load_image(self.filename)
 
 		# 2. Color enhancement
 		if color_enhancement:
 			reporter.step(f"2/5 - Enhancing colors (gamma={gamma}, saturation={contrast_saturation})")
 			image = utils.gamma_correction(image, gamma=gamma)
-			image = utils.enhance_contrast(image, saturated_pixels=contrast_saturation)
+			image = utils.enhance_contrast(image, saturated_pixels=contrast_saturation, max_stat_pixels=self._DETECTION_MAX_PIXELS)
 		else:
 			reporter.step(f"2/5 - Color enhancement not required")
 
@@ -486,31 +590,35 @@ class MicroscopyImage(BaseSample):
 		if image.dtype != np.float32:
 			image = image.astype(np.float32)
 
-		# 3. Background removal
-		if remove_background:
-			reporter.step(f"3/5 - Removing background")
-			image = self._remove_background(
+		# 3. Background removal + 4. Crop share one low-resolution tissue-detection pass
+		if remove_background or crop_to_tissue:
+			reporter.step(f"3/5 - Detecting tissue (downsampled proxy)")
+			mask, scale = self._compute_tissue_mask(
 				image,
-				background_color=background_color,
 				min_object_coverage=min_object_coverage,
 				blur_kernel_size=gaussian_blur_kernel_size,
 				min_object_size=min_object_size,
 				clip_percentile=clip_percentile
 			)
+			if remove_background:
+				reporter.step(f"3/5 - Removing background")
+				image = self._remove_background(image, mask, scale, background_color=background_color)
+			else:
+				reporter.step(f"3/5 - Background removal not required")
+
+			if crop_to_tissue:
+				reporter.step(f"4/5 - Cropping to tissue area (margin={crop_margin}px)")
+				image = self._crop_image(image, mask, scale, margin=crop_margin)
+			else:
+				reporter.step(f"4/5 - Cropping not required")
 		else:
 			reporter.step(f"3/5 - Background removal not required")
-
-		# 4. Crop
-		if crop_to_tissue:
-			reporter.step(f"4/5 - Cropping to tissue area (margin={crop_margin}px)")
-			image = self._crop_image(image, background_color=background_color, margin=crop_margin)
-		else:
 			reporter.step(f"4/5 - Cropping not required")
 
 		# 5. Save
 		n_levels = self._compute_pyramid_levels(*image.shape[:2])
 		reporter.step(f"5/5 - Saving OME-TIFF ({n_levels} pyramid levels, cap={self._MAX_PYRAMID_PIXELS} px)")
-		self._save_image_pyramid(image, output_ome_tiff)
+		self._save_image_pyramid(image, output_ome_tiff, input_dtype)
 		return output_ome_tiff
 
 

@@ -434,7 +434,7 @@ def _check_type(d: dict, key: str, expected_type: type, context: str = "config")
 
 # --- Image utilities ---
 
-def enhance_contrast(channel: np.ndarray, saturated_pixels: float = 0.35) -> np.ndarray:
+def enhance_contrast(channel: np.ndarray, saturated_pixels: float = 0.35, max_stat_pixels: int | None = None) -> np.ndarray:
 	'''
 	Enhance the contrast of a single channel image by stretching the histogram.
 	Add a small amount of saturated pixels to improve the contrast.
@@ -445,6 +445,12 @@ def enhance_contrast(channel: np.ndarray, saturated_pixels: float = 0.35) -> np.
 		The channel to enhance.
 	saturated_pixels : float
 		The amount of saturated pixels to add. Default is 0.35%.
+	max_stat_pixels : int, optional
+		If set and the number of nonzero pixels exceeds this, the saturation percentiles are
+		estimated from a strided subsample instead of the full array (percentiles are stable
+		under subsampling, so this is a fast, negligible-error approximation for huge images).
+		The stretch itself is still applied exactly to every pixel of `channel`. Default (None)
+		always uses the exact full-population percentile, unchanged from prior behavior.
 	'''
 
 	if channel.dtype != np.float32:
@@ -453,8 +459,13 @@ def enhance_contrast(channel: np.ndarray, saturated_pixels: float = 0.35) -> np.
 	mask = channel > 0
 
 	if np.any(mask):
+		values = channel[mask]
+		if max_stat_pixels is not None and values.size > max_stat_pixels:
+			stride = -(-values.size // max_stat_pixels)  # ceil division
+			values = values[::stride]
+
 		# Compute the pixels to saturate
-		p_low, p_high = np.percentile(channel[mask], (saturated_pixels, 100 - saturated_pixels))
+		p_low, p_high = np.percentile(values, (saturated_pixels, 100 - saturated_pixels))
 
 		if p_high > p_low:
 			# Stretch the histogram in-place

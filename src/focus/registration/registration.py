@@ -40,7 +40,12 @@ class FeatureExtractorRegistration:
 		self._hf_token = hf_token
 
 	def _load_ome_tiff(self, filename: str) -> np.ndarray:
-		"""Load an OME-TIFF image at full resolution, returning HWC float32 array."""
+		"""Load an OME-TIFF image at full resolution, returning an HWC float32 array in [0, 1].
+
+		The file may be stored in any dtype (uint8/uint16/float32 - preprocessing picks the
+		dtype matching the source), so integer data is rescaled by its dtype max to reach
+		the [0, 1] range the feature extractor expects.
+		"""
 		if not os.path.exists(filename):
 			raise FileNotFoundError(f"Image file not found: {filename}")
 
@@ -50,6 +55,11 @@ class FeatureExtractorRegistration:
 		# Ensure HWC format (channel dim is the smallest)
 		if image_data.ndim == 3 and np.argmin(image_data.shape) == 0:
 			image_data = np.transpose(image_data, (1, 2, 0))
+
+		if np.issubdtype(image_data.dtype, np.integer):
+			image_data = image_data.astype(np.float32) / np.iinfo(image_data.dtype).max
+		elif image_data.dtype != np.float32:
+			image_data = image_data.astype(np.float32)
 
 		return image_data
 

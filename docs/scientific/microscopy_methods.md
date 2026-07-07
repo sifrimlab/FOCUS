@@ -35,20 +35,41 @@ I'' = \frac{\operatorname{clip}(I',\,p_\text{lo},\,p_\text{hi}) - p_\text{lo}}{p
 (applied only when \(p_\text{hi}>p_\text{lo}\)). This saturates the darkest/brightest ~0.35 % of
 non-zero pixels and stretches the remainder across the full range.
 
+For images above `_DETECTION_MAX_PIXELS` (~9 megapixels), \(p_\text{lo}\)/\(p_\text{hi}\) are
+estimated from a strided subsample of the non-zero pixels rather than the full population —
+percentiles are stable under subsampling, so this is a negligible-error approximation. The clip/
+rescale formula above is still applied to every pixel of the full-resolution channel.
+
 ---
 
 ## 3. Background removal (`remove_background`)
 
-Implemented in `_remove_background`:
+Detection (`_detect_tissue_mask`, orchestrated by `_compute_tissue_mask`) and application
+(`_remove_background`) are separate steps:
+
+**Detection**, run on a downsampled proxy rather than the full-resolution image (see "Detection
+resolution" below):
 
 1. Convert to uint8 and replace pure-black pixels by white (artifact guard).
 2. Convert to grayscale and invert.
 3. Clip intensities at `clip_percentile` (default 99).
-4. Apply Gaussian blur (`gaussian_blur_kernel_size`, default 251; coerced to odd).
+4. Apply Gaussian blur (`gaussian_blur_kernel_size`, default 251 at full resolution; coerced to odd
+   and rescaled proportionally to the proxy resolution).
 5. Compute the **Otsu threshold** on the blurred image; apply it to the original inverted grayscale.
-6. Remove small connected components and fill holes.
-7. Contour area filtering using `min_object_coverage` fraction of image area.
-8. Fill background with the selected `background_color` (`white` or `black`).
+6. Remove small connected components (`min_object_size`, rescaled by the proxy scale squared, since
+   it's an area) and fill holes.
+7. Contour area filtering using `min_object_coverage` fraction of (proxy) image area.
+
+**Application**: the resulting boolean mask is upsampled (nearest-neighbor) back to full resolution
+and used to fill background with the selected `background_color` (`white` or `black`).
+
+**Detection resolution.** Segmentation (steps 1-7) runs on a proxy capped at
+`_DETECTION_MAX_PIXELS` (\(3000\times3000 = 9\times10^6\) px, independent of the OME-TIFF pyramid
+cap in §5) rather than the full image: a tissue/background boundary is a smooth, low-frequency shape,
+so locating it doesn't require full-resolution input, and this keeps Gaussian blur, Otsu thresholding,
+and connected-component/hole-filling — the most expensive steps for gigapixel whole-slide images —
+fast. If the image is already at or below the cap, no downsampling occurs and detection runs at full
+resolution exactly as before.
 
 **Otsu threshold.** Otsu's method selects the gray level \(t^\*\) maximizing the between-class
 variance of the (blurred) intensity histogram,
@@ -69,9 +90,15 @@ components smaller than `min_object_size` pixels, followed by hole filling.
 
 ## 4. Tissue cropping (`crop_to_tissue`)
 
-Foreground is defined as pixels different from fill color (tolerance `1e-3`).
+Uses the same tissue mask from §3 (`_compute_tissue_mask`/`_detect_tissue_mask`) — always the
+Otsu-based detection, even when `remove_background=False`. The bounding box is read directly off the
+mask (at its detection resolution, then scaled back to full-resolution coordinates), expanded by
+`crop_margin` (default 250 px) and clamped to image bounds.
 
-Bounding box is expanded by `crop_margin` (default 250 px) and clamped to image bounds.
+Because the mask may come from a downsampled proxy, the bounding box carries an additional boundary
+tolerance of at most one proxy-resolution pixel (i.e. up to `1/scale` full-resolution pixels, where
+`scale` is the detection downsample factor from §3) on top of `crop_margin` — negligible in practice
+since `crop_margin` (250 px) is already far larger than this for any realistic image size.
 
 ---
 

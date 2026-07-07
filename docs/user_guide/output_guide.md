@@ -226,7 +226,7 @@ FOCUS keeps every intermediate file it produces (preprocessed, aligned, register
 - **Stage inspection**: You can examine the output of any individual stage (e.g., inspect an aligned AnnData before registration) without re-running the full pipeline.
 
 !!! warning "Disk space"
-    Keeping all intermediate files is space-intensive, particularly for high-resolution microscopy images stored as multi-resolution OME-TIFF pyramids. Plan for roughly 2–3× the raw data size per sample. Use `force_recomputing: true` only when you intentionally want to regenerate outputs from scratch.
+    Keeping all intermediate files is space-intensive, particularly for high-resolution microscopy images stored as multi-resolution OME-TIFF pyramids. Microscopy pyramids are stored in the source file's original dtype (not upsampled to float32), so plan for roughly the raw data size per sample, plus a fraction more for the added pyramid levels. Use `force_recomputing: true` only when you intentionally want to regenerate outputs from scratch.
 
 ---
 

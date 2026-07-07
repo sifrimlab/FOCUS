@@ -4,7 +4,7 @@
 
 Microscopy provides high-resolution, whole-sample spatial context. Supported tissue imaging types include H&E-stained brightfield sections, multi-channel immunofluorescence, and general brightfield acquisitions.
 
-The preprocessing pipeline normalises the pixel data to a uniform `float32 [0, 1]` range, optionally enhances colour and contrast, removes background, crops to the tissue region, and writes the result as a multi-resolution OME-TIFF pyramid for efficient downstream access at any scale.
+The preprocessing pipeline normalises the pixel data to a uniform `float32 [0, 1]` range internally, optionally enhances colour and contrast, removes background, crops to the tissue region, and writes the result as a multi-resolution OME-TIFF pyramid for efficient downstream access at any scale. The final pyramid is stored in the source file's original dtype (`uint8`/`uint16` pass through unchanged; float sources stay `float32`), keeping disk usage close to the source file's rather than always promoting to 4-byte floats.
 
 ---
 
@@ -49,13 +49,13 @@ The modality name (e.g. `he_image`) must match the name declared in the FOCUS co
 
 1. **Load and normalise to float32 [0, 1]** — TIFF files are read with `tifffile`; CZI files with `czifile`. Integer arrays are divided by their dtype maximum; float arrays are used as-is if already in range. The array is reshaped to `(H, W, C)`.
 
-2. **Colour enhancement** — gamma correction (`image^gamma`) brightens the image when `gamma < 1`. Contrast stretching saturates a configurable percentage of pixels at both ends of the intensity histogram to maximise dynamic range. Both operations are skipped when `color_enhancement=False`.
+2. **Colour enhancement** — gamma correction (`image^gamma`) brightens the image when `gamma < 1`. Contrast stretching saturates a configurable percentage of pixels at both ends of the intensity histogram to maximise dynamic range; for large images the saturation percentiles are estimated from a subsample rather than every pixel (percentiles are stable under subsampling), but the stretch itself is still applied exactly to every pixel. Both operations are skipped when `color_enhancement=False`.
 
-3. **Background removal** — the image is converted to grayscale and inverted (white background becomes black). A Gaussian blur is applied to suppress detail, then an Otsu threshold on the blurred image determines the foreground. Small objects below `min_object_size` pixels are removed, holes are filled, and contours smaller than `min_object_coverage` × image area are discarded. The detected background is replaced with the fill colour (`white` or `black`). Skipped when `remove_background=False`.
+3. **Background removal** — a tissue/background mask is detected (grayscale, invert, Gaussian blur, Otsu threshold, small-object removal, hole filling, contour-area filtering) on a downsampled proxy capped at ~9 megapixels rather than the full-resolution image — a tissue boundary is a smooth, low-frequency shape that doesn't need full-resolution input to locate, and this keeps detection fast on multi-gigapixel scans. The mask is then upsampled back to full resolution and applied: detected background is replaced with the fill colour (`white` or `black`). Skipped when `remove_background=False`.
 
-4. **Crop to tissue** — the tight bounding box of the non-background region is computed, expanded by `crop_margin` pixels on all sides (clamped to image boundaries), and the image is cropped. Skipped when `crop_to_tissue=False`.
+4. **Crop to tissue** — the tight bounding box of the tissue mask from step 3 is computed, expanded by `crop_margin` pixels on all sides (clamped to image boundaries), and the image is cropped. Because the mask may come from a downsampled proxy, the effective boundary has a small additional tolerance (at most one proxy-resolution pixel's worth of full-resolution pixels) beyond `crop_margin`. This step always uses the same tissue-detection mask, even when `remove_background=False`. Skipped when `crop_to_tissue=False`.
 
-5. **OME-TIFF pyramid construction** — the processed float32 image is downsampled by successive factors of 2 (area interpolation). The number of resolution levels is **computed automatically** from the image dimensions so that the smallest pyramid level fits within a 3,000 × 3,000 pixel cap (for efficient GUI rendering); it is not user-configurable. Each level is stored as an independent IFD in a BigTIFF container with zlib compression and a full OME-XML metadata block in the first IFD. RGB images are written as interleaved photometric RGB; multi/single-channel images as separate `minisblack` planes.
+5. **OME-TIFF pyramid construction** — the processed float32 image is downsampled by successive factors of 2 (area interpolation). The number of resolution levels is **computed automatically** from the image dimensions so that the smallest pyramid level fits within a 3,000 × 3,000 pixel cap (for efficient GUI rendering); it is not user-configurable. Each level is quantized back to the source file's original dtype and stored as an independent IFD in a BigTIFF container with zlib compression (with a TIFF predictor matched to the storage dtype) and a full OME-XML metadata block in the first IFD. RGB images are written as interleaved photometric RGB; multi/single-channel images as separate `minisblack` planes.
 
 ---
 
@@ -115,9 +115,9 @@ The preprocessing step produces a single multi-resolution OME-TIFF per sample at
 
 | Property | Value |
 |----------|-------|
-| Data type | `float32` |
-| Value range | `[0, 1]` |
-| Compression | zlib |
+| Data type | Matches source file (`uint8`/`uint16` pass through; float sources stay `float32`) |
+| Value range | Native range of the stored dtype (e.g. `[0, 255]` for `uint8`) |
+| Compression | zlib, with predictor 2 (integer dtypes) or 3 (float) |
 | Container | BigTIFF |
 | Pyramid levels | Computed automatically (smallest level ≤ 3,000 × 3,000 px) |
 | Downsampling factor | 0.5× per level (area interpolation) |

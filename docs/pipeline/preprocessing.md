@@ -15,7 +15,7 @@ Each modality undergoes specialized processing tailored to its data characterist
 ### 1. Microscopy Image Preprocessing
 
 **Input Formats**: `.ome.tiff`, `.ome.tif`, `.qptiff`, `.tiff`, `.tif`, `.czi` (searched in this priority order)  
-**Output Format**: Multi-resolution OME-TIFF (float32, zlib-compressed)
+**Output Format**: Multi-resolution OME-TIFF, stored in the source file's dtype (`uint8`/`uint16` pass through; float sources stay `float32`), zlib-compressed with a predictor matched to the storage dtype
 
 **Processing Steps**:
 
@@ -48,7 +48,8 @@ Each modality undergoes specialized processing tailored to its data characterist
 
 5. **Pyramid Construction and Saving**
    - Build resolution levels by successive 2× downsampling. The number of levels is **computed automatically** from the image dimensions so the smallest level fits within a 3,000 × 3,000 pixel cap (for GUI rendering); it is not configurable.
-   - Write as multi-image BigTIFF OME-TIFF with zlib compression
+   - Quantize each level from float32 back to the source file's original dtype (`uint8`/`uint16` pass through; float sources stay `float32`)
+   - Write as multi-image BigTIFF OME-TIFF with zlib compression and a predictor matched to the storage dtype (2 for integer, 3 for float)
    - RGB images: interleaved `YXC` layout; single/multi-channel: separate planes per channel
 
 **Parameters**:
