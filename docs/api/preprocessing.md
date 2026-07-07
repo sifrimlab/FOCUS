@@ -101,7 +101,7 @@ class MicroscopyImage(BaseSample):
     ) -> None: ...
 ```
 
-On construction, `MicroscopyImage` scans `<source_path>/<sample_id>/<modality_name>/` for a supported image file. Supported extensions (in priority order): `.ome.tiff`, `.ome.tif`, `.tiff`, `.tif`, `.czi`.
+On construction, `MicroscopyImage` scans `<source_path>/<sample_id>/<modality_name>/` for a supported image file. Supported extensions (in priority order): `.ome.tiff`, `.ome.tif`, `.qptiff`, `.tiff`, `.tif`, `.czi`.
 
 **`process_image()`**
 

@@ -15,7 +15,7 @@ from focus.preprocessing.base import BaseSample, BaseDataset
 from focus.preprocessing._registry import ModalityHandler, register_modality
 
 # Supported input file extensions, ordered by priority
-_SUPPORTED_EXTENSIONS = (".ome.tiff", ".ome.tif", ".tiff", ".tif", ".czi")
+_SUPPORTED_EXTENSIONS = (".ome.tiff", ".ome.tif", ".qptiff", ".tiff", ".tif", ".czi")
 
 
 class MicroscopyImage(BaseSample):
@@ -23,8 +23,8 @@ class MicroscopyImage(BaseSample):
 	Process a microscopy image to uniform the format, enhance colors,
 	and prepare it for alignment/registration.
 
-	Input: TIFF (.tiff, .tif, .ome.tiff, .ome.tif) or CZI (.czi)
-	Output: multi-resolution OME-TIFF (float32, zstd-compressed, tiled)
+	Input: TIFF (.tiff, .tif, .ome.tiff, .ome.tif), qpTIFF (.qptiff), or CZI (.czi)
+	Output: multi-resolution OME-TIFF (float32, zlib-compressed)
 	"""
 
 	# Default processing parameters (all configurable via process_image)
@@ -66,6 +66,8 @@ class MicroscopyImage(BaseSample):
 		lower = file.lower()
 		if lower.endswith(".czi"):
 			return self._load_czi(file)
+		elif lower.endswith(".qptiff"):
+			return self._load_qptiff(file)
 		else:
 			return self._load_tiff(file)
 
@@ -92,6 +94,27 @@ class MicroscopyImage(BaseSample):
 				print("WARNING: CZI file has multiple scenes. Using only the first one.")
 			while image.ndim > 3:
 				image = image[0]
+
+		image = self._normalize_image(image)
+		return image
+
+	def _load_qptiff(self, file: str) -> np.ndarray:
+		"""
+		Read a qpTIFF file and return as float32 [0,1] with channels last (H, W, C).
+
+		qpTIFF files (e.g. Akoya Vectra/PhenoImager) embed the full-resolution image
+		alongside a downsampled pyramid and small auxiliary images (thumbnail, macro,
+		label). Since FOCUS recomputes its own pyramid on output, select the single
+		series/level with the most pixels rather than trusting series order.
+		"""
+		with tifffile.TiffFile(file) as f:
+			levels = [level for series in f.series for level in series.levels]
+			sizes = [utils.hw_from_axes(level.shape, getattr(level, "axes", "")) for level in levels]
+			best_index = max(range(len(levels)), key=lambda i: sizes[i][0] * sizes[i][1])
+			if len(levels) > 1:
+				h, w = sizes[best_index]
+				print(f"INFO: qpTIFF file has {len(levels)} candidate resolutions across series; using the highest-resolution one ({h}x{w}).")
+			image = levels[best_index].asarray()
 
 		image = self._normalize_image(image)
 		return image

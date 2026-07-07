@@ -39,9 +39,10 @@ FOCUS expects a two-level directory hierarchy rooted at the `dataset_path` you s
 
 ### Microscopy Image (`microscopy_image`)
 
-Place exactly one image file per sample inside the modality directory. Supported extensions are `.tiff`, `.tif`, `.ome.tiff`, `.ome.tif`, and `.czi`. If multiple supported files are present, FOCUS selects the first match in extension-priority order (`.ome.tiff` > `.ome.tif` > `.tiff` > `.tif` > `.czi`).
+Place exactly one image file per sample inside the modality directory. Supported extensions are `.tiff`, `.tif`, `.ome.tiff`, `.ome.tif`, `.qptiff`, and `.czi`. If multiple supported files are present, FOCUS selects the first match in extension-priority order (`.ome.tiff` > `.ome.tif` > `.qptiff` > `.tiff` > `.tif` > `.czi`).
 
 - **TIFF/OME-TIFF**: any number of channels; uint8, uint16, or float32 pixel type.
+- **qpTIFF (Akoya/PerkinElmer)**: if the file contains multiple resolutions or auxiliary series (pyramid levels, thumbnail, macro, label), only the highest-resolution series/level is used.
 - **CZI (Zeiss)**: multi-scene and multi-time CZI files are supported. FOCUS reads the first scene and first timepoint.
 
 ```

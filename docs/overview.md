@@ -47,7 +47,7 @@ If compilation runs, it reads all per-modality registered AnnData files and asse
 
 | Modality type key | Input format | Output format | Registration method |
 |-------------------|-------------|--------------|---------------------|
-| `microscopy_image` | `.tiff` / `.tif` / `.czi` | OME-TIFF pyramid | `feature_extraction` (GPU) |
+| `microscopy_image` | `.tiff` / `.tif` / `.ome.tiff` / `.ome.tif` / `.qptiff` / `.czi` | OME-TIFF pyramid | `feature_extraction` (GPU) |
 | `msi` | `.imzML` + `.ibd` | AnnData `.h5ad` | `spot_interpolation` or `spot_aggregation` (CPU) |
 | `raman` | `.lif` | OME-TIFF hyperspectral | `raman_pixel_interpolation` (CPU) |
 | `st` | AnnData `.h5ad` | AnnData `.h5ad` | `spot_interpolation` or `spot_aggregation` (CPU), or `none` |
@@ -94,7 +94,7 @@ FOCUS expects input data and writes intermediate and final outputs according to 
 
 | Modality | Required files | Sub-directory |
 |----------|---------------|---------------|
-| `microscopy_image` | One `.tiff`, `.tif`, or `.czi` file | directly in `<modality_name>/` |
+| `microscopy_image` | One `.tiff`, `.tif`, `.ome.tiff`, `.ome.tif`, `.qptiff`, or `.czi` file | directly in `<modality_name>/` |
 | `msi` (positive mode only) | `data.imzML` + `data.ibd` | `<modality_name>/pos/` |
 | `msi` (dual mode) | 2 × (`.imzML` + `.ibd`) | `<modality_name>/pos/` and `<modality_name>/neg/` |
 | `raman` | One `.lif` file | directly in `<modality_name>/` |

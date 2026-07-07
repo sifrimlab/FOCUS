@@ -13,6 +13,7 @@ The preprocessing pipeline normalises the pixel data to a uniform `float32 [0, 1
 | Extension | Description |
 |-----------|-------------|
 | `.ome.tiff` / `.ome.tif` | OME-TIFF (any bit depth, any number of channels, existing pyramids are ignored) |
+| `.qptiff` | Akoya/PerkinElmer Vectra/PhenoImager qpTIFF; if multiple resolutions/series are present (pyramid levels, thumbnail, macro, label), only the highest-resolution one is used |
 | `.tiff` / `.tif` | Standard TIFF (8-bit, 16-bit, float; channels-first or channels-last) |
 | `.czi` | Zeiss CZI; multi-scene files are supported — only the first scene is used |
 
@@ -35,6 +36,9 @@ dataset_root/
 ├── sample_B/
 │   └── he_image/
 │       └── section_B.czi
+├── sample_C/
+│   └── he_image/
+│       └── section_C.qptiff
 ```
 
 The modality name (e.g. `he_image`) must match the name declared in the FOCUS configuration file.

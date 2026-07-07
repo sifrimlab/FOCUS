@@ -2,10 +2,11 @@
 
 ## 1. Input normalization
 
-Supported inputs: `.ome.tiff`, `.ome.tif`, `.tiff`, `.tif`, `.czi`.
+Supported inputs: `.ome.tiff`, `.ome.tif`, `.qptiff`, `.tiff`, `.tif`, `.czi`.
 
 Loading behavior:
 
+- qpTIFF: all series/pyramid levels in the file are compared by pixel count; only the single highest-resolution one is loaded (auxiliary thumbnail/macro/label images and lower pyramid levels are discarded).
 - CZI: extra leading dimensions are squeezed iteratively; if multiple scenes exist, first scene is used.
 - Channel axis is moved to last position using a smallest-dimension heuristic.
 - Arrays are converted to float32 and scaled to `[0, 1]`.

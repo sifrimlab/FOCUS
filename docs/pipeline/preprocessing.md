@@ -14,13 +14,14 @@ Each modality undergoes specialized processing tailored to its data characterist
 
 ### 1. Microscopy Image Preprocessing
 
-**Input Formats**: `.ome.tiff`, `.ome.tif`, `.tiff`, `.tif`, `.czi` (searched in this priority order)  
+**Input Formats**: `.ome.tiff`, `.ome.tif`, `.qptiff`, `.tiff`, `.tif`, `.czi` (searched in this priority order)  
 **Output Format**: Multi-resolution OME-TIFF (float32, zlib-compressed)
 
 **Processing Steps**:
 
 1. **File Loading and Normalization**
-   - Detect file format (TIFF/OME-TIFF vs CZI)
+   - Detect file format (TIFF/OME-TIFF vs qpTIFF vs CZI)
+   - For qpTIFF: compare all series/pyramid levels by pixel count and load only the highest-resolution one
    - For CZI: squeeze extra dimensions, use first scene only if multiple scenes are present
    - Move channel axis to last position using a shape heuristic
    - Convert to float32 in [0, 1] range (using dtype maximum or image maximum)

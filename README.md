@@ -36,7 +36,7 @@ No programming is required to use FOCUS. The entire pipeline is driven by a JSON
 
 | Modality | Key `"type"` | Input Format | Output Format |
 |---|---|---|---|
-| Fluorescence / brightfield microscopy | `microscopy_image` | `.tiff`, `.tif`, `.czi` | OME-TIFF pyramid |
+| Fluorescence / brightfield microscopy | `microscopy_image` | `.tiff`, `.tif`, `.ome.tiff`, `.ome.tif`, `.qptiff`, `.czi` | OME-TIFF pyramid |
 | Mass Spectrometry Imaging (MSI / lipidomics) | `msi` | `.imzML` + `.ibd` | AnnData `.h5ad` |
 | Raman spectroscopy | `raman` | `.lif` | OME-TIFF (hyperspectral) |
 | Spatial transcriptomics | `st` | AnnData `.h5ad` | AnnData `.h5ad` |
