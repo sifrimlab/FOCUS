@@ -31,12 +31,12 @@ Each modality undergoes specialized processing tailored to its data characterist
    - Gamma correction: `I = I^gamma` (default γ=0.45, which brightens the image)
    - Contrast stretching using percentile-based saturation (default: saturate 0.35% of pixels)
 
-3. **Background Removal** (optional, `remove_background=True`)
+3. **Background Removal** (optional, `remove_background=True`) — runs on a downsampled proxy capped at ~9 megapixels rather than the full-resolution image (a tissue boundary is a smooth shape that doesn't need full-resolution input to locate), with the resulting mask upsampled back to full resolution before being applied
    - Replace pure-black pixels with white to avoid thresholding artifacts
    - Convert to grayscale and invert (white background becomes dark)
-   - Clip at `clip_percentile` (default: 99th percentile) then apply Gaussian blur (kernel default: 251 px)
+   - Clip at `clip_percentile` (default: 99th percentile) then apply Gaussian blur (kernel fixed at 25 px, tuned for the detection-proxy canvas)
    - Compute Otsu threshold on the blurred image, apply to unblurred grayscale
-   - Remove small connected components (default: < 500 pixels)
+   - Remove small connected components (fixed at < 50 pixels, tuned for the detection-proxy canvas)
    - Fill holes in the binary tissue mask
    - Refine by contour area: keep only contours covering ≥ `min_object_coverage` fraction of image area (default: 1%)
    - Apply mask: tissue pixels are kept, background is filled with the background color
@@ -61,15 +61,13 @@ Each modality undergoes specialized processing tailored to its data characterist
 | `contrast_saturation` | `0.35` | Percentage of pixels to saturate when stretching contrast |
 | `remove_background` | `true` | Remove background using Otsu thresholding |
 | `background_color` | `"white"` | Color to fill removed background (`"white"` or `"black"`) |
-| `gaussian_blur_kernel_size` | `251` | Kernel size for pre-thresholding Gaussian blur (must be odd) |
 | `clip_percentile` | `99` | Intensity percentile for clipping before blur |
-| `min_object_size` | `500` | Minimum connected component size in pixels to keep |
 | `min_object_coverage` | `0.01` | Minimum tissue area fraction (0–1) for contour filtering |
 | `crop_to_tissue` | `true` | Crop image to tissue bounding box |
 | `crop_margin` | `250` | Pixel margin added around the tissue bounding box |
 | `force_recomputing` | `false` | Reprocess even if output already exists |
 
-The number of pyramid resolution levels is not a parameter — it is computed automatically from the image size.
+The number of pyramid resolution levels is not a parameter — it is computed automatically from the image size. The Gaussian blur kernel size and minimum object size used during tissue detection are also not parameters — detection always runs on a downsampled proxy capped at ~9 megapixels, so these are fixed internal constants tuned for that canvas rather than the source image's native resolution.
 
 **Output Files**:
 ```

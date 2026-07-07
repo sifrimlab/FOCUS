@@ -167,8 +167,6 @@ class MicroscopyImageProcessingParams(_AbstractEnum):
 	BACKGROUND_COLOR = "background_color"
 	MIN_OBJECT_COVERAGE = "min_object_coverage"
 	FORCE_RECOMPUTING = "force_recomputing"
-	GAUSSIAN_BLUR_KERNEL_SIZE = "gaussian_blur_kernel_size"
-	MIN_OBJECT_SIZE = "min_object_size"
 	CLIP_PERCENTILE = "clip_percentile"
 	CROP_MARGIN = "crop_margin"
 	GAMMA = "gamma"

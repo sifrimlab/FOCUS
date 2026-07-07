@@ -240,9 +240,7 @@ Example:
 | `contrast_saturation` | float | `0.35` |
 | `remove_background` | bool | `true` |
 | `background_color` | string | `"white"` |
-| `gaussian_blur_kernel_size` | int | `251` |
 | `clip_percentile` | int | `99` |
-| `min_object_size` | int | `500` |
 | `min_object_coverage` | float | `0.01` |
 | `crop_to_tissue` | bool | `true` |
 | `crop_margin` | int | `250` |
@@ -259,9 +257,7 @@ Example:
   "contrast_saturation": 0.35,
   "remove_background": true,
   "background_color": "white",
-  "gaussian_blur_kernel_size": 251,
   "clip_percentile": 99,
-  "min_object_size": 500,
   "min_object_coverage": 0.01,
   "crop_to_tissue": true,
   "crop_margin": 250,
@@ -529,9 +525,7 @@ Example:
         "contrast_saturation": 0.35,
         "remove_background": true,
         "background_color": "white",
-        "gaussian_blur_kernel_size": 251,
         "clip_percentile": 99,
-        "min_object_size": 500,
         "min_object_coverage": 0.01,
         "crop_to_tissue": true,
         "crop_margin": 250,

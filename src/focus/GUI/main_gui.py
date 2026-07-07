@@ -509,8 +509,6 @@ def _build_schema() -> dict:
 				},
 				MicroscopyImageProcessingParams.MIN_OBJECT_COVERAGE: {"type": "float", "default": 0.01},
 				MicroscopyImageProcessingParams.FORCE_RECOMPUTING: {"type": "bool", "default": False},
-				MicroscopyImageProcessingParams.GAUSSIAN_BLUR_KERNEL_SIZE: {"type": "int", "default": 251},
-				MicroscopyImageProcessingParams.MIN_OBJECT_SIZE: {"type": "int", "default": 500},
 				MicroscopyImageProcessingParams.CLIP_PERCENTILE: {"type": "int", "default": 99},
 				MicroscopyImageProcessingParams.CROP_MARGIN: {"type": "int", "default": 250},
 				MicroscopyImageProcessingParams.GAMMA: {"type": "float", "default": 0.45},

@@ -30,13 +30,17 @@ class MicroscopyImage(BaseSample):
 
 	# Default processing parameters (all configurable via process_image)
 	_CROP_MARGIN_PX = 250
-	_GAUSSIAN_BLUR_KERNEL_SIZE = 251
-	_MIN_OBJECT_SIZE = 500
 	_CLIP_PERCENTILE = 99
 	_GAMMA = 0.45
 	_CONTRAST_SATURATION = 0.35
 	_MAX_PYRAMID_PIXELS = 3000 * 3000  # pixel cap for the smallest pyramid level (GUI rendering)
 	_DETECTION_MAX_PIXELS = 3000 * 3000  # pixel cap for the tissue-detection proxy (independent of the pyramid cap)
+
+	# Tissue-detection tuning, fixed relative to the ~3000px detection canvas (see _DETECTION_MAX_PIXELS)
+	# rather than the source image's native resolution - detection always runs on a canvas of at most
+	# this size, so a single dataset-independent value is appropriate (not user-configurable).
+	_DETECTION_BLUR_KERNEL_SIZE = 25   # ~0.8% of the ~3000px canvas width; odd
+	_DETECTION_MIN_OBJECT_SIZE = 50    # small speck-noise filter; min_object_coverage does the real area filtering
 
 	def __init__(self, source_path: str, sample_id: str, modality_name: str) -> None:
 		super().__init__(source_path, sample_id, modality_name)
@@ -317,13 +321,15 @@ class MicroscopyImage(BaseSample):
 
 	def _detect_tissue_mask(self, image: np.ndarray,
 		min_object_coverage: float = 0.01,
-		blur_kernel_size: int = 251,
-		min_object_size: int = 500,
 		clip_percentile: int = 99
 	) -> np.ndarray:
 		"""
 		Segment tissue vs. background (Otsu-based) on `image` at its current resolution,
 		preserving tissue areas larger than image_area * min_object_coverage.
+
+		Blur kernel size and minimum object size are fixed relative to the detection canvas
+		(_DETECTION_BLUR_KERNEL_SIZE / _DETECTION_MIN_OBJECT_SIZE) rather than configurable,
+		since `image` here is always already at or below the ~3000px detection canvas size.
 
 		Parameters
 		----------
@@ -331,10 +337,6 @@ class MicroscopyImage(BaseSample):
 			Input RGB float32 image of shape (H, W, 3) in [0, 1].
 		min_object_coverage : float
 			Minimum tissue area relative to image area.
-		blur_kernel_size : int
-			Gaussian blur kernel size (must be odd).
-		min_object_size : int
-			Minimum connected component size in pixels to keep.
 		clip_percentile : int
 			Percentile for intensity clipping before thresholding.
 
@@ -343,10 +345,6 @@ class MicroscopyImage(BaseSample):
 		np.ndarray
 			Boolean tissue mask, same (H, W) as `image`.
 		"""
-		# Ensure blur kernel is odd
-		if blur_kernel_size % 2 == 0:
-			blur_kernel_size += 1
-
 		# Convert to uint8 for mask computation (avoids float intermediaries)
 		image_uint8 = (image * 255).astype(np.uint8)
 
@@ -363,7 +361,7 @@ class MicroscopyImage(BaseSample):
 		clip_value = np.percentile(gray, clip_percentile)
 		blurred = cv2.GaussianBlur(
 			np.clip(gray, None, clip_value).astype(np.uint8),
-			(blur_kernel_size, blur_kernel_size), 0
+			(self._DETECTION_BLUR_KERNEL_SIZE, self._DETECTION_BLUR_KERNEL_SIZE), 0
 		)
 
 		# Otsu threshold on blurred, apply to original grayscale
@@ -373,7 +371,7 @@ class MicroscopyImage(BaseSample):
 		del gray
 
 		# Morphological cleanup
-		mask_clean = morphology.remove_small_objects(thresh.astype(bool), min_size=min_object_size)
+		mask_clean = morphology.remove_small_objects(thresh.astype(bool), min_size=self._DETECTION_MIN_OBJECT_SIZE)
 		del thresh
 		segmentation_mask = binary_fill_holes(mask_clean)
 		del mask_clean
@@ -398,8 +396,6 @@ class MicroscopyImage(BaseSample):
 
 	def _compute_tissue_mask(self, image: np.ndarray,
 		min_object_coverage: float = 0.01,
-		blur_kernel_size: int = 251,
-		min_object_size: int = 500,
 		clip_percentile: int = 99
 	) -> tuple[np.ndarray, float]:
 		"""
@@ -423,11 +419,9 @@ class MicroscopyImage(BaseSample):
 			proxy = cv2.resize(image, (max(1, round(W * scale)), max(1, round(H * scale))), interpolation=cv2.INTER_AREA)
 			if proxy.ndim == 2:
 				proxy = proxy[..., np.newaxis]
-			k = max(3, int(round(blur_kernel_size * scale)) | 1)  # odd, matches physical blur extent
-			m = max(1, int(round(min_object_size * scale * scale)))  # area scales with scale**2
 		else:
-			proxy, k, m = image, blur_kernel_size, min_object_size
-		mask = self._detect_tissue_mask(proxy, min_object_coverage, k, m, clip_percentile)
+			proxy = image
+		mask = self._detect_tissue_mask(proxy, min_object_coverage, clip_percentile)
 		return mask, scale
 
 	def _remove_background(self, image: np.ndarray, mask: np.ndarray, scale: float,
@@ -523,8 +517,6 @@ class MicroscopyImage(BaseSample):
 		background_color: SegmentationBackgroundColor = SegmentationBackgroundColor.WHITE,
 		min_object_coverage: float = 0.01,
 		force_recomputing: bool = False,
-		gaussian_blur_kernel_size: int = _GAUSSIAN_BLUR_KERNEL_SIZE,
-		min_object_size: int = _MIN_OBJECT_SIZE,
 		clip_percentile: int = _CLIP_PERCENTILE,
 		crop_margin: int = _CROP_MARGIN_PX,
 		gamma: float = _GAMMA,
@@ -547,10 +539,6 @@ class MicroscopyImage(BaseSample):
 			Minimum tissue area fraction to keep during background removal (0-1).
 		force_recomputing : bool
 			Whether to force recomputation even if the output exists.
-		gaussian_blur_kernel_size : int
-			Gaussian blur kernel size for background detection (must be odd).
-		min_object_size : int
-			Minimum connected component size in pixels to keep.
 		clip_percentile : int
 			Percentile for intensity clipping before thresholding.
 		crop_margin : int
@@ -596,8 +584,6 @@ class MicroscopyImage(BaseSample):
 			mask, scale = self._compute_tissue_mask(
 				image,
 				min_object_coverage=min_object_coverage,
-				blur_kernel_size=gaussian_blur_kernel_size,
-				min_object_size=min_object_size,
 				clip_percentile=clip_percentile
 			)
 			if remove_background:
@@ -638,8 +624,6 @@ class MicroscopyImageDataset(BaseDataset):
 		background_color: SegmentationBackgroundColor = SegmentationBackgroundColor.WHITE,
 		min_object_coverage: float = 0.01,
 		force_recomputing: bool = False,
-		gaussian_blur_kernel_size: int = MicroscopyImage._GAUSSIAN_BLUR_KERNEL_SIZE,
-		min_object_size: int = MicroscopyImage._MIN_OBJECT_SIZE,
 		clip_percentile: int = MicroscopyImage._CLIP_PERCENTILE,
 		crop_margin: int = MicroscopyImage._CROP_MARGIN_PX,
 		gamma: float = MicroscopyImage._GAMMA,
@@ -669,8 +653,6 @@ class MicroscopyImageDataset(BaseDataset):
 					background_color=background_color,
 					min_object_coverage=min_object_coverage,
 					force_recomputing=force_recomputing,
-					gaussian_blur_kernel_size=gaussian_blur_kernel_size,
-					min_object_size=min_object_size,
 					clip_percentile=clip_percentile,
 					crop_margin=crop_margin,
 					gamma=gamma,
@@ -701,8 +683,6 @@ def _extract_microscopy_settings(settings):
 		'background_color': settings.get(MicroscopyImageProcessingParams.BACKGROUND_COLOR, SegmentationBackgroundColor.WHITE),
 		'min_object_coverage': settings.get(MicroscopyImageProcessingParams.MIN_OBJECT_COVERAGE, 0.01),
 		'force_recomputing': settings.get(MicroscopyImageProcessingParams.FORCE_RECOMPUTING, False),
-		'gaussian_blur_kernel_size': settings.get(MicroscopyImageProcessingParams.GAUSSIAN_BLUR_KERNEL_SIZE, MicroscopyImage._GAUSSIAN_BLUR_KERNEL_SIZE),
-		'min_object_size': settings.get(MicroscopyImageProcessingParams.MIN_OBJECT_SIZE, MicroscopyImage._MIN_OBJECT_SIZE),
 		'clip_percentile': settings.get(MicroscopyImageProcessingParams.CLIP_PERCENTILE, MicroscopyImage._CLIP_PERCENTILE),
 		'crop_margin': settings.get(MicroscopyImageProcessingParams.CROP_MARGIN, MicroscopyImage._CROP_MARGIN_PX),
 		'gamma': settings.get(MicroscopyImageProcessingParams.GAMMA, MicroscopyImage._GAMMA),

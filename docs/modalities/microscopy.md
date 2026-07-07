@@ -51,7 +51,7 @@ The modality name (e.g. `he_image`) must match the name declared in the FOCUS co
 
 2. **Colour enhancement** — gamma correction (`image^gamma`) brightens the image when `gamma < 1`. Contrast stretching saturates a configurable percentage of pixels at both ends of the intensity histogram to maximise dynamic range; for large images the saturation percentiles are estimated from a subsample rather than every pixel (percentiles are stable under subsampling), but the stretch itself is still applied exactly to every pixel. Both operations are skipped when `color_enhancement=False`.
 
-3. **Background removal** — a tissue/background mask is detected (grayscale, invert, Gaussian blur, Otsu threshold, small-object removal, hole filling, contour-area filtering) on a downsampled proxy capped at ~9 megapixels rather than the full-resolution image — a tissue boundary is a smooth, low-frequency shape that doesn't need full-resolution input to locate, and this keeps detection fast on multi-gigapixel scans. The mask is then upsampled back to full resolution and applied: detected background is replaced with the fill colour (`white` or `black`). Skipped when `remove_background=False`.
+3. **Background removal** — a tissue/background mask is detected (grayscale, invert, Gaussian blur, Otsu threshold, small-object removal, hole filling, contour-area filtering) on a downsampled proxy capped at ~9 megapixels rather than the full-resolution image — a tissue boundary is a smooth, low-frequency shape that doesn't need full-resolution input to locate, and this keeps detection fast on multi-gigapixel scans. The blur kernel and minimum-object-size used during detection are fixed internally to match this proxy resolution (not user-configurable — see the note below). The mask is then upsampled back to full resolution and applied: detected background is replaced with the fill colour (`white` or `black`). Skipped when `remove_background=False`.
 
 4. **Crop to tissue** — the tight bounding box of the tissue mask from step 3 is computed, expanded by `crop_margin` pixels on all sides (clamped to image boundaries), and the image is cropped. Because the mask may come from a downsampled proxy, the effective boundary has a small additional tolerance (at most one proxy-resolution pixel's worth of full-resolution pixels) beyond `crop_margin`. This step always uses the same tissue-detection mask, even when `remove_background=False`. Skipped when `crop_to_tissue=False`.
 
@@ -68,9 +68,7 @@ The modality name (e.g. `he_image`) must match the name declared in the FOCUS co
 | `contrast_saturation` | `float` | `0.35` | Percentage of pixels saturated at each histogram end | `0.0` – `100.0` |
 | `remove_background` | `bool` | `True` | Detect and fill background pixels | `True`, `False` |
 | `background_color` | `str` | `"white"` | Fill colour for background regions | `"white"`, `"black"` |
-| `gaussian_blur_kernel_size` | `int` | `251` | Kernel size for Gaussian blur used in background detection (must be odd) | Positive odd integer |
 | `clip_percentile` | `int` | `99` | Intensity percentile clipped before Otsu thresholding | `1` – `100` |
-| `min_object_size` | `int` | `500` | Minimum connected component size (pixels) retained in the tissue mask | Positive integer |
 | `min_object_coverage` | `float` | `0.01` | Minimum tissue contour area as a fraction of total image area | `0.0` – `1.0` |
 | `crop_to_tissue` | `bool` | `True` | Crop to the bounding box of the tissue region | `True`, `False` |
 | `crop_margin` | `int` | `250` | Pixel margin added around the tissue bounding box | Non-negative integer |
@@ -78,6 +76,9 @@ The modality name (e.g. `he_image`) must match the name declared in the FOCUS co
 
 !!! note "Pyramid levels are not configurable"
     The number of OME-TIFF resolution levels is computed automatically from the image size (so the smallest level stays within 3,000 × 3,000 px). There is no `pyramid_levels` parameter.
+
+!!! note "Blur kernel and minimum object size are not configurable"
+    Tissue detection always runs on a proxy capped at ~9 megapixels (see step 3 above), so the Gaussian blur kernel size and the minimum connected-component size used during detection are fixed internally to values appropriate for that fixed canvas, rather than being exposed as `gaussian_blur_kernel_size`/`min_object_size` parameters tied to the source image's native resolution.
 
 ---
 
@@ -145,9 +146,7 @@ modalities:
       contrast_saturation: 0.35
       remove_background: true
       background_color: white
-      gaussian_blur_kernel_size: 251
       clip_percentile: 99
-      min_object_size: 500
       min_object_coverage: 0.01
       crop_to_tissue: true
       crop_margin: 250

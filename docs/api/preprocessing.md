@@ -114,8 +114,6 @@ def process_image(
     background_color: SegmentationBackgroundColor = SegmentationBackgroundColor.WHITE,
     min_object_coverage: float = 0.01,
     force_recomputing: bool = False,
-    gaussian_blur_kernel_size: int = 251,
-    min_object_size: int = 500,
     clip_percentile: int = 99,
     crop_margin: int = 250,
     gamma: float = 0.45,
@@ -134,14 +132,12 @@ Pipeline: load → gamma correction + contrast stretching → background removal
 | `background_color` | `SegmentationBackgroundColor` | `WHITE` | Fill color for background regions (`"white"` or `"black"`). |
 | `min_object_coverage` | `float` | `0.01` | Minimum tissue area as fraction of total image area (0–1). |
 | `force_recomputing` | `bool` | `False` | Re-run even if output already exists. |
-| `gaussian_blur_kernel_size` | `int` | `251` | Kernel size for Gaussian blur used in background detection. Must be odd. |
-| `min_object_size` | `int` | `500` | Minimum connected component size in pixels to retain. |
 | `clip_percentile` | `int` | `99` | Percentile for intensity clipping before thresholding. |
 | `crop_margin` | `int` | `250` | Pixel margin around the tissue bounding box. |
 | `gamma` | `float` | `0.45` | Gamma value for correction (< 1 brightens, > 1 darkens). |
 | `contrast_saturation` | `float` | `0.35` | Percentage of pixels to saturate during contrast stretching. |
 
-The number of OME-TIFF pyramid levels is not a parameter — it is computed automatically from the image dimensions (smallest level kept within 3,000 × 3,000 px).
+The number of OME-TIFF pyramid levels is not a parameter — it is computed automatically from the image dimensions (smallest level kept within 3,000 × 3,000 px). The Gaussian blur kernel size and minimum object size used during background detection are also not parameters: detection always runs on a downsampled proxy capped at ~9 megapixels, so these are fixed internal constants tuned for that canvas rather than the source image's native resolution.
 
 Returns `str` — path to the output OME-TIFF.
 
@@ -170,8 +166,6 @@ class MicroscopyImageDataset(BaseDataset):
         background_color: SegmentationBackgroundColor = SegmentationBackgroundColor.WHITE,
         min_object_coverage: float = 0.01,
         force_recomputing: bool = False,
-        gaussian_blur_kernel_size: int = 251,
-        min_object_size: int = 500,
         clip_percentile: int = 99,
         crop_margin: int = 250,
         gamma: float = 0.45,
