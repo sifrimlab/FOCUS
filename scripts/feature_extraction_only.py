@@ -27,6 +27,23 @@ registration output:
   - per-sample : {dataset_path}/{sample_id}/registration/{modality}_{sample_id}_processed_aligned_registered.h5ad
   - merged     : {dataset_path}/merged/registration/{modality}_merged_processed_aligned_registered.h5ad
 
+Multi-resolution
+----------------
+By default only the full-resolution level is extracted (identical to the paths above).
+``--resolution-levels N`` additionally encodes coarser levels by reading the multi-resolution
+pyramid already stored in each preprocessed OME-TIFF (FOCUS preprocessing writes a ``0.5**i``
+pyramid); nothing is downsampled at run time. Level ``i`` is written to a sibling file with a
+``_res{i}`` suffix, and merged the same way:
+
+  - per-sample (level i>=1) : {..}/{modality}_{sample_id}_processed_aligned_registered_res{i}.h5ad
+  - merged     (level i>=1) : {..}/merged/registration/{modality}_merged_processed_aligned_registered_res{i}.h5ad
+
+Level 0 (full resolution) is left byte-for-byte as before (unchanged filename, no extra
+``uns`` keys). Coarser-level files carry the same AnnData format plus ``uns['res_level']`` and
+``uns['downsample_factor']``; their ``obsm['spatial']`` patch centers are reconciled to the
+full-resolution (canonical FOCUS) frame using each level's actual measured dimension ratio.
+Levels are cached per file: only missing or stale ``.h5ad`` files are (re)computed.
+
 (The filenames retain "processed_aligned_registered" even though no alignment ran — kept
 for drop-in compatibility with any tooling that expects registration output at these paths.
 A stamped ``uns['patch_mode'] = 'free_form'`` marker keeps this anchorless output from ever
@@ -57,6 +74,7 @@ import argparse
 import logging
 
 import anndata
+import numpy as np
 
 # Allow running straight from a source checkout (scripts/ is a sibling of src/) without
 # requiring an editable install. An installed ``focus`` still takes precedence if present.
@@ -73,6 +91,7 @@ from focus.constants import (
 	SegmentationBackgroundColor,
 	MODALITY_PREPROCESSING,
 	MODALITY_REGISTRATION,
+	MODALITY_REGISTRATION_MERGED,
 	MODALITY_FILE_EXTENSION,
 )
 from focus.utils import write_h5ad_compat, release_memory
@@ -85,6 +104,10 @@ from focus.registration.microscopy_image import MicroscopyImageFeatureExtractor
 
 _H5AD_COMPRESSION = "gzip"
 _PATCH_MODE_FREE_FORM = "free_form"
+# Prov-GigaPath tile-encoder output width. Used to give a too-small coarse level an empty
+# (0, D) embedding matrix instead of (0, 0), so anndata.concat(merge='same') can't inner-join
+# away all feature columns when a resolution level mixes empty and non-empty samples.
+_GIGAPATH_EMBEDDING_DIM = 1536
 
 
 def _select_microscopy_modality(config: dict, logger: logging.Logger) -> dict | None:
@@ -150,6 +173,30 @@ def _cached_registration_valid(cached_adata, patch_size: int, background_color: 
 	)
 
 
+def _res_level_path(path: str, level: int) -> str:
+	"""Insert a ``_res{level}`` marker before the extension for coarser resolution levels.
+
+	Level 0 (the canonical FOCUS full-resolution output) returns ``path`` unchanged so its
+	filename stays byte-for-byte compatible with the existing anchor-based registration output.
+	Registration output is always the single-token ``.h5ad`` extension, so ``splitext`` is safe.
+	"""
+	if level == 0:
+		return path
+	root, ext = os.path.splitext(path)
+	return f"{root}_res{level}{ext}"
+
+
+def _level_cache_valid(cached_adata, level: int, patch_size: int, background_color: str) -> bool:
+	"""Like :func:`_cached_registration_valid`, but for coarser levels also requires the stamped
+	``res_level`` to match. Level 0 files carry no ``res_level`` key and use the base check only.
+	"""
+	if not _cached_registration_valid(cached_adata, patch_size, background_color):
+		return False
+	if level == 0:
+		return True
+	return cached_adata.uns.get("res_level") == level
+
+
 def main() -> None:
 	parser = argparse.ArgumentParser(
 		description="Run standalone, anchorless microscopy feature extraction from preprocessed OME-TIFFs."
@@ -159,10 +206,24 @@ def main() -> None:
 		help="Absolute path of the JSON config file (same format as the full pipeline).",
 	)
 	parser.add_argument(
+		"--resolution-levels", type=int, default=1,
+		help=(
+			"Number of resolution levels to extract from each image's existing OME-TIFF pyramid. "
+			"1 = full resolution only (default); 2 = full res + half res; N = pyramid levels 0..N-1 "
+			"(level i is the 0.5**i scale). Coarser levels are read from the file's stored pyramid "
+			"(no real-time downsampling); their patch coordinates are reconciled to the full-res frame. "
+			"If a sample's pyramid has fewer levels than requested, only the available levels are used."
+		),
+	)
+	parser.add_argument(
 		"--debug", action="store_true", default=False,
 		help="Enable debug logging (shows all log levels including HTTP request logs).",
 	)
 	args = parser.parse_args()
+
+	if args.resolution_levels < 1:
+		# Console logging is not configured yet; argparse's own stderr is the right channel here.
+		parser.error(f"--resolution-levels must be >= 1, got {args.resolution_levels}.")
 
 	# Phase 1: console-only logging so validation errors are formatted.
 	utils.setup_logging(debug=args.debug)
@@ -219,6 +280,11 @@ def main() -> None:
 		f"Modality '{modality_name}': patch_size={patch_size}, "
 		f"background_color='{background_color}', force_recomputing={force_recomputing}"
 	)
+	num_levels = args.resolution_levels
+	logger.info(
+		f"Resolution levels requested: {num_levels} "
+		f"({'full resolution only' if num_levels == 1 else f'pyramid levels 0..{num_levels - 1}'})."
+	)
 
 	sample_ids = discover_sample_ids(dataset_path, ignore_samples=config[ConfigParameters.IGNORE_SAMPLES])
 	if not sample_ids:
@@ -248,86 +314,162 @@ def main() -> None:
 	# some sample actually needs (re)computation.
 	engine = FeatureExtractorRegistration(path=dataset_path, hf_token=hf_token)
 	feature_extractor: MicroscopyImageFeatureExtractor | None = None
-	registered_files: dict[str, str] = {}
-	all_cached = True
+	# level -> {sample_id: per-sample file}; level -> True until any sample recomputes that level.
+	per_level_files: dict[int, dict[str, str]] = {}
+	per_level_all_cached: dict[int, bool] = {}
 
 	for sample_idx, sample_id in enumerate(sample_ids, 1):
 		logger.info(f"[{sample_idx}/{len(sample_ids)}] Extracting features for sample '{sample_id}'")
 
-		registered_file = MODALITY_REGISTRATION(dataset_path, sample_id, modality_name, "h5ad")
-		os.makedirs(os.path.dirname(registered_file), exist_ok=True)
+		image_path = preprocessed_files[sample_id]
 
-		if os.path.exists(registered_file) and not force_recomputing:
-			cached = anndata.read_h5ad(registered_file)
-			if _cached_registration_valid(cached, patch_size, background_color):
-				logger.info(f"Using cached free-form registration for sample '{sample_id}'")
-				registered_files[sample_id] = registered_file
-				del cached
-				continue
-			logger.warning(
-				f"Cached registration for '{sample_id}' is stale or from a different mode; recomputing."
+		# Only inspect the pyramid when coarser levels are requested; a default single-level run
+		# never touches the OME-TIFF on a cache hit, exactly as before. Coarser levels need each
+		# level's dims to cap the request and to reconcile coordinates to the full-res frame.
+		if num_levels > 1:
+			pyramid_dims = engine._ome_tiff_pyramid_dims(image_path)
+			n_available = len(pyramid_dims)
+			n_use = min(num_levels, n_available)
+			if num_levels > n_available:
+				logger.warning(
+					f"Sample '{sample_id}': requested {num_levels} resolution level(s) but its pyramid "
+					f"has only {n_available}; extracting {n_available} level(s) for this sample."
+				)
+		else:
+			pyramid_dims = None
+			n_use = 1
+
+		# Per-file caching: reuse valid level files already on disk, collect only the missing ones.
+		needed: list[tuple[int, str]] = []
+		for level in range(n_use):
+			target = _res_level_path(
+				MODALITY_REGISTRATION(dataset_path, sample_id, modality_name, "h5ad"), level
 			)
-			del cached
+			os.makedirs(os.path.dirname(target), exist_ok=True)
+			per_level_files.setdefault(level, {})
+			per_level_all_cached.setdefault(level, True)
 
-		all_cached = False
+			if os.path.exists(target) and not force_recomputing:
+				cached = anndata.read_h5ad(target)
+				valid = _level_cache_valid(cached, level, patch_size, background_color)
+				del cached
+				if valid:
+					logger.info(
+						f"Using cached free-form registration for sample '{sample_id}' (res level {level})"
+					)
+					per_level_files[level][sample_id] = target
+					continue
+				logger.warning(
+					f"Cached registration for '{sample_id}' (res level {level}) is stale or from a "
+					f"different mode; recomputing."
+				)
+
+			needed.append((level, target))
+			per_level_all_cached[level] = False
+
+		if not needed:
+			continue
 
 		if feature_extractor is None:
 			logger.info("Loading feature extractor model (Prov-GigaPath)...")
 			feature_extractor = MicroscopyImageFeatureExtractor(path=dataset_path, hf_token=hf_token)
 
-		image_data = engine._load_ome_tiff(preprocessed_files[sample_id])
-		embeddings, center_coordinates = feature_extractor.extract_features(
-			image=image_data,
-			patch_centers=None,
-			background_color=background_color,
-			patch_size=patch_size,
-			step_reporter=None,
-		)
-		if embeddings.shape[0] == 0:
-			logger.warning(f"Sample '{sample_id}': no foreground patches found (fully background image?).")
+		for level, target in needed:
+			# Read exactly this pyramid level (level 0 is the full-res base, unchanged behavior).
+			image_data = engine._load_ome_tiff(image_path, level=level)
+			embeddings, center_coordinates = feature_extractor.extract_features(
+				image=image_data,
+				patch_centers=None,
+				background_color=background_color,
+				patch_size=patch_size,
+				step_reporter=None,
+			)
+			if embeddings.shape[0] == 0:
+				logger.warning(
+					f"Sample '{sample_id}' (res level {level}): no foreground patches found "
+					f"(fully background, or level smaller than one patch)."
+				)
 
-		adata = anndata.AnnData(
-			X=embeddings,
-			obsm={"spatial": center_coordinates},
-			obs={"sample_id": [sample_id] * embeddings.shape[0]},
-		)
-		adata.uns["registration_type"] = RegistrationType.FEATURE_EXTRACTION
-		adata.uns["patch_mode"] = _PATCH_MODE_FREE_FORM
-		adata.uns["patch_size"] = patch_size
-		adata.uns["background_color"] = background_color
+			if level > 0:
+				# Reconcile patch centers to the full-resolution (canonical FOCUS) frame using the
+				# actual measured ratio — the pyramid stores int-truncated dims, so this is not
+				# exactly 2**level.
+				H0, W0 = pyramid_dims[0]
+				Hi, Wi = pyramid_dims[level]
+				center_coordinates = center_coordinates.astype(np.float32, copy=True)
+				center_coordinates[:, 0] *= W0 / Wi
+				center_coordinates[:, 1] *= H0 / Hi
+				# A too-small level returns a (0, 0) embedding array; give it the model's real
+				# width so a merge that mixes empty and non-empty samples keeps all feature columns.
+				if embeddings.shape[1] == 0:
+					embeddings = np.zeros((0, _GIGAPATH_EMBEDDING_DIM), dtype=np.float32)
 
-		write_h5ad_compat(adata, registered_file, compression=_H5AD_COMPRESSION)
-		registered_files[sample_id] = registered_file
-		logger.debug(f"Saved {embeddings.shape[0]} patch embeddings for sample '{sample_id}'")
+			adata = anndata.AnnData(
+				X=embeddings,
+				obsm={"spatial": center_coordinates},
+				obs={"sample_id": [sample_id] * embeddings.shape[0]},
+			)
+			adata.uns["registration_type"] = RegistrationType.FEATURE_EXTRACTION
+			adata.uns["patch_mode"] = _PATCH_MODE_FREE_FORM
+			adata.uns["patch_size"] = patch_size
+			adata.uns["background_color"] = background_color
+			if level > 0:
+				adata.uns["res_level"] = level
+				adata.uns["downsample_factor"] = pyramid_dims[0][1] / pyramid_dims[level][1]
 
-		del image_data, embeddings, center_coordinates, adata
+			write_h5ad_compat(adata, target, compression=_H5AD_COMPRESSION)
+			per_level_files[level][sample_id] = target
+			logger.debug(
+				f"Saved {embeddings.shape[0]} patch embeddings for sample '{sample_id}' (res level {level})"
+			)
+
+			del image_data, embeddings, center_coordinates, adata
 
 	if feature_extractor is not None:
 		del feature_extractor
 
-	# Merge across samples — _merge_samples only reuses a cached merged file when
-	# all_per_sample_cached is True, which is only set here once every per-sample file has
-	# already passed the free-form-aware _cached_registration_valid check above, so merge-level
-	# reuse is fully gated by the per-sample gate even though _merge_samples itself does not
-	# check patch_mode/patch_size/background_color.
-	registered_files = engine._merge_samples(
-		registered_files, modality_name,
-		force_recomputing=force_recomputing, all_per_sample_cached=all_cached,
-	)
+	# Merge across samples, once per resolution level. _merge_samples reuses a cached merged file
+	# only when all_per_sample_cached is True, which per level is set here only once every
+	# per-sample file at that level passed the free-form-aware _level_cache_valid check above, so
+	# merge-level reuse stays gated by the per-sample gate even though _merge_samples itself does
+	# not re-check patch_mode/patch_size/background_color/res_level. Level 0 uses the canonical
+	# merged path (merged_file=None); coarser levels write a sibling _res{level} merged file.
+	for level in sorted(per_level_files):
+		if level == 0:
+			merged_file = None
+			extra_uns = None
+		else:
+			merged_file = _res_level_path(
+				MODALITY_REGISTRATION_MERGED(dataset_path, modality_name, "h5ad"), level
+			)
+			# anndata.concat drops per-sample uns, so re-stamp the level marker on the merged
+			# file (downsample_factor here is nominal 2**level; per-sample files carry the exact
+			# measured ratio).
+			extra_uns = {"res_level": level, "downsample_factor": float(2 ** level)}
+		per_level_files[level] = engine._merge_samples(
+			per_level_files[level], modality_name,
+			force_recomputing=force_recomputing,
+			all_per_sample_cached=per_level_all_cached[level],
+			merged_file=merged_file,
+			extra_uns=extra_uns,
+		)
 
 	del engine
 	release_memory(gpu=True)
 
 	logger.info("=" * 60)
 	logger.info("Feature extraction complete.")
-	merged = registered_files.get("merged")
-	per_sample = {k: v for k, v in registered_files.items() if k != "merged"}
-	logger.info(
-		f"  '{modality_name}': {len(per_sample)} per-sample file(s)"
-		+ (f"; merged: {merged}" if merged else "; (no merged file produced)")
-	)
-	for sid, path in per_sample.items():
-		logger.info(f"      {sid}: {path}")
+	for level in sorted(per_level_files):
+		level_files = per_level_files[level]
+		merged = level_files.get("merged")
+		per_sample = {k: v for k, v in level_files.items() if k != "merged"}
+		label = "full resolution" if level == 0 else f"resolution level {level}"
+		logger.info(
+			f"  '{modality_name}' [{label}]: {len(per_sample)} per-sample file(s)"
+			+ (f"; merged: {merged}" if merged else "; (no merged file produced)")
+		)
+		for sid, path in per_sample.items():
+			logger.info(f"      {sid}: {path}")
 	logger.info("=" * 60)
 
 	sys.exit(0)

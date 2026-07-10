@@ -5,7 +5,7 @@ from scipy.spatial import cKDTree
 
 from focus.constants import MODALITY_REGISTRATION, MODALITY_REGISTRATION_MERGED
 from focus.constants import ModalityType, RegistrationType
-from focus.utils import write_h5ad_compat, read_merged_sample_ids, registration_cache_valid
+from focus.utils import write_h5ad_compat, read_merged_sample_ids, registration_cache_valid, hw_from_axes
 
 from focus.registration.microscopy_image import MicroscopyImageFeatureExtractor
 
@@ -39,8 +39,46 @@ class FeatureExtractorRegistration:
 		self._path = path
 		self._hf_token = hf_token
 
-	def _load_ome_tiff(self, filename: str) -> np.ndarray:
-		"""Load an OME-TIFF image at full resolution, returning an HWC float32 array in [0, 1].
+	@staticmethod
+	def _resolve_pyramid_levels(tif: tifffile.TiffFile) -> list:
+		"""Return the OME-TIFF pyramid level handles ordered highest-res first ([base, r1, ...]).
+
+		Mirrors the multi-format detection in ``alignment._load_ome_tiff``: a level handle may be
+		a ``TiffPageSeries`` (SubIFD ``series.levels`` or a FOCUS separate-series pyramid) or a
+		``TiffPage`` (direct SubIFD pages) — all expose ``.shape``, ``.axes`` and ``.asarray()``.
+		Index ``i`` corresponds to pyramid level ``i`` in every branch.
+		"""
+		series0 = tif.series[0]
+		if len(series0.levels) > 1:
+			# SubIFD pyramid (e.g. qpTIFF): series.levels already includes the base at index 0.
+			return list(series0.levels)
+		if tif.pages[0].pages:
+			# Direct SubIFD pages exclude the base page itself, so prepend it.
+			return [tif.pages[0]] + list(tif.pages[0].pages)
+		if len(tif.series) > 1:
+			# FOCUS-written pyramid: one top-level series per level, base first.
+			return list(tif.series)
+		return [series0]
+
+	def _ome_tiff_pyramid_dims(self, filename: str) -> list[tuple[int, int]]:
+		"""Return per-level ``(H, W)`` of an OME-TIFF pyramid, highest-res first, WITHOUT loading
+		pixels. ``len(...)`` is the number of available levels; index 0 is the full-resolution
+		base. Dimensions come from each level's OME ``axes`` via ``hw_from_axes``, so they are
+		correct for both channel-last (RGB) and channel-first layouts.
+		"""
+		if not os.path.exists(filename):
+			raise FileNotFoundError(f"Image file not found: {filename}")
+
+		with tifffile.TiffFile(filename) as tif:
+			levels = self._resolve_pyramid_levels(tif)
+			return [hw_from_axes(lvl.shape, getattr(lvl, "axes", "")) for lvl in levels]
+
+	def _load_ome_tiff(self, filename: str, level: int = 0) -> np.ndarray:
+		"""Load an OME-TIFF pyramid level, returning an HWC float32 array in [0, 1].
+
+		``level=0`` reads the full-resolution base exactly as before (via ``tif.asarray()``);
+		``level>=1`` reads the corresponding coarser pyramid level already stored in the file
+		(FOCUS preprocessing writes a ``0.5**i`` pyramid) — no real-time downsampling is done.
 
 		The file may be stored in any dtype (uint8/uint16/float32 - preprocessing picks the
 		dtype matching the source), so integer data is rescaled by its dtype max to reach
@@ -50,7 +88,15 @@ class FeatureExtractorRegistration:
 			raise FileNotFoundError(f"Image file not found: {filename}")
 
 		with tifffile.TiffFile(filename) as tif:
-			image_data = tif.asarray()
+			if level == 0:
+				image_data = tif.asarray()
+			else:
+				levels = self._resolve_pyramid_levels(tif)
+				if level >= len(levels):
+					raise IndexError(
+						f"Requested pyramid level {level} but '{filename}' has only {len(levels)} level(s)."
+					)
+				image_data = levels[level].asarray()
 
 		# Ensure HWC format (channel dim is the smallest)
 		if image_data.ndim == 3 and np.argmin(image_data.shape) == 0:
@@ -206,15 +252,23 @@ class FeatureExtractorRegistration:
 		modality_name: str,
 		force_recomputing: bool = False,
 		all_per_sample_cached: bool = False,
+		merged_file: str | None = None,
+		extra_uns: dict | None = None,
 	) -> dict[str, str]:
-		"""Merge per-sample registration files."""
+		"""Merge per-sample registration files.
+
+		``merged_file`` overrides the output path (used for coarser resolution-level merges);
+		when None the canonical ``MODALITY_REGISTRATION_MERGED`` path is used, unchanged.
+		``extra_uns`` (if given) is stamped onto the merged ``uns`` after ``registration_type`` —
+		anndata.concat drops per-sample ``uns``, so any level markers must be re-stamped here.
+		"""
 		sample_files = {k: v for k, v in registered_files.items() if k != "merged"}
 		if not sample_files:
 			return registered_files
 
-		merge_dir = os.path.join(self._path, "merged", "registration")
-		os.makedirs(merge_dir, exist_ok=True)
-		merged_file = MODALITY_REGISTRATION_MERGED(self._path, modality_name, "h5ad")
+		if merged_file is None:
+			merged_file = MODALITY_REGISTRATION_MERGED(self._path, modality_name, "h5ad")
+		os.makedirs(os.path.dirname(merged_file), exist_ok=True)
 
 		# Cache check: reuse merged only when all per-sample files were cached and the merged
 		# file exists with exactly the active sample composition.
@@ -235,6 +289,8 @@ class FeatureExtractorRegistration:
 
 		merged = anndata.concat(adata_list, merge='same')
 		merged.uns['registration_type'] = self._REGISTRATION_TYPE
+		if extra_uns:
+			merged.uns.update(extra_uns)
 
 		write_h5ad_compat(merged, merged_file, compression=_H5AD_COMPRESSION)
 		registered_files["merged"] = merged_file
