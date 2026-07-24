@@ -1768,10 +1768,11 @@ class MsiDataset(BaseDataset):
 			Frequency threshold for filtering M/Z values.
 		intensity_normalization : MsiIntensityNormalization
 			Type of intensity normalization to apply, one of 'none', 'tic', 'log',
-			'clr', or 'global_scaling'. All methods are applied independently per
-			ion mode. 'tic' divides each spectrum by its total ion current (rows sum
-			to 1); 'global_scaling' rescales each spectrum to the mean total ion
-			current of the ion mode, preserving absolute intensity scale.
+			'clr', or 'tic_mean_scaled'. All methods are applied independently per
+			sample and ion mode. 'tic' divides each spectrum by its total ion current
+			(rows sum to 1); 'tic_mean_scaled' rescales each spectrum to the mean total
+			ion current over the sample's spots, preserving absolute intensity scale
+			(equivalent to 'tic' times a per-sample constant; not comparable across samples).
 		recalibration_reference : dict[MsiIonMode, np.ndarray] | None
 			Reference M/Z vectors for recalibration per ion mode.
 		min_intensity_threshold : float
@@ -2124,14 +2125,16 @@ class MsiDataset(BaseDataset):
 						counts[counts == 0] = 1
 						row_mean = log_x.sum(axis=1, keepdims=True) / counts
 						merged_intensities = np.where(nz, log_x - row_mean, 0.0)
-					elif intensity_normalization == MsiIntensityNormalization.GLOBAL_SCALING:
-						# Global scaling: rescale every spectrum to the mean total ion
-						# current of this ion mode. Like TIC it removes per-spot total-
-						# intensity variation, but instead of forcing each spectrum to
-						# sum to 1 it scales each spot's total to the global mean,
-						# preserving an interpretable absolute intensity range.
-						tic = merged_intensities.sum(axis=1, keepdims=True)  # per-spot totals (this mode)
-						mean_tic = tic.mean()                                # global average over spots
+					elif intensity_normalization == MsiIntensityNormalization.TIC_MEAN_SCALED:
+						# TIC mean scaling: rescale every spectrum of this sample so its
+						# total ion current equals the mean TIC over this sample's spots
+						# (this ion mode). Equivalent to TIC normalization multiplied by a
+						# constant: like TIC it removes per-spot total-intensity variation,
+						# but keeps an interpretable absolute scale instead of forcing each
+						# spectrum to sum to 1. The mean is taken within this sample and ion
+						# mode only, not across the cohort, so it does not harmonise samples.
+						tic = merged_intensities.sum(axis=1, keepdims=True)  # per-spot totals (this sample, this mode)
+						mean_tic = tic.mean()                                # mean over this sample's spots (this mode)
 						if mean_tic == 0:
 							mean_tic = 1.0
 						scaling = tic / mean_tic                             # per-spot scaling factor

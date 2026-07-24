@@ -251,7 +251,7 @@ class MsiIntensityNormalization(_AbstractEnum):
 	TIC = "tic"
 	LOG = "log"
 	CLR = "clr"
-	GLOBAL_SCALING = "global_scaling"
+	TIC_MEAN_SCALED = "tic_mean_scaled"
 	NONE = "none"
 
 class DecompositionMethod(_AbstractEnum):
@@ -280,7 +280,7 @@ DISPLAY_NAMES: dict[str, str] = {
 	MsiIntensityNormalization.TIC:  "TIC",
 	MsiIntensityNormalization.LOG:  "Log",
 	MsiIntensityNormalization.CLR:  "CLR",
-	MsiIntensityNormalization.GLOBAL_SCALING: "Global Scaling",
+	MsiIntensityNormalization.TIC_MEAN_SCALED: "TIC Mean Scaled",
 	MsiIntensityNormalization.NONE: "None",
 	# Background colour
 	SegmentationBackgroundColor.WHITE: "White",

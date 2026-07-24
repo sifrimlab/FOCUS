@@ -69,7 +69,7 @@ Organize raw files into the standard directory layout:
 ```
 dataset/
 ├── sample_001/
-│   ├── microscopy/   # .tiff / .tif / .ome.tiff / .qptiff / .czi
+│   ├── microscopy/   # .tiff / .tif / .ome.tiff / .ome.tif / .qptiff / .czi
 │   ├── msi/          # pos/ and/or neg/ with .imzML + .ibd
 │   ├── raman/        # .lif
 │   └── st/           # .h5ad

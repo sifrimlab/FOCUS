@@ -44,7 +44,7 @@ The reference modality is typically chosen as the modality with the lowest spati
 
 ## Preprocessing
 
-**Preprocessing** is the first pipeline stage. It applies modality-specific quality control, normalization, background removal, and format conversion to each raw data file, producing a standardized output (OME-TIFF for image modalities, AnnData `.h5ad` for omics modalities). Preprocessing is fully automated for all modalities; parameters such as normalization method, background threshold, and pixel binning can be tuned in the configuration.
+**Preprocessing** is the first pipeline stage. It applies modality-specific quality control, normalization, background removal, and format conversion to each raw data file, producing a standardized output (OME-TIFF for image modalities, AnnData `.h5ad` for omics modalities). Preprocessing is fully automated for all modalities; modality-specific parameters, such as intensity normalization, background handling, and binning, can be tuned in the configuration.
 
 ---
 
@@ -98,7 +98,7 @@ FOCUS writes all omics modalities as AnnData `.h5ad` files at every intermediate
 - multi-channel images (e.g., DAPI, GFP, RFP channels)
 - rich XML metadata describing pixel size, channel names, and acquisition parameters
 
-FOCUS converts all image modalities (microscopy and Raman) to OME-TIFF pyramids during preprocessing, using zlib compression and tiled storage for efficient access. OME-TIFF files can be opened in [QuPath](https://qupath.github.io), [Napari](https://napari.org), [FIJI](https://fiji.sc), and other bioimaging tools.
+FOCUS converts all image modalities (microscopy and Raman) to multi-resolution OME-TIFF pyramids during preprocessing, using zlib compression for efficient access. OME-TIFF files can be opened in [QuPath](https://qupath.github.io), [Napari](https://napari.org), [FIJI](https://fiji.sc), and other bioimaging tools.
 
 ---
 

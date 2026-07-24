@@ -76,8 +76,7 @@ FOCUS writes all outputs back into `dataset_path`. Nothing is written outside of
 │
 ├── merged/
 │   ├── preprocessing/
-│   │   ├── microscopy_merged_processed.ome.tiff
-│   │   ├── msi_merged_processed.h5ad
+│   │   ├── msi_merged_processed.h5ad          ← omics modalities only; microscopy has no merged preprocessing output
 │   │   └── st_merged_processed.h5ad
 │   │
 │   ├── alignment/
@@ -196,9 +195,13 @@ sq.pl.spatial_scatter(
 import tifffile
 
 with tifffile.TiffFile("microscopy_sample_001_processed.ome.tiff") as tif:
-    # Read the full-resolution level
-    image = tif.series[0].levels[0].asarray()
-    print(image.shape)   # (channels, height, width)
+    # Full-resolution level (level 0)
+    image = tif.asarray()
+    print(image.shape)   # RGB: (H, W, 3); single/multi-channel: (H, W) or (C, H, W)
+
+    # FOCUS stores each pyramid level as a separate series (level 0 = full resolution)
+    n_levels = len(tif.series)
+    half_res = tif.series[1].asarray() if n_levels > 1 else None
 ```
 
 ### Opening AnnData files at any stage
@@ -232,7 +235,7 @@ FOCUS keeps every intermediate file it produces (preprocessed, aligned, register
 
 ## The Merged Directory
 
-After processing all individual samples, FOCUS concatenates them into a single per-modality file in `merged/`:
+After processing all individual samples, FOCUS concatenates the omics modalities into a single per-modality file in `merged/` (image modalities such as microscopy are merged only at the registration stage, not during preprocessing):
 
 - Spot/pixel coordinates are preserved in each sample's original reference space and tagged with a `sample_id` observation column.
 - The final `multimodal_dataset.h5mu` is built from the merged registered files.

@@ -26,7 +26,7 @@ half-raster centering applied later (§2.2). Prior to any processing the IBD pay
 a truncated file (smaller than the largest `offset + length × itemsize`) raises `ValueError`, and
 spectra containing non-finite m/z or intensity values are dropped.
 
-Supported intensity normalization options are `none`, `tic`, `log`, `clr`, and `global_scaling`.
+Supported intensity normalization options are `none`, `tic`, `log`, `clr`, and `tic_mean_scaled`.
 
 ---
 
@@ -251,7 +251,7 @@ All methods are applied **independently per ion mode** (each mode's matrix is no
 - `tic`: divide row by TIC (rows with TIC=0 use divisor 1); each spectrum then sums to 1
 - `log`: `log1p`
 - `clr`: sparsity-preserving centered log-ratio. For each spectrum, the log is taken over the nonzero entries only and centered by the mean log over that nonzero support; structural zeros are left at 0, so sparsity is preserved.
-- `global_scaling`: divide each spectrum by the scaling factor \(f_s = T_s / \bar{T}\), where \(T_s\) is the spot's total ion current and \(\bar{T}\) is the mean total ion current over all spots of that ion mode (\(\bar{T}=0\) uses divisor 1; empty spots stay at 0). Each spectrum is thus rescaled to total \(\bar{T}\). Equivalent to `tic` multiplied by the mean TIC — it removes per-spot total-intensity variation like `tic`, but preserves an interpretable absolute intensity scale instead of compressing every spectrum to sum 1.
+- `tic_mean_scaled`: divide each spectrum by the scaling factor \(f_s = T_s / \bar{T}\), where \(T_s\) is the spot's total ion current and \(\bar{T}\) is the mean total ion current over that sample's spots for that ion mode (\(\bar{T}=0\) uses divisor 1; empty spots stay at 0). Each spectrum is thus rescaled to total \(\bar{T}\). Equivalent to `tic` multiplied by a per-sample constant — it removes per-spot total-intensity variation like `tic`, but preserves an interpretable absolute intensity scale instead of compressing every spectrum to sum 1. The mean is taken within each sample and ion mode, so it does not make intensities comparable across samples.
 
 Raw interpolated matrix is preserved in `.layers['raw']`; normalized matrix in `.X`.
 

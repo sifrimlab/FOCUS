@@ -313,8 +313,10 @@ dataset_path/
 
 **What not to change:** `patch_size` defaults to 224 and is exposed in `registration_settings`, but
 you should leave it at 224 — Prov-GigaPath expects a 224 × 224 input, so reducing it to save memory
-degrades the embeddings rather than being a supported memory knob. The internal batch size (32) **is**
-fixed and not user-configurable, so it cannot be lowered to reduce VRAM either.
+degrades the embeddings rather than being a supported memory knob. There is also no batch-size knob to
+lower: on GPU FOCUS already sizes each batch to the free VRAM and halves it automatically on an
+out-of-memory error, so a genuine out-of-memory here means the card is too small for even the minimum
+batch.
 
 **What you can try:**
 

@@ -134,7 +134,7 @@ The MSI pipeline operates at the **dataset level**: all samples are processed to
    - `"tic"`: divide each spectrum by its total ion count (each spectrum sums to 1)
    - `"log"`: apply log(1 + x) transform
    - `"clr"`: sparsity-preserving centered log-ratio — log-centers each spectrum over its nonzero entries only, leaving structural zeros at 0
-   - `"global_scaling"`: rescale each spectrum to the mean total ion count of its ion mode (each spectrum's total becomes the mean TIC) — like `"tic"` but preserves an interpretable absolute intensity scale instead of forcing a sum of 1
+   - `"tic_mean_scaled"`: rescale each spectrum to the mean total ion count of its ion mode (each spectrum's total becomes the mean TIC) — like `"tic"` but preserves an interpretable absolute intensity scale instead of forcing a sum of 1
    - `"none"`: keep raw interpolated intensities
 
 10. **Per-Sample Leiden Clustering**
@@ -152,7 +152,7 @@ The MSI pipeline operates at the **dataset level**: all samples are processed to
 |-----------|---------|-------------|
 | `mass_tolerance` | `10` | Mass tolerance in ppm for m/z clustering, recalibration, and annotation |
 | `frequency_threshold` | `0.01` | Minimum fraction of max cluster weight for backbone m/z inclusion |
-| `intensity_normalization` | `"none"` | Normalization method (per ion mode): `"tic"`, `"log"`, `"clr"`, `"global_scaling"`, or `"none"` |
+| `intensity_normalization` | `"none"` | Normalization method (per ion mode): `"tic"`, `"log"`, `"clr"`, `"tic_mean_scaled"`, or `"none"` |
 | `recalibration_reference` | `null` | User-supplied reference m/z dict per ion mode; auto-computed if null |
 | `min_intensity_threshold` | `10000.0` | Minimum intensity for a peak to be used in recalibration offset estimation |
 | `detect_background` | `false` | Run background detection to classify tissue vs background spots |

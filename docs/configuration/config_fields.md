@@ -281,7 +281,7 @@ Example:
 | `lipid_annotation_db` | string or null | `null` |
 | `force_recomputing` | bool | `false` |
 
-- `intensity_normalization` allowed values: `"none"`, `"tic"`, `"log"`, `"clr"`, `"global_scaling"` (all applied per ion mode). `"tic"` makes each spectrum sum to 1; `"global_scaling"` rescales each spectrum to the mean total ion current of its ion mode, preserving absolute intensity scale.
+- `intensity_normalization` allowed values: `"none"`, `"tic"`, `"log"`, `"clr"`, `"tic_mean_scaled"` (all applied per ion mode). `"tic"` makes each spectrum sum to 1; `"tic_mean_scaled"` rescales each spectrum to the mean total ion current of its ion mode, preserving absolute intensity scale.
 - `sample_type` allowed values: `"tissue"`, `"microgrid"`.
 - `lipid_annotation_db`: path to a CSV or JSON file with columns `db_name`, `ionized_mass`, `ion_mode`.
 

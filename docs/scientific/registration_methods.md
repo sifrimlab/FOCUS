@@ -45,7 +45,7 @@ with ImageNet statistics
 
 Model: `hf_hub:prov-gigapath/prov-gigapath` via `timm`, run in `torch.inference_mode()`.
 
-Batch size is fixed to 32 in current implementation.
+On GPU the batch size is chosen automatically from the available VRAM (an empirical per-patch cost is probed, then the batch is sized to 80 % of free memory, clamped to 8–512 patches and rounded to a multiple of 8), and is halved and retried on a CUDA out-of-memory error. On CPU a fixed batch of 32 is used.
 
 ### 2.3 Outputs
 

@@ -230,7 +230,7 @@ Additional settings for the chosen registration method. May be an empty object w
     | Parameter | Type | Description |
     |-----------|------|-------------|
     | `mass_tolerance` | int | m/z clustering tolerance in ppm. |
-    | `intensity_normalization` | string | Normalization method (per ion mode): `"none"` (default), `"tic"`, `"log"`, `"clr"`, or `"global_scaling"` (rescales each spectrum to the mean total ion current, preserving absolute scale). |
+    | `intensity_normalization` | string | Normalization method (per ion mode): `"none"` (default), `"tic"`, `"log"`, `"clr"`, or `"tic_mean_scaled"` (rescales each spectrum to the mean total ion current, preserving absolute scale). |
     | `min_intensity_threshold` | int or null | Pixels with total ion current below this value are masked. |
     | `detect_background` | bool | Detect and flag off-tissue background spots in `obs["foreground"]` (all spots are still written). Default `false`. |
     | `sample_type` | string | Sample type hint for background detection (e.g., `"tissue"`). |

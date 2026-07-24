@@ -122,7 +122,7 @@ The preprocessing step produces a single multi-resolution OME-TIFF per sample at
 | Container | BigTIFF |
 | Pyramid levels | Computed automatically (smallest level ≤ 3,000 × 3,000 px) |
 | Downsampling factor | 0.5× per level (area interpolation) |
-| Metadata | OME-XML in first IFD; physical pixel size stored when available |
+| Metadata | OME-XML in the first IFD |
 | RGB images | Interleaved `photometric=rgb` |
 | Single/multi-channel | Separate `minisblack` planes per channel |
 

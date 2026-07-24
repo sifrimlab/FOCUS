@@ -81,9 +81,9 @@ field.
 **Modality-Specific Settings:**
 
 **Microscopy Image:**
-- **Input Format**: TIFF/CZI
+- **Input Format**: OME-TIFF, qpTIFF, TIFF, or CZI
 - **Color Enhancement**: Enable/disable gamma correction and contrast stretching
-- **Background Removal**: Enable/disable and set threshold
+- **Background Removal**: Enable/disable and choose the fill colour (white or black)
 - **Crop to Tissue**: Enable/disable with margin size
 
 !!! note

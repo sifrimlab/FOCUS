@@ -278,7 +278,7 @@ class MsiDataset(BaseDataset):
 | `lipid_annotation_db` | `str` or `None` | `None` | Path to a CSV or JSON lipid annotation database. Required columns: `db_name`, `ionized_mass`, `ion_mode`. |
 | `mass_tolerance` | `int` | `10` | Adaptive mass tolerance in ppm for m/z consensus clustering. |
 | `frequency_threshold` | `float` | `0.01` | Minimum fraction of spectra in which an m/z must appear to be included in the reference grid. |
-| `intensity_normalization` | `MsiIntensityNormalization` | `"tic"` | Normalization method (applied per ion mode): `"tic"`, `"log"`, `"clr"`, `"global_scaling"`, or `"none"`. `"tic"` makes each spectrum sum to 1; `"global_scaling"` rescales each spectrum to the mean total ion current, preserving absolute scale. |
+| `intensity_normalization` | `MsiIntensityNormalization` | `"tic"` | Normalization method (applied per ion mode): `"tic"`, `"log"`, `"clr"`, `"tic_mean_scaled"`, or `"none"`. `"tic"` makes each spectrum sum to 1; `"tic_mean_scaled"` rescales each spectrum to the mean total ion current, preserving absolute scale. |
 | `recalibration_reference` | `dict` or `None` | `None` | Per-ion-mode reference m/z vectors for recalibration. |
 | `min_intensity_threshold` | `float` | `10000.0` | Minimum peak intensity for recalibration peak selection. |
 | `detect_background` | `bool` | `True` | If `True`, GMM-based tissue/background classification is run. |
