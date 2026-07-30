@@ -90,12 +90,13 @@ field.
     The number of OME-TIFF pyramid levels is computed automatically from the image size and is not a GUI setting.
 
 **MSI (Mass Spectrometry Imaging):**
-- **Ion Mode**: Positive/Negative/Both
-- **Mass Range**: m/z range to process
 - **Intensity Normalization**: None/TIC/Log/CLR
 - **Background Detection**: Enable/disable GMM-based detection
 - **Recalibration**: Enable/disable m/z recalibration
 - **Lipid Annotation**: Enable/disable lipid database matching
+
+!!! note
+    Ion mode is not a GUI setting. Each sample's ion modes are detected from its data: an ion mode is used when its `pos/` or `neg/` subfolder holds a complete `.imzML` + `.ibd` pair. The GUI creates both subfolders for every MSI sample — if you only have one ion mode, leave the other empty.
 
 **Raman Spectroscopy Imaging:**
 - **Wavenumber Range**: Range to process
@@ -105,10 +106,14 @@ field.
 - **Spectral Cleaning**: Despike, denoise, baseline options
 
 **Spatial Transcriptomics:**
-- **Quality Control**: Mitochondrial gene threshold
-- **Filtering**: Min/max genes per spot
-- **Normalization**: Total counts, log1p
-- **Highly Variable Genes**: Number to select
+- **Spot filters**: Min/Max Count Per Spot, Min/Max Genes Per Spot (leave blank to disable)
+- **Gene filters**: Min Spots Per Gene, Min Count Spots Ratio Per Gene (applied to the merged dataset)
+- **Remove Mitochondrial Genes**: Enable/disable
+- **Total Counts Normalize**: Enable/disable (scales each spot to 10,000 counts)
+- **Log1p Transform**: Enable/disable
+
+!!! note
+    Every spot filter, gene filter and normalisation step is off by default. With defaults, `.X` in the output holds the raw counts from your input file. There is no highly-variable-gene selection.
 
 #### Processing Options
 

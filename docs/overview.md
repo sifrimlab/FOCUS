@@ -16,7 +16,7 @@ Raw Data → [1] Preprocessing → [2] Alignment → [3] Registration → [4] Co
 
 ### Stage 1 — Preprocessing
 
-Preprocessing converts raw instrument output into a standardized, quality-controlled representation. Each modality is handled by a dedicated processor that applies domain-appropriate algorithms: background subtraction and pyramid tiling for microscopy images, m/z consensus alignment and intensity normalization for MSI, BaSiC illumination correction and ASHLAR tile stitching for Raman, and count/gene filtering with leiden clustering (and mitochondrial QC metrics) for spatial transcriptomics. The output of this stage is either an OME-TIFF pyramid (for image modalities) or an AnnData `.h5ad` file (for omics modalities), stored under `{sample_id}/preprocessing/{modality_name}/`.
+Preprocessing converts raw instrument output into a standardized, quality-controlled representation. Each modality is handled by a dedicated processor that applies domain-appropriate algorithms: background subtraction and pyramid tiling for microscopy images, m/z consensus alignment and intensity normalization for MSI, BaSiC illumination correction and ASHLAR tile stitching for Raman, and mitochondrial flagging with QC metrics, optional count/gene filtering and optional normalisation for spatial transcriptomics. The output of this stage is either an OME-TIFF pyramid (for image modalities) or an AnnData `.h5ad` file (for omics modalities), stored under `{sample_id}/preprocessing/{modality_name}/`.
 
 ### Stage 2 — Alignment
 
@@ -96,6 +96,7 @@ FOCUS expects input data and writes intermediate and final outputs according to 
 |----------|---------------|---------------|
 | `microscopy_image` | One `.tiff`, `.tif`, `.ome.tiff`, `.ome.tif`, `.qptiff`, or `.czi` file | directly in `<modality_name>/` |
 | `msi` (positive mode only) | `data.imzML` + `data.ibd` | `<modality_name>/pos/` |
+| `msi` (negative mode only) | `data.imzML` + `data.ibd` | `<modality_name>/neg/` |
 | `msi` (dual mode) | 2 × (`.imzML` + `.ibd`) | `<modality_name>/pos/` and `<modality_name>/neg/` |
 | `raman` | One `.lif` file | directly in `<modality_name>/` |
 | `st` | One `.h5ad` file | directly in `<modality_name>/` |

@@ -235,8 +235,10 @@ class MsiSample(BaseSample):
 | `source_path` | `str` | Root dataset path. |
 | `sample_id` | `str` | Sample identifier. |
 | `modality_name` | `str` | Modality name. |
-| `double_ion_mode` | `bool` | If `True`, both positive and negative ion modes are expected in `pos/` and `neg/` subdirectories. |
+| `double_ion_mode` | `bool` | If `True`, both `pos/` and `neg/` must each hold a complete `.imzML` + `.ibd` pair. |
 | `ion_mode` | `MsiIonMode` or `None` | Required when `double_ion_mode=False`. One of `"pos"` or `"neg"`. |
+
+When samples are built by the pipeline rather than constructed directly, these two arguments are inferred per sample: an ion mode counts as acquired when its subdirectory holds a complete `.imzML` + `.ibd` pair, and a subdirectory holding neither file is ignored. Constructing `MsiSample` yourself with `double_ion_mode=True` is stricter — it asserts both ion modes are present, so an empty subdirectory raises `FileNotFoundError`.
 
 **Key properties**
 
@@ -262,10 +264,10 @@ class MsiDataset(BaseDataset):
         self,
         mass_tolerance: int = 10,
         frequency_threshold: float = 0.01,
-        intensity_normalization: MsiIntensityNormalization = MsiIntensityNormalization.TIC,
+        intensity_normalization: MsiIntensityNormalization = MsiIntensityNormalization.NONE,
         recalibration_reference: dict | None = None,
         min_intensity_threshold: float = 10000.0,
-        detect_background: bool = True,
+        detect_background: bool = False,
         sample_type: str = MsiSampleType.TISSUE,  # "tissue"
         force_recomputing: bool = False,
         step_reporter=None,
@@ -276,12 +278,12 @@ class MsiDataset(BaseDataset):
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `lipid_annotation_db` | `str` or `None` | `None` | Path to a CSV or JSON lipid annotation database. Required columns: `db_name`, `ionized_mass`, `ion_mode`. |
-| `mass_tolerance` | `int` | `10` | Adaptive mass tolerance in ppm for m/z consensus clustering. |
+| `mass_tolerance` | `int` | `10` | Adaptive mass tolerance in ppm for m/z consensus clustering. Must be a Python `int` — a float raises `ValueError`. |
 | `frequency_threshold` | `float` | `0.01` | Minimum fraction of spectra in which an m/z must appear to be included in the reference grid. |
-| `intensity_normalization` | `MsiIntensityNormalization` | `"tic"` | Normalization method (applied per ion mode): `"tic"`, `"log"`, `"clr"`, `"tic_mean_scaled"`, or `"none"`. `"tic"` makes each spectrum sum to 1; `"tic_mean_scaled"` rescales each spectrum to the mean total ion current, preserving absolute scale. |
+| `intensity_normalization` | `MsiIntensityNormalization` | `"none"` | Normalization method (applied per sample and per ion mode): `"tic"`, `"log"`, `"clr"`, `"tic_mean_scaled"`, or `"none"`. `"tic"` makes each spectrum sum to 1; `"tic_mean_scaled"` rescales each spectrum to the mean total ion current over that sample's spots for that ion mode, preserving absolute scale (not comparable across samples). |
 | `recalibration_reference` | `dict` or `None` | `None` | Per-ion-mode reference m/z vectors for recalibration. |
 | `min_intensity_threshold` | `float` | `10000.0` | Minimum peak intensity for recalibration peak selection. |
-| `detect_background` | `bool` | `True` | If `True`, GMM-based tissue/background classification is run. |
+| `detect_background` | `bool` | `False` | If `True` **and** `lipid_annotation_db` is set, GMM-based (or Otsu, for `microgrid`) tissue/background classification is run. Without a database the step is silently skipped and all spots are marked foreground. |
 | `sample_type` | `str` | `"tissue"` | `"tissue"` or `"microgrid"`. Affects background detection strategy. |
 | `force_recomputing` | `bool` | `False` | Re-run even if output already exists. |
 
@@ -477,21 +479,29 @@ def preprocess_data(
     total_counts_normalize: bool = False,
     log1p_transform: bool = False,
     force_recomputing: bool = False,
+    step_reporter=None,
 ) -> str:
     ...
 ```
 
-Pipeline: load → flag mito genes → spot filtering → QC metrics → optional mito-gene removal → store raw counts in `.layers["raw"]` → optional normalize/log1p → Leiden clustering (on an internal normalized copy) → save as gzip-compressed `.h5ad`.
+Returns the output path immediately if that file exists and `force_recomputing` is `False`.
+
+Pipeline: load → flag mito genes in `.var["mt"]` → spot filtering → QC metrics → optional mito-gene removal → prefix `.obs_names` with `<sample_id>_` → cluster labels → store `.layers["raw"]` (only if normalizing) → optional normalize/log1p → save as gzip-compressed `.h5ad`.
 
 Output AnnData structure:
 
-- `.X` — counts (sparse CSR); raw unless `total_counts_normalize`/`log1p_transform` are set
-- `.layers["raw"]` — filtered, post-feature-selection raw counts
+- `.X` — sparse CSR; raw counts unless `total_counts_normalize`/`log1p_transform` are set
+- `.layers["raw"]` — raw counts before normalization; **present only when `.X` was normalized**
+- `.obs_names` — spot names prefixed `<sample_id>_`
+- `.var["mt"]` — boolean mitochondrial flag
 - `.obs["sample_id"]` — categorical sample identifier
-- `.obs["leiden"]` — per-sample Leiden cluster labels (PCA/neighbour intermediates are not persisted)
-- `.obs` / `.var` QC metrics from `calculate_qc_metrics` (`pct_counts_mt`, `n_genes_by_counts`, `n_cells_by_counts`, ...)
+- `.obs["cluster"]` — categorical per-sample cluster labels (the coarsened matrix, PCA embedding and neighbour graph are not persisted)
+- `.obs` QC — `total_counts`, `n_genes_by_counts`, `total_counts_mt`, `pct_counts_mt` and their `log1p_` variants
+- `.var` QC — `n_cells_by_counts`, `mean_counts`, `total_counts`, `pct_dropout_by_counts` and their `log1p_` variants
 - `.obsm["spatial"]` — float32 spatial coordinates
 - `.uns["spot_size"]` — float32 array of shape `(2,)`
+
+Cluster labels are computed on `.X` before normalization, so they always read raw counts. `calculate_qc_metrics` runs before the optional mito-gene removal, so `pct_counts_mt` describes the matrix prior to removal.
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
@@ -534,25 +544,30 @@ class SpatialTranscriptomicDataset(BaseDataset):
 
 Dataset-level pipeline:
 
-1. Preprocess each sample individually (spot filtering, optional mito-gene removal, per-sample Leiden)
-2. Concatenate using raw counts from `.layers["raw"]` (outer join, missing genes filled with 0)
-3. Cross-sample gene filtering (`min_spots_per_gene`, `min_count_spots_ratio_per_gene`)
-4. Recompute QC metrics on the merged matrix
-5. Optionally normalize / log1p-transform the merged dataset (opt-in)
-6. Preserve per-sample Leiden labels
-7. Build `.uns["spot_size"]` as `{sample_id: [float, float]}`
-8. Save as gzip-compressed `.h5ad`
+1. Preprocess each sample individually via `preprocess_data()` (the two gene-level thresholds are **not** forwarded — they are dataset-level only)
+2. Return the cached merged file if it exists, `force_recomputing` is `False`, and its `.obs["sample_id"]` set equals the active sample set
+3. Read each per-sample `.uns["spot_size"]` with a backed read (`.X` never materialized)
+4. Concatenate on disk (`anndata.concat_on_disk`, `axis=0`, `join="outer"`, `fill_value=0`); `.uns` is dropped by the concat
+5. Recover raw counts: `.X = .layers.pop("raw", .X)`, so the layer is used when the per-sample files were normalized and `.X` otherwise
+6. Cross-sample gene filtering — skipped entirely when both thresholds are `None`
+7. Recompute `.var["mt"]` and QC metrics on the merged raw matrix
+8. Store `.layers["raw"]` (only if normalizing), then optionally normalize / log1p-transform
+9. Keep the per-sample `.obs["cluster"]` labels carried through the concat
+10. Build `.uns["spot_size"]` as `{sample_id: [float, float]}`
+11. Save as gzip-compressed sparse CSR `.h5ad`
 
 Additional parameters beyond per-sample ones:
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `min_spots_per_gene` | `float` or `None` | `None` | Minimum fraction of spots per sample expressing a gene (0–1). Genes failing in most samples are removed. |
-| `min_count_spots_ratio_per_gene` | `float` or `None` | `None` | Minimum ratio of total counts to expressed spots per gene. |
+| `min_spots_per_gene` | `float` or `None` | `None` | Minimum fraction of a sample's spots expressing a gene for that sample to count as passing. Must satisfy `0 < value < 1`. |
+| `min_count_spots_ratio_per_gene` | `float` or `None` | `None` | Minimum ratio of a gene's total counts to the number of spots expressing it, per sample. Must be `> 0`. |
 
-(`remove_mitochondrial_genes` is shared with the per-sample method and applied per sample.)
+Both are evaluated per sample; a gene is retained when it passes in **at least one** sample, and when both are set it must satisfy each in at least one sample (not necessarily the same one). For the ratio criterion, samples where the gene is unexpressed count as neither pass nor fail.
 
-Returns `dict[str, str]` with sample IDs and a `"merged"` key.
+(`remove_mitochondrial_genes` is shared with the per-sample method and applied per sample, before merging.)
+
+Returns `dict[str, str]` with sample IDs and a `"merged"` key. The merged file differs from the per-sample files in that `.uns["spot_size"]` is a dict keyed by `sample_id`.
 
 **Example**
 

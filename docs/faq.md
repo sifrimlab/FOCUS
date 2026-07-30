@@ -118,16 +118,20 @@ sample_001/
 
 Whether you have one or both ion modes, the `.imzML` and `.ibd` files must always be placed in a `pos/` or `neg/` subfolder matching the ion mode — never directly in the modality folder.
 
+If you only have one ion mode, leave the other subfolder empty. FOCUS decides a sample's ion modes from the files it finds, so a subfolder holding neither an `.imzML` nor an `.ibd` is read as "this polarity was not acquired" and ignored. The GUI creates both `pos/` and `neg/` when it scaffolds a sample, and you do not need to delete the unused one. Different samples in the same dataset may have different ion modes.
+
 ---
 
 ### What format must the spatial transcriptomics input be in?
 
 The input must be an AnnData `.h5ad` file with:
 
-- `.obsm['spatial']` — a `(n_spots, 2)` array of physical coordinates (any consistent unit).
-- `.uns['spot_size']` — a `(2,)` array giving the spot diameter in the same units as the coordinates.
-- `.X` or `.layers` — a count matrix.
-- `.obs['sample_id']` — a column identifying the sample (can be a single value if the file contains one sample).
+- `.X` — the count matrix. Only `.X` is read; a matrix placed in `.layers` is not picked up. Dense input is converted to sparse CSR on load.
+- `.obsm['spatial']` — a `(n_spots, 2)` array of physical coordinates (any consistent unit). **Required**: a missing key raises `ValueError`.
+- `.var` — gene metadata with the gene names as the index.
+- `.uns['spot_size']` — *optional*. The spot diameter in the same units as the coordinates, given as a scalar, a 1-element array, or a `(2,)` array. Defaults to `[1.0, 1.0]` when absent.
+
+You do not need to supply `.obs['sample_id']` — FOCUS writes it during preprocessing from the sample directory name, and prefixes `.obs_names` with `<sample_id>_`.
 
 See [Spatial Transcriptomics](modalities/transcriptomics.md) for the full input contract.
 

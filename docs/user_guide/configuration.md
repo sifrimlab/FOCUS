@@ -218,23 +218,28 @@ Additional settings for the chosen registration method. May be an empty object w
     | `max_count_per_spot` | int or null | Maximum total UMI count (outlier removal). |
     | `min_genes_per_spot` | int or null | Minimum number of detected genes per spot. |
     | `max_genes_per_spot` | int or null | Maximum number of detected genes per spot. |
-    | `min_spots_per_gene` | int or null | Genes detected in fewer spots are removed. |
-    | `min_count_spots_ratio_per_gene` | float or null | Minimum fraction of spots expressing a gene. |
-    | `remove_mitochondrial_genes` | bool | Opt-in. Drop mitochondrial genes (`MT-`/`MT.` prefix) from the feature set. Off by default (high mito can be biological in spatial data). |
-    | `total_counts_normalize` | bool | Normalize each spot to a total count of 10,000. |
-    | `log1p_transform` | bool | Apply log1p transformation after normalisation. |
-    | `force_recomputing` | bool | Reprocess even if output already exists. |
+    | `min_spots_per_gene` | float or null | Minimum **fraction** of a sample's spots that must express a gene for that sample to count as passing. Must satisfy `0 < value < 1`. Dataset-level only. Default `null`. |
+    | `min_count_spots_ratio_per_gene` | float or null | Minimum ratio of a gene's total counts to the number of spots expressing it, per sample. Must be `> 0`. Dataset-level only. Default `null`. |
+    | `remove_mitochondrial_genes` | bool | Drop the genes flagged in `.var['mt']` (case-insensitive `MT-`/`MT.` name prefix) from the feature set. Applied per sample, before merging. Default `false`. |
+    | `total_counts_normalize` | bool | Normalize each spot to a total count of 10,000. Default `false`. |
+    | `log1p_transform` | bool | Apply log1p transformation after normalisation. Default `false`. |
+    | `force_recomputing` | bool | Reprocess even if output already exists. Default `false`. |
+
+    Both gene-level filters are evaluated per sample, and a gene survives when it passes in at least one sample; with both thresholds set it must satisfy each in at least one sample. Every filtering and normalisation step is opt-in, so with defaults `.X` holds the raw counts from the input file.
 
 === "Mass Spectrometry Imaging (`msi`)"
 
     | Parameter | Type | Description |
     |-----------|------|-------------|
-    | `mass_tolerance` | int | m/z clustering tolerance in ppm. |
-    | `intensity_normalization` | string | Normalization method (per ion mode): `"none"` (default), `"tic"`, `"log"`, `"clr"`, or `"tic_mean_scaled"` (rescales each spectrum to the mean total ion current, preserving absolute scale). |
-    | `min_intensity_threshold` | int or null | Pixels with total ion current below this value are masked. |
-    | `detect_background` | bool | Detect and flag off-tissue background spots in `obs["foreground"]` (all spots are still written). Default `false`. |
-    | `sample_type` | string | Sample type hint for background detection (e.g., `"tissue"`). |
-    | `force_recomputing` | bool | Reprocess even if output already exists. |
+    | `mass_tolerance` | int | m/z clustering tolerance in ppm. Must be an integer — a float raises `ValueError`. Default `10`. |
+    | `frequency_threshold` | float | Minimum fraction of the maximum cluster weight for an m/z to enter the per-sample backbone. Default `0.01`. |
+    | `intensity_normalization` | string | Normalization method (per sample and per ion mode): `"none"` (default), `"tic"`, `"log"`, `"clr"`, or `"tic_mean_scaled"` (rescales each spectrum to the mean total ion current over that sample's spots for that ion mode, preserving absolute scale; not comparable across samples). |
+    | `min_intensity_threshold` | float | Minimum *peak* intensity for a peak to be used when estimating m/z recalibration offsets. Does not mask or filter spots. Default `10000.0`. |
+    | `detect_background` | bool | Detect and flag off-tissue background spots in `obs["foreground"]` (all spots are still written). Only effective when `lipid_annotation_db` is also set. Default `false`. |
+    | `sample_type` | string | Background-detection strategy: `"tissue"` (GMM + BIC, default) or `"microgrid"` (Otsu with a 25th-percentile floor). |
+    | `recalibration_reference` | dict or null | Pre-computed per-ion-mode reference m/z arrays. Computed from the dataset when `null`. Default `null`. |
+    | `lipid_annotation_db` | string or null | Path to a CSV or JSON lipid database with columns `db_name`, `ionized_mass`, `ion_mode`. Default `null`. |
+    | `force_recomputing` | bool | Reprocess even if output already exists. Default `false`. |
 
 === "Microscopy Image (`microscopy_image`)"
 

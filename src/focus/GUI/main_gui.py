@@ -545,6 +545,7 @@ def _build_schema() -> dict:
 				STPreprocessingParams.MAX_GENES_PER_SPOT: {"type": "int", "default": None, "nullable": True},
 				STPreprocessingParams.MIN_SPOTS_PER_GENE: {"type": "float", "default": None, "nullable": True},
 				STPreprocessingParams.MIN_COUNT_SPOTS_RATIO_PER_GENE: {"type": "float", "default": None, "nullable": True},
+				STPreprocessingParams.REMOVE_MITOCHONDRIAL_GENES: {"type": "bool", "default": False},
 				STPreprocessingParams.TOTAL_COUNTS_NORMALIZE: {"type": "bool", "default": False},
 				STPreprocessingParams.LOG1P_TRANSFORM: {"type": "bool", "default": False},
 				STPreprocessingParams.FORCE_RECOMPUTING: {"type": "bool", "default": False},

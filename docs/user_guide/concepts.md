@@ -108,8 +108,16 @@ FOCUS converts all image modalities (microscopy and Raman) to multi-resolution O
 
 FOCUS supports:
 
-- **Single ion mode** — only `pos/` or only `neg/` data per sample
+- **Single ion mode** — data in only `pos/` or only `neg/` per sample. The other subfolder may exist and be empty (the GUI creates both); FOCUS decides from the files present, not the folders
 - **Dual ion mode** — both `pos/` and `neg/` data per sample; features (m/z values) are identified by mode via `.var['mz_mode']` column (`'pos'` or `'neg'`), allowing the same spot to have measurements from both ion modes
+
+Ion mode is **not** a configuration setting — it is detected per sample from whether each ion mode subfolder holds a complete `.imzML` + `.ibd` pair. Samples within one dataset may therefore differ.
+
+!!! warning "Mixed datasets zero-fill the missing polarity"
+    The feature axis spans the union of both ion modes across the whole dataset. For a sample that
+    only has one polarity, the other polarity's columns are written as **zeros**, which are not
+    distinguishable from genuinely measured zeros. Use `.var['mz_mode']` together with the sample's
+    own ion modes to mask those columns before any cross-sample statistics.
 
 ---
 
@@ -117,12 +125,12 @@ FOCUS supports:
 
 **`spot_size`** is the physical footprint of a single spot or pixel, expressed as $[\text{width}, \text{height}]$ in micrometers ($\mu\text{m}$). It is the canonical keyword for spot/pixel dimensions throughout FOCUS:
 
-- Stored in `.uns['spot_size']` of every omics AnnData file as a `float32` array of shape `(2,)`
+- Stored in `.uns['spot_size']` of every omics AnnData file as a 2-element `[x, y]` value (a `float32` array of shape `(2,)` for ST, a plain list of two floats for MSI). In **merged** files it becomes a `dict` keyed by `sample_id` instead, since samples can differ
 - Used during spot/pixel registration (`spot_interpolation`, `spot_aggregation`, `raman_pixel_interpolation`) to set the footprint within which target spots/pixels are combined for each reference spot — a larger `spot_size` includes more neighbors. For `spot_interpolation` and `raman_pixel_interpolation` it also sets the radius of the Gaussian kernel used in the weighted average; `spot_aggregation` uses the footprint only, to select which spots are summed (no kernel)
 - Carried forward to the final MuData `.uns['spot_size']`, where it reflects the reference modality's spot dimensions
 
 **Automatic vs. manual specification:**
-- **MSI**: Read automatically from instrument metadata (`.imzML` file)
+- **MSI**: Read automatically from instrument metadata (the `pixel size x`/`pixel size y` scan settings in the `.imzML` file), as an integer number of µm; defaults to `[1.0, 1.0]` when absent or below 1 µm. In dual ion mode the positive mode's raster size is used (both modes are expected to share it)
 - **Raman**: Read automatically from instrument metadata (`.lif` file headers)
 - **Spatial Transcriptomics (ST)**: Read from the input AnnData's `.uns['spot_size']` field; if absent, defaults to `[1.0, 1.0]` µm
 - **Microscopy (microscopy_image)**: **Not used** — microscopy is an image modality and does not have discrete spots with a size parameter

@@ -14,10 +14,10 @@ from focus.constants import (
 	ConfigParameters, ModalityParameters, ModalityType,
 	RegistrationType, REGISTRATION_COMPATIBILITY,
 	AlignmentStrategy, ALIGNMENT_STRATEGY_COMPATIBILITY,
-	MsiPreprocessingParams,
+	MsiPreprocessingParams, MsiIonMode,
 	AnnotationsParameters, AnnotationFileType,
 )
-from focus.preprocessing._utils import validate_path_readable, discover_sample_ids
+from focus.preprocessing._utils import validate_path_readable, discover_sample_ids, find_imzml_pair
 
 
 def hw_from_axes(shape, axes: str | None) -> tuple[int, int]:
@@ -290,6 +290,23 @@ def parse_config(config: dict, require_raw_inputs: bool = True) -> dict:
 					raise FileNotFoundError(
 						f"Lipid annotation database not found for modality '{mod_name}': {lipid_db}"
 					)
+
+				# MSI input lives in pos/ and/or neg/ ion mode subdirectories. The GUI creates both
+				# for every sample, so validate the imzML/IBD pairs rather than the directories:
+				# a sample needs a complete pair in at least one ion mode.
+				for sample_id in sample_ids:
+					mod_dir = os.path.join(dataset_path, sample_id, mod_name)
+					# Materialise the list rather than using a generator with any(): short-circuiting
+					# on the first hit would skip the incomplete-pair check on the other ion mode.
+					pairs = [
+						find_imzml_pair(os.path.join(mod_dir, mode)) for mode in MsiIonMode.list()
+					]
+					if not any(pairs):
+						raise FileNotFoundError(
+							f"No complete .imzML + .ibd file pair found for sample '{sample_id}' in "
+							f"'{mod_dir}'. Expected one in at least one of the ion mode "
+							f"subdirectories: {MsiIonMode.list()}."
+						)
 
 	# --- Step 9: Registration type compatibility ---
 	for modality in config[ConfigParameters.MODALITIES]:

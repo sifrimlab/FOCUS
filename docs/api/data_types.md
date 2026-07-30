@@ -25,14 +25,18 @@ For microscopy, the full-resolution level is at index `0`; higher indices are pr
 | Attribute | Type | Shape | Description |
 |-----------|------|-------|-------------|
 | `.X` | sparse CSR float32 | $(n_\text{spots},\ n_\text{mz})$ | Ion intensities after normalization |
+| `.layers['raw']` | sparse CSR float32 | $(n_\text{spots},\ n_\text{mz})$ | Interpolated intensities *before* normalization |
 | `.obsm['spatial']` | float32 ndarray | $(n_\text{spots},\ 2)$ | Physical coordinates in µm $(x, y)$ |
-| `.obsm['raster_coordinates']` | int32 ndarray | $(n_\text{spots},\ 2,\ 2)$ | Pixel bounding boxes $[[x_\text{tl}, y_\text{tl}], [x_\text{br}, y_\text{br}]]$ in µm |
+| `.obsm['raster_coordinates']` | int32 ndarray | $(n_\text{spots},\ 2,\ 2)$ | Raster-cell bounding boxes $[[x_\text{tl}, y_\text{tl}], [x_\text{br}, y_\text{br}]]$ in µm |
 | `.obs['sample_id']` | categorical | $(n_\text{spots},)$ | Sample identifier (directory name) |
-| `.obs['foreground']` | categorical | $(n_\text{spots},)$ | Tissue/background mask stored as categorical boolean values |
+| `.obs['foreground']` | categorical | $(n_\text{spots},)$ | Tissue/background mask stored as categorical boolean values. Always present; all `True` when background detection did not run |
+| `.obs['cluster']` | categorical | $(n_\text{spots},)$ | Per-sample cluster label, used only for spot colouring in the alignment GUI |
 | `.var['mz']` | float32 ndarray | $(n_\text{mz},)$ | Consensus m/z values |
 | `.var['mz_mode']` | categorical | $(n_\text{mz},)$ | Ion mode for each m/z (`'pos'` or `'neg'`) |
-| `.var['lipid_annotation']` | categorical | $(n_\text{mz},)$ | Lipid annotation string (`"Unannotated"` when no match/database is provided) |
-| `.uns['spot_size']` | float32 ndarray | $(2,)$ | Spot size $[x,\ y]$ in µm, derived from MSI raster metadata |
+| `.var['lipid_annotation']` | categorical | $(n_\text{mz},)$ | Lipid annotation string — `"; "`-separated `db_name` hits, or `"Unannotated"` when no match/database is provided |
+| `.uns['spot_size']` | list of 2 floats | — | Spot size $[x,\ y]$ in µm, derived from MSI raster metadata. In the **merged** file this is instead a `dict` keyed by `sample_id` |
+
+`.var_names` are the stringified column indices `"0" … "n_mz-1"`, not the m/z values — read `.var['mz']` for the masses.
 
 !!! note "Dual ion mode"
     When both positive and negative ion mode acquisitions are present, their features are concatenated along `var` (columns), and mode identity is tracked in `.var['mz_mode']`.
@@ -44,13 +48,16 @@ For microscopy, the full-resolution level is at index `0`; higher indices are pr
 
 | Attribute | Type | Shape | Description |
 |-----------|------|-------|-------------|
-| `.X` | sparse CSR float32 | $(n_\text{spots},\ n_\text{genes})$ | Normalized expression counts (with optional log1p transform) |
-| `.layers['raw']` | sparse CSR float32 | $(n_\text{spots},\ n_\text{genes})$ | Raw counts before normalization |
+| `.X` | sparse CSR | $(n_\text{spots},\ n_\text{genes})$ | Expression counts. Raw unless `total_counts_normalize` or `log1p_transform` was enabled; dtype follows the input file |
+| `.layers['raw']` | sparse CSR | $(n_\text{spots},\ n_\text{genes})$ | Raw counts before normalization. **Present only when `.X` was normalized** |
 | `.obsm['spatial']` | float32 ndarray | $(n_\text{spots},\ 2)$ | Spot coordinates in µm $(x, y)$ |
+| `.obs_names` | object | $(n_\text{spots},)$ | Spot names, prefixed `<sample_id>_` |
 | `.obs['sample_id']` | categorical | $(n_\text{spots},)$ | Sample identifier |
-| `.obs['leiden']` | categorical | $(n_\text{spots},)$ | Leiden cluster label (computed during preprocessing) |
-| `.uns['spot_size']` | float32 ndarray | $(2,)$ | Spot diameter $[x,\ y]$ in µm. **Automatically extracted from input AnnData's `.uns['spot_size']`.** If unavailable, defaults to `[1.0, 1.0]` µm. |
-| `.var['mt']` | bool | $(n_\text{genes},)$ | `True` for mitochondrial genes (prefix `MT-` / `mt-`) |
+| `.obs['cluster']` | categorical | $(n_\text{spots},)$ | Per-sample cluster label, used only for spot colouring in the alignment GUI |
+| `.obs` QC | float / int | $(n_\text{spots},)$ | `total_counts`, `n_genes_by_counts`, `total_counts_mt`, `pct_counts_mt` and their `log1p_` variants |
+| `.var['mt']` | bool | $(n_\text{genes},)$ | `True` for mitochondrial genes (case-insensitive `MT-` / `MT.` name prefix) |
+| `.var` QC | float / int | $(n_\text{genes},)$ | `n_cells_by_counts`, `mean_counts`, `total_counts`, `pct_dropout_by_counts` and their `log1p_` variants |
+| `.uns['spot_size']` | float32 ndarray | $(2,)$ | Spot diameter $[x,\ y]$ in µm, read from the input AnnData's `.uns['spot_size']`; defaults to `[1.0, 1.0]` µm when absent. In the **merged** file this is instead a `dict` keyed by `sample_id` |
 
 !!! note "spot_size"
     For ST modalities, `spot_size` is read from the input AnnData file's `.uns['spot_size']` field during preprocessing. If this field is absent, FOCUS applies the default `[1.0, 1.0]` µm. This value is critical for accurate spot interpolation during registration; ensure your input ST AnnData has the correct spot diameter.
@@ -141,7 +148,7 @@ annotations = mdata.obs["spatial_annotation"]
 
 # Downstream analysis with squidpy (feature names are namespaced as {modality}:{name})
 import squidpy as sq
-sq.pl.spatial_scatter(mdata.mod["st"], color="st:leiden")
+sq.pl.spatial_scatter(mdata.mod["st"], color="st:CD3E")
 
 # Access feature embeddings from microscopy registration
 microscopy_embeddings = mdata.mod["microscopy"].X  # (n_spots, 1536)

@@ -87,25 +87,27 @@ The MSI pipeline operates at the **dataset level**: all samples are processed to
 **Processing Steps**:
 
 1. **Initialization and Metadata Parsing** (per sample)
-   - Detect ion modes from subdirectory presence (`pos/`, `neg/`, or both)
+   - Detect ion modes from the presence of a complete `.imzML` + `.ibd` pair in `pos/`, `neg/`, or both (an ion mode subdirectory holding neither file is treated as not acquired and ignored)
    - Parse imzML XML: extract data types, raster size (µm), pixel coordinates, and physical coordinates
    - Correct rotation error in physical coordinates via linear regression on the densest pixel column
    - If double ion mode: filter unpaired spots (experimental artifacts), compute affine alignment between positive and negative physical coordinates, and average the two coordinate sets
    - Normalize physical coordinates to origin; shift to raster center
    - Compute raster bounding-box coordinates for each spot (in µm)
 
-2. **Background Detection** (optional, `detect_background=True`)
+2. **Background Detection** (optional, `detect_background=True` **and** `lipid_annotation_db` set — without a database the step is silently skipped and every spot is marked foreground)
    - For each spot, compute three spectral complexity features: Shannon entropy of the normalized intensity distribution, number of detected peaks, and log(1 + TIC)
-   - If a lipid annotation database is provided: add a 4th feature (fraction of peaks matching the DB at the configured mass tolerance)
+   - Add a 4th feature from the database (fraction of peaks matching the DB at the configured mass tolerance)
    - Min-max normalize each feature and average into a composite score
    - **Tissue sections** (`sample_type="tissue"`): fit a 1-component and a 2-component Gaussian Mixture Model; use BIC to select between them. If the 2-component model wins, classify spots with posterior ≥ 0.5 on the higher-mean component as tissue. Apply morphological cleanup (hole filling + binary opening) on the pixel grid.
    - **Microgrid samples** (`sample_type="microgrid"`): use Otsu thresholding with a 25th-percentile floor to protect weak single-cell signals; no spatial cleanup.
    - The foreground classification is stored as `obs["foreground"]`; all spots (including background) are included in the output and can be filtered downstream.
 
 3. **Recalibration Reference Selection**
-   - Randomly subsample 30% of spectra per sample to estimate representative m/z values
-   - For each ion mode, greedily select the 5 highest-scoring candidate m/z values (scored by global frequency × sample coverage) that collectively cover all samples
-   - Alternatively, a user-supplied `recalibration_reference` dictionary can be passed directly
+   - Every spectrum of every sample contributes. Each sample is reduced on arrival to a compact m/z occurrence histogram on a logarithmic grid and its raw peaks are released, so memory stays bounded by the mass range and tolerance rather than the spectrum count
+   - Candidates are the annotation-matched m/z when a `lipid_annotation_db` is configured, otherwise all m/z
+   - Histogram bins are grouped within `mass_tolerance` ppm (same weighted sliding window used for the m/z backbone), collapsing the many slightly different measurements of one calibrant into a single candidate
+   - For each ion mode, greedily select at least 5 candidates by descending score (occurrences × fraction of samples containing the candidate, ties broken by ascending m/z), adding more if needed until every sample is covered
+   - Alternatively, a user-supplied `recalibration_reference` dictionary can be passed directly, which skips this step entirely
 
 4. **Per-Row m/z Recalibration** (per sample)
    - For each reference m/z peak, find the highest-intensity peak within `mass_tolerance` in each spectrum
@@ -113,7 +115,7 @@ The MSI pipeline operates at the **dataset level**: all samples are processed to
    - Apply the row-wise offset to all m/z values in that row
 
 5. **Per-Sample m/z Backbone Computation**
-   - Pool all (recalibrated) m/z values from foreground spots of a sample
+   - Pool all (recalibrated) m/z values of a sample — restricted to foreground spots only when background detection actually ran (see step 2), otherwise all spots
    - Cluster nearby values using adaptive sliding-window clustering with weighted centroids (parallel, chunked)
    - Filter clusters by frequency: keep only those appearing in ≥ `frequency_threshold` fraction of the maximum cluster weight
 
@@ -130,16 +132,17 @@ The MSI pipeline operates at the **dataset level**: all samples are processed to
    - Each original peak distributes its intensity to reference bins within `mass_tolerance` ppm using inverse-distance weighting
    - Produces a dense (N_spots × N_features) float32 matrix
 
-9. **Intensity Normalization** (applied independently per ion mode)
+9. **Intensity Normalization** (applied independently per sample and per ion mode)
    - `"tic"`: divide each spectrum by its total ion count (each spectrum sums to 1)
    - `"log"`: apply log(1 + x) transform
    - `"clr"`: sparsity-preserving centered log-ratio — log-centers each spectrum over its nonzero entries only, leaving structural zeros at 0
-   - `"tic_mean_scaled"`: rescale each spectrum to the mean total ion count of its ion mode (each spectrum's total becomes the mean TIC) — like `"tic"` but preserves an interpretable absolute intensity scale instead of forcing a sum of 1
+   - `"tic_mean_scaled"`: rescale each spectrum to the mean total ion count over that sample's spots for that ion mode (each spectrum's total becomes the mean TIC) — like `"tic"` but preserves an interpretable absolute intensity scale instead of forcing a sum of 1. The mean is per sample, so values are not comparable across samples
    - `"none"`: keep raw interpolated intensities
 
-10. **Per-Sample Leiden Clustering**
-    - PCA (up to 50 components) → neighbor graph → Leiden (`resolution=0.5`, `flavor="igraph"`, `n_iterations=2`) on the normalized matrix
-    - Labels stored in `obs["leiden"]`. The PCA embedding, neighbor graph, and associated metadata are then discarded (only `obs["leiden"]` is kept) to minimize file size
+10. **Per-Sample Cluster Labels** (used only to colour spots during alignment)
+    - Samples above 100,000 spots are coarsened first: a uniform spatial grid of at most 100,000 bins is laid over the spots, all spots in a bin are **summed** into one pseudo-spot, and the pseudo-spots are re-normalized so bin occupancy washes out. Smaller samples skip binning
+    - PCA (up to 50 components) → neighbor graph → Leiden (`resolution=0.5`, `flavor="igraph"`, `n_iterations=2`, `directed=False`) on that matrix; each bin's label then propagates back to every spot it contains
+    - Labels stored in `obs["cluster"]`. The binned matrix, PCA embedding and neighbor graph are all discarded (only `obs["cluster"]` is kept) to minimize file size
 
 11. **Save Per-Sample AnnData and Merge**
     - Each sample is saved separately (gzip compression)
@@ -155,12 +158,12 @@ The MSI pipeline operates at the **dataset level**: all samples are processed to
 | `intensity_normalization` | `"none"` | Normalization method (per ion mode): `"tic"`, `"log"`, `"clr"`, `"tic_mean_scaled"`, or `"none"` |
 | `recalibration_reference` | `null` | User-supplied reference m/z dict per ion mode; auto-computed if null |
 | `min_intensity_threshold` | `10000.0` | Minimum intensity for a peak to be used in recalibration offset estimation |
-| `detect_background` | `false` | Run background detection to classify tissue vs background spots |
+| `detect_background` | `false` | Run background detection to classify tissue vs background spots. Requires `lipid_annotation_db`; without it the step is skipped |
 | `sample_type` | `"tissue"` | Sample type for background detection: `"tissue"` or `"microgrid"` |
 | `lipid_annotation_db` | `null` | Path to lipid annotation database (CSV or JSON with `db_name`, `ionized_mass`, `ion_mode` columns) |
 | `force_recomputing` | `false` | Reprocess even if output already exists |
 
-The defaults above are the values applied when running through the configuration file (the pipeline's settings extractor). When calling `MsiDataset.process_dataset()` directly in Python, two signature defaults differ: `intensity_normalization` defaults to `"tic"` and `detect_background` defaults to `True`.
+The defaults above are applied both by the pipeline's settings extractor (`_extract_msi_settings`) and by the `MsiDataset.process_dataset()` signature — config runs and direct Python calls agree. Note that `mass_tolerance` must be an `int`; a float raises `ValueError`.
 
 **Output Files**:
 ```
@@ -178,8 +181,8 @@ The defaults above are the values applied when running through the configuration
 | `.X` | Normalized interpolated intensities (sparse CSR, spots × m/z features) |
 | `.layers["raw"]` | Raw interpolated intensities before normalization (sparse CSR) |
 | `.obs["sample_id"]` | Categorical sample identifier |
-| `.obs["foreground"]` | Boolean: tissue (True) vs background (False) |
-| `.obs["leiden"]` | Categorical Leiden cluster labels |
+| `.obs["foreground"]` | Categorical boolean: tissue (True) vs background (False). Always present; all True when background detection did not run |
+| `.obs["cluster"]` | Categorical per-sample cluster labels (alignment colouring) |
 | `.obsm["spatial"]` | Physical spot center coordinates in µm, shape (N, 2), float32 |
 | `.obsm["raster_coordinates"]` | Raster bounding boxes in µm, shape (N, 2, 2): [[x1,y1],[x2,y2]] |
 | `.var["mz"]` | Consensus reference m/z values (float32) |
@@ -287,40 +290,47 @@ Supports any spot-based or cell-based spatial transcriptomics technology (Visium
    - All thresholds default to `null` (no filtering)
 
 4. **QC Metrics Computation**
-   - `scanpy.pp.calculate_qc_metrics(qc_vars=["mt"], percent_top=None)` on the retained spots (mito genes still present, so `pct_counts_mt` is meaningful)
-   - Adds per-spot (`n_genes_by_counts`, `total_counts`, `pct_counts_mt`, ...) and per-gene (`n_cells_by_counts`, ...) metrics as inspectable metadata
+   - `scanpy.pp.calculate_qc_metrics(qc_vars=["mt"], percent_top=None)` on the retained spots, with mitochondrial genes still present
+   - `.obs` gains `total_counts`, `n_genes_by_counts`, `total_counts_mt`, `pct_counts_mt` and their `log1p_` variants; `.var` gains `n_cells_by_counts`, `mean_counts`, `total_counts`, `pct_dropout_by_counts` and their `log1p_` variants
 
 5. **Mitochondrial Gene Removal** (optional)
-   - When `remove_mitochondrial_genes=true`, drop the `.var["mt"]`-flagged genes from the feature set. Off by default (high mito fraction is often biological in spatial data)
-   - Observation names are then prefixed with `<sample_id>_` to ensure uniqueness across samples
+   - When `remove_mitochondrial_genes=true`, drop the `.var["mt"]`-flagged genes from the feature set
+   - Runs after step 4, so the QC metrics already in `.obs` (including `pct_counts_mt`) describe the matrix before removal
 
-6. **Raw Count Preservation**
-   - Store the filtered, post-feature-selection (unnormalized) count matrix in `.layers["raw"]`
+6. **Observation Names**
+   - Prefixed with `<sample_id>_`, unless every name already carries that prefix
 
-7. **Normalization** (both optional, default off)
+7. **Per-Sample Cluster Labels**
+   - Stored in `.obs["cluster"]`; used to colour spots in the alignment GUI
+   - Computed on `.X` at this point — post-filter, post-removal, still raw counts
+   - Samples above 100,000 spots are first coarsened onto a uniform spatial grid of at most 100,000 cells, summing the spots in each cell into one pseudo-spot
+   - The run matrix is normalized to 10,000 counts and log1p-transformed on a throwaway copy, then PCA (`min(50, n_rows-1, n_genes-1)` components) → neighbor graph (`min(15, n_rows-1)` neighbours) → Leiden (`resolution=0.5`, `flavor="igraph"`, `n_iterations=2`, `directed=False`); each cell's label propagates back to its spots
+   - Only `.obs["cluster"]` is persisted. Fewer than 2 run rows, fewer than 2 usable PCs, or a single resulting cluster all give the label `'0'`. `random_state=0`
+
+8. **Raw Count Layer**
+   - `.layers["raw"]` receives a copy of `.X` **only when** `total_counts_normalize` or `log1p_transform` is enabled. With both off, `.X` already holds raw counts and no layer is written
+
+9. **Normalization** (both optional, default off)
    - Total count normalization: scale each spot to `target_sum = 10,000`
-   - log(1 + x) transformation
+   - log(1 + x) transformation, applied after normalization
    - With both off (the default), `.X` stays raw; downstream stages consume it as-is
-
-8. **Per-Sample Leiden Clustering**
-   - Labels colour spots during alignment; only `.obs["leiden"]` is kept
-   - Computed on a throwaway, internally normalized + log1p copy (so labels are meaningful even when `.X` is raw): PCA (up to 50 components) → neighbor graph → Leiden (`resolution=0.5`, `flavor="igraph"`, `n_iterations=2`, `directed=False`)
-   - PCA/neighbour-graph intermediates are **not** persisted; samples with < 2 spots (or too few PCs) get label `'0'`
 
 **Dataset-Level (Merged) Processing**:
 
-After per-sample preprocessing, all samples are merged:
+After per-sample preprocessing, all samples are merged. The merged file is reused as-is when it exists, `force_recomputing` is false, and its `.obs["sample_id"]` set equals the active sample set.
 
-1. Reload per-sample files; revert `.X` to raw counts from `.layers["raw"]`
-2. Concatenate with **outer join**: genes absent from a sample are filled with 0 counts
-3. **Cross-sample gene filtering** (both optional):
-   - `min_spots_per_gene`: a gene must be expressed in ≥ this fraction of spots in ≥ 5% of samples
-   - `min_count_spots_ratio_per_gene`: a gene's (total counts / expressed spots) ratio must exceed this value in ≥ 5% of samples; samples where the gene is absent are excluded from the denominator
-   - Note: the design preserves every gene with signal in ≥ 1 sample (rare cell-type markers); FOCUS does not subset to highly variable genes
-4. Recompute QC metrics on the merged matrix so `.obs`/`.var` QC reflect the retained spots/genes
-5. Store post-filter raw counts in `.layers["raw"]`
-6. Normalize merged `.X` (same opt-in `total_counts_normalize` / `log1p_transform` flags)
-7. Per-sample Leiden labels from individual processing are preserved in `.obs["leiden"]`
+1. Read each per-sample `.uns["spot_size"]` with a backed read, without materializing `.X`
+2. Concatenate **on disk** (`anndata.concat_on_disk`) with **outer join**: genes absent from a sample are filled with 0 counts. `.uns` is dropped by the concat
+3. Restore raw counts on the merged object: `.X = .layers.pop("raw", .X)` — the layer exists only if the per-sample files were normalized, otherwise `.X` is already raw
+4. **Cross-sample gene filtering** (both optional; skipped entirely when both are `null`):
+   - `min_spots_per_gene`: a sample passes for a gene when the gene is expressed in ≥ this fraction of that sample's spots
+   - `min_count_spots_ratio_per_gene`: a sample passes when the gene's (total counts / expressed spots) ≥ this value; samples where the gene is unexpressed count as neither pass nor fail
+   - A gene is retained when it passes in **at least one** sample; the number of samples it is detected in does not matter. With both thresholds set, a gene must satisfy each in at least one sample, not necessarily the same one
+   - There is no highly-variable-gene selection
+5. Re-derive `.var["mt"]` and recompute QC metrics on the merged raw matrix
+6. `.layers["raw"]` under the same condition as step 8 above, then normalize merged `.X` with the same `total_counts_normalize` / `log1p_transform` flags
+7. Per-sample `.obs["cluster"]` labels carried through the concat are kept unchanged; no clustering runs on the merged matrix
+8. `.uns["spot_size"]` is written as `{sample_id: [x, y]}`
 
 **Parameters**:
 
@@ -330,9 +340,9 @@ After per-sample preprocessing, all samples are merged:
 | `max_count_per_spot` | `null` | Maximum total UMI counts per spot to retain |
 | `min_genes_per_spot` | `null` | Minimum detected genes per spot to retain |
 | `max_genes_per_spot` | `null` | Maximum detected genes per spot to retain |
-| `min_spots_per_gene` | `null` | Minimum fraction of spots per sample expressing a gene (0–1) |
-| `min_count_spots_ratio_per_gene` | `null` | Minimum ratio of total counts to expressed spots per gene |
-| `remove_mitochondrial_genes` | `false` | Opt-in. Drop mitochondrial genes (`MT-`/`MT.` prefix) from the feature set |
+| `min_spots_per_gene` | `null` | Minimum fraction of a sample's spots expressing a gene for that sample to pass; must satisfy `0 < value < 1`. Dataset-level only |
+| `min_count_spots_ratio_per_gene` | `null` | Minimum ratio of a gene's total counts to its expressed spots, per sample; must be `> 0`. Dataset-level only |
+| `remove_mitochondrial_genes` | `false` | Drop mitochondrial genes (`MT-`/`MT.` prefix) from the feature set. Applied per sample |
 | `total_counts_normalize` | `false` | Normalize total counts per spot to 10,000 |
 | `log1p_transform` | `false` | Apply log(1 + x) transformation |
 | `force_recomputing` | `false` | Reprocess even if output already exists |
@@ -354,12 +364,15 @@ same defaults as the config extractor.
 | Slot | Description |
 |------|-------------|
 | `.X` | Counts (sparse CSR); raw unless `total_counts_normalize`/`log1p_transform` are set |
-| `.layers["raw"]` | Filtered, post-feature-selection raw counts (sparse CSR) |
+| `.layers["raw"]` | Raw counts before normalization (sparse CSR). Present **only** when `.X` was normalized |
+| `.obs_names` | Spot names, prefixed `<sample_id>_` |
 | `.obs["sample_id"]` | Categorical sample identifier |
-| `.obs["leiden"]` | Categorical per-sample Leiden cluster labels |
-| `.obs` (QC columns) | `n_genes_by_counts`, `total_counts`, `pct_counts_mt`, etc. from `calculate_qc_metrics` |
+| `.obs["cluster"]` | Categorical per-sample cluster labels |
+| `.obs` (QC columns) | `total_counts`, `n_genes_by_counts`, `total_counts_mt`, `pct_counts_mt` and their `log1p_` variants |
+| `.var["mt"]` | Boolean mitochondrial flag |
+| `.var` (QC columns) | `n_cells_by_counts`, `mean_counts`, `total_counts`, `pct_dropout_by_counts` and their `log1p_` variants |
 | `.obsm["spatial"]` | float32 spatial coordinates, shape (N, 2) |
-| `.uns["spot_size"]` | float32 array [width, height] in µm (or [1.0, 1.0] if not provided); dict keyed by sample_id in merged file |
+| `.uns["spot_size"]` | float32 array [width, height] in µm (or [1.0, 1.0] if not provided); dict keyed by sample_id in the merged file |
 
 ---
 
@@ -388,6 +401,9 @@ FOCUS uses a consistent naming pattern for all preprocessed outputs.
 ## Caching
 
 Each modality checks whether its output file already exists at the start of processing. If the file is found and `force_recomputing` is not set, the step is skipped and the cached path is returned. There is no hash- or timestamp-based validation: deleting the output file or setting `force_recomputing: true` is the only way to trigger reprocessing.
+
+!!! warning "Changing a processing setting does not invalidate the cache"
+    The cache key is the existence of the output file (plus, for the merged MSI/ST files, the set of active sample IDs) — **not** the processing settings. Editing a setting and re-running therefore returns the previously computed output unchanged, with no warning. After changing any processing setting, set `force_recomputing: true` for that modality (or delete its outputs) so the new value takes effect.
 
 The Raman pipeline has intermediate caches (`basic_corrected_tiles.npy`, `segmented_tiles.npy`, `raman_corrected_tiles.npy`) that are checked independently at each step, allowing partial resume within a single sample. These intermediate files are deleted after the final OME-TIFF is produced.
 
@@ -443,10 +459,11 @@ sc.pl.violin(adata, ["n_genes_by_counts", "total_counts", "pct_counts_mt"], jitt
 # Spatial plot of total counts
 sc.pl.spatial(adata, color="total_counts", spot_size=adata.uns["spot_size"][0])
 
-# UMAP colored by cluster
+# UMAP coloured by the preprocessing cluster labels
+sc.pp.pca(adata, n_comps=min(50, adata.n_obs - 1, adata.n_vars - 1))
 sc.pp.neighbors(adata)
 sc.tl.umap(adata)
-sc.pl.umap(adata, color="leiden")
+sc.pl.umap(adata, color="cluster")
 ```
 
 ### MSI
@@ -455,28 +472,32 @@ After preprocessing, inspect the foreground classification and the quality of th
 
 ```python
 import anndata as ad
+import numpy as np
+import scanpy as sc
 import matplotlib.pyplot as plt
 
 adata = ad.read_h5ad("path/to/<modality>_<sample>_processed.h5ad")
 
 # Spatial map of foreground mask
 coords = adata.obsm["spatial"]
-fg = adata.obs["foreground"].astype(bool)
+fg = adata.obs["foreground"].astype(bool).to_numpy()
 plt.scatter(coords[~fg, 0], coords[~fg, 1], c="lightgray", s=1, label="background")
 plt.scatter(coords[fg, 0], coords[fg, 1], c="steelblue", s=1, label="foreground")
 plt.legend(); plt.axis("equal"); plt.show()
 
 # Spatial map of a known lipid (if annotated)
-import numpy as np
-hits = np.where(adata.var["lipid_annotation"] != "Unannotated")[0]
+hits = np.where(adata.var["lipid_annotation"].to_numpy() != "Unannotated")[0]
 if hits.size:
-    sc.pl.spatial equivalent or plt scatter with adata.X[:, hits[0]].toarray().ravel()
+    intensity = adata.X[:, hits[0]].toarray().ravel()
+    plt.scatter(coords[:, 0], coords[:, 1], c=intensity, s=1, cmap="viridis")
+    plt.colorbar(label=str(adata.var["lipid_annotation"].iloc[hits[0]]))
+    plt.axis("equal"); plt.show()
 
-# Leiden clusters in embedding space
-import scanpy as sc
+# Preprocessing clusters in embedding space (obs["cluster"], used for alignment colouring)
+sc.pp.pca(adata, n_comps=min(50, adata.n_obs - 1, adata.n_vars - 1))
 sc.pp.neighbors(adata)
 sc.tl.umap(adata)
-sc.pl.umap(adata, color=["leiden", "foreground"])
+sc.pl.umap(adata, color=["cluster", "foreground"])
 ```
 
 ### Raman

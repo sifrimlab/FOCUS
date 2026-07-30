@@ -1,4 +1,4 @@
-# FOCUS — Flexible Omics Curation and Unified Standardization
+# FOCUS: end-to-end preprocessing, alignment and resolution-matched integration of spatial multi-omics data
 
 FOCUS is an end-to-end preprocessing, alignment, and registration pipeline for **spatial multiomics** datasets. It integrates data acquired from different imaging and omics modalities on the same tissue section — such as microscopy images, mass spectrometry imaging (MSI/lipidomics), Raman spectroscopy, and spatial transcriptomics — into a single, analysis-ready multimodal dataset. The output is structured as [MuData](https://mudata.readthedocs.io/) (`.h5mu`), making it immediately compatible with established single-cell and spatial omics frameworks such as [scanpy](https://scanpy.readthedocs.io/), [squidpy](https://squidpy.readthedocs.io/), and [AnnData](https://anndata.readthedocs.io/).
 

@@ -92,10 +92,13 @@ FOCUS supports two acquisition modes:
                 └── acquisition_neg.ibd
     ```
 
-    FOCUS detects the dual-mode layout automatically when `pos/` and `neg/` subdirectories are present. The two ion modes are processed independently and stored as separate AnnData objects in the merged dataset.
+    FOCUS detects the dual-mode layout automatically when both `pos/` and `neg/` hold a complete `.imzML` + `.ibd` pair. The two ion modes are processed independently and stored as separate AnnData objects in the merged dataset.
+
+!!! tip "An unused ion mode folder can be left empty"
+    A sample's ion modes are decided by the **files** present, not by the directory structure: an ion mode subdirectory holding neither an `.imzML` nor an `.ibd` is read as "this polarity was not acquired" and is ignored. The GUI scaffolds both `pos/` and `neg/` for every MSI sample, so if you only have one ion mode just leave the other folder empty — there is no need to delete it. Ion modes may also differ from sample to sample within one dataset.
 
 !!! warning "imzML and ibd must be paired"
-    The `.imzML` and `.ibd` files must share the same base name and be in the same directory. A missing `.ibd` file will cause a file-not-found error when the parser tries to read spectra.
+    The `.imzML` and `.ibd` files must share the same base name and be in the same directory. An incomplete pair — an `.imzML` without its `.ibd`, an `.ibd` without its `.imzML`, or mismatched base names — is reported as an error during configuration validation, before any processing starts. Only an ion-mode folder holding neither file kind is treated as "this polarity was not acquired" and ignored.
 
 ---
 
@@ -127,7 +130,7 @@ Multi-tile LIF files are fully supported. FOCUS assembles the individual tiles i
 
 ### Spatial Transcriptomics (`st`)
 
-Place exactly one AnnData file (`.h5ad`) per sample inside the modality directory.
+Place one AnnData file (`.h5ad`) per sample inside the modality directory. FOCUS loads the first `.h5ad` it finds there, so a directory holding more than one gives no guarantee about which is used.
 
 ```
 <dataset_path>/

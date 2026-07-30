@@ -96,9 +96,15 @@ The resulting physical coordinates are shared across modes for that sample.
 
 ## 3. Tissue/background detection
 
-If `detect_background=true`, foreground (tissue/cell) spots are separated from background spots
-per spot from spectral-complexity features (`_detect_tissue_spots`). Tissue spectra are richer and
-more diverse than background, which is dominated by uniformly sprayed matrix/standards.
+If `detect_background=true` **and** a `lipid_annotation_db` is configured, foreground (tissue/cell)
+spots are separated from background spots per spot from spectral-complexity features
+(`_detect_tissue_spots`). Tissue spectra are richer and more diverse than background, which is
+dominated by uniformly sprayed matrix/standards.
+
+!!! warning "Gated on the annotation database"
+    The detector is invoked from `load_payload` only when `annotation_db is not None`. With
+    `detect_background=true` and no database, detection is skipped, `filtered_idx` stays `None`, and
+    `foreground_mask` marks every spot as foreground.
 
 **Per-spot features.** For spot \(i\) with raw centroided intensities \(I_i=(I_{i,1},\dots,I_{i,k_i})\):
 
@@ -158,21 +164,87 @@ The foreground mask is stored in `.obs['foreground']`; **all** spots remain in t
 
 ### 4.1 Recalibration reference selection
 
-If no `recalibration_reference` is supplied, reference peaks are selected automatically
-(`_find_calibration_reference`), independently per ion mode. To bound memory, ~30 % of each
-sample's spectra are sampled (\(\lfloor 0.3\,n\rfloor\), at least one) and their m/z rounded to 6
-decimals. For each unique candidate m/z let \(c\) be its **global count** (occurrences across all
-sampled spectra) and \(k\) the number of **distinct samples** in which it appears, out of \(S\)
-samples. Candidates are scored by
+If no `recalibration_reference` is supplied, reference masses are selected automatically
+(`_CalibrationReferenceSelector`), independently per ion mode, from **every** spectrum of every
+sample. The candidate pool is the annotation-matched m/z when a `lipid_annotation_db` is available,
+and all m/z otherwise.
+
+#### 4.1.1 Logarithmic reduction
+
+A calibrant is never recorded at exactly the same m/z twice, so candidates must be pooled within a
+relative tolerance before they can be counted. Peaks are therefore indexed on a logarithmic grid.
+For tolerance \(\tau\) (ppm) and subdivision \(\beta=2\), the bin width in natural-log units is
 
 \[
-\text{score} = c \cdot \left(\frac{k}{S}\right)^{\alpha},\qquad \alpha = 1,
+w = \frac{\tau \cdot 10^{-6}}{\beta},
+\qquad
+k(m) = \left\lfloor \frac{\ln m}{w} \right\rfloor .
 \]
 
-i.e. global frequency weighted by cross-sample coverage. Peaks are then chosen greedily in
-descending score until at least \(N_\text{ref}=5\) (hard-coded) are selected **and** every sample is
-covered (a peak covers a sample if that sample has a peak within ppm tolerance of it); a second
-pass adds further peaks if any sample remains uncovered.
+This is the natural grid for a *relative* tolerance: for \(m_1 < m_2\) within \(\tau\) ppm,
+
+\[
+\ln m_2 - \ln m_1 = \ln\!\left(1 + \frac{m_2 - m_1}{m_1}\right) \approx \frac{m_2 - m_1}{m_1} \le \tau \cdot 10^{-6},
+\]
+
+so one uniform grid resolves the tolerance identically across the whole mass range, and two peaks
+within tolerance lie at most \(\beta\) bins apart. Bins are deliberately **narrower** than the
+tolerance so that the grouping in §4.1.2 — not the grid — decides what is one candidate; boundary
+splits are healed there.
+
+Per sample and ion mode the reduction accumulates, over occupied bins only,
+
+\[
+n_b = \#\{\text{peaks in bin } b\},
+\qquad
+\sigma_b = \sum_{m \,\in\, b} m ,
+\]
+
+via `np.bincount` (a single linear pass, no sort). The representative mass of a bin is the exact
+mean \(\sigma_b / n_b\) of the raw values that fell in it — the grid only ever *indexes* peaks, it
+never replaces a measured mass with a bin centre. Samples are folded in one at a time and their raw
+peaks released immediately; what persists per sample is one `int32` array of occupied bin indices.
+Retained memory is therefore \(O(\ln(m_{\max}/m_{\min})/w)\), i.e. bounded by the **mass span and
+tolerance**, and independent of the number of spectra.
+
+#### 4.1.2 Grouping and scoring
+
+The merged per-mode histogram is grouped within \(\tau\) ppm by the same weighted sliding window
+used to build the m/z backbone (`cluster_unique_mz_labels`, sharing the growth rule of
+`cluster_unique_mz_chunk`): bins are visited in ascending mass and a bin joins the current group
+while it stays within \(\tau\) ppm of the group's running weighted centroid. Group \(g\) then has
+
+\[
+c_g = \sum_{b \in g} n_b ,
+\qquad
+\mu_g = \frac{\sum_{b \in g} \sigma_b}{c_g},
+\qquad
+k_g = \#\{\, s : \exists\, b \in g \text{ with a peak from sample } s \,\} .
+\]
+
+\(k_g\) is counted over **distinct samples**: presence is collapsed to
+\((\text{sample}, \text{group})\) pairs before counting, so a sample whose jitter spreads one
+calibrant across several bins of a group contributes exactly once and \(k_g \le S\).
+
+With \(S\) the number of samples **having that ion mode** (so mixed single-/dual-mode cohorts score
+against the samples that could contribute), groups are scored by
+
+\[
+\text{score}_g = c_g \cdot \left(\frac{k_g}{S}\right)^{\alpha},\qquad \alpha = 1,
+\]
+
+i.e. occurrence frequency weighted by cross-sample coverage. Groups are ordered by descending score
+with **ascending \(\mu_g\) as tie-break** (a `lexsort`, giving a total order) and taken greedily
+until at least \(N_\text{ref}=5\) (hard-coded) are selected **and** every sample is covered (a group
+covers a sample when that sample has a peak in it). A second pass then adds any further group that
+covers a still-uncovered sample. The selected \(\mu_g\) are returned in ascending order.
+
+Because grouping precedes scoring, the \(N_\text{ref}\) references are \(N_\text{ref}\) *distinct*
+calibrants separated by more than \(\tau\), each reported at the weighted centroid \(\mu_g\) of all
+its measurements — a lower-variance estimate of the true mass than any single observation.
+
+The references are shared by the whole dataset: one set per ion mode, used by every sample. The
+per-sample quantity is the offset \(\Delta_x\) derived from them (§4.2).
 
 ### 4.2 Per-row recalibration
 
@@ -259,7 +331,31 @@ Raw interpolated matrix is preserved in `.layers['raw']`; normalized matrix in `
 
 ## 6b. Per-sample clustering
 
-After normalization, PCA (up to 50 components) → neighbor graph → Leiden (`resolution=0.5`, `flavor="igraph"`, `n_iterations=2`) is computed per sample and stored in `.obs['leiden']`. The PCA embedding and neighbor graph are then discarded; only the cluster labels are persisted.
+After normalization, per-sample cluster labels are computed (`compute_cluster_labels`) and stored in
+`.obs['cluster']`. They are consumed only by the alignment GUI for categorical spot colouring — no
+downstream algorithm uses them numerically — so the goal is a fast Leiden-*like* partition rather
+than an exact Leiden over every spot.
+
+For a sample with \(n\) spots and cap \(C = 100{,}000\):
+
+- **\(n > C\)** — the spots are coarsened, which also aggregates the weak signal of an individual
+  ultra-high-resolution MSI spot into something PCA/Leiden can find structure in. A uniform spatial
+  grid of at most \(C\) cells is laid over the coordinates (never finer than the native spot
+  spacing, so cells cannot fall between samples), and all spots in a cell are **summed** into one
+  pseudo-spot. Since summing breaks the per-spot normalization, the pseudo-spots are total-count
+  normalized to the median (no `log1p`, matching the unbinned path).
+- **\(n \le C\)** — no binning; Leiden runs on every spot, matrix used as-is.
+
+Then \(\text{PCA} \to \text{kNN} \to \text{Leiden}\) on that matrix, with
+\(n_\text{pcs} = \min(50,\, n_\text{run}-1,\, n_\text{vars}-1)\),
+`n_neighbors = min(15, n_run - 1)`, and Leiden at `resolution=0.5`, `flavor="igraph"`,
+`n_iterations=2`, `directed=False`. Each cell's label then propagates back to every spot that
+contributed to it.
+
+The binned matrix, PCA embedding and neighbour graph live on a throwaway `AnnData` and are never
+persisted — only the per-spot label array is. Samples with fewer than 2 run-rows or fewer than 2
+usable PCs, and samples resolving to a single cluster, receive the single label `'0'`. PCA and Leiden
+run with `random_state=0`.
 
 ---
 
@@ -283,7 +379,7 @@ Key fields:
 - `.layers['raw']`: pre-normalization interpolated intensities
 - `.obsm['spatial']`: physical coordinates
 - `.obsm['raster_coordinates']`: raster bounding boxes
-- `.obs['foreground']`, `.obs['leiden']`, `.obs['sample_id']`
+- `.obs['foreground']`, `.obs['cluster']`, `.obs['sample_id']` (all categorical)
 - `.var['mz']`, `.var['mz_mode']`, `.var['lipid_annotation']`
 - `.uns['spot_size']`: per-sample `[x,y]` (merged file stores per-sample dict)
 
@@ -291,14 +387,13 @@ Key fields:
 
 ## 8. Parameters reflected by implementation
 
-- `mass_tolerance` (default 10)
+- `mass_tolerance` (default 10; must be an `int` — `process_dataset` rejects floats)
 - `frequency_threshold` (default 0.01)
-- `intensity_normalization` (pipeline default `none`: the settings extractor `_extract_msi_settings`
-  defaults to `NONE`. Note the lower-level `process_dataset` signature default is `TIC`; pipeline
-  runs always go through the extractor, so `none` is the effective default unless configured.)
+- `intensity_normalization` (default `none`, in both the settings extractor `_extract_msi_settings`
+  and the `process_dataset` signature)
 - `recalibration_reference` (default `null`)
 - `min_intensity_threshold` (default `10000.0`)
-- `detect_background` (default `false` in extracted settings)
+- `detect_background` (default `false`; effective only when `lipid_annotation_db` is also set)
 - `sample_type` (`tissue` or `microgrid`, default `tissue`)
 - `lipid_annotation_db` (optional CSV/JSON with `db_name`, `ionized_mass`, `ion_mode`)
 - `force_recomputing` (default false)

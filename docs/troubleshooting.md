@@ -201,6 +201,34 @@ dataset_path/
 
 ---
 
+### `No complete .imzML + .ibd file pair found for sample '...' in <path>`
+
+**Cause:** An MSI modality is active for this sample, but neither the `pos/` nor the `neg/` subfolder contains a usable acquisition. FOCUS decides a sample's ion modes from the files present, so a sample with two empty ion-mode folders has no data at all.
+
+**Fix:** Place a matching `.imzML` and `.ibd` pair in `pos/` and/or `neg/`:
+
+```
+dataset_path/
+└── sample_001/
+    └── msi/
+        ├── pos/
+        │   ├── data.imzML
+        │   └── data.ibd
+        └── neg/          ← may stay empty if you only acquired positive mode
+```
+
+If the sample genuinely has no MSI data, add it to `"ignore_samples"` instead so the rest of the dataset can still be processed.
+
+---
+
+### `Incomplete MSI acquisition in <path>: found .imzML files [...] and .ibd files [...]`
+
+**Cause:** An ion-mode folder holds files but not a complete pair — an `.imzML` without its `.ibd`, an `.ibd` without its `.imzML`, or two files whose base names do not match. This usually means an interrupted copy or a partial export. Any file of either kind is taken as evidence that the ion mode was intended, so FOCUS reports the incomplete pair rather than skipping the polarity.
+
+**Fix:** Complete the transfer so both files are present and share the same base name (`data.imzML` + `data.ibd`). If the folder holds leftover junk from a failed export, delete it — an ion-mode folder that is completely **empty** is ignored, but one holding a stray file is not.
+
+---
+
 ### `Registration type '...' is not compatible with modality type '...'`
 
 **Cause:** An incompatible `registration_type` / modality `type` combination was specified.

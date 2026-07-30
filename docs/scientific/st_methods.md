@@ -61,30 +61,53 @@ Invalid non-positive thresholds are rejected. All thresholds default to `null` (
 ### 3.3 QC metric computation
 
 `scanpy.pp.calculate_qc_metrics(..., qc_vars=['mt'], percent_top=None)` is applied on
-the retained spots, **with mitochondrial genes still present** so that `pct_counts_mt`
-is meaningful. It adds per-spot QC summaries to `.obs` (`n_genes_by_counts`,
-`total_counts`, `pct_counts_mt`, ...) and per-gene summaries to `.var`
-(`n_cells_by_counts`, ...). These metrics are persisted as inspectable metadata and
-drive the optional mitochondrial gene filter below. `percent_top=None` skips the
-`pct_counts_in_top_*` columns to keep the output lean.
+the retained spots, **with mitochondrial genes still present**. It adds per-spot QC
+summaries to `.obs` (`total_counts`, `n_genes_by_counts`, `total_counts_mt`,
+`pct_counts_mt`, and their `log1p_` variants) and per-gene summaries to `.var`
+(`n_cells_by_counts`, `mean_counts`, `total_counts`, `pct_dropout_by_counts`, and their
+`log1p_` variants). `percent_top=None` omits the `pct_counts_in_top_*` columns.
 
-### 3.4 Mitochondrial gene removal (optional, QC-driven)
+### 3.4 Mitochondrial gene removal (optional)
 
-When `remove_mitochondrial_genes=true`, genes flagged in `.var['mt']` are dropped from
-the feature set. This is **off by default**: in spatial data a high mitochondrial
-fraction is frequently a genuine biological signal (e.g. metabolically active regions)
-rather than a low-quality artefact, so mitochondrial content is never discarded unless
-explicitly requested.
+When `remove_mitochondrial_genes=true`, the genes flagged in `.var['mt']` (§3.1) are
+dropped from the feature set. Because this step follows §3.3, the QC metrics already
+written to `.obs` — `pct_counts_mt` included — describe the matrix as it stood before
+removal, and they are not recomputed here.
 
 ### 3.5 Observation index standardization
 
-Observation names are prefixed with `<sample_id>_` when needed to guarantee uniqueness
-after merge.
+Observation names are prefixed with `<sample_id>_`, unless every name already carries
+that prefix.
 
-### 3.6 Raw-count preservation
+### 3.6 Per-sample clustering
 
-Filtered, post-feature-selection counts are copied to `layers['raw']` (the FOCUS
-cross-modality convention for unnormalized counts) before any normalization.
+Cluster labels (`.obs['cluster']`) are consumed only by the alignment GUI for spot
+colouring. They are computed on `.X` at this point in the sequence — post-filter,
+post-removal, and still raw counts, since §3.7 has not yet run.
+
+Let \(N\) be the spot count, \(G\) the gene count and \(C = 100{,}000\) the row cap.
+
+1. **Coarsening.** If \(N > C\), a uniform spatial grid of at most \(C\) cells is laid over
+   `.obsm['spatial']` and all spots in a cell are summed into one pseudo-spot, giving a run
+   matrix of \(N_r \le C\) rows. Otherwise \(N_r = N\) and every spot is used directly.
+2. **Internal normalization.** The run matrix is total-count normalized to \(10^4\) and
+   `log1p`-transformed on a throwaway copy.
+3. **Partition.** With
+
+   \[
+   n_{pcs} = \min(50,\, N_r-1,\, G-1),
+   \qquad
+   n_{neighbors} = \min(15,\, N_r-1),
+   \]
+
+   PCA \(\to\) kNN \(\to\) Leiden (`resolution=0.5`, `flavor='igraph'`, `n_iterations=2`,
+   `directed=False`) runs on that matrix. Each cell's label propagates back to every spot
+   that contributed to it.
+4. **Fallback.** If \(N_r < 2\), \(n_{pcs} < 2\), or the partition resolves to a single
+   cluster, every spot receives the label `'0'`.
+
+Only the label array is persisted; the coarsened matrix, PCA embedding and neighbour graph
+are discarded. PCA and Leiden run with `random_state=0`.
 
 ### 3.7 Optional normalization and transform
 
@@ -93,36 +116,27 @@ Both steps are opt-in and leave `.X` as raw counts by default:
 - total-count normalization (`scanpy.pp.normalize_total`, target sum \(10^4\)) when `total_counts_normalize=true`
 - `scanpy.pp.log1p` when `log1p_transform=true`
 
-Because the downstream alignment and registration stages consume the preprocessing
-output **as-is** (no further normalization), whatever ends up in `.X` is the final
-analysis matrix.
+`layers['raw']` receives a copy of `.X` immediately before these steps, and **only** when
+at least one of them is enabled. With both off, `.X` holds the raw counts and no layer is
+written. The downstream alignment and registration stages consume `.X` as-is, without
+further normalization.
 
-### 3.8 Per-sample clustering
-
-Leiden labels (`.obs['leiden']`) are used only to colour spots during the interactive
-alignment stage. Clustering is computed on a throwaway, internally normalized +
-`log1p` representation of the raw counts, so the labels are meaningful even when the
-output `.X` is left as raw counts. Only the labels are kept — the PCA embedding and
-neighbour graph are **not** persisted, keeping the saved `.h5ad` small.
-
-\[
-n_{pcs} = \min(50, N-1, G-1)
-\]
-
-- if \(N \ge 2\) and \(n_{pcs} \ge 2\): normalize+log1p (internal copy) -> PCA -> neighbors -> Leiden (`resolution=0.5`, `flavor='igraph'`, `n_iterations=2`, `directed=False`)
-- otherwise: all observations get cluster label `'0'`
-
-### 3.9 Output metadata and persistence
+### 3.8 Output metadata and persistence
 
 Per-sample output sets:
 
+- `.obs_names` prefixed `<sample_id>_`
 - `.obs['sample_id']` (categorical)
-- `.obs['leiden']` (categorical)
-- per-spot/per-gene QC metrics from §3.3
+- `.obs['cluster']` (categorical)
+- per-spot / per-gene QC metrics from §3.3
+- `.var['mt']` (boolean)
 - `.obsm['spatial']` as `float32`
-- `.layers['raw']` (unnormalized counts)
+- `.uns['spot_size']` as a `float32` array of shape (2,)
+- `.layers['raw']` only under the condition in §3.7
 
-Saved as gzip-compressed `.h5ad`. PCA/neighbour-graph intermediates are not written.
+`.X` and every layer are coerced to sparse CSR and the file is written gzip-compressed.
+If the output file already exists and `force_recomputing=false`, the whole of §3 is
+skipped and the cached path is returned.
 
 ---
 
@@ -132,31 +146,49 @@ Saved as gzip-compressed `.h5ad`. PCA/neighbour-graph intermediates are not writ
 
 ### 4.1 Merge construction
 
-For each sample file:
+If the merged file already exists, `force_recomputing=false`, and the set of
+`.obs['sample_id']` values it contains equals the active sample set, that file is returned
+and §4 is skipped.
 
-1. reload `.h5ad`
-2. restore `.X <- .layers['raw']`
-3. remove temporary raw layer before concatenation
-
-All samples are concatenated with outer gene union:
+Otherwise each per-sample `.uns['spot_size']` is read with a backed read (so no `.X` is
+materialized), and the per-sample files are concatenated **on disk**, streaming one file at
+a time rather than holding them all plus the result in memory:
 
 ```python
-ad.concat(..., join='outer', fill_value=0)
+concat_on_disk_compat(sample_files, merged_file,
+                      axis=0, join='outer', fill_value=0, merge='same')
 ```
 
-Then `.X` is forced to sparse CSR.
+The outer join takes the union of genes across samples, and a gene absent from a sample is
+filled with 0 counts. `.uns` is dropped by the concat; `spot_size` is rebuilt from the
+backed reads as a per-sample dictionary (§4.3).
+
+The merged file is then read back and raw counts are restored on the combined object:
+
+```python
+combined.X = combined.layers.pop('raw', combined.X)
+```
+
+The `'raw'` layer is present only if the per-sample files were normalized (§3.7); when
+they were not, `.X` already holds raw counts. Either way, §4.2 and the recomputed QC of
+§4.3 operate on raw counts. `.X` and any layer are then coerced to sparse CSR.
 
 ### 4.2 Cross-sample gene filtering
 
-Let \(S\) be number of samples and \(\tau = 0.05\) (`_NUM_SAMPLES_FILTER`).
+Both criteria are opt-in; when both are `null` the whole of §4.2 is skipped and every gene
+is kept.
 
-A gene is retained if it passes criterion in at least
+Each criterion is evaluated independently within every sample, and a gene is retained if it
+passes in **at least one** sample:
 
 \[
-\left\lceil \tau S \right\rceil
+\text{keep}(g) \iff \#\{s : g \text{ passes in } s\} \ge 1
 \]
 
-samples.
+The number of samples in which a gene is detected therefore has no bearing on whether it is
+kept: a gene confined to a single sample survives on the strength of that sample alone. When
+both criteria are set, a gene must satisfy each of them in at least one sample, not
+necessarily the same one.
 
 #### A) Expression-frequency filter (`min_spots_per_gene = \theta`)
 
@@ -187,18 +219,17 @@ Unexpressed genes in a sample are neutral (neither pass nor fail that sample).
 
 After gene filtering:
 
-- QC metrics are **recomputed** on the merged matrix (`calculate_qc_metrics`, `percent_top=None`) so `.obs`/`.var` QC reflect the retained spots and genes (per-sample QC predates cross-sample filtering)
-- post-filter raw counts are stored in `combined.layers['raw']`
-- optional `normalize_total` and `log1p` are applied to merged `.X`
-- `.obs['sample_id']` and `.obs['leiden']` are categorical
+- `.var['mt']` is re-derived and QC metrics are **recomputed** on the merged raw matrix (`calculate_qc_metrics`, `qc_vars=['mt']`, `percent_top=None`), so `.obs`/`.var` QC reflect the retained spots and genes; the per-sample QC of §3.3 predates cross-sample filtering
+- `combined.layers['raw']` receives a copy of `.X`, under the same condition as §3.7 — only when at least one normalization step is enabled
+- optional `normalize_total` (target sum \(10^4\)) and `log1p` are applied to merged `.X`
+- `.obs['sample_id']` and `.obs['cluster']` are stored as categoricals; the per-sample cluster labels carried through the concat are kept unchanged, so no clustering runs on the merged matrix
 - `.obsm['spatial']` is `float32`
-- `.uns['spot_size']` becomes a per-sample dictionary `{sample_id: [sx, sy]}`
+- `.uns['spot_size']` is a per-sample dictionary `{sample_id: [sx, sy]}`
 
-Saved as gzip-compressed merged `.h5ad`.
+`.X` and any layer are coerced to sparse CSR and saved gzip-compressed.
 
-Note: the gene-selection design deliberately retains every gene with sufficient signal
-in at least one sample (to preserve rare cell-type markers). FOCUS does **not** subset
-to highly variable genes — the full filtered panel is carried through to registration.
+There is no highly-variable-gene selection: the panel surviving §4.2 is carried through to
+registration in full.
 
 ---
 

@@ -294,7 +294,6 @@ class SpatialTranscriptomicDataset(BaseDataset):
     with cross-sample gene filtering and unified normalization.
     '''
 
-    _NUM_SAMPLES_FILTER = 0.05
     _NORMALIZE_TARGET_SUM = 1e4
     _H5AD_COMPRESSION = "gzip"
 
@@ -509,20 +508,22 @@ class SpatialTranscriptomicDataset(BaseDataset):
         (rather than once per criterion), and the matrix is materialized only once at the end:
 
         - min_spots_per_gene: keep a gene expressed in at least this fraction of a sample's
-          spots, in >= _NUM_SAMPLES_FILTER of all samples. ceil ensures min_cells >= 1 when the
-          fraction > 0, so genes with zero expression always fail this threshold.
+          spots, in at least one sample. ceil ensures min_cells >= 1 when the fraction > 0, so
+          genes with zero expression always fail this threshold.
         - min_count_spots_ratio: keep a gene whose (total counts / expressed spots) meets the
-          threshold, in >= _NUM_SAMPLES_FILTER of the samples where it is actually expressed.
-          Genes absent from a sample are neutral (neither pass nor fail), so they don't inflate
-          the per-gene preserved counts.
+          threshold in at least one sample. Genes absent from a sample are neutral (neither pass
+          nor fail).
 
-        When both criteria are requested a gene must satisfy both. Computing the ratio test on
-        the full matrix is equivalent to running it after the frequency filter: subsetting genes
-        (columns) does not change the per-gene expressed/total counts of the surviving genes.
-        Operates on sparse matrices without densification.
+        Both criteria are per-sample: clearing one in a single sample is enough, so a gene
+        confined to one sample is retained on the strength of that sample alone.
+
+        When both criteria are requested a gene must satisfy both, though not necessarily in the
+        same sample. Computing the ratio test on the full matrix is equivalent to running it after
+        the frequency filter: subsetting genes (columns) does not change the per-gene
+        expressed/total counts of the surviving genes. Operates on sparse matrices without
+        densification.
         '''
         sample_ids = adata.obs['sample_id'].unique()
-        num_samples = len(sample_ids)
 
         freq_preserved = np.zeros(adata.n_vars, dtype=int)
         ratio_preserved = np.zeros(adata.n_vars, dtype=int)
@@ -545,12 +546,13 @@ class SpatialTranscriptomicDataset(BaseDataset):
                 )
                 ratio_preserved += ratio_ok.astype(int)
 
-        min_samples_required = np.ceil(self._NUM_SAMPLES_FILTER * num_samples)
+        # Passing in a single sample is enough: a gene that clears the per-sample threshold
+        # somewhere is retained, regardless of how many samples it is detected in.
         gene_mask = np.ones(adata.n_vars, dtype=bool)
         if min_spots_per_gene is not None:
-            gene_mask &= freq_preserved >= min_samples_required
+            gene_mask &= freq_preserved > 0
         if min_count_spots_ratio is not None:
-            gene_mask &= ratio_preserved >= min_samples_required
+            gene_mask &= ratio_preserved > 0
 
         return adata[:, gene_mask].copy()
 

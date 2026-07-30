@@ -281,9 +281,12 @@ Example:
 | `lipid_annotation_db` | string or null | `null` |
 | `force_recomputing` | bool | `false` |
 
-- `intensity_normalization` allowed values: `"none"`, `"tic"`, `"log"`, `"clr"`, `"tic_mean_scaled"` (all applied per ion mode). `"tic"` makes each spectrum sum to 1; `"tic_mean_scaled"` rescales each spectrum to the mean total ion current of its ion mode, preserving absolute intensity scale.
+- `intensity_normalization` allowed values: `"none"`, `"tic"`, `"log"`, `"clr"`, `"tic_mean_scaled"` (all applied per sample and per ion mode). `"tic"` makes each spectrum sum to 1; `"tic_mean_scaled"` rescales each spectrum to the mean total ion current over that sample's spots for that ion mode, preserving absolute intensity scale (values are therefore not comparable across samples).
 - `sample_type` allowed values: `"tissue"`, `"microgrid"`.
 - `lipid_annotation_db`: path to a CSV or JSON file with columns `db_name`, `ionized_mass`, `ion_mode`.
+- `detect_background` only takes effect when `lipid_annotation_db` is also set. Without a database the detection step is skipped and every spot is flagged foreground.
+- `mass_tolerance` must be an integer; a float value raises `ValueError` during processing.
+- `min_intensity_threshold` is the minimum *peak* intensity for a peak to count when estimating m/z recalibration offsets. It does not filter or mask spots.
 
 The example below enables TIC normalization and background detection explicitly; these are not the defaults.
 
@@ -348,7 +351,11 @@ Example:
 | `log1p_transform` | bool | `false` |
 | `force_recomputing` | bool | `false` |
 
-- `remove_mitochondrial_genes`: when `true`, drops mitochondrial genes (flagged by a case-insensitive `MT-`/`MT.` name prefix) from the feature set. Off by default — in spatial data a high mitochondrial fraction is often biological rather than a low-quality artefact.
+- `remove_mitochondrial_genes`: when `true`, drops mitochondrial genes (flagged by a case-insensitive `MT-`/`MT.` name prefix) from the feature set. Applied per sample, before merging, and after QC metrics are computed — so `pct_counts_mt` still describes the matrix before removal.
+- `min_spots_per_gene`: minimum fraction of a sample's spots that must express a gene for that sample to count as passing. Must satisfy `0 < value < 1`.
+- `min_count_spots_ratio_per_gene`: minimum ratio of a gene's total counts to the number of spots expressing it, per sample. Must be `> 0`. Samples where the gene is unexpressed count as neither pass nor fail.
+- Both gene filters act on the merged matrix only, and are ignored when `null`. Each is evaluated per sample, and a gene is retained when it passes in at least one sample; with both set it must satisfy each in at least one sample, not necessarily the same one.
+- `total_counts_normalize` / `log1p_transform`: when either is enabled, the pre-normalisation counts are copied to `.layers['raw']`. With both off, `.X` holds the raw counts and no layer is written.
 
 Example:
 

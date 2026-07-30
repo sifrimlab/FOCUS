@@ -2,7 +2,7 @@ import numpy as np
 import scipy.sparse as sp
 import mmap
 import os, tqdm, psutil
-from focus.preprocessing._utils import StepReporter, compute_cluster_labels
+from focus.preprocessing._utils import StepReporter, compute_cluster_labels, find_imzml_pair
 from collections import defaultdict
 from sklearn.linear_model import LinearRegression
 from sklearn.mixture import GaussianMixture
@@ -75,6 +75,63 @@ def cluster_unique_mz_chunk(unique_mz, counts, mass_tolerance_ppm):
 		start_idx = end_idx
 
 	return np.array(consensus_mz), np.array(consensus_weights)
+
+
+@njit(cache=True)
+def cluster_unique_mz_labels(unique_mz, counts, mass_tolerance_ppm):
+	"""
+	Group sorted unique m/z within a ppm tolerance and return the group index of every input value.
+
+	Applies the SAME sliding-window weighted-centroid growth rule as `cluster_unique_mz_chunk` — a
+	value joins the current group while it stays within `mass_tolerance_ppm` of the running weighted
+	centroid — but emits per-value labels instead of the centroids. Callers need the labels to
+	aggregate extra per-group statistics that the centroid form cannot express, in particular how
+	many distinct samples contribute to a group. Keep the two growth rules in sync.
+
+	Parameters
+	----------
+	unique_mz : 1D np.ndarray (sorted ascending)
+		Distinct m/z values.
+	counts : 1D np.ndarray (float64)
+		Weight associated with each m/z.
+	mass_tolerance_ppm : int
+		Mass tolerance in ppm.
+
+	Returns
+	-------
+	labels : 1D np.ndarray (int32)
+		Group index per input value, ascending and gap-free (`labels[0] == 0`).
+	"""
+
+	n = len(unique_mz)
+	labels = np.empty(n, dtype=np.int32)
+
+	group = 0
+	start_idx = 0
+
+	while start_idx < n:
+		centroid = unique_mz[start_idx]
+		weight_sum = counts[start_idx]
+		weighted_sum = unique_mz[start_idx] * counts[start_idx]
+		labels[start_idx] = group
+		end_idx = start_idx + 1
+
+		while end_idx < n:
+			candidate_mz = unique_mz[end_idx]
+			ppm_diff = abs(candidate_mz - centroid) / centroid * 1e6
+			if ppm_diff <= mass_tolerance_ppm:
+				weight_sum += counts[end_idx]
+				weighted_sum += candidate_mz * counts[end_idx]
+				centroid = weighted_sum / weight_sum
+				labels[end_idx] = group
+				end_idx += 1
+			else:
+				break
+
+		group += 1
+		start_idx = end_idx
+
+	return labels
 
 
 @njit(cache=True)
@@ -182,6 +239,8 @@ class MsiSample(BaseSample):
 			Name of the modality.
 		double_ion_mode : bool
 			If True, the sample contains both positive and negative ion mode data in separate subdirectories with format input_path/pos and input_path/neg.
+			Each of the two subdirectories must hold a complete .imzML + .ibd pair; an empty one raises FileNotFoundError.
+			Prefer letting _create_msi_samples infer this from the files on disk rather than asserting it here.
 		ion_mode : MsiIonMode | None
 			If double_ion_mode is False, specify the ion mode of the sample. If double_ion_mode is True, this should be None.
 		'''
@@ -193,17 +252,18 @@ class MsiSample(BaseSample):
 
 		super().__init__(source_path, sample_id, modality_name)
 
-		# If double ion mode is True, check that the input path contains both pos and neg subdirectories
-		pos_path = os.path.join(source_path, sample_id, modality_name, 'pos')
-		neg_path = os.path.join(source_path, sample_id, modality_name, 'neg')
-		if double_ion_mode:
-			if not os.path.exists(pos_path):
-				raise FileNotFoundError(f"Positive ion mode path {pos_path} does not exist.")
-			if not os.path.exists(neg_path):
-				raise FileNotFoundError(f"Negative ion mode path {neg_path} does not exist.")
-			self.input_paths = {MsiIonMode.POSITIVE: pos_path, MsiIonMode.NEGATIVE: neg_path}
-		else:
-			self.input_paths = {ion_mode: os.path.join(source_path, sample_id, modality_name, ion_mode)}
+		# Which ion modes are present is decided by the imzML/IBD pairs on disk, not by directory
+		# presence: the GUI scaffolds both pos/ and neg/ for every MSI modality, so an empty
+		# ion mode directory only means that polarity was not acquired.
+		self.input_paths = {}
+		for mode in (MsiIonMode.list() if double_ion_mode else [ion_mode]):
+			mode_path = os.path.join(source_path, sample_id, modality_name, mode)
+			if find_imzml_pair(mode_path) is None:
+				raise FileNotFoundError(
+					f"No complete .imzML + .ibd file pair found in '{mode_path}' for ion mode "
+					f"'{mode}' of sample '{sample_id}'."
+				)
+			self.input_paths[mode] = mode_path
 
 		self.double_ion_mode = double_ion_mode
 		self.ion_mode = ion_mode
@@ -813,17 +873,12 @@ class MsiSample(BaseSample):
 
 		# Load the imzML files for each ion mode
 		for mode, input_path in self.input_paths.items():
-			# List the files in the given directory and extract the absolute path for the first imzML file
-			files = os.listdir(input_path)
-			imzml_files = [f for f in files if f.endswith('.imzML')]
-			if len(imzml_files) == 0:
-				raise FileNotFoundError(f"No imzML files found in {input_path}.")
-			self._metadata_files[mode] = os.path.join(input_path, imzml_files[0])
-
-			# Obtain the IBD file using the same filename and swapping the extension
-			self._binary_files[mode] = self._metadata_files[mode].replace('.imzML', '.ibd')
-			if not os.path.exists(self._binary_files[mode]):
-				raise FileNotFoundError(f"IBD file {self._binary_files[mode]} not found in {input_path}.")
+			# Same resolver that decided which ion modes this sample has, so discovery and loading
+			# can never disagree. It returns the real on-disk .ibd name, no extension guesswork.
+			pair = find_imzml_pair(input_path)
+			if pair is None:
+				raise FileNotFoundError(f"No complete .imzML + .ibd file pair found in '{input_path}'.")
+			self._metadata_files[mode], self._binary_files[mode] = pair
 
 			# Parse the imzML file to extract the metadata and the parsed spectra
 			self._metadata[mode] = self._parse_imzml(self._metadata_files[mode])
@@ -1332,6 +1387,271 @@ class MsiSample(BaseSample):
 		return mz_vectors, intensity_vectors, filtered_mz, filtered_intensity
 
 
+class _CalibrationReferenceSelector:
+	'''
+	Deterministic, streaming selection of the reference M/Z values used for m/z recalibration.
+
+	Every spectrum of every sample contributes -- there is no subsampling and no RNG, so repeated
+	runs on the same input return byte-identical references.
+
+	Usage: construct with the ppm tolerance, feed one sample's payload at a time with
+	:meth:`add_sample` (the payload can be released immediately afterwards), then call
+	:meth:`select`.
+
+	How it stays cheap
+	------------------
+	Each sample is reduced on arrival to an m/z *occurrence histogram* on a fixed logarithmic
+	grid, and only the histogram survives. Peak memory therefore never scales with the number of
+	spectra: what is retained per sample is one int32 array of occupied bin indices, whose length
+	is bounded by the sample's mass span divided by the bin width (a few hundred thousand entries
+	at the default 10 ppm), not by its peak count. This is what makes the pass safe on the
+	datasets that previously exhausted RAM while holding every sample's raw peaks at once.
+
+	Why a logarithmic grid
+	----------------------
+	For small relative differences ln(m2) - ln(m1) = ln(1 + (m2 - m1) / m1) ~= (m2 - m1) / m1, so a
+	constant ppm tolerance is a constant width in log space. A single uniform grid therefore
+	resolves the tolerance identically across the whole mass range, with no per-mass bookkeeping.
+	Bins are deliberately narrower than the tolerance (see ``_BIN_SUBDIVISION``), so two peaks
+	within tolerance land at most that many bins apart; the ppm grouping in :meth:`select` then
+	re-merges them across bin boundaries. The grid only ever *indexes* peaks -- the mass reported
+	for a bin is the exact mean of the raw m/z that fell in it, never a bin centre.
+	'''
+
+	# Bin width as a fraction of the ppm tolerance. 2 => bins are half a tolerance wide.
+	_BIN_SUBDIVISION = 2
+	# Spectra concatenated per reduction block. Bounds the transient arrays independently of how
+	# many spectra a sample has.
+	_BLOCK_SPECTRA = 20_000
+
+	def __init__(self, mass_tolerance: int) -> None:
+		'''
+		Parameters
+		----------
+		mass_tolerance : int
+			Mass tolerance in ppm, used both for the grid width and for the final ppm grouping.
+		'''
+		self._mass_tolerance = mass_tolerance
+		self._log_bin_width = (mass_tolerance * 1e-6) / self._BIN_SUBDIVISION
+
+		# Dataset-wide histogram per ion mode, plus the bins each contributing sample occupies.
+		# Only samples that actually have a mode are tracked, so coverage is later measured against
+		# the samples that could contribute -- mixed single-/dual-mode datasets score correctly.
+		self._bins: dict[MsiIonMode, np.ndarray] = {}
+		self._counts: dict[MsiIonMode, np.ndarray] = {}
+		self._mz_sums: dict[MsiIonMode, np.ndarray] = {}
+		self._sample_bins: dict[MsiIonMode, list[np.ndarray]] = {}
+
+	def add_sample(self, sample_mz: dict[MsiIonMode, list[np.ndarray]]) -> None:
+		'''
+		Fold one sample's M/Z payload into the running histogram.
+
+		The payload is only read, never retained: the caller is free to release it as soon as this
+		returns.
+
+		Parameters
+		----------
+		sample_mz : dict[MsiIonMode, list[np.ndarray]]
+			One M/Z array per spectrum, per ion mode present in this sample.
+		'''
+
+		for mode, spectra in sample_mz.items():
+			bins, counts, mz_sums = self._reduce_spectra(
+				spectra, self._log_bin_width, self._BLOCK_SPECTRA)
+			if bins.size == 0:
+				continue
+
+			if mode not in self._bins:
+				self._bins[mode], self._counts[mode], self._mz_sums[mode] = bins, counts, mz_sums
+				self._sample_bins[mode] = [bins]
+				continue
+
+			# Merge into the running histogram, then drop this sample's counts: only its
+			# occupied-bin index set is kept, for the distinct-sample coverage statistic.
+			union = np.union1d(self._bins[mode], bins)
+			union_counts = np.zeros(union.size, dtype=np.int64)
+			union_mz_sums = np.zeros(union.size, dtype=np.float64)
+			previous = np.searchsorted(union, self._bins[mode])
+			union_counts[previous] = self._counts[mode]
+			union_mz_sums[previous] = self._mz_sums[mode]
+			current = np.searchsorted(union, bins)
+			union_counts[current] += counts
+			union_mz_sums[current] += mz_sums
+
+			self._bins[mode] = union
+			self._counts[mode] = union_counts
+			self._mz_sums[mode] = union_mz_sums
+			self._sample_bins[mode].append(bins)
+
+	def select(self, number_of_references: int) -> dict[MsiIonMode, np.ndarray]:
+		'''
+		Select the reference M/Z values from everything added so far.
+
+		Per ion mode, the merged histogram bins are grouped within ``mass_tolerance`` ppm by the
+		same weighted sliding window used to build the m/z backbone
+		(:func:`cluster_unique_mz_labels`), and each resulting group is scored by
+
+		    score = occurrences * (samples containing the group / samples having this ion mode)
+
+		Groups are then taken greedily in descending score until at least `number_of_references`
+		are selected AND every sample is covered, followed by a second pass that keeps adding
+		groups while any sample is still uncovered. A group covers a sample when that sample has a
+		peak in it.
+
+		Ties are broken by ascending m/z, giving a total order, so the greedy walk cannot depend on
+		sort implementation details.
+
+		Parameters
+		----------
+		number_of_references : int
+			Minimum number of references per ion mode. More are added when needed for coverage.
+
+		Returns
+		-------
+		dict[MsiIonMode, np.ndarray]
+			Ascending reference M/Z values per ion mode; an empty array for a mode that no sample
+			contributed.
+		'''
+
+		recalibration_reference: dict[MsiIonMode, np.ndarray] = {}
+
+		for mode in MsiIonMode.list():
+			if mode not in self._bins or self._bins[mode].size == 0:
+				recalibration_reference[mode] = np.array([], dtype=np.float64)
+				continue
+
+			bins = self._bins[mode]
+			counts = self._counts[mode].astype(np.float64)
+			mz_sums = self._mz_sums[mode]
+
+			# Exact mean mass of each bin. Bin indices ascend and ln is monotone, so these ascend
+			# too, which is what the sliding-window grouping requires.
+			bin_mz = mz_sums / counts
+
+			labels = cluster_unique_mz_labels(bin_mz, counts, self._mass_tolerance)
+			n_groups = int(labels[-1]) + 1
+
+			group_weight = np.bincount(labels, weights=counts, minlength=n_groups)
+			group_mz = np.bincount(labels, weights=mz_sums, minlength=n_groups) / group_weight
+
+			# Distinct-sample coverage per group. Counting per bin and summing would double-count a
+			# sample whose measurement jitter spreads one peak over several bins of the same group,
+			# so presence is collapsed to (sample, group) pairs first.
+			rows = self._sample_bins[mode]
+			n_samples = len(rows)
+			present = np.zeros((n_samples, n_groups), dtype=bool)
+			for sample_idx, row in enumerate(rows):
+				present[sample_idx, labels[np.searchsorted(bins, row)]] = True
+			coverage = present.sum(axis=0)
+
+			scores = group_weight * (coverage / n_samples)  # alpha = 1
+			order = np.lexsort((group_mz, -scores))
+
+			selected: list[int] = []
+			chosen = np.zeros(n_groups, dtype=bool)
+			covered = np.zeros(n_samples, dtype=bool)
+
+			# First pass: best-scoring groups until the quota is met and every sample is covered.
+			for group in order:
+				if len(selected) >= number_of_references and covered.all():
+					break
+				selected.append(int(group))
+				chosen[group] = True
+				covered |= present[:, group]
+
+			# Second pass: keep adding groups that cover a still-uncovered sample.
+			if not covered.all():
+				for group in order:
+					if covered.all():
+						break
+					if chosen[group] or not (present[:, group] & ~covered).any():
+						continue
+					selected.append(int(group))
+					chosen[group] = True
+					covered |= present[:, group]
+
+			recalibration_reference[mode] = np.sort(group_mz[np.array(selected, dtype=np.intp)])
+
+		return recalibration_reference
+
+	@staticmethod
+	def _reduce_spectra(spectra: list[np.ndarray], log_bin_width: float,
+						block_spectra: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+		'''
+		Reduce one sample + ion mode to a compact m/z occurrence histogram.
+
+		Spectra are consumed in blocks, and the dense accumulator spans only the masses this
+		sample actually contains (it is grown on demand), so peak memory is bounded by the block
+		size plus the sample's own mass span -- never by its spectrum count. Only occupied bins are
+		returned. Binning uses ``np.bincount``, which is a single linear pass with no sort.
+
+		Parameters
+		----------
+		spectra : list[np.ndarray]
+			One M/Z array per spectrum.
+		log_bin_width : float
+			Bin width in natural-log units.
+		block_spectra : int
+			Number of spectra concatenated at a time.
+
+		Returns
+		-------
+		bins : np.ndarray[np.int32]
+			Ascending occupied bin indices, ``floor(ln(m) / log_bin_width)``.
+		counts : np.ndarray[np.int64]
+			Peak occurrences per bin.
+		mz_sums : np.ndarray[np.float64]
+			Sum of the raw m/z values per bin; divide by `counts` for the bin's exact mean mass.
+		'''
+
+		empty = (np.array([], dtype=np.int32),
+				 np.array([], dtype=np.int64),
+				 np.array([], dtype=np.float64))
+		if not spectra:
+			return empty
+
+		bins_lo = 0
+		counts = None
+		mz_sums = None
+
+		for start in range(0, len(spectra), block_spectra):
+			block_mz = np.concatenate(spectra[start:start + block_spectra])
+			block_mz = block_mz.astype(np.float64, copy=False)
+			# ln is undefined at or below zero, and such m/z are invalid for MSI anyway.
+			block_mz = block_mz[block_mz > 0.0]
+			if block_mz.size == 0:
+				continue
+
+			bin_idx = np.floor(np.log(block_mz) / log_bin_width).astype(np.int64)
+			block_lo, block_hi = int(bin_idx.min()), int(bin_idx.max())
+
+			if counts is None:
+				bins_lo = block_lo
+				counts = np.zeros(block_hi - block_lo + 1, dtype=np.int64)
+				mz_sums = np.zeros(block_hi - block_lo + 1, dtype=np.float64)
+			elif block_lo < bins_lo or block_hi > bins_lo + counts.size - 1:
+				# Grow the accumulator to span the widened mass range, preserving alignment.
+				new_lo = min(bins_lo, block_lo)
+				new_size = max(bins_lo + counts.size - 1, block_hi) - new_lo + 1
+				offset = bins_lo - new_lo
+				grown_counts = np.zeros(new_size, dtype=np.int64)
+				grown_mz_sums = np.zeros(new_size, dtype=np.float64)
+				grown_counts[offset:offset + counts.size] = counts
+				grown_mz_sums[offset:offset + mz_sums.size] = mz_sums
+				counts, mz_sums, bins_lo = grown_counts, grown_mz_sums, new_lo
+
+			bin_idx -= bins_lo
+			counts += np.bincount(bin_idx, minlength=counts.size)
+			mz_sums += np.bincount(bin_idx, weights=block_mz, minlength=mz_sums.size)
+			del block_mz, bin_idx
+
+		if counts is None:
+			return empty
+
+		occupied = np.flatnonzero(counts)
+		return (occupied + bins_lo).astype(np.int32), counts[occupied], mz_sums[occupied]
+
+
 class MsiDataset(BaseDataset):
 
 	_LEIDEN_RESOLUTION = 0.5
@@ -1611,123 +1931,6 @@ class MsiDataset(BaseDataset):
 
 		return np.array(annotations, dtype=str)
 
-	def _find_calibration_reference(self, mz_vectors: list[dict[MsiIonMode, list[np.ndarray]]], mass_tolerance: int,
-									number_of_references: int = 1) -> dict[MsiIonMode, np.ndarray]:
-		'''
-		Scan the dataset to select the M/Z values to use as reference for recalibration.
-		Each ion mode is processed separately. For each ion mode, the M/Z values from all samples are concatenated,
-		and the top 'number_of_references' most frequent M/Z values are selected as reference.
-		To reduce memory usage, only a random subset (30%) of the M/Z values from each sample is used.
-
-		Parameters
-		----------
-		mz_vectors : list[dict[MsiIonMode, list[np.ndarray]]]
-			List of M/Z vectors for each sample and ion mode.
-		mass_tolerance : int
-			Mass tolerance in ppm for grouping M/Z values.
-		number_of_references : int
-			Number of reference M/Z values to select for each ion mode.
-
-		Returns
-		-------
-		dict[MsiIonMode, np.ndarray]
-			A dictionary mapping each ion mode to the selected reference M/Z values.
-		'''
-
-		# Per-mode per-sample rounded mz
-		per_sample_mz: dict[MsiIonMode, list[np.ndarray]] = {
-			MsiIonMode.POSITIVE: [],
-			MsiIonMode.NEGATIVE: [],
-		}
-
-		rng = np.random.default_rng()
-
-		# Downsample each sample and collect per-sample mz per mode. Evaluate only 30% of the spectra to reduce memory usage
-		for sample_mz in mz_vectors:
-			for mode, spectra in sample_mz.items():
-				n = len(spectra)
-				if n == 0:
-					continue
-				subset_idx = rng.choice(n, size=max(1, n * 3 // 10), replace=False)
-				sample_mode_mz = np.concatenate([spectra[i] for i in subset_idx]).astype(np.float64)
-				sample_mode_mz = np.round(sample_mode_mz, decimals=6)
-				per_sample_mz[mode].append(sample_mode_mz)
-
-		recalibration_reference: dict[MsiIonMode, np.ndarray] = {}
-
-		# Process each ion mode independently
-		for mode, mode_samples in per_sample_mz.items():
-			if len(mode_samples) == 0:
-				recalibration_reference[mode] = np.array([], dtype=np.float64)
-				continue
-
-			# Global concatenation for frequency
-			concatenated = np.concatenate(mode_samples)
-			unique_mz, global_counts = np.unique(concatenated, return_counts=True)
-
-			# Compute sample coverage per unique m/z
-			mz_to_samples = defaultdict(set)
-			for s_idx, mz_arr in enumerate(mode_samples):
-				u = np.unique(mz_arr)
-				pos = np.searchsorted(unique_mz, u)
-				valid = (pos < len(unique_mz)) & (unique_mz[pos] == u)
-				for p in pos[valid]:
-					mz_to_samples[int(p)].add(s_idx)
-
-			sample_coverage = np.zeros_like(global_counts, dtype=np.int32)
-			for idx, samples in mz_to_samples.items():
-				sample_coverage[idx] = len(samples)
-
-			n_samples = len(mode_samples)
-			coverage_fraction = sample_coverage / max(1, n_samples)
-
-			# Score the candidates combining global counts and coverage
-			scores = global_counts * (coverage_fraction ** 1.0)  # Alpha
-
-			# Sort candidates by score
-			sorted_idx = np.argsort(-scores)
-			sorted_mz = unique_mz[sorted_idx]
-
-			# Greedy selection ensuring coverage
-			selected = []
-			covered = np.zeros(n_samples, dtype=bool)
-
-			# Helper to update coverage given a candidate m/z
-			def update_coverage(candidate_mz: float):
-				tol_da = candidate_mz * mass_tolerance * 1e-6
-				newly_covered = np.zeros_like(covered)
-				for s_idx, mz_arr in enumerate(mode_samples):
-					if covered[s_idx]:
-						continue
-					if np.any((mz_arr >= candidate_mz - tol_da) & (mz_arr <= candidate_mz + tol_da)):
-						newly_covered[s_idx] = True
-				covered[newly_covered] = True
-				return np.any(newly_covered)
-
-			# First pass: pick top-scoring candidates until we reach the desired number
-			# or all samples are covered
-			for mz_cand in sorted_mz:
-				if len(selected) >= number_of_references and covered.all():
-					break
-				if mz_cand in selected:
-					continue
-				selected.append(mz_cand)
-				update_coverage(mz_cand)
-
-			# Second pass: if some samples are still uncovered, add extra candidates
-			if not covered.all():
-				for mz_cand in sorted_mz:
-					if covered.all():
-						break
-					if mz_cand in selected:
-						continue
-					if update_coverage(mz_cand):
-						selected.append(mz_cand)
-
-			recalibration_reference[mode] = np.array(selected, dtype=np.float64)
-
-		return recalibration_reference
-
 	@staticmethod
 	def _read_cached_var_and_spotsize(path: str) -> tuple[pd.DataFrame, list[float]] | None:
 		'''
@@ -1928,11 +2131,16 @@ class MsiDataset(BaseDataset):
 			sample.initialize_sample()
 			sample._sample_type = sample_type
 
-		# STEP 2: Compute the recalibration offsets for each sample. If a reference is provided, it is used directly.
-		# Otherwise, if the annotation DB is provided, the reference is computed from the annotated lipids (5 annotated lipids with the highest intensity).
-		# If the DB is not provided and the recalibration reference is not provided, no recalibration is performed.
+		# STEP 2: Determine the recalibration reference M/Z values. If one is provided it is used
+		# directly; otherwise it is computed from the dataset, scoring candidates by occurrence
+		# frequency weighted by how many samples contain them (see _CalibrationReferenceSelector).
+		# The candidate pool is the annotation-matched M/Z when a lipid DB is configured, and all
+		# M/Z otherwise -- so recalibration runs either way.
 		if recalibration_reference is None:
-			mz_vectors_all_samples = []
+			# Every spectrum contributes, but each sample is folded into a compact m/z histogram as
+			# soon as it is loaded and its peaks are released immediately. Accumulating all samples'
+			# raw spectra first is what used to be both slow and a source of OOM.
+			selector = _CalibrationReferenceSelector(mass_tolerance)
 
 			for sample in reporter.tqdm(iter_samples, desc="2/8 - Selecting high-confidence tissue spots", unit="sample"):
 				raw_mz, _, filtered_mz, _ = sample.load_payload(annotation_db=self.lipid_annotation_db,
@@ -1940,10 +2148,7 @@ class MsiDataset(BaseDataset):
 																detect_background=detect_background)
 
 				# If it was possible to filter the datapoints using the lipid annotation DB, use the filtered M/Z values
-				if filtered_mz != {}:
-					mz_vectors_all_samples.append(filtered_mz)
-				else:
-					mz_vectors_all_samples.append(raw_mz)
+				selector.add_sample(filtered_mz if filtered_mz != {} else raw_mz)
 
 				del raw_mz, filtered_mz  # Free memory
 				gc.collect()
@@ -1951,12 +2156,8 @@ class MsiDataset(BaseDataset):
 			# Compute the recalibration reference from the dataset
 			reporter.step(
 				"3/8 - Selecting recalibration reference M/Z values from the dataset and filtering background datapoints")
-			recalibration_reference = self._find_calibration_reference(
-				mz_vectors=mz_vectors_all_samples,
-				mass_tolerance=mass_tolerance,
-				number_of_references=5
-			)
-			del mz_vectors_all_samples  # Free memory
+			recalibration_reference = selector.select(number_of_references=5)
+			del selector  # Free memory
 			gc.collect()
 		else:
 			# Dummy call to still filter the datapoints in each sample
@@ -2249,34 +2450,32 @@ class MsiDataset(BaseDataset):
 def _create_msi_samples(path, sample_ids, modality_name, settings):
 	samples = []
 	for sample_id in sample_ids:
-		subdir = os.listdir(os.path.join(path, sample_id, modality_name))
-		ion_modes = 0
+		modality_path = os.path.join(path, sample_id, modality_name)
 
-		for mode in MsiIonMode.list():
-			if mode in subdir:
-				ion_modes += 1
+		# The GUI scaffolds both pos/ and neg/ for every MSI modality, so directory presence says
+		# nothing about which ion modes were acquired. Decide from the imzML/IBD pairs on disk and
+		# treat an ion mode directory holding neither file kind as "not acquired".
+		available_modes = [
+			mode for mode in MsiIonMode.list()
+			if find_imzml_pair(os.path.join(modality_path, mode)) is not None
+		]
 
-		if ion_modes == 0:
-			raise ValueError(f"No ion mode subdirectories found for sample {sample_id}. Expected at least one of: {MsiIonMode.list()}")
-		elif ion_modes == 1:
-			samples.append(
-				MsiSample(
-					source_path=path,
-					sample_id=sample_id,
-					modality_name=modality_name,
-					double_ion_mode=False,
-					ion_mode=MsiIonMode.POSITIVE if MsiIonMode.POSITIVE in subdir else MsiIonMode.NEGATIVE
-				)
+		if not available_modes:
+			raise FileNotFoundError(
+				f"No complete .imzML + .ibd file pair found for sample '{sample_id}' in "
+				f"'{modality_path}'. Expected one in at least one of the ion mode "
+				f"subdirectories: {MsiIonMode.list()}."
 			)
-		else:
-			samples.append(
-				MsiSample(
-					source_path=path,
-					sample_id=sample_id,
-					modality_name=modality_name,
-					double_ion_mode=True,
-				)
+
+		samples.append(
+			MsiSample(
+				source_path=path,
+				sample_id=sample_id,
+				modality_name=modality_name,
+				double_ion_mode=len(available_modes) > 1,
+				ion_mode=None if len(available_modes) > 1 else available_modes[0],
 			)
+		)
 	return samples
 
 def _create_msi_dataset(path, samples, settings):

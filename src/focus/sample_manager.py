@@ -38,6 +38,12 @@ class SampleManager:
 
 		Idempotent — existing folders are left untouched. For MSI modalities the
 		pos/ and neg/ ion-mode subfolders are also created if missing.
+
+		Both ion-mode subfolders are always created, since which polarities a sample
+		has cannot be known here. That is safe: preprocessing decides a sample's ion
+		modes from the presence of a complete .imzML + .ibd pair (see
+		preprocessing._utils.find_imzml_pair), so an empty one is simply ignored and
+		the user does not need to delete it.
 		"""
 		for sample_id in sample_ids:
 			self._ensure_modality_folder(sample_id, modality_name, modality_type)
