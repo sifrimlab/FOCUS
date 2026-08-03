@@ -1,14 +1,13 @@
 @echo off
-:: ── FOCUS installation script — Windows shim ─────────────────────────────────
-:: The real installer is install.ps1 (PowerShell), which mirrors install.sh:
-:: CUDA detection, CUDA-matched PyTorch wheels, the FOCUS env, and tool envs.
-:: This shim keeps the documented `install.bat [--reinstall]` entry point
-:: working by forwarding to install.ps1.
+:: FOCUS installation script for Windows.
+:: install.ps1 is the real installer and mirrors install.sh: CUDA detection,
+:: CUDA-matched PyTorch wheels, the FOCUS env, and tool envs. This shim forwards
+:: to it so the documented `install.bat [--reinstall]` entry point keeps working.
 ::
 :: Usage: install.bat [--reinstall]
 setlocal EnableDelayedExpansion
 
-:: Translate the legacy --reinstall flag to the PowerShell -Reinstall switch;
+:: Translate the legacy --reinstall flag to the PowerShell -Reinstall switch and
 :: pass any other arguments through unchanged.
 set "PS_ARGS="
 for %%A in (%*) do (

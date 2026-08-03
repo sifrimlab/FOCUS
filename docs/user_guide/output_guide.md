@@ -15,7 +15,7 @@ The final output structure depends on your pipeline configuration:
 - At least one non-reference modality has registration enabled
 
 **Final Output:**
-- **Primary:** `merged/multimodal_dataset.h5mu` — a single MuData file containing all registered modalities
+- **Primary:** `merged/multimodal_dataset.h5mu`, a single MuData file containing all registered modalities
 - Per-sample files in `sample_*/preprocessing/`, `sample_*/alignment/`, and `sample_*/registration/`
 - Merged stage files: `merged/preprocessing/`, `merged/alignment/`, `merged/registration/`
 
@@ -34,14 +34,14 @@ The final output structure depends on your pipeline configuration:
 
 **Conditions:**
 - Reference modality is `microscopy_image` or `raman` (image-based)
-- Currently, all non-reference modalities must also be image-based
+- Every non-reference modality is also image-based. A spot-based modality alongside an image reference is rejected during configuration validation
+- Every non-reference modality uses `registration_type: none`, since registration reads the aligned reference as AnnData
 
 **Final Output:**
-- Per-sample cropped images in `sample_*/alignment/`
-- For spot-based targets: spot coordinates expressed in reference frame
+- Per-sample cropped images in `sample_*/alignment/`, one per non-reference modality, each named after that modality and holding its image cropped to the region the reference covers
 - Per-sample and merged preprocessed files available
-- **No MuData file is created** (mixed image/spot references not yet supported)
-- If spot-based targets are present: merged results available in `merged/alignment/`
+- **No merged alignment file**: merging applies to the AnnData outputs only
+- **No MuData file is created** (compilation requires a spot-based reference)
 
 ---
 
@@ -223,7 +223,7 @@ adata_msi = ad.read_h5ad(
 
 ## Intermediate Files
 
-FOCUS keeps every intermediate file it produces (preprocessed, aligned, registered). This behaviour is intentional:
+FOCUS keeps every intermediate file it produces (preprocessed, aligned, registered), for two reasons:
 
 - **Resumable runs**: If a run is interrupted or fails partway through, you can restart with the same config and FOCUS will skip any stage whose output file already exists, as long as `force_recomputing` is `false` in the processing or registration settings.
 - **Stage inspection**: You can examine the output of any individual stage (e.g., inspect an aligned AnnData before registration) without re-running the full pipeline.

@@ -181,7 +181,7 @@ Example:
 - **Type**: `boolean`
 - **Required**: No
 - **Default**: `false`
-- **Description**: Re-run alignment for this modality even if cached alignment outputs are already present. Set to `true` to force re-alignment of this specific reference–target pair without affecting other modalities.
+- **Description**: Re-run alignment for this modality even if cached alignment outputs are already present. Set to `true` to force re-alignment of this specific reference-target pair without affecting other modalities.
 
 Example:
 
@@ -198,7 +198,7 @@ Example:
 - **Default**: `"none"`
 - **Allowed values**:
   - `"none"` (any modality; skips registration)
-  - `"feature_extraction"` (`microscopy_image` only)
+  - `"feature_extraction"` (`microscopy_image` only, and only for H&E-stained brightfield RGB images; see [Registration Settings](#feature_extraction))
   - `"spot_interpolation"` (`msi`, `st`)
   - `"spot_aggregation"` (`msi`, `st`)
   - `"raman_pixel_interpolation"` (`raman`)
@@ -233,20 +233,31 @@ Example:
 
 ## `microscopy_image`
 
-| Field | Type | Default |
-|---|---|---|
-| `color_enhancement` | bool | `true` |
-| `gamma` | float | `0.45` |
-| `contrast_saturation` | float | `0.35` |
-| `remove_background` | bool | `true` |
-| `background_color` | string | `"white"` |
-| `clip_percentile` | int | `99` |
-| `min_object_coverage` | float | `0.01` |
-| `crop_to_tissue` | bool | `true` |
-| `crop_margin` | int | `250` |
-| `force_recomputing` | bool | `false` |
+| Field | Type | Default | Step |
+|---|---|---|---|
+| `color_enhancement` | bool | `true` | Colour enhancement |
+| `gamma` | float | `0.45` | Colour enhancement |
+| `contrast_saturation` | float | `0.35` | Colour enhancement |
+| `remove_background` | bool | `true` | Background removal |
+| `background_color` | string | `"white"` | Background removal |
+| `clip_percentile` | int | `99` | Background removal |
+| `min_object_coverage` | float | `0.01` | Background removal |
+| `crop_to_tissue` | bool | `true` | Cropping |
+| `crop_margin` | int | `250` | Cropping |
+| `force_recomputing` | bool | `false` | All |
 
-The number of OME-TIFF pyramid levels is not a configurable field — it is computed automatically from the image dimensions.
+- `gamma`: exponent of `I^gamma` on the image normalised to `[0, 1]`. Below `1.0` it brightens midtones, above `1.0` it darkens them.
+- `contrast_saturation`: a **percentage**. The `contrast_saturation` and `100 − contrast_saturation` percentiles of the non-zero pixels become the clip bounds, which are then rescaled to `[0, 1]`. Those percentiles are computed once over the whole image, with all channels pooled. The default `0.35` saturates 0.35% of those pixels at each end.
+- `background_color`: `"white"` or `"black"`. Any other value raises `ValueError` when background removal runs.
+- `clip_percentile`: percentile at which the inverted grayscale is clipped before the Gaussian blur that feeds the Otsu threshold.
+- `min_object_coverage`: a tissue contour is kept when its area is at least this fraction of the detection-proxy area. The proxy is the image downscaled to at most 9 megapixels.
+- `crop_margin`: full-resolution pixels added on each side of the tissue bounding box, clamped to the image bounds.
+- `crop_to_tissue`: uses the same tissue mask as background removal, so enabling it alone still runs the full Otsu detection.
+- `force_recomputing`: microscopy keeps no intermediate caches. The only cache is the output OME-TIFF itself, which is reused whenever it exists and this flag is false.
+
+The number of OME-TIFF pyramid levels is not a configurable field; it is computed automatically from the final image dimensions. The tissue-detection tuning is not configurable either: the 9-megapixel proxy cap, the 25 px Gaussian blur kernel and the 50 px speck-removal size are internal constants.
+
+Except for `background_color`, these fields are not checked: an out-of-range value reaches the processing code, where it either raises (a `clip_percentile` above 100 fails inside `numpy.percentile`) or changes the result. The out-of-range value is never reported during configuration validation.
 
 Example:
 
@@ -310,15 +321,24 @@ Example:
 
 ## `raman`
 
-| Field | Type | Default |
-|---|---|---|
-| `savgol_window` | int | `7` |
-| `savgol_polyorder` | int | `3` |
-| `otsu_threshold_factor` | float | `0.7` |
-| `bg_min_area_fraction` | float | `0.05` |
-| `min_object_size` | int | `500` |
-| `max_workers` | int | `8` |
-| `force_recomputing` | bool | `false` |
+| Field | Type | Default | Step |
+|---|---|---|---|
+| `savgol_window` | int | `7` | Spectral cleaning |
+| `savgol_polyorder` | int | `3` | Spectral cleaning |
+| `otsu_threshold_factor` | float | `0.7` | Background removal |
+| `bg_min_area_fraction` | float | `0.05` | Background removal |
+| `min_object_size` | int | `500` | Background removal |
+| `max_workers` | int | `8` | BaSiC correction, spectral cleaning |
+| `force_recomputing` | bool | `false` | All |
+
+- `savgol_window` / `savgol_polyorder`: window length in channels and polynomial order of the Savitzky-Golay filter in the RamanSPy cleaning pipeline. SciPy raises `ValueError` when the order is not smaller than the window, or when the window is longer than a scan's channel block. The other three cleaning stages (Whitaker-Hayes despiking, IASLS baseline, min-max normalisation) use their library defaults and are not configurable.
+- `otsu_threshold_factor`: the Otsu threshold computed on the segmentation preview mosaic is multiplied by this value before binarisation. Below `1.0` it lowers the threshold, keeping more pixels as tissue.
+- `bg_min_area_fraction`: tissue contours are kept when their area is at least this fraction of the preview mosaic area.
+- `min_object_size`: connected components of this many pixels or fewer are removed from the mask (`skimage.morphology.remove_small_objects(..., max_size=...)`, inclusive).
+- `max_workers`: number of threads used to correct spectral channels with BaSiC, and number of `joblib` workers used to clean tile × scan work units.
+- `force_recomputing`: also invalidates the per-step `.npy` caches (`basic_corrected_tiles.npy`, `segmented_tiles.npy`, `raman_corrected_tiles.npy`), which are otherwise reused whenever present.
+
+No step of the Raman pipeline can be switched off from the configuration; these fields only change how each step behaves.
 
 Example:
 
@@ -351,7 +371,7 @@ Example:
 | `log1p_transform` | bool | `false` |
 | `force_recomputing` | bool | `false` |
 
-- `remove_mitochondrial_genes`: when `true`, drops mitochondrial genes (flagged by a case-insensitive `MT-`/`MT.` name prefix) from the feature set. Applied per sample, before merging, and after QC metrics are computed — so `pct_counts_mt` still describes the matrix before removal.
+- `remove_mitochondrial_genes`: when `true`, drops mitochondrial genes (flagged by a case-insensitive `MT-`/`MT.` name prefix) from the feature set. Applied per sample, before merging, and after QC metrics are computed, so `pct_counts_mt` still describes the matrix before removal.
 - `min_spots_per_gene`: minimum fraction of a sample's spots that must express a gene for that sample to count as passing. Must satisfy `0 < value < 1`.
 - `min_count_spots_ratio_per_gene`: minimum ratio of a gene's total counts to the number of spots expressing it, per sample. Must be `> 0`. Samples where the gene is unexpressed count as neither pass nor fail.
 - Both gene filters act on the merged matrix only, and are ignored when `null`. Each is evaluated per sample, and a gene is retained when it passes in at least one sample; with both set it must satisfy each in at least one sample, not necessarily the same one.
@@ -380,13 +400,21 @@ Example:
 
 ### `feature_extraction`
 
-Compatible modality type: `microscopy_image`.
+Compatible modality type: `microscopy_image`, and only when that image is an **H&E-stained
+brightfield RGB section**: the encoder (Prov-GigaPath) is pretrained on tiles from H&E whole-slide
+images. FOCUS does not verify the stain. A fluorescence or other-stain image is encoded without
+error and yields embeddings that carry no morphological meaning. Use `"none"` for those modalities.
+See [Registration](../pipeline/registration.md#feature_extraction).
 
 | Field | Type | Default |
 |---|---|---|
 | `patch_size` | int | `224` |
 | `background_color` | string | `"white"` |
 | `force_recomputing` | bool | `false` |
+
+- `patch_size`: side length in pixels of the patch cut around each anchor spot. Prov-GigaPath expects 224.
+- `background_color`: `"white"` or `"black"`. This is the colour counted by the background test; a patch whose pixels match it in at least 99% of positions is skipped and stored as an all-zero embedding. Set it to the `background_color` used in the modality's `processing_settings`.
+- `force_recomputing`: recompute even when a valid cached registration exists.
 
 Example:
 
@@ -416,7 +444,7 @@ Example:
 
 ### `spot_aggregation`
 
-Compatible modality types: `msi`, `st`. Sums (rather than averages) the target spots inside each anchor footprint, with no normalization — intended for subcellular-resolution data (e.g. Visium HD). See [Registration](../pipeline/registration.md#spot_aggregation).
+Compatible modality types: `msi`, `st`. Sums the target spots inside each anchor footprint instead of averaging them, with no normalization. Intended for subcellular-resolution data (e.g. Visium HD). See [Registration](../pipeline/registration.md#spot_aggregation).
 
 | Field | Type | Default |
 |---|---|---|

@@ -1,4 +1,4 @@
-# FOCUS — Flexible Omics Curation and Unified Standardization
+# FOCUS: End-to-end preprocessing, alignment, and registration pipeline
 
 FOCUS is an end-to-end pipeline for integrating spatial multiomics data from multiple imaging and omics instruments acquired on the same tissue section. It handles preprocessing, spatial alignment, and optional feature registration. When a spot-based modality is used as reference and registration is enabled, FOCUS assembles outputs into a single MuData (`.h5mu`) file ready for downstream analysis in scanpy, squidpy, and AnnData. Alignment-only workflows produce merged AnnData files per modality.
 
@@ -12,7 +12,7 @@ FOCUS is an end-to-end pipeline for integrating spatial multiomics data from mul
 
     ---
 
-    Never used FOCUS before? Start with the interactive GUI — no Python required.
+    Start with the interactive GUI. No Python required.
 
     [:octicons-arrow-right-24: GUI Walkthrough](quick_start/gui_usage.md)
 
@@ -20,7 +20,7 @@ FOCUS is an end-to-end pipeline for integrating spatial multiomics data from mul
 
     ---
 
-    Running FOCUS in batch mode, on an HPC cluster, or from a script? The CLI reference is your entry point.
+    The CLI reference covers running FOCUS in batch mode, on an HPC cluster, or from a script.
 
     [:octicons-arrow-right-24: CLI Reference](quick_start/cli_usage.md)
 
@@ -28,7 +28,7 @@ FOCUS is an end-to-end pipeline for integrating spatial multiomics data from mul
 
     ---
 
-    Integrating FOCUS outputs, extending modality support, or building on top of the Python API?
+    The API reference covers integrating FOCUS outputs, extending modality support, and building on top of the Python API.
 
     [:octicons-arrow-right-24: API Reference](api/data_types.md)
 
@@ -38,11 +38,11 @@ FOCUS is an end-to-end pipeline for integrating spatial multiomics data from mul
 
 ## Key features
 
-- **No programming required** — the entire pipeline is driven by a JSON configuration file or the interactive web GUI
-- **MuData output** — results are written as `.h5mu`, compatible with [scanpy](https://scanpy.readthedocs.io), [squidpy](https://squidpy.readthedocs.io), and [AnnData](https://anndata.readthedocs.io)
-- **Four modalities** — fluorescence/brightfield microscopy, MSI/lipidomics, Raman spectroscopy imaging, and spatial transcriptomics
-- **Cross-platform** — Windows, macOS, Linux, and HPC environments are all supported
-- **Container support** — Docker, Podman, and Singularity/Apptainer images are available for reproducible deployment
+- **No programming required**: the entire pipeline is driven by a JSON configuration file or the interactive web GUI
+- **MuData output**: results are written as `.h5mu`, compatible with [scanpy](https://scanpy.readthedocs.io), [squidpy](https://squidpy.readthedocs.io), and [AnnData](https://anndata.readthedocs.io)
+- **Four modalities**: fluorescence/brightfield microscopy, MSI/lipidomics, Raman spectroscopy imaging, and spatial transcriptomics
+- **Cross-platform**: Windows, macOS, Linux, and HPC environments are all supported
+- **Container support**: Docker, Podman, and Singularity/Apptainer images are available for reproducible deployment
 
 ---
 
@@ -50,7 +50,7 @@ FOCUS is an end-to-end pipeline for integrating spatial multiomics data from mul
 
 **1. Install FOCUS**
 
-FOCUS is installed from source — clone the repository and run the installer, which
+FOCUS is installed from source. Clone the repository and run the installer, which
 creates a `FOCUS` conda environment and registers the `focus` command:
 
 ```bash
@@ -117,8 +117,8 @@ Raw Data → [1] Preprocessing → [2] Alignment → [3] Registration → [4] Co
 
 ## Further reading
 
-- [System Overview](overview.md) — pipeline architecture, modality table, directory layout
-- [Key Concepts](user_guide/concepts.md) — glossary of FOCUS terminology
-- [Configuration Reference](configuration/config_fields.md) — every JSON field explained
-- [Scientific Background](scientific/overview.md) — motivation and algorithm design
-- [Data Schemas](api/data_types.md) — canonical AnnData / MuData schemas for developers
+- [System Overview](overview.md): pipeline architecture, modality table, directory layout
+- [Key Concepts](user_guide/concepts.md): glossary of FOCUS terminology
+- [Configuration Reference](configuration/config_fields.md): every JSON field explained
+- [Scientific Background](scientific/overview.md): motivation and algorithm design
+- [Data Schemas](api/data_types.md): canonical AnnData / MuData schemas for developers

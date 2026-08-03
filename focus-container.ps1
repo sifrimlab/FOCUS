@@ -1,4 +1,4 @@
-# ── FOCUS container launcher — Windows PowerShell (Docker Desktop / Podman) ───
+# FOCUS container launcher for Windows PowerShell (Docker Desktop / Podman)
 #
 # Runs FOCUS inside Docker or Podman on Windows.
 # The mount directory is mounted at the same Unix-style path inside the
@@ -48,7 +48,7 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-# ── Helpers ───────────────────────────────────────────────────────────────────
+# Helpers
 function Write-Info  ($msg) { Write-Host "[INFO]  $msg" -ForegroundColor Cyan   }
 function Write-Ok    ($msg) { Write-Host "[OK]    $msg" -ForegroundColor Green  }
 function Write-Warn  ($msg) { Write-Host "[WARN]  $msg" -ForegroundColor Yellow }
@@ -68,7 +68,7 @@ function ConvertTo-UnixPath ([string]$WinPath) {
     return $abs -replace '\\','/'
 }
 
-# ── Runtime detection ─────────────────────────────────────────────────────────
+# Runtime detection
 if ($Runtime -eq "") {
     foreach ($rt in @("docker","podman")) {
         if (Get-Command $rt -ErrorAction SilentlyContinue) { $Runtime = $rt; break }
@@ -91,10 +91,10 @@ No container runtime found in PATH.
 
 Write-Ok "Using runtime: $Runtime"
 
-# ── Default mount: current directory ─────────────────────────────────────────
+# Default mount: current directory
 if ($Mount.Count -eq 0) { $Mount = @((Get-Location).Path) }
 
-# ── Resolve and convert mount paths ──────────────────────────────────────────
+# Resolve and convert mount paths
 $UnixMounts = @()
 foreach ($m in $Mount) {
     if (-not (Test-Path $m)) { Write-Err "Mount path does not exist: $m" }
@@ -103,13 +103,13 @@ foreach ($m in $Mount) {
     Write-Info "Mounting: $m  →  $unix (same directory tree inside container)"
 }
 
-# ── Detect GUI vs CLI mode ────────────────────────────────────────────────────
+# Detect GUI vs CLI mode
 $GuiMode = $true
 foreach ($arg in $FocusArgs) {
     if ($arg -eq "--config" -or $arg -eq "-c") { $GuiMode = $false; break }
 }
 
-# ── Build ─────────────────────────────────────────────────────────────────────
+# Build
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 if ($Build) {
     # PyTorch wheel index baked into the image: CPU by default, CUDA when -Gpu
@@ -126,7 +126,7 @@ if ($Build) {
     if ($LASTEXITCODE -ne 0) { Write-Err "Image build failed." }
 }
 
-# ── Verify image exists ───────────────────────────────────────────────────────
+# Verify image exists
 $imgCheck = & $Runtime image inspect $Image 2>&1
 if ($LASTEXITCODE -ne 0) {
     Write-Err @"
@@ -137,7 +137,7 @@ Image '$Image' not found.
 "@
 }
 
-# ── Assemble run command ──────────────────────────────────────────────────────
+# Assemble run command
 $RunArgs = @("run", "--rm", "--interactive", "--tty")
 
 # Volume mounts: same Unix path on both sides
@@ -148,7 +148,7 @@ foreach ($unix in $UnixMounts) {
 # Port forwarding for GUI mode
 if ($GuiMode) {
     $RunArgs += @("-p", "${Port}:${Port}")
-    Write-Info "GUI mode — open http://localhost:$Port in your browser"
+    Write-Info "GUI mode: open http://localhost:$Port in your browser"
 }
 
 # GPU

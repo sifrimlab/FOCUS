@@ -30,7 +30,7 @@ focus --config /scratch/$USER/myproject/focus_config.json
     bash install.sh
     ```
 
-    See [Local Installation — Troubleshooting PyTorch / CUDA on HPC](local.md#troubleshooting-pytorch-cuda-on-hpc) for full details on CUDA detection and the `TORCH_VERSION` escape hatch.
+    See [Local Installation: Troubleshooting PyTorch / CUDA on HPC](local.md#troubleshooting-pytorch-cuda-on-hpc) for full details on CUDA detection and the `TORCH_VERSION` escape hatch.
 
 ---
 
@@ -101,20 +101,20 @@ sbatch --export=ALL,FOCUS_CONFIG=/scratch/$USER/proj/config.json,FOCUS_SIF=/scra
 ### What the script contains
 
 The script runs FOCUS in CLI mode and is organised into two clearly marked
-blocks — switch by commenting one and uncommenting the other:
+blocks. Switch by commenting one and uncommenting the other:
 
-- **Option A — Singularity/Apptainer container** (the default): loads the
+- **Option A** (Singularity/Apptainer container, the default): loads the
   `singularity`/`apptainer` and `cuda` modules, then `... run --bind "$FOCUS_WORKDIR" --nv "$FOCUS_SIF" --config "$FOCUS_CONFIG"`.
-- **Option B — host install** (conda env from `install.sh`): sources the conda
+- **Option B** (host install, conda env from `install.sh`): sources the conda
   hook, `conda activate FOCUS`, then `focus --config "$FOCUS_CONFIG"`.
 
-It requests these resources (tune them to your data — see
+It requests these resources (tune them to your data, see
 [Performance Tuning](#performance-tuning)):
 
 | Directive | Default | Notes |
 |---|---|---|
 | `--cpus-per-task` | `16` | Raman preprocessing parallelism (config `max_workers`) |
-| `--mem` | `64G` | MSI preprocessing peaks at ~40–100 GB per sample |
+| `--mem` | `64G` | MSI preprocessing peaks at ~40-100 GB per sample |
 | `--gres=gpu:1` | on | Only needed for `feature_extraction`; remove it (and `--nv`) for CPU-only runs |
 | `--time` | `24:00:00` | Wall-clock limit |
 | `--output` | `focus_%j.log` | SLURM log (`%j` = job ID) |
@@ -139,13 +139,13 @@ into the container, default `/scratch/$USER`).
 
 The alignment GUI requires a web browser. On a headless server, forward the port over SSH to your local machine:
 
-**Step 1 — On your local machine, open an SSH tunnel:**
+**Step 1. On your local machine, open an SSH tunnel:**
 
 ```bash
 ssh -L 5050:localhost:5050 -L 8000:localhost:8000 user@hpc-cluster.example.org
 ```
 
-**Step 2 — On the server, start FOCUS in GUI mode:**
+**Step 2. On the server, start FOCUS in GUI mode:**
 
 === "Host install"
 
@@ -161,9 +161,9 @@ ssh -L 5050:localhost:5050 -L 8000:localhost:8000 user@hpc-cluster.example.org
     ```
 
     !!! tip
-        Singularity inherits the host network namespace — no `-p` port mapping is needed. Port 5050 on the container is the same as port 5050 on the cluster node.
+        Singularity inherits the host network namespace. No `-p` port mapping is needed. Port 5050 on the container is the same as port 5050 on the cluster node.
 
-**Step 3 — Open `http://localhost:5050`** in your local browser. The tunnel forwards the connection transparently to the cluster.
+**Step 3. Open `http://localhost:5050`** in your local browser. The tunnel forwards the connection transparently to the cluster.
 
 !!! warning "HPC warning from the launcher script"
     When running Singularity in GUI mode, `focus-container.sh` automatically prints:
@@ -194,7 +194,7 @@ This allows FOCUS to run from start to finish in a batch job with no human inter
 | Stage | Notes |
 |---|---|
 | **Raman preprocessing** | Parallelised across workers. Increase `max_workers` in the config (default: 8) to match available CPUs. |
-| **MSI preprocessing** | Peak RAM scales with a single sample. Typical tissue samples use 40–50 GB; large tissue sections may require up to 100 GB. Request memory accordingly when submitting batch jobs. |
+| **MSI preprocessing** | Peak RAM scales with a single sample. Typical tissue samples use 40-50 GB; large tissue sections may require up to 100 GB. Request memory accordingly when submitting batch jobs. |
 | **Feature extraction** | Requires an NVIDIA GPU. Ensure `--nv` (Singularity) or `--gpus all` (Docker/Podman) is set, and that `nvidia-smi` returns the expected device inside the container. |
 | **Compilation** | CPU-bound and I/O-bound. Fast NVMe storage for `dataset_path` significantly reduces runtime for large datasets. |
 

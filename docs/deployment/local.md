@@ -53,9 +53,9 @@ cd FOCUS
     .\install.ps1
     ```
 
-    `install.ps1` is the full Windows installer — it performs the same CUDA
-    detection and CUDA-matched PyTorch installation as `install.sh`. A
-    `install.bat` shim is also provided (it simply forwards to `install.ps1`),
+    `install.ps1` is the full Windows installer. It performs the same CUDA
+    detection and CUDA-matched PyTorch installation as `install.sh`. An
+    `install.bat` shim is also provided (it forwards to `install.ps1`),
     so `install.bat` still works from a classic Command Prompt.
 
 ### What the script does
@@ -106,7 +106,7 @@ To wipe and recreate all environments from scratch (e.g. after a dependency upda
 
 ---
 
-## GPU Setup (Optional — for `feature_extraction`)
+## GPU Setup (Optional: for `feature_extraction`)
 
 GPU acceleration is required only for the `feature_extraction` registration type, which uses the [Prov-GigaPath](https://huggingface.co/prov-gigapath/prov-gigapath) model. All other pipeline stages run on CPU.
 
@@ -159,13 +159,13 @@ conda activate FOCUS
 focus --help
 ```
 
-Expected output: usage text listing the `--config` flag and other available options. If the command is not found, the package installation step may have failed — re-run `bash install.sh --reinstall`.
+Expected output: usage text listing the `--config` flag and other available options. If the command is not found, the package installation step may have failed. Re-run `bash install.sh --reinstall`.
 
 ---
 
 ## Troubleshooting PyTorch / CUDA on HPC
 
-The install script automatically detects your system's CUDA version (via `nvcc`, `nvidia-smi`, or environment module variables) and installs a matching PyTorch build. On most systems this works without any intervention. On **HPC clusters**, however, two classes of problems can occur.
+The install script automatically detects your system's CUDA version (via `nvcc`, `nvidia-smi`, or environment module variables) and installs a matching PyTorch build. On most systems this works without intervention. Two classes of problems can occur on **HPC clusters**.
 
 ### 1. CUDA not detected (CPU-only fallback)
 
@@ -184,11 +184,11 @@ bash install.sh --reinstall
 
 The script checks for CUDA in the following order:
 
-1. `nvcc` in `PATH` — most accurate (toolkit version)
-2. `nvcc` inside `$CUDA_HOME`, `$CUDA_PATH`, or `$CUDA_ROOT` — set by Lmod when a CUDA module is loaded
+1. `nvcc` in `PATH`: most accurate (toolkit version)
+2. `nvcc` inside `$CUDA_HOME`, `$CUDA_PATH`, or `$CUDA_ROOT`: set by Lmod when a CUDA module is loaded
 3. `version.json` or `version.txt` inside those paths
-4. `$LOADEDMODULES` — Lmod sets this to a colon-separated list (e.g. `gcc/12.2:cuda/12.8:...`) which the script parses directly
-5. `nvidia-smi` — reports the driver's maximum supported CUDA version
+4. `$LOADEDMODULES`: Lmod sets this to a colon-separated list (e.g. `gcc/12.2:cuda/12.8:...`) which the script parses directly
+5. `nvidia-smi`: reports the driver's maximum supported CUDA version
 
 ### 2. PyTorch crashes on import (Bus error / SIGBUS)
 
@@ -228,10 +228,10 @@ TORCH_VERSION=2.9.0 bash install.sh --reinstall
     | System CUDA | Wheel index |
     |---|---|
     | 13.x or 12.8+ | `cu128` |
-    | 12.6 – 12.7 | `cu126` |
-    | 12.4 – 12.5 | `cu124` |
-    | 12.0 – 12.3 | `cu121` |
-    | 11.8 – 11.x | `cu118` |
+    | 12.6-12.7 | `cu126` |
+    | 12.4-12.5 | `cu124` |
+    | 12.0-12.3 | `cu121` |
+    | 11.8-11.x | `cu118` |
 
     The install script prints which index it selects during installation.
 

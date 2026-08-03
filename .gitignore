@@ -202,7 +202,7 @@ tools/BaSiCpy/basicpy.sif
 
 notebooks/gigapath
 
-# GUI — Node / build intermediates (exclude node_modules and Vite cache;
+# GUI: Node / build intermediates (exclude node_modules and Vite cache;
 # keep gui_src source files and the built artifacts under src/focus/GUI/)
 gui_src/**/node_modules/
 gui_src/**/.vite/

@@ -24,41 +24,43 @@ Given modalities \(\{M_k\}\), FOCUS constructs a shared set of observations inde
 
 ---
 
-## Four-stage method
+## Pipeline stages
 
 ```text
-Raw data -> [1] Preprocessing -> [2] Alignment -> [3] Registration -> [4] Compilation
+Raw data → [1] Preprocessing → [2] Alignment → [3] Registration → [4] Compilation
 ```
+
+[Spatial annotation transfer](annotation_transfer.md) is an optional additional stage. It runs
+directly after alignment and independently of registration and compilation. When it is enabled the
+pipeline reports five stages and the numbering shifts: annotation transfer is stage 3, registration
+stage 4, and compilation stage 5.
 
 ### Stage 1: Preprocessing
 
 Raw modality files are transformed into standardized intermediate representations:
 
-- Image modalities (`microscopy_image`, `raman`) -> OME-TIFF
-- Spot modalities (`msi`, `st`) -> AnnData
+- Image modalities ([`microscopy_image`](microscopy_methods.md), [`raman`](raman_methods.md)) → OME-TIFF
+- Spot modalities ([`msi`](msi_methods.md), [`st`](st_methods.md)) → AnnData
 
 This stage also computes modality-specific metadata used later (for example `spot_size` for spot interpolation).
 
 ### Stage 2: Alignment
 
-Alignment computes coordinates of reference spots expressed in each target modality frame.
+Alignment computes coordinates of reference spots expressed in each target modality frame
+(see [Alignment Methods](alignment_methods.md)).
 
-For a non-reference modality \(T\), the aligned reference coordinates are stored as:
-
-\[
-\texttt{obsm['\{T\}_spatial']} \in \mathbb{R}^{N_R \times 2}
-\]
-
-where row \(i\) corresponds to reference observation \(i\).
+For a non-reference modality \(T\), the aligned reference coordinates are stored on the reference's
+aligned AnnData under the pair-specific key `obsm['{target_name}_spatial']`, a matrix in
+\(\mathbb{R}^{N_R \times 2}\) where row \(i\) corresponds to reference observation \(i\).
 
 ### Stage 3: Registration
 
 For each target modality \(T\), FOCUS computes a feature vector at each aligned reference location.
 
-- `feature_extraction` (`microscopy_image`): deep patch embeddings (Prov-GigaPath).
+- `feature_extraction` (`microscopy_image`): deep patch embeddings (Prov-GigaPath); valid only for H&E-stained brightfield RGB images, which is the model's pretraining domain.
 - `spot_interpolation` (`msi`, `st`): Gaussian-weighted average over the target spots in each anchor footprint.
 - `spot_aggregation` (`msi`, `st`): equal-weight sum over the target spots in each anchor footprint (no normalization); accumulates signal for subcellular-resolution data.
-- `raman_pixel_interpolation` (`raman`): the same Gaussian interpolation over hyperspectral OME-TIFF pixels (temporary, pending a Raman-specific feature extractor).
+- `raman_pixel_interpolation` (`raman`): the same Gaussian interpolation over hyperspectral OME-TIFF pixels, each pixel acting as a spot at its pixel coordinate.
 
 Generic interpolation form:
 
@@ -68,18 +70,20 @@ Generic interpolation form:
 w_{ij}=\exp\!\left(-\frac{\|r_i-t_j\|^2}{2\sigma^2}\right)
 \]
 
-with neighborhood \(\mathcal{N}_i\) and \(\sigma\) defined by the implementation in `registration_methods.md`.
+with neighborhood \(\mathcal{N}_i\) and \(\sigma\) defined by the implementation in
+[Registration Methods](registration_methods.md).
 
 ### Stage 4: Compilation
 
-Compilation to MuData is conditional:
+Compilation to MuData is conditional on **both**:
 
-- Reference modality is spot-based (`msi` or `st`), and
-- At least one non-reference modality has `registration_type != "none"`.
+- `perform_registration` is `true`, and
+- the reference modality is spot-based (`msi` or `st`).
 
-These two conditions are equivalent to the "`perform_registration` is `true` **and** the reference
-modality is spot-based" gate described in [Compilation](../pipeline/compilation.md), since
-`perform_registration` is effectively "at least one modality is registered".
+`perform_registration` is an independent configuration flag (default `true`), not a derived one: the
+gate does **not** count how many modalities have `registration_type != "none"`. The requirement that
+at least two modalities survive row-alignment validation is enforced *inside* the stage, not by this
+gate (see [Compilation](../pipeline/compilation.md)).
 
 When compiled, modalities share a harmonized observation index and top-level spatial metadata.
 
@@ -94,9 +98,13 @@ When compiled, modalities share a harmonized observation index and top-level spa
 
 The scientific details for each preprocessing pipeline are documented in:
 
-- `microscopy_methods.md`
-- `msi_methods.md`
-- `raman_methods.md`
-- `registration_methods.md`
-- `alignment_methods.md`
-- `annotation_transfer.md`
+- [MSI Preprocessing](msi_methods.md)
+- [Raman Preprocessing](raman_methods.md)
+- [Microscopy Preprocessing](microscopy_methods.md)
+- [Spatial Transcriptomics Preprocessing](st_methods.md)
+
+The stages that operate across modalities are documented in:
+
+- [Alignment Methods](alignment_methods.md)
+- [Registration Methods](registration_methods.md)
+- [Annotation Transfer](annotation_transfer.md)

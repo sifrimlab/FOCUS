@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "FOCUS"
 version = "0.1.0"
-description = "Fusion of Omics for Cohesive Unified Standardization"
+description = "FOCUS: End-to-end preprocessing, alignment, and registration pipeline"
 readme = "README.md"
 license = {text = "MIT"}
 authors = [
@@ -23,7 +23,7 @@ dependencies = [
     "mudata",
     "scanpy",
     "scikit-learn",
-    "scikit-image",
+    "scikit-image>=0.26",
     "opencv-python",
     "Pillow",
     "tifffile",
@@ -43,3 +43,14 @@ dependencies = [
 
 [project.scripts]
 focus = "focus.main:main"
+
+# The compiled Vue/Vite front-ends under focus/GUI/{main,alignment} are data
+# files, not Python modules, so setuptools would otherwise leave them out of the
+# wheel and both GUIs would 404 on a non-editable install. Globbing the whole
+# directory (rather than listing extensions) keeps this correct if a future build
+# emits fonts or images; the exclude below stops macOS junk from shipping.
+[tool.setuptools.package-data]
+"focus.GUI" = ["main/*", "alignment/*"]
+
+[tool.setuptools.exclude-package-data]
+"focus.GUI" = ["**/.DS_Store"]

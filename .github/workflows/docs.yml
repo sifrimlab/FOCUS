@@ -1,8 +1,8 @@
 name: Docs
 
 # Builds the MkDocs (Material) site and publishes it to GitHub Pages.
-# Uses the modern Pages-from-Actions flow (no gh-pages branch, nothing is
-# committed — the built site is uploaded as a Pages artifact and deployed).
+# Uses the Pages-from-Actions flow (no gh-pages branch, nothing is
+# committed. The built site is uploaded as a Pages artifact and deployed).
 #
 # One-time setup (after the repository is public):
 #   Settings → Pages → Build and deployment → Source: "GitHub Actions".

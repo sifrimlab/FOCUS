@@ -26,7 +26,7 @@ This page covers the most common errors encountered when installing and running 
 **Symptom:** The install script prints a message such as:
 
 ```
-No CUDA detected — installing CPU-only PyTorch.
+No CUDA detected. Installing CPU-only PyTorch.
 ```
 
 (On an HPC node where no CUDA toolkit is found, the message is instead `Falling back to CPU-only PyTorch for now.`)
@@ -57,18 +57,22 @@ If you have a GPU and want to use `feature_extraction` registration:
 
 ---
 
-### Raman Processing Fails — Missing `FOCUS_BaSiCpy` or `FOCUS_ASHLAR` Environment
+### Raman Processing Fails: Missing `FOCUS_BaSiCpy` or `FOCUS_ASHLAR` Environment
 
-**Symptom:** FOCUS starts but fails when preprocessing a `raman` modality with an error about a missing conda environment or a missing command.
+**Symptom:** every sample of a `raman` modality is reported on the console as
+`Error processing sample <sample_id>: Conda environment 'FOCUS_BaSiCpy' does not exist.`,
+`... conda not found. Make sure conda is installed and in PATH.`, or a non-zero exit from the ASHLAR
+subprocess. The pipeline keeps running and the modality produces no preprocessed output.
 
 **Cause:** Raman processing runs BaSiC illumination correction and ASHLAR stitching in dedicated
 auxiliary conda environments (`FOCUS_BaSiCpy`, `FOCUS_ASHLAR`). If one of these environments was
-not created during installation, Raman preprocessing fails when it tries to invoke it.
+not created during installation, Raman preprocessing fails when it tries to invoke it. The failure is
+caught per sample, so the run continues instead of stopping.
 
 **Fix:**
 
-The install script creates these environments automatically — one `FOCUS_<name>` environment for
-each subdirectory of `tools/` (`BaSiCpy` and `ASHLAR`); there are no interactive prompts. First
+The install script creates these environments automatically: one `FOCUS_<name>` environment for
+each subdirectory of `tools/` (`BaSiCpy` and `ASHLAR`). There are no interactive prompts. First
 confirm whether they exist:
 
 ```bash
@@ -85,8 +89,9 @@ bash install.sh        # macOS/Linux
 .\install.ps1          # Windows (PowerShell; install.bat also works)
 ```
 
-ASHLAR needs Java, but you do not need to install it yourself: the installer provisions OpenJDK
-(from conda-forge) inside the `FOCUS_ASHLAR` environment automatically.
+ASHLAR needs Java to read the tile files through Bio-Formats, but you do not need to install it
+yourself: the installer runs `conda install -c conda-forge openjdk` in every tool environment it
+creates, `FOCUS_ASHLAR` included.
 
 ---
 
@@ -145,7 +150,7 @@ All configuration errors are caught by `parse_config` before any computation sta
 
 **Valid values:** `"microscopy_image"`, `"msi"`, `"raman"`, `"st"`.
 
-**Fix:** Correct the `"type"` field. Note that the type is case-sensitive.
+**Fix:** Correct the `"type"` field. The type is case-sensitive.
 
 ---
 
@@ -223,9 +228,9 @@ If the sample genuinely has no MSI data, add it to `"ignore_samples"` instead so
 
 ### `Incomplete MSI acquisition in <path>: found .imzML files [...] and .ibd files [...]`
 
-**Cause:** An ion-mode folder holds files but not a complete pair — an `.imzML` without its `.ibd`, an `.ibd` without its `.imzML`, or two files whose base names do not match. This usually means an interrupted copy or a partial export. Any file of either kind is taken as evidence that the ion mode was intended, so FOCUS reports the incomplete pair rather than skipping the polarity.
+**Cause:** An ion-mode folder holds files but not a complete pair: an `.imzML` without its `.ibd`, an `.ibd` without its `.imzML`, or two files whose base names do not match. This usually means an interrupted copy or a partial export. Any file of either kind is taken as evidence that the ion mode was intended, so FOCUS reports the incomplete pair rather than skipping the polarity.
 
-**Fix:** Complete the transfer so both files are present and share the same base name (`data.imzML` + `data.ibd`). If the folder holds leftover junk from a failed export, delete it — an ion-mode folder that is completely **empty** is ignored, but one holding a stray file is not.
+**Fix:** Complete the transfer so both files are present and share the same base name (`data.imzML` + `data.ibd`). If the folder holds leftover junk from a failed export, delete it. An ion-mode folder that is completely **empty** is ignored, but one holding a stray file is not.
 
 ---
 
@@ -249,7 +254,7 @@ If the sample genuinely has no MSI data, add it to `"ignore_samples"` instead so
 
 ### `Alignment strategy 'pre_aligned' cannot be set on the reference modality`
 
-**Cause:** You set `"alignment_strategy": "pre_aligned"` on the modality that is also the `reference_modality`. The reference is the coordinate system anchor — it cannot itself be pre-aligned to anything.
+**Cause:** You set `"alignment_strategy": "pre_aligned"` on the modality that is also the `reference_modality`. The reference is the coordinate system anchor, so it cannot itself be pre-aligned to anything.
 
 **Fix:** Set `"alignment_strategy": "pre_aligned"` only on *non-reference* modalities.
 
@@ -260,6 +265,16 @@ If the sample genuinely has no MSI data, add it to `"ignore_samples"` instead so
 **Cause:** `"alignment_strategy": "pre_aligned"` requires the reference modality to be spot-based (`msi` or `st`), because pre-alignment assumes the reference's spot coordinates are already expressed in the target modality's coordinate space. Image-based reference modalities (`microscopy_image`, `raman`) have no discrete spot locations and cannot be used with `pre_aligned`.
 
 **Fix:** Use a spot-based modality as the reference when using `"pre_aligned"`.
+
+---
+
+### `Reference modality '...' has image-based type '...', which cannot be aligned to the spot-based modality/modalities [...]`
+
+**Cause:** `"reference_modality"` names a `microscopy_image` or `raman` modality while at least one other modality is `msi` or `st`. Alignment maps the reference onto each non-reference modality, and mapping an image reference onto a spot modality is not implemented.
+
+**Fix:** Set `"reference_modality"` to an `msi` or `st` modality. This is also required for MuData compilation. An image-based reference is only accepted when every other modality is image-based, and then it supports alignment only: set `"registration_type": "none"` on those modalities, because registration reads the aligned reference as AnnData.
+
+This is checked only when `"perform_alignment": true`.
 
 ---
 
@@ -318,7 +333,7 @@ dataset_path/
 **Fix:**
 
 - Confirm that you clicked **Confirm** in the alignment GUI and waited for the page to advance to the next sample (or close). Navigating away from the page before the POST completes will discard the transform.
-- Check that the browser did not block the POST request — look for errors in the browser developer console (F12).
+- Check that the browser did not block the POST request. Look for errors in the browser developer console (F12).
 - If the problem persists, check `focus.log` for a write error on the alignment output file.
 
 ---
@@ -327,9 +342,15 @@ dataset_path/
 
 **Symptom:** When rerunning FOCUS, the alignment GUI appears again even though the previous run completed alignment successfully.
 
-**Cause:** `"alignment_force_recomputing": true` is set on one of the non-reference modality entries in the config.
+**Cause:** A pair is re-aligned when **any** of three flags is `true`:
 
-**Fix:** Set `"alignment_force_recomputing": false` (the default) on each modality to reuse cached alignment results.
+- `"alignment_force_recomputing": true` on that non-reference modality;
+- `"force_recomputing": true` in the **reference** modality's `processing_settings`;
+- `"force_recomputing": true` in that **non-reference** modality's `processing_settings`.
+
+Forcing preprocessing to re-run also invalidates the alignments that depend on it, and the same condition forces that modality's registration.
+
+**Fix:** Set all three to `false` (the default) to reuse cached alignment results. To redo preprocessing only, run it with `force_recomputing: true` once, then set it back before the next run.
 
 ---
 
@@ -340,27 +361,29 @@ dataset_path/
 **Cause:** The GPU does not have enough VRAM to run the Prov-GigaPath model on the number of patches required by the image.
 
 **What not to change:** `patch_size` defaults to 224 and is exposed in `registration_settings`, but
-you should leave it at 224 — Prov-GigaPath expects a 224 × 224 input, so reducing it to save memory
-degrades the embeddings rather than being a supported memory knob. There is also no batch-size knob to
-lower: on GPU FOCUS already sizes each batch to the free VRAM and halves it automatically on an
-out-of-memory error, so a genuine out-of-memory here means the card is too small for even the minimum
-batch.
+leave it at 224. Prov-GigaPath expects a 224 × 224 input, so reducing it to save memory degrades the
+embeddings; it is not a supported memory knob. There is also no batch-size knob to lower: on GPU
+FOCUS already sizes each batch to the free VRAM and halves it automatically on an out-of-memory
+error, so a genuine out-of-memory here means the card is too small for even the minimum batch.
 
 **What you can try:**
 
 1. Close all other GPU processes before running FOCUS to free as much VRAM as possible.
-2. If the problem persists, the GPU simply does not have enough VRAM for the `feature_extraction` step. You will need to run it on a machine with a larger GPU.
+2. If the problem persists, the GPU does not have enough VRAM for the `feature_extraction` step. You will need to run it on a machine with a larger GPU.
 
-**If you want to use a different (lighter) model:** The built-in `feature_extraction` step is specific to Prov-GigaPath. To use a different model you must implement a custom registration workflow in Python using the FOCUS preprocessing outputs directly — the built-in registration step cannot be swapped for a different model without code changes.
+**If you want to use a different (lighter) model:** The built-in `feature_extraction` step is specific to Prov-GigaPath. To use a different model you must implement a custom registration workflow in Python using the FOCUS preprocessing outputs directly. The built-in registration step cannot be swapped for a different model without code changes.
 
-!!! warning "Do not use `spot_interpolation` as a fallback for image modalities"
-    Setting `"registration_type": "spot_interpolation"` on a `microscopy_image` modality is not supported and will produce results that carry no meaningful morphological information. If `feature_extraction` is not feasible for your hardware, omit registration for the image modality (`"registration_type": "none"`) and work with the aligned OME-TIFF outputs directly.
+!!! warning "`spot_interpolation` is not a fallback for image modalities"
+    `"registration_type": "spot_interpolation"` on a `microscopy_image` modality is rejected during configuration validation, before any processing runs: the only registration types accepted for `microscopy_image` are `feature_extraction` and `none`. If `feature_extraction` is not feasible for your hardware, set `"registration_type": "none"` for the image modality and work with the aligned OME-TIFF outputs directly.
+
+!!! warning "`feature_extraction` is only valid for H&E brightfield images"
+    Prov-GigaPath is pretrained on H&E-stained brightfield tiles, and FOCUS does not check the stain or the imaging mode: a fluorescence, IHC or other-stain image produces a complete embedding matrix with no error, whose values do not describe the tissue. This failure is silent. There is no message in `focus.log` to look for. Use `"registration_type": "none"` for any microscopy modality that is not an H&E brightfield RGB section.
 
 ---
 
 ### `feature_extraction` Registration Is Extremely Slow (No GPU Detected)
 
-**Cause:** `feature_extraction` does not hard-require a GPU — it selects CUDA when available and
+**Cause:** `feature_extraction` does not hard-require a GPU. It selects CUDA when available and
 otherwise falls back to CPU. Running Prov-GigaPath on CPU works but is impractically slow for
 real images, so a slow `feature_extraction` stage usually means no GPU was visible to the process
 (PyTorch installed without CUDA support, or no GPU allocated).
@@ -413,7 +436,7 @@ The model is cached in `~/.cache/huggingface/hub/`. On subsequent runs on nodes 
 1. Confirm the reference modality is `msi` or `st`.
 2. Confirm `"perform_registration": true`.
 3. Check `focus.log` for observation count mismatch warnings.
-4. If the merged file is missing, check whether the per-sample registration files exist. A missing merged file usually indicates an earlier crash — delete the partial outputs and rerun with `"force_recomputing": true`.
+4. If the merged file is missing, check whether the per-sample registration files exist. A missing merged file usually indicates an earlier crash. Delete the partial outputs and rerun with `"force_recomputing": true`.
 
 ---
 
@@ -462,9 +485,9 @@ Remove any comments (JSON does not support `//` or `/* */` comments).
 
 ### Large Files Cause Memory Errors During Preprocessing
 
-**Cause:** FOCUS processes one sample at a time — no more than one sample is ever fully loaded in RAM simultaneously — so peak RAM usage scales with the size of a *single* sample, not the whole dataset. Large, high-resolution sections (MSI or Raman in particular) can individually require many tens of gigabytes of RAM.
+**Cause:** FOCUS processes one sample at a time, so no more than one sample is ever fully loaded in RAM simultaneously. Peak RAM usage scales with the size of a *single* sample, not the whole dataset. Large, high-resolution sections (MSI or Raman in particular) can individually require many tens of gigabytes of RAM.
 
-**Fix:** Run FOCUS on a machine with enough RAM for your largest single sample. There is no configuration parameter that reduces peak RAM usage for a given sample — the memory footprint is determined by the data itself. If the available RAM is insufficient, move the dataset to a machine (or HPC node) with more memory.
+**Fix:** Run FOCUS on a machine with enough RAM for your largest single sample. There is no configuration parameter that reduces peak RAM usage for a given sample. The memory footprint is determined by the data itself. If the available RAM is insufficient, move the dataset to a machine (or HPC node) with more memory.
 
 ---
 

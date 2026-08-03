@@ -1,10 +1,10 @@
-# FOCUS: end-to-end preprocessing, alignment and resolution-matched integration of spatial multi-omics data
+# FOCUS: End-to-end preprocessing, alignment, and registration pipeline
 
-FOCUS is an end-to-end preprocessing, alignment, and registration pipeline for **spatial multiomics** datasets. It integrates data acquired from different imaging and omics modalities on the same tissue section — such as microscopy images, mass spectrometry imaging (MSI/lipidomics), Raman spectroscopy, and spatial transcriptomics — into a single, analysis-ready multimodal dataset. The output is structured as [MuData](https://mudata.readthedocs.io/) (`.h5mu`), making it immediately compatible with established single-cell and spatial omics frameworks such as [scanpy](https://scanpy.readthedocs.io/), [squidpy](https://squidpy.readthedocs.io/), and [AnnData](https://anndata.readthedocs.io/).
+FOCUS is an end-to-end preprocessing, alignment, and registration pipeline for **spatial multiomics** datasets. It integrates data acquired from different imaging and omics modalities on the same tissue section into a single, analysis-ready multimodal dataset. Supported modalities include microscopy images, mass spectrometry imaging (MSI/lipidomics), Raman spectroscopy, and spatial transcriptomics. The output is structured as [MuData](https://mudata.readthedocs.io/) (`.h5mu`), making it immediately compatible with established single-cell and spatial omics frameworks such as [scanpy](https://scanpy.readthedocs.io/), [squidpy](https://squidpy.readthedocs.io/), and [AnnData](https://anndata.readthedocs.io/).
 
 No programming is required to use FOCUS. The entire pipeline is driven by a JSON configuration file that can be built interactively through a web-based GUI.
 
-📖 **Full documentation: [sifrimlab.github.io/FOCUS](https://sifrimlab.github.io/FOCUS/)** — installation, user guide, per-modality docs, scientific methods, and deployment guides.
+📖 **Full documentation: [sifrimlab.github.io/FOCUS](https://sifrimlab.github.io/FOCUS/)** (installation, user guide, per-modality docs, scientific methods, and deployment guides).
 
 ---
 
@@ -51,10 +51,12 @@ Raw Data  ──►  Preprocessing  ──►  Alignment  ──►  Registratio
                                     web GUI)          or interpolation)
 ```
 
-1. **Preprocessing** — modality-specific quality control, normalisation, background removal, and storage in a standardised format.
-2. **Alignment** — an interactive web GUI lets you visually overlay the reference modality onto each target modality (translate, rotate, scale, flip, and corner-distort) to record their spatial correspondence. Each sample is handled individually.
-3. **Registration** — computationally maps features from one modality onto the coordinate space of another using either deep-learning patch embeddings (requires GPU) or Gaussian-weighted spot interpolation.
-4. **Compilation** — all aligned and registered modalities are merged into a single MuData (`.h5mu`) file.
+1. **Preprocessing**: modality-specific quality control, normalisation, background removal, and storage in a standardised format.
+2. **Alignment**: an interactive web GUI lets you visually overlay the reference modality onto each target modality (translate, rotate, scale, flip, and corner-distort) to record their spatial correspondence. Each sample is handled individually.
+3. **Registration**: maps the feature content of each modality onto the reference coordinate space. Four modes are available: deep-learning patch embeddings (`feature_extraction`), Gaussian-weighted spot interpolation (`spot_interpolation`), equal-weight spot summation (`spot_aggregation`), and the same Gaussian interpolation applied to hyperspectral pixels (`raman_pixel_interpolation`).
+4. **Compilation**: all aligned and registered modalities are merged into a single MuData (`.h5mu`) file.
+
+**Spatial annotation transfer** is an optional stage that runs after alignment. It assigns region labels from GeoJSON polygons to the reference observations and runs independently of registration and compilation.
 
 ---
 
@@ -64,8 +66,8 @@ Raw Data  ──►  Preprocessing  ──►  Alignment  ──►  Registratio
 |---|---|
 | **[Conda](https://docs.conda.io/en/latest/miniconda.html)** (Miniconda or Anaconda) | Required for environment management |
 | **Python 3.11** | Managed automatically by the install script |
-| **NVIDIA GPU + CUDA** | *Optional.* Required only for the `feature_extraction` registration type (uses the [Prov-GigaPath](https://huggingface.co/prov-gigapath/prov-gigapath) model via HuggingFace). All other pipeline stages run on CPU. |
-| **HuggingFace token** | *Optional.* Required only when `feature_extraction` registration is enabled and the model has not been cached locally. |
+| **NVIDIA GPU + CUDA** | *Optional.* Used by the `feature_extraction` registration type (the [Prov-GigaPath](https://huggingface.co/prov-gigapath/prov-gigapath) model via HuggingFace). Without CUDA it falls back to CPU, which is much slower on large sections. All other pipeline stages run on CPU. |
+| **HuggingFace token** | Required whenever any modality uses `feature_extraction` registration. Configuration validation rejects the config without it, whether or not the model is already cached locally. |
 
 FOCUS runs on **Windows 10/11**, **macOS**, and **Linux** (both desktop and headless servers).
 
@@ -78,7 +80,7 @@ Clone the repository and run the install script for your platform. The script wi
 - Check that conda is available and guide you to install it if not.
 - Create a `FOCUS` conda environment with all dependencies.
 - Register the `focus` command so you can run the software from any directory after activating the environment.
-- Create auxiliary `FOCUS_ASHLAR` and `FOCUS_BaSiCpy` environments (one per subfolder in `tools/`) for Raman spectroscopy processing. These are built by default — no extra flag is needed.
+- Create auxiliary `FOCUS_ASHLAR` and `FOCUS_BaSiCpy` environments (one per subfolder in `tools/`) for Raman spectroscopy processing. These are built by default. No extra flag is needed.
 
 ```bash
 git clone https://github.com/sifrimlab/FOCUS.git
@@ -201,14 +203,20 @@ dataset_path/
 ├── sample_001/
 │   ├── preprocessing/<modality>/   ← preprocessed files
 │   ├── alignment/                  ← aligned files
-│   └── registration/<modality>/    ← registered files
+│   ├── registration/               ← registered files
+│   └── annotations/                ← annotated reference files (optional stage)
 ├── ...
 └── merged/
     ├── preprocessing/
     ├── alignment/
     ├── registration/
+    ├── annotations/
     └── multimodal_dataset.h5mu     ← final output
 ```
+
+Only `preprocessing/` is split into one subdirectory per modality. In the other stages the
+modality name is part of the file name instead. The `annotations/` directories are created only
+when spatial annotation transfer is configured.
 
 ---
 
@@ -234,10 +242,10 @@ FOCUS GUI started. Open http://localhost:5050 in your browser.
 
 The GUI guides you through four stages:
 
-1. **Setup** — enter your `dataset_path` or load an existing configuration file.
-2. **Configuration** — define your modalities, processing settings, and registration options. The configuration is auto-saved as `focus_config.json` inside your `dataset_path`.
-3. **Running** — monitor pipeline progress. When the alignment stage is reached, a button appears to open the interactive alignment tool (served separately at `http://localhost:8000`).
-4. **Complete** — review the list of generated output files.
+1. **Setup**: enter your `dataset_path` or load an existing configuration file.
+2. **Configuration**: define your modalities, processing settings, and registration options. The configuration is auto-saved as `focus_config.json` inside your `dataset_path`.
+3. **Running**: monitor pipeline progress. When the alignment stage is reached, a button appears to open the interactive alignment tool (served separately at `http://localhost:8000`).
+4. **Complete**: review the list of generated output files.
 
 ### CLI Mode
 
@@ -253,7 +261,7 @@ The configuration file must be a valid JSON file. Its path can be anywhere on th
 
 ## Usage with Containers
 
-FOCUS provides a `Dockerfile`, a Singularity definition file (`focus.def`), and launcher scripts for all three major container runtimes. The key design principle is **same-path mounting**: the directory you choose to mount is mapped to the *identical absolute path* inside the container, so every path in your config file is valid without any translation.
+FOCUS provides a `Dockerfile`, a Singularity definition file (`focus.def`), and launcher scripts for all three major container runtimes. FOCUS uses **same-path mounting**: the directory you choose to mount is mapped to the *identical absolute path* inside the container, so every path in your config file is valid without any translation.
 
 ### Building the Image
 
@@ -296,6 +304,12 @@ Use `focus-container.sh`. It auto-detects the first available runtime (Docker �
 bash focus-container.sh --mount /path/to/your/data
 ```
 
+> `focus-container.sh` publishes port 5050 only. The interactive alignment tool is served on port 8000, so to reach the alignment stage from a container, run it directly with both ports mapped (see [Container Deployment](docs/deployment/containers.md)):
+>
+> ```bash
+> docker run --rm -it -p 5050:5050 -p 8000:8000 -v /data/mylab:/data/mylab focus
+> ```
+
 **CLI mode:**
 
 ```bash
@@ -317,7 +331,7 @@ bash focus-container.sh --runtime singularity --mount /data/mylab -- --config /d
 bash focus-container.sh --gpu --mount /data/mylab -- --config /data/mylab/project/focus_config.json
 ```
 
-> The image must contain a CUDA PyTorch build for the GPU to be used — build it with `--build --gpu` (see below), or via the `TORCH_INDEX` build arg.
+> The image must contain a CUDA PyTorch build for the GPU to be used. Build it with `--build --gpu` (see below), or via the `TORCH_INDEX` build arg.
 
 **Mount multiple directories:**
 
@@ -424,6 +438,6 @@ See the [HPC & Headless Servers](docs/deployment/hpc.md) guide for the full brea
 | CLI mode | ✓ | ✓ | ✓ | ✓ |
 | Docker / Podman container | ✓ | ✓ | ✓ | ✓ |
 | Singularity / Apptainer container | via WSL2 | ✓ | ✓ | ✓ |
-| GPU acceleration (feature extraction) | ✓ | — | ✓ | ✓ |
+| GPU acceleration (feature extraction) | ✓ | - | ✓ | ✓ |
 
 > GPU acceleration via CUDA is not available on macOS (Apple Silicon uses MPS, which is not currently supported). All pipeline stages that do not use `feature_extraction` registration run fully on CPU and are supported on all platforms.

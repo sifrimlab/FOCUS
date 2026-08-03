@@ -3,7 +3,7 @@
 
 This is a thin, standalone entry point for the case where preprocessing has already
 been done (one preprocessed AnnData/OME-TIFF per sample per modality) and you only
-want to (re)produce the alignment outputs — without re-running preprocessing and
+want to (re)produce the alignment outputs without re-running preprocessing and
 without touching registration or MuData compilation.
 
 Unlike the full pipeline (``focus -c config.json``), this script does NOT require the
@@ -22,7 +22,7 @@ so the outputs are identical to what a normal run would produce:
 
 For modalities whose ``alignment_strategy`` is ``manual`` (the default), the interactive
 alignment GUI is launched at http://localhost:8000 and the script blocks until each
-sample is confirmed — exactly as in a normal CLI run. Modalities using ``pre_aligned``
+sample is confirmed, exactly as in a normal CLI run. Modalities using ``pre_aligned``
 run headlessly with no GUI.
 
 Usage
@@ -65,7 +65,7 @@ def _collect_preprocessed_modality_files(config: dict, logger: logging.Logger) -
 	without running preprocessing: it points at the per-sample preprocessed files and
 	includes only those that actually exist. Samples missing a modality's file are simply
 	omitted from that modality's dict (and reported), so a pair is aligned over the samples
-	present in both the reference and the target. No ``"merged"`` key is added — alignment
+	present in both the reference and the target. No ``"merged"`` key is added: alignment
 	does not use it, and ``DirectMappingAligner`` ignores it anyway.
 	"""
 	dataset_path = config[ConfigParameters.DATASET_PATH]
@@ -108,7 +108,7 @@ def _validate_alignable(config: dict, modality_files: dict, logger: logging.Logg
 	- the reference modality has zero preprocessed files;
 	- no non-reference modality is declared;
 	- a non-reference modality shares zero samples with the reference (nothing to align
-	  for that pair — almost certainly a mistake or a path mismatch).
+	  for that pair, which is usually a mistake or a path mismatch).
 
 	Per-sample gaps within an otherwise-overlapping pair are only warned about (already
 	logged by the collector): the aligner aligns the reference∩target intersection.
@@ -119,7 +119,7 @@ def _validate_alignable(config: dict, modality_files: dict, logger: logging.Logg
 	ref_files = modality_files.get(ref_name, {})
 	if not ref_files:
 		logger.error(
-			f"Reference modality '{ref_name}' has no preprocessed files — nothing to align. "
+			f"Reference modality '{ref_name}' has no preprocessed files, so there is nothing to align. "
 			f"Expected files at {{dataset_path}}/{{sample}}/preprocessing/{ref_name}/."
 		)
 		return False
@@ -135,8 +135,8 @@ def _validate_alignable(config: dict, modality_files: dict, logger: logging.Logg
 		overlap = ref_samples & set(modality_files.get(name, {}))
 		if not overlap:
 			logger.error(
-				f"Target modality '{name}' shares no sample with reference '{ref_name}' — "
-				f"this pair has nothing to align."
+				f"Target modality '{name}' shares no sample with reference '{ref_name}'. "
+				f"This pair has nothing to align."
 			)
 			ok = False
 		else:
@@ -147,7 +147,7 @@ def _validate_alignable(config: dict, modality_files: dict, logger: logging.Logg
 
 	if targets == 0:
 		logger.error(
-			"No non-reference modality declared — alignment needs at least one target modality."
+			"No non-reference modality declared. Alignment needs at least one target modality."
 		)
 		return False
 
@@ -184,7 +184,7 @@ def main() -> None:
 		sys.exit(1)
 
 	# Validate WITHOUT requiring the raw inputs / registration credential / annotation
-	# files — none are needed to align from preprocessed files. All structural, type, and
+	# files. None are needed to align from preprocessed files. All structural, type, and
 	# alignment-strategy-compatibility checks still run.
 	try:
 		config = utils.parse_config(config, require_raw_inputs=False)
@@ -193,10 +193,10 @@ def main() -> None:
 		sys.exit(1)
 
 	if not config[ConfigParameters.PERFORM_ALIGNMENT]:
-		logger.error("'perform_alignment' is false in the config — nothing to do.")
+		logger.error("'perform_alignment' is false in the config, so there is nothing to do.")
 		sys.exit(1)
 
-	# Phase 2: full logging — adds the focus.log file handler now that dataset_path is known.
+	# Phase 2: full logging. Adds the focus.log file handler now that dataset_path is known.
 	dataset_path = config[ConfigParameters.DATASET_PATH]
 	utils.setup_logging(dataset_path, debug=args.debug)
 	logger.info(f"Config loaded and validated (alignment-only): {args.config}")
@@ -207,7 +207,7 @@ def main() -> None:
 		logger.error(f"No sample directories found in '{dataset_path}'.")
 		sys.exit(1)
 	if not _validate_alignable(config, modality_files, logger):
-		logger.error("Input validation failed — aborting alignment.")
+		logger.error("Input validation failed. Aborting alignment.")
 		sys.exit(1)
 
 	# No GUI progress sink in standalone mode; _run_alignment also logs via the focus logger.
@@ -220,7 +220,7 @@ def main() -> None:
 
 	# force_overrides=None: re-alignment is governed solely by each modality's
 	# 'alignment_force_recomputing' and by whether cached aligned files already exist.
-	# The preprocessing-force cascade is intentionally not applied — we do not preprocess.
+	# The preprocessing-force cascade is not applied, since this script does not preprocess.
 	aligned_files = orchestrator._run_alignment(
 		config, modality_files, _report, n_stages=1, force_overrides=None,
 	)

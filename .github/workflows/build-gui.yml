@@ -3,7 +3,7 @@ name: Build GUI
 # Rebuilds the Vue/Vite front-ends from gui_src/ and opens a pull request with
 # the compiled output (src/focus/GUI/{main,alignment}), so the GUI never has to
 # be built and committed by hand on a dev machine. Using a PR (instead of a
-# direct push) works cleanly with a protected main branch — a maintainer reviews
+# direct push) works cleanly with a protected main branch: a maintainer reviews
 # and merges.
 #
 # Uses only first-party tooling: actions/checkout, actions/setup-node, and the
@@ -48,7 +48,7 @@ jobs:
             gui_src/alignment/package-lock.json
 
       # Clear stale compiled assets first. Vite's outDir lives outside the
-      # project root, so Vite does not empty it automatically — wiping here
+      # project root, so Vite does not empty it automatically. Wiping here
       # keeps the output free of orphaned, content-hashed chunks. `git rm`
       # stages the deletions; the build then recreates the dirs.
       - name: Clear previous build output
@@ -78,7 +78,7 @@ jobs:
           set -euo pipefail
 
           if [ -z "$(git status --porcelain -- src/focus/GUI)" ]; then
-            echo "No GUI changes — nothing to open a PR for."
+            echo "No GUI changes, nothing to open a PR for."
             exit 0
           fi
 
@@ -92,7 +92,7 @@ jobs:
           git push --force-with-lease origin "$BRANCH"
 
           if [ "$(gh pr view "$BRANCH" --json state --jq .state 2>/dev/null || true)" = "OPEN" ]; then
-            echo "PR for $BRANCH already open — it now points at the new commit."
+            echo "PR for $BRANCH already open. It now points at the new commit."
           else
             gh pr create \
               --base main \

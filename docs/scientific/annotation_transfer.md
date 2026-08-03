@@ -4,7 +4,7 @@
 
 Annotation transfer assigns region labels from GeoJSON polygons to reference observations and stores labels in `.obs['spatial_annotation']`.
 
-It is a **distinct pipeline stage that runs after alignment** (`_run_annotation_transfer` in `orchestrator.py`), not a part of compilation. The label is written onto the reference modality file at this stage and runs even when registration and compilation are inactive. The compilation stage, when it runs, only **promotes** the already-written label to the top level of the MuData object (`mdata.obs['spatial_annotation']`).
+It is a **distinct pipeline stage that runs after alignment** (`_run_annotation_transfer` in `orchestrator.py`), not a part of compilation. The label is written onto the reference modality file at this stage and runs even when registration and compilation are inactive. The [compilation stage](../pipeline/compilation.md), when it runs, only **promotes** the already-written label to the top level of the MuData object (`mdata.obs['spatial_annotation']`).
 
 Input coordinates must already be expressed in the annotation modality frame (see [§6 Requirements](#6-requirements)).
 
@@ -78,7 +78,7 @@ mdata.obs['spatial_annotation']
 The transfer always runs **per sample**, never against the merged aligned file (which may be absent or incomplete if a prior run was interrupted). For each sample, the spot `sample_id`s are read from the reference modality file, and the coordinates used for the point-in-polygon test are taken as follows:
 
 - **If the annotation modality equals the reference modality:** use `obsm['spatial']` from the reference sample directly.
-- **Otherwise:** use the aligned coordinates `obsm['{annotation_modality}_spatial']` from that sample's aligned file (`aligned_files[annotation_modality][sample_id]`). These are the reference spots expressed in the annotation modality's frame, produced by the alignment stage.
+- **Otherwise:** use the aligned coordinates `obsm['{annotation_modality}_spatial']` from that sample's aligned file (`aligned_files[annotation_modality][sample_id]`). These are the reference spots expressed in the annotation modality's frame, produced by the [alignment stage](alignment_methods.md).
 
 Either way, the point-in-polygon queries are performed in annotation-modality coordinates, matching the GeoJSON pixel space.
 
@@ -87,8 +87,8 @@ Either way, the point-in-polygon queries are performed in annotation-modality co
 ## 6. Requirements
 
 - **Config block.** `spatial_annotations` is an optional object. When present it must declare:
-    - `modality_name` — must be the `name` of a modality declared in the config.
-    - `file_type` — must be `"geojson"` (the only supported type).
+    - `modality_name`: must be the `name` of a modality declared in the config.
+    - `file_type`: must be `"geojson"` (the only supported type).
 - **Exactly one `.geojson` per sample.** Each sample directory must contain exactly one `.geojson` file under `{dataset_path}/{sample_id}/{modality_name}/`. Zero files raises `FileNotFoundError`; more than one raises `ValueError`.
 - **Alignment requirement.** If the annotation modality is **not** the reference modality, `perform_alignment` must be `true`. Otherwise validation fails with:
 
@@ -101,7 +101,7 @@ Either way, the point-in-polygon queries are performed in annotation-modality co
 
 ## 7. Tuning and control
 
-The algorithm itself **exposes no tunable parameters.** There is no distance threshold, polygon buffering, or coordinate snapping, and the overlap rule (smallest-area-wins) is fixed. A spot just *outside* a polygon boundary is left unlabeled (`None`) — containment is exact.
+The algorithm itself **exposes no tunable parameters.** There is no distance threshold, polygon buffering, or coordinate snapping, and the overlap rule (smallest-area-wins) is fixed. Containment is exact, so a spot outside a polygon boundary is left unlabeled (`None`).
 
 The outcome is therefore controlled entirely by the inputs you provide:
 

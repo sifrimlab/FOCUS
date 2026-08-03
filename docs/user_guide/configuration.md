@@ -1,6 +1,6 @@
 # Configuration
 
-FOCUS is entirely driven by a single JSON configuration file. This page explains every field, shows a complete working example, and documents the validation rules that FOCUS enforces before the pipeline starts.
+FOCUS is driven by a single JSON configuration file. This page explains every field, shows a complete working example, and documents the validation rules that FOCUS enforces before the pipeline starts.
 
 ---
 
@@ -23,7 +23,7 @@ The config file is a JSON document that tells FOCUS:
 
 ## Annotated Full Example
 
-The example below covers all three supported modality types and uses every available top-level and per-modality field. Inline comments (not valid in real JSON — remove them before use) explain each field.
+The example below covers all three supported modality types and uses every available top-level and per-modality field. Inline comments explain each field. They are not valid in real JSON, so remove them before use.
 
 ```json
 {
@@ -111,7 +111,7 @@ The `name` of the modality that defines the master spatial coordinate system. Al
 ```
 
 !!! note "Reference modality alignment"
-    The reference modality does not undergo alignment (it *is* the target). Its `alignment_strategy` field is ignored. Set `registration_type` to `"none"` for the reference modality unless you also want to register it onto itself, which is not meaningful.
+    The reference modality does not undergo alignment; it is the target. Its `alignment_strategy` field is ignored. Set `registration_type` to `"none"` for the reference modality unless you also want to register it onto itself, which is not meaningful.
 
 ### `perform_alignment` _(optional, boolean, default: `true`)_
 
@@ -195,8 +195,8 @@ The computational method used to map this modality's features onto the reference
 | `"none"` | No registration. This modality is aligned but **not** included in the final MuData output. | All |
 | `"spot_interpolation"` | Gaussian-weighted average of the spot-based data in each anchor footprint. Runs on CPU. | `msi`, `st` |
 | `"spot_aggregation"` | Equal-weight **sum** of the spot-based data in each anchor footprint (no normalization); accumulates signal for subcellular-resolution data (e.g. Visium HD). Runs on CPU. | `msi`, `st` |
-| `"raman_pixel_interpolation"` | Gaussian-weighted interpolation over the hyperspectral OME-TIFF pixels (temporary; no Raman feature extractor exists yet). Runs on CPU. | `raman` |
-| `"feature_extraction"` | Prov-GigaPath patch embeddings (deep learning). Requires an NVIDIA GPU and a HuggingFace token. | `microscopy_image` |
+| `"raman_pixel_interpolation"` | Gaussian-weighted interpolation over the hyperspectral OME-TIFF pixels, each pixel acting as a spot. Runs on CPU. | `raman` |
+| `"feature_extraction"` | Prov-GigaPath patch embeddings (deep learning). **Only for H&E-stained brightfield RGB images**: the model is pretrained on H&E tiles and FOCUS does not check the stain, so other image types yield embeddings that carry no morphological meaning; use `"none"` for those. Requires an NVIDIA GPU and a HuggingFace token. | `microscopy_image` |
 
 ### `processing_settings` _(required, object)_
 
@@ -231,7 +231,7 @@ Additional settings for the chosen registration method. May be an empty object w
 
     | Parameter | Type | Description |
     |-----------|------|-------------|
-    | `mass_tolerance` | int | m/z clustering tolerance in ppm. Must be an integer — a float raises `ValueError`. Default `10`. |
+    | `mass_tolerance` | int | m/z clustering tolerance in ppm. Must be an integer. A float raises `ValueError`. Default `10`. |
     | `frequency_threshold` | float | Minimum fraction of the maximum cluster weight for an m/z to enter the per-sample backbone. Default `0.01`. |
     | `intensity_normalization` | string | Normalization method (per sample and per ion mode): `"none"` (default), `"tic"`, `"log"`, `"clr"`, or `"tic_mean_scaled"` (rescales each spectrum to the mean total ion current over that sample's spots for that ion mode, preserving absolute scale; not comparable across samples). |
     | `min_intensity_threshold` | float | Minimum *peak* intensity for a peak to be used when estimating m/z recalibration offsets. Does not mask or filter spots. Default `10000.0`. |
@@ -245,23 +245,32 @@ Additional settings for the chosen registration method. May be an empty object w
 
     | Parameter | Type | Description |
     |-----------|------|-------------|
-    | `color_enhancement` | bool | Apply gamma correction and contrast enhancement. |
-    | `remove_background` | bool | Detect and mask off-tissue background regions. |
-    | `crop_to_tissue` | bool | Crop the output image tightly around the tissue. |
-    | `gamma` | float | Gamma value for power-law intensity correction. Default: `0.45`. |
-    | `force_recomputing` | bool | Reprocess even if output already exists. |
+    | `color_enhancement` | bool | Apply gamma correction and contrast stretching. Default `true`. |
+    | `gamma` | float | Exponent of the power-law intensity correction; below `1.0` brightens. Default `0.45`. |
+    | `contrast_saturation` | float | Percentage of non-zero pixels saturated at each end of the histogram before the stretch. Default `0.35`. |
+    | `remove_background` | bool | Fill off-tissue pixels with `background_color`. Default `true`. |
+    | `background_color` | string | `"white"` or `"black"`; fill colour for removed background. Default `"white"`. |
+    | `clip_percentile` | int | Percentile at which the inverted grayscale is clipped before the Otsu threshold. Default `99`. |
+    | `min_object_coverage` | float | Minimum area of a tissue contour, as a fraction of the detection-proxy area. Default `0.01`. |
+    | `crop_to_tissue` | bool | Crop the output image around the tissue. Uses the same tissue mask as background removal. Default `true`. |
+    | `crop_margin` | int | Pixels added on each side of the tissue bounding box. Default `250`. |
+    | `force_recomputing` | bool | Reprocess even if output already exists. Default `false`. |
+
+    Tissue detection works on any channel count: 1- and 2-channel images are promoted to 3 channels for the grayscale conversion, and their background polarity is detected automatically, so fluorescence acquisitions are segmented as well as brightfield ones. `background_color` does not follow that detection. Set it to `"black"` for dark-background images, otherwise the white fill leaves tissue and background indistinguishable.
 
 === "Raman Spectroscopy Imaging (`raman`)"
 
     | Parameter | Type | Description |
     |-----------|------|-------------|
-    | `max_workers` | int or null | Number of parallel workers for tile processing. |
-    | `savgol_window` | int | Savitzky-Golay filter window size for spectral smoothing. |
-    | `savgol_polyorder` | int | Polynomial order for Savitzky-Golay filter. |
-    | `bg_min_area_fraction` | float | Minimum fraction of the image area for background detection. |
-    | `otsu_threshold_factor` | float | Multiplier applied to the Otsu threshold for tissue segmentation. |
-    | `min_object_size` | int | Minimum tissue region size in pixels. |
-    | `force_recomputing` | bool | Reprocess even if output already exists. |
+    | `max_workers` | int | Threads used to correct spectral channels with BaSiC, and `joblib` workers used for spectral cleaning. Default `8`. |
+    | `savgol_window` | int | Savitzky-Golay window length, in channels, for spectral smoothing. Default `7`. |
+    | `savgol_polyorder` | int | Polynomial order for the Savitzky-Golay filter; must be smaller than `savgol_window`. Default `3`. |
+    | `bg_min_area_fraction` | float | Minimum area of a tissue contour, as a fraction of the segmentation mosaic area, for it to be kept. Default `0.05`. |
+    | `otsu_threshold_factor` | float | Multiplier applied to the Otsu threshold for tissue segmentation; below `1.0` it keeps more pixels as tissue. Default `0.7`. |
+    | `min_object_size` | int | Connected components of this many pixels or fewer are removed from the tissue mask. Default `500`. |
+    | `force_recomputing` | bool | Reprocess even if the output or an intermediate `.npy` cache already exists. Default `false`. |
+
+    All five Raman steps (LIF loading, BaSiC correction, background removal, spectral cleaning, ASHLAR stitching) always run; these parameters only change how they behave.
 
 ---
 
@@ -286,4 +295,4 @@ Common validation errors and their causes:
     The GUI config builder performs live validation as you fill in each field and highlights incompatible combinations before you save the file. Using the GUI at least once to generate an initial config is recommended, even if you subsequently edit the JSON manually.
 
 !!! note "Null fields"
-    Fields that accept `null` (e.g., filter thresholds) are truly optional. Setting them to `null` disables the corresponding filter. Omitting them entirely is equivalent to setting them to `null`.
+    Fields that accept `null` (e.g., filter thresholds) are optional. Setting them to `null` disables the corresponding filter. Omitting them entirely is equivalent to setting them to `null`.

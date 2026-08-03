@@ -9,6 +9,7 @@ from focus.constants import (
 	ModalityType, MODALITY_FILE_EXTENSION, MULTIMODAL_DATASET,
 	AlignmentStrategy, AnnotationsParameters, AnnotationFileType,
 	MODALITY_ANNOTATION, MODALITY_ANNOTATION_MERGED, DISPLAY_NAMES,
+	IMAGE_MODALITY_TYPES, SPOT_MODALITY_TYPES,
 )
 from focus.utils import write_h5ad_compat, concat_on_disk_compat, write_h5mu_compat, release_memory
 from focus.preprocessing import preprocess_modality
@@ -22,8 +23,8 @@ from focus.alignment.alignment import DirectMappingAligner
 
 logger = logging.getLogger("focus.orchestrator")
 
-_IMAGE_MODALITIES = [ModalityType.MICROSCOPY_IMAGE, ModalityType.RAMAN]
-_SPOT_MODALITIES = [ModalityType.MSI, ModalityType.ST]
+_IMAGE_MODALITIES = IMAGE_MODALITY_TYPES
+_SPOT_MODALITIES = SPOT_MODALITY_TYPES
 
 
 def run(config: dict, progress_callback=None) -> dict:

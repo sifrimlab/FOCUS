@@ -46,7 +46,7 @@ jobs:
           pip install timm huggingface-hub
           pip install -e .
 
-      - name: Lint (ruff — real-error subset)
+      - name: Lint (ruff, real-error subset)
         run: |
           pip install ruff
           # Catch syntax errors and undefined names (genuine breakage), not style.

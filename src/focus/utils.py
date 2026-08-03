@@ -14,6 +14,7 @@ from focus.constants import (
 	ConfigParameters, ModalityParameters, ModalityType,
 	RegistrationType, REGISTRATION_COMPATIBILITY,
 	AlignmentStrategy, ALIGNMENT_STRATEGY_COMPATIBILITY,
+	IMAGE_MODALITY_TYPES, SPOT_MODALITY_TYPES,
 	MsiPreprocessingParams, MsiIonMode,
 	AnnotationsParameters, AnnotationFileType,
 )
@@ -362,6 +363,28 @@ def parse_config(config: dict, require_raw_inputs: bool = True) -> dict:
 			f"The reference modality can only be expressed in one coordinate system at a time, "
 			f"but {pre_aligned_count} modalities have 'pre_aligned' set."
 		)
+
+	# --- Step 9c: Alignment modality-pair support ---
+	# Alignment maps the reference modality onto each non-reference modality. An image-based
+	# reference can only be mapped onto another image (the overlap crop); mapping it onto a
+	# spot-based modality is not implemented, so reject it here instead of letting the user
+	# align every sample in the GUI and discarding the result.
+	if config[ConfigParameters.PERFORM_ALIGNMENT] and ref_type in IMAGE_MODALITY_TYPES:
+		spot_targets = [
+			m[ModalityParameters.NAME]
+			for m in config[ConfigParameters.MODALITIES]
+			if m[ModalityParameters.NAME] != ref_name
+			and m[ModalityParameters.TYPE] in SPOT_MODALITY_TYPES
+		]
+		if spot_targets:
+			raise ValueError(
+				f"Reference modality '{ref_name}' has image-based type '{ref_type}', which cannot be "
+				f"aligned to the spot-based modality/modalities {spot_targets}. An image-based reference "
+				f"can only be aligned to image-based modalities "
+				f"({', '.join(IMAGE_MODALITY_TYPES)}). Set 'reference_modality' to a spot-based "
+				f"modality ({', '.join(SPOT_MODALITY_TYPES)}), which is also required for MuData "
+				f"compilation."
+			)
 
 	# --- Step 10: HuggingFace token requirement ---
 	# The token is only used to download the registration feature extractor; an

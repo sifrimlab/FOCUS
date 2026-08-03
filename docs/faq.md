@@ -6,7 +6,7 @@
 
 ### Can I use FOCUS with only one modality?
 
-Yes, but only the preprocessing stage will run. With a single modality there is nothing to align or register, so FOCUS stops after writing the preprocessed output (`.h5ad` or OME-TIFF). No alignment GUI is launched, no registration is performed, and no MuData file is created. The preprocessed file can be used directly with scanpy or any other AnnData-compatible tool.
+Yes, but only the preprocessing stage runs. With a single modality there is nothing to align or register, so FOCUS stops after writing the preprocessed output (`.h5ad` or OME-TIFF). No alignment GUI is launched, no registration is performed, and no MuData file is created. The preprocessed file can be used directly with scanpy or any other AnnData-compatible tool.
 
 ---
 
@@ -14,15 +14,15 @@ Yes, but only the preprocessing stage will run. With a single modality there is 
 
 The reference modality defines the common coordinate space that all other modalities are aligned into. Every non-reference modality goes through the alignment GUI, where the user physically drags the reference modality (the movable layer) to overlap it with the target modality (the fixed layer). This records the reference modality's spot or pixel coordinates in the target modality's coordinate space, enabling registration to pair observations 1-to-1. After registration, all spot-based outputs share the reference modality's physical coordinates.
 
-Choose the modality with the **lowest spatial resolution** (largest spots) as your reference. The reference spot grid defines the atomic unit of information in the final dataset: every observation in the MuData corresponds to one reference spot. Non-reference modalities with higher spatial resolution can be aggregated down onto that grid during registration, but a modality cannot produce more spots than it originally measured — upsampling would generate artificial observations. For example, if you have ST (55 µm spots) and MSI (100 µm spots), MSI should be the reference, and ST features are interpolated onto the MSI grid.
+Choose the modality with the **lowest spatial resolution** (largest spots) as your reference. The reference spot grid defines the atomic unit of information in the final dataset: every observation in the MuData corresponds to one reference spot. Non-reference modalities with higher spatial resolution can be aggregated down onto that grid during registration, but a modality cannot produce more spots than it originally measured, because upsampling would generate artificial observations. For example, if you have ST (55 µm spots) and MSI (100 µm spots), MSI should be the reference, and ST features are interpolated onto the MSI grid.
 
 ---
 
 ### Do I need a GPU?
 
-A GPU is only useful for `feature_extraction` registration, which runs the Prov-GigaPath deep-learning model to extract patch embeddings from microscopy images. All other pipeline stages — preprocessing, alignment, `spot_interpolation` and `raman_pixel_interpolation` registration, annotation transfer, and MuData compilation — run on CPU.
+A GPU is only useful for `feature_extraction` registration, which runs the Prov-GigaPath deep-learning model to extract patch embeddings from microscopy images. All other pipeline stages run on CPU: preprocessing, alignment, `spot_interpolation`, `spot_aggregation` and `raman_pixel_interpolation` registration, annotation transfer, and MuData compilation.
 
-`feature_extraction` itself is not strictly GPU-only: it uses the GPU when one is available and otherwise falls back to CPU. However, Prov-GigaPath on CPU is impractically slow for real images, so a CUDA GPU is **strongly recommended** whenever you use `feature_extraction`.
+`feature_extraction` uses the GPU when one is available and otherwise falls back to CPU. Prov-GigaPath on CPU is impractically slow for real images, so a CUDA GPU is **strongly recommended** whenever you use `feature_extraction`.
 
 If you do not have a GPU, use `"registration_type": "spot_interpolation"` for `msi`/`st` modalities and `"raman_pixel_interpolation"` for `raman`, and set `"registration_type": "none"` for microscopy modalities (working with the aligned OME-TIFFs directly).
 
@@ -33,8 +33,8 @@ If you do not have a GPU, use `"registration_type": "spot_interpolation"` for `m
 | | Alignment | Registration |
 |---|---|---|
 | **What it does** | Records the reference modality's spot/pixel coordinates in each non-reference modality's coordinate space by letting the user physically drag the reference layer to overlap the fixed target layer | Transfers features (intensities, embeddings) from the non-reference modality onto the reference spot grid |
-| **How it works** | The confirmed overlay transform is read back directly; the resulting coordinate mapping is stored in `obsm` with no landmark fitting | Gaussian-weighted interpolation (spot modalities) or patch embedding extraction (image modalities) |
-| **User involvement** | Interactive — you drag and visually overlap the reference with the target in the browser GUI | Fully automated |
+| **How it works** | The confirmed overlay is returned as a 3×3 projective matrix and applied to every reference spot; the mapped coordinates are stored in `obsm`, with no landmark fitting | Gaussian-weighted interpolation (spot modalities) or patch embedding extraction (image modalities) |
+| **User involvement** | Interactive: you drag and visually overlap the reference with the target in the browser GUI | Fully automated |
 | **Output** | Aligned AnnData with `obsm['{modality}_spatial']` keys | Registered AnnData with feature matrix aligned to the reference grid |
 | **Required for MuData?** | Yes | Yes (when the reference is spot-based) |
 
@@ -44,7 +44,7 @@ If you do not have a GPU, use `"registration_type": "spot_interpolation"` for `m
 
 Yes: set `"perform_alignment": false`. In this case FOCUS runs preprocessing only and writes per-modality output files. No alignment or registration is performed, and no MuData is created.
 
-Note that you **cannot** enable registration while disabling alignment — FOCUS enforces this:
+You **cannot** enable registration while disabling alignment. FOCUS enforces this:
 
 ```
 'perform_registration' requires 'perform_alignment' to be true.
@@ -55,6 +55,16 @@ Note that you **cannot** enable registration while disabling alignment — FOCUS
 ### Can I skip registration?
 
 Yes: set `"perform_registration": false` or set `"registration_type": "none"` for all modalities. Preprocessing and alignment still run. The aligned reference coordinates are written to the aligned AnnData files, but no feature mapping is performed and no MuData is produced.
+
+---
+
+### When should I use `feature_extraction` for a microscopy modality?
+
+Only when the image is an **H&E-stained histological section imaged in brightfield RGB**. The encoder, Prov-GigaPath, is pretrained on tiles from H&E whole-slide images, so its 1536-dimensional embeddings are a description of H&E morphology.
+
+FOCUS applies no stain, imaging-mode or channel check. An immunofluorescence, IHC or otherwise-stained image is patched, normalized and encoded exactly the same way, and a complete embedding matrix is written with no error and no warning. The values are not a description of that tissue. Single-channel images are replicated to RGB before patching, so they complete rather than fail.
+
+For every microscopy modality that is not H&E brightfield, set `"registration_type": "none"`. Preprocessing and alignment still run, the aligned OME-TIFF stays on disk under `alignment/`, and only the embedding step is skipped. A modality registered with `none` is not carried into the MuData, and MuData compilation needs at least two registered modalities.
 
 ---
 
@@ -116,7 +126,7 @@ sample_001/
         └── data.ibd
 ```
 
-Whether you have one or both ion modes, the `.imzML` and `.ibd` files must always be placed in a `pos/` or `neg/` subfolder matching the ion mode — never directly in the modality folder.
+Whether you have one or both ion modes, the `.imzML` and `.ibd` files must always be placed in a `pos/` or `neg/` subfolder matching the ion mode, never directly in the modality folder.
 
 If you only have one ion mode, leave the other subfolder empty. FOCUS decides a sample's ion modes from the files it finds, so a subfolder holding neither an `.imzML` nor an `.ibd` is read as "this polarity was not acquired" and ignored. The GUI creates both `pos/` and `neg/` when it scaffolds a sample, and you do not need to delete the unused one. Different samples in the same dataset may have different ion modes.
 
@@ -126,12 +136,12 @@ If you only have one ion mode, leave the other subfolder empty. FOCUS decides a 
 
 The input must be an AnnData `.h5ad` file with:
 
-- `.X` — the count matrix. Only `.X` is read; a matrix placed in `.layers` is not picked up. Dense input is converted to sparse CSR on load.
-- `.obsm['spatial']` — a `(n_spots, 2)` array of physical coordinates (any consistent unit). **Required**: a missing key raises `ValueError`.
-- `.var` — gene metadata with the gene names as the index.
-- `.uns['spot_size']` — *optional*. The spot diameter in the same units as the coordinates, given as a scalar, a 1-element array, or a `(2,)` array. Defaults to `[1.0, 1.0]` when absent.
+- `.X`: the count matrix. Only `.X` is read; a matrix placed in `.layers` is not picked up. Dense input is converted to sparse CSR on load.
+- `.obsm['spatial']`: a `(n_spots, 2)` array of physical coordinates (any consistent unit). **Required**: a missing key raises `ValueError`.
+- `.var`: gene metadata with the gene names as the index.
+- `.uns['spot_size']`: *optional*. The spot diameter in the same units as the coordinates, given as a scalar, a 1-element array, or a `(2,)` array. Defaults to `[1.0, 1.0]` when absent.
 
-You do not need to supply `.obs['sample_id']` — FOCUS writes it during preprocessing from the sample directory name, and prefixes `.obs_names` with `<sample_id>_`.
+You do not need to supply `.obs['sample_id']`. FOCUS writes it during preprocessing from the sample directory name, and prefixes `.obs_names` with `<sample_id>_`.
 
 See [Spatial Transcriptomics](modalities/transcriptomics.md) for the full input contract.
 
@@ -156,7 +166,7 @@ Yes. The GUI writes a standard JSON file (`<dataset_path>/focus_config.json`) th
 `"alignment_strategy": "pre_aligned"` tells FOCUS that the reference modality's spot coordinates are already expressed in a non-reference modality's coordinate space, so no alignment GUI is needed. The alignment is replaced with a uniform (identity) transformation.
 
 **Requirements:**
-- The **reference modality** must be spot-based (`msi` or `st`) — its spots have well-defined coordinates.
+- The **reference modality** must be spot-based (`msi` or `st`), because its spots have well-defined coordinates.
 - The **target modality** can be any type (`msi`, `st`, `raman`, `microscopy_image`), as long as the reference's spot coordinates are already in the target's coordinate frame.
 - Example: ST spots with coordinates already in H&E microscopy pixel space (e.g., from the acquisition instrument's metadata).
 
@@ -179,13 +189,13 @@ Set both normalization flags to `false` in the ST modality's `processing_setting
 }
 ```
 
-Both default to `false`, so simply omitting them also disables normalization.
+Both default to `false`, so omitting them also disables normalization.
 
 ---
 
 ### Do I need a HuggingFace token for every run?
 
-Only the first time the Prov-GigaPath model is used — it needs to be downloaded from HuggingFace and cached locally (in `~/.cache/huggingface/hub/`). Once cached, the token is not used again. You can leave the `"huggingface_token"` field in the config or remove it after the first successful run.
+Only the first time the Prov-GigaPath model is used. On that run it is downloaded from HuggingFace and cached locally (in `~/.cache/huggingface/hub/`). Once cached, the token is not used again. You can leave the `"huggingface_token"` field in the config or remove it after the first successful run.
 
 ---
 
@@ -210,7 +220,7 @@ MuData compilation is skipped if any of these conditions apply:
 1. The reference modality is image-based (`microscopy_image` or `raman`). MuData requires a spot-based reference.
 2. `"perform_registration"` is `false`.
 3. Fewer than two modalities have completed registration.
-4. A merged registration file is missing, or its rows do not align to the reference (anchor) — its observation count or its per-row `sample_id` sequence does not match. Such modalities are skipped, which can leave fewer than two.
+4. A merged registration file is missing, or its rows do not align to the reference (anchor): its observation count or its per-row `sample_id` sequence does not match. Such modalities are skipped, which can leave fewer than two.
 5. Every reference spot was dropped because it is uncovered (all-zero features) in at least one modality.
 
 Check `focus.log` for a line beginning with `"Skipping MuData compilation"` or `"Only one modality available"`.
@@ -246,7 +256,7 @@ Yes. The `run()` function accepts an optional `progress_callback` argument. The 
 
 FOCUS runs on Apple Silicon via conda's `osx-arm64` packages. Preprocessing, alignment, the spot/pixel interpolation registrations, annotation transfer, and compilation all work normally.
 
-For `feature_extraction`, the registration code selects a CUDA GPU when present and otherwise falls back to **CPU** — it does not use the Metal (MPS) backend. So on Apple Silicon, `feature_extraction` runs on the CPU, which is functional but impractically slow for real images. If you need fast `feature_extraction`, run it on a CUDA GPU; otherwise prefer `"registration_type": "none"` for microscopy on Apple Silicon and work with the aligned OME-TIFFs.
+For `feature_extraction`, the registration code selects a CUDA GPU when present and otherwise falls back to **CPU**. It does not use the Metal (MPS) backend. On Apple Silicon, `feature_extraction` runs on the CPU, which is functional but impractically slow for real images. If you need fast `feature_extraction`, run it on a CUDA GPU; otherwise prefer `"registration_type": "none"` for microscopy on Apple Silicon and work with the aligned OME-TIFFs.
 
 ---
 

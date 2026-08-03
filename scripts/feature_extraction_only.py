@@ -3,7 +3,7 @@
 
 This is a thin, standalone entry point for single-`microscopy_image`-modality FOCUS
 projects. FOCUS requires ``reference_modality`` to name a declared modality, so with only
-one modality it is unavoidably its own reference — and the real pipeline's registration
+one modality it is unavoidably its own reference, and the real pipeline's registration
 stage always skips the reference modality. That means ``registration_type:
 "feature_extraction"`` (which normally extracts a Prov-GigaPath embedding for the image
 patch centered on each *anchor* spot produced by the alignment stage) never actually runs
@@ -13,7 +13,7 @@ This script uses the *free-form* mode of
 ``MicroscopyImageFeatureExtractor.extract_features`` (``patch_centers=None``): the image is
 tiled into a non-overlapping grid of ``patch_size``x``patch_size`` patches, patches that are
 >=99% background are dropped using the same background-detection code the anchor-based path
-uses, and the rest are encoded with Prov-GigaPath — no alignment or anchor modality required.
+uses, and the rest are encoded with Prov-GigaPath. No alignment or anchor modality is required.
 
 Like ``align_only.py``, it consumes only the per-sample preprocessed OME-TIFF that lives
 under ``{dataset_path}/{sample_id}/preprocessing/{modality}/`` and does not require raw
@@ -44,7 +44,7 @@ Level 0 (full resolution) is left byte-for-byte as before (unchanged filename, n
 full-resolution (canonical FOCUS) frame using each level's actual measured dimension ratio.
 Levels are cached per file: only missing or stale ``.h5ad`` files are (re)computed.
 
-(The filenames retain "processed_aligned_registered" even though no alignment ran — kept
+(The filenames retain "processed_aligned_registered" even though no alignment ran. They are kept
 for drop-in compatibility with any tooling that expects registration output at these paths.
 A stamped ``uns['patch_mode'] = 'free_form'`` marker keeps this anchorless output from ever
 being silently confused with a genuine future anchor-based cache at the same path, in either
@@ -97,7 +97,7 @@ from focus.constants import (
 from focus.utils import write_h5ad_compat, release_memory
 from focus.preprocessing._utils import discover_sample_ids
 # Importing FeatureExtractorRegistration already pulls in timm/torch/huggingface_hub
-# transitively (via microscopy_image.py) — unlike align_only.py, there is no lazy-import
+# transitively (via microscopy_image.py). Unlike align_only.py, there is no lazy-import
 # benefit to preserve here, since this script always needs the encoder.
 from focus.registration.registration import FeatureExtractorRegistration
 from focus.registration.microscopy_image import MicroscopyImageFeatureExtractor
@@ -160,7 +160,7 @@ def _cached_registration_valid(cached_adata, patch_size: int, background_color: 
 	registration_type alone is not enough to validate the cache: a genuine future
 	anchor-based feature_extraction run (e.g. after a second modality is added) would stamp
 	the same registration_type at this same path. The patch_mode marker disambiguates in
-	both directions — this script recomputes a cache missing the marker (rejecting a real
+	both directions: this script recomputes a cache missing the marker (rejecting a real
 	anchor-based cache), and the real pipeline's own registration_cache_valid recomputes a
 	free-form file at this path anyway, since its obs count (patch count) won't generally
 	match the anchor's spot count.
@@ -240,7 +240,7 @@ def main() -> None:
 		logger.error(f"Invalid JSON in config file '{args.config}': {e}")
 		sys.exit(1)
 
-	# Validate WITHOUT requiring raw modality input dirs — this script only needs each
+	# Validate WITHOUT requiring raw modality input dirs. This script only needs each
 	# modality's preprocessed output, exactly like align_only.py's alignment-only run.
 	try:
 		config = utils.parse_config(config, require_raw_inputs=False)
@@ -249,11 +249,11 @@ def main() -> None:
 		sys.exit(1)
 
 	if not config[ConfigParameters.PERFORM_REGISTRATION]:
-		logger.error("'perform_registration' is false in the config — nothing to do.")
+		logger.error("'perform_registration' is false in the config, so there is nothing to do.")
 		sys.exit(1)
 
 	# require_raw_inputs=False also skips parse_config's own huggingface_token requirement
-	# (gated behind that flag) — check it ourselves, since this script unconditionally needs
+	# (gated behind that flag), so check it here, since this script unconditionally needs
 	# it to download Prov-GigaPath.
 	hf_token = config[ConfigParameters.HUGGINGFACE_TOKEN]
 	if not hf_token or not isinstance(hf_token, str):
@@ -262,7 +262,7 @@ def main() -> None:
 		)
 		sys.exit(1)
 
-	# Phase 2: full logging — adds the focus.log file handler now that dataset_path is known.
+	# Phase 2: full logging. Adds the focus.log file handler now that dataset_path is known.
 	dataset_path = config[ConfigParameters.DATASET_PATH]
 	utils.setup_logging(dataset_path, debug=args.debug)
 	logger.info(f"Config loaded and validated (feature-extraction-only): {args.config}")
@@ -300,7 +300,7 @@ def main() -> None:
 		logger.error(
 			f"Modality '{modality_name}' is missing preprocessed '.{ext}' file(s) for "
 			f"{len(missing)}/{len(sample_ids)} sample(s): {missing}. Expected at "
-			f"{{dataset_path}}/{{sample}}/preprocessing/{modality_name}/. Aborting — this script "
+			f"{{dataset_path}}/{{sample}}/preprocessing/{modality_name}/. Aborting: this script "
 			f"requires every discovered sample to already be preprocessed."
 		)
 		sys.exit(1)
@@ -309,7 +309,7 @@ def main() -> None:
 	logger.info("Running standalone feature extraction (anchorless, free-form patch grid)")
 	logger.info("=" * 60)
 
-	# engine is reused only for _load_ome_tiff and _merge_samples — cheap __init__, no model
+	# engine is reused only for _load_ome_tiff and _merge_samples: cheap __init__, no model
 	# loading. The pretrained MicroscopyImageFeatureExtractor is loaded lazily below, only if
 	# some sample actually needs (re)computation.
 	engine = FeatureExtractorRegistration(path=dataset_path, hf_token=hf_token)
@@ -392,7 +392,7 @@ def main() -> None:
 
 			if level > 0:
 				# Reconcile patch centers to the full-resolution (canonical FOCUS) frame using the
-				# actual measured ratio — the pyramid stores int-truncated dims, so this is not
+				# actual measured ratio. The pyramid stores int-truncated dims, so this is not
 				# exactly 2**level.
 				H0, W0 = pyramid_dims[0]
 				Hi, Wi = pyramid_dims[level]

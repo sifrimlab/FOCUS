@@ -1,16 +1,16 @@
-# ── FOCUS Singularity / Apptainer definition ─────────────────────────────────
+# FOCUS Singularity / Apptainer definition
 #
 # CPU-only PyTorch is baked in by default. For a CUDA build pass the
 # TORCH_INDEX build arg (Apptainer >= 1.1 / SingularityCE >= 3.11):
 #
-# Build (CPU — default):
+# Build (CPU, the default):
 #   singularity build --build-arg TORCH_INDEX=https://download.pytorch.org/whl/cpu focus.sif focus.def
 #   apptainer  build --build-arg TORCH_INDEX=https://download.pytorch.org/whl/cpu focus.sif focus.def
 #   # (a bare `apptainer build focus.sif focus.def` also works and defaults to CPU)
 #
-# Build (GPU — pick the index matching your target CUDA, e.g. CUDA 12.8+):
+# Build (GPU): pick the index matching your target CUDA, e.g. CUDA 12.8+:
 #   apptainer build --build-arg TORCH_INDEX=https://download.pytorch.org/whl/cu128 focus.sif focus.def
-#   # other indices: cu126, cu124, cu121, cu118 — see install.sh resolve_torch_index
+#   # other indices: cu126, cu124, cu121, cu118; see install.sh resolve_torch_index
 #   # The cuXXX wheel bundles CUDA internally; pass --nv at runtime for GPU access.
 #
 # Plain build (requires root or --fakeroot):
@@ -26,7 +26,7 @@
 #
 # Note: Singularity/Apptainer automatically bind-mounts $HOME and /tmp.
 # Use --bind /path to add additional directories at the same path inside
-# the container — no directory translation required in config files.
+# the container, so no directory translation is required in config files.
 
 Bootstrap: docker
 From: python:3.11-slim
@@ -34,7 +34,7 @@ From: python:3.11-slim
 %labels
     Author  Lorenzo Venturelli
     Version 0.1.0
-    Description FOCUS — Flexible Multiomics data preprocessing, alignment and registration
+    Description FOCUS: End-to-end preprocessing, alignment, and registration pipeline
 
 %environment
     export PATH=/opt/focus-env/bin:$PATH
@@ -62,9 +62,9 @@ From: python:3.11-slim
     # Install the general dependencies
     /opt/focus-env/bin/pip install --no-cache-dir -r /opt/focus/requirements.txt
 
-    # ── PyTorch ecosystem (torch, torchvision, timm, huggingface-hub) ────────
+    # PyTorch ecosystem (torch, torchvision, timm, huggingface-hub)
     # Installed from the wheel index in TORCH_INDEX (build arg, default CPU),
-    # NOT from requirements.txt — same strategy as install.sh. On older
+    # NOT from requirements.txt. Same strategy as install.sh. On older
     # Singularity without build-arg support the {{ }} template stays literal,
     # so anything that is not a pytorch.org URL falls back to the CPU index.
     TORCH_INDEX="{{ TORCH_INDEX }}"
@@ -89,7 +89,7 @@ From: python:3.11-slim
     exec /opt/focus-env/bin/focus "$@"
 
 %help
-    FOCUS: Flexible Multiomics data preprocessing, alignment and registration.
+    FOCUS: End-to-end preprocessing, alignment, and registration pipeline
 
     Usage
     -----

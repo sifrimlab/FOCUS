@@ -168,16 +168,17 @@ class FeatureExtractorRegistration:
 			# Load anchor spot coordinates in image space (needed for cache validation and extraction)
 			anchor_adata = anndata.read_h5ad(anchor_files[sample_id])
 			coord_key = f'{image_name}_spatial'
-			if coord_key in anchor_adata.obsm:
-				patch_centers = np.asarray(anchor_adata.obsm[coord_key], dtype=np.float32)
-			elif 'spatial' in anchor_adata.obsm:
-				logger.warning(f"obsm['{coord_key}'] not found, falling back to obsm['spatial']")
-				patch_centers = np.asarray(anchor_adata.obsm['spatial'], dtype=np.float32)
-			else:
-				logger.error(f"No spatial coordinates found for sample '{sample_id}', skipping.")
+			if coord_key not in anchor_adata.obsm:
+				# Only the aligned key locates the anchor spots in this image's pixel space;
+				# obsm['spatial'] is the anchor's own frame and would place patches elsewhere.
+				logger.error(
+					f"Anchor '{anchor_name}' sample '{sample_id}' missing obsm['{coord_key}']. "
+					f"Ensure alignment was performed. Skipping."
+				)
 				all_cached = False
 				del anchor_adata
 				continue
+			patch_centers = np.asarray(anchor_adata.obsm[coord_key], dtype=np.float32)
 
 			# Cache check — validate obs count and registration mode against the anchor to
 			# detect stale caches (wrong size, or a file left by a different registration mode).

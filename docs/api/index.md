@@ -85,7 +85,7 @@ BaseDataset._check_cache(output_path: str, force_recomputing: bool) -> bool
 
 ## Progress reporting utility
 
-`StepReporter` lives in `focus.preprocessing._utils` and is used by preprocessing/orchestration for CLI and GUI progress updates.
+`StepReporter` lives in `focus.preprocessing._utils`. Preprocessing and orchestration use it for CLI and GUI progress updates.
 
 ```python
 from focus.preprocessing._utils import StepReporter

@@ -3,7 +3,7 @@ import os, sys, json, argparse, logging
 
 def main():
 	parser = argparse.ArgumentParser(
-		description='FOCUS: Flexible Multiomics data preprocessing and alignment pipeline.'
+		description='FOCUS: End-to-end preprocessing, alignment, and registration pipeline'
 	)
 	parser.add_argument('-c', '--config', type=str, required=False, default=None,
 						help='Absolute path of the JSON config file. If omitted, the GUI starts.')

@@ -337,7 +337,7 @@
   <!-- ═══ FOOTER ═══ -->
   <line x1="20" y1="428" x2="940" y2="428" stroke="#f1f5f9" stroke-width="1"/>
   <text x="480" y="438" text-anchor="middle" font-size="8" fill="#cbd5e1">
-    Pipeline driven by a JSON configuration file — no programming required · GUI available
+    Pipeline driven by a JSON configuration file, no programming required · GUI available
   </text>
 
 </svg>

@@ -31,7 +31,7 @@ def preprocess_modality(
 
 **Returns**
 
-`dict[str, str]` — maps each `sample_id` to its output file path. Also includes a `"merged"` key for modalities that produce a concatenated multi-sample file.
+`dict[str, str]`, mapping each `sample_id` to its output file path. Also includes a `"merged"` key for modalities that produce a concatenated multi-sample file.
 
 **Example**
 
@@ -101,7 +101,7 @@ class MicroscopyImage(BaseSample):
     ) -> None: ...
 ```
 
-On construction, `MicroscopyImage` scans `<source_path>/<sample_id>/<modality_name>/` for a supported image file. Supported extensions (in priority order): `.ome.tiff`, `.ome.tif`, `.qptiff`, `.tiff`, `.tif`, `.czi`.
+On construction, `MicroscopyImage` scans `<source_path>/<sample_id>/<modality_name>/` for a supported image file and keeps the first match for the highest-priority extension present (`.ome.tiff`, `.ome.tif`, `.qptiff`, `.tiff`, `.tif`, `.czi`, matched case-insensitively). With no match it raises `FileNotFoundError` at construction time, before any sample is processed.
 
 **`process_image()`**
 
@@ -127,19 +127,21 @@ Pipeline: load → gamma correction + contrast stretching → background removal
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `color_enhancement` | `bool` | `True` | Apply gamma correction and contrast stretching. |
-| `remove_background` | `bool` | `True` | Remove background using Otsu thresholding on a blurred grayscale image. |
-| `crop_to_tissue` | `bool` | `True` | Crop the image to the tissue bounding box. |
-| `background_color` | `SegmentationBackgroundColor` | `WHITE` | Fill color for background regions (`"white"` or `"black"`). |
-| `min_object_coverage` | `float` | `0.01` | Minimum tissue area as fraction of total image area (0–1). |
+| `remove_background` | `bool` | `True` | Fill non-tissue pixels, using an Otsu mask detected on a downsampled proxy. |
+| `crop_to_tissue` | `bool` | `True` | Crop the image to the tissue bounding box. Uses the same mask, so it triggers detection even with `remove_background=False`. |
+| `background_color` | `SegmentationBackgroundColor` | `WHITE` | Fill color for background regions (`"white"` or `"black"`; anything else raises `ValueError`). |
+| `min_object_coverage` | `float` | `0.01` | Minimum tissue contour area, as a fraction of the detection-proxy area. |
 | `force_recomputing` | `bool` | `False` | Re-run even if output already exists. |
-| `clip_percentile` | `int` | `99` | Percentile for intensity clipping before thresholding. |
+| `clip_percentile` | `int` | `99` | Percentile at which the inverted grayscale is clipped before the blur and Otsu threshold. |
 | `crop_margin` | `int` | `250` | Pixel margin around the tissue bounding box. |
 | `gamma` | `float` | `0.45` | Gamma value for correction (< 1 brightens, > 1 darkens). |
-| `contrast_saturation` | `float` | `0.35` | Percentage of pixels to saturate during contrast stretching. |
+| `contrast_saturation` | `float` | `0.35` | Percentage of non-zero pixels saturated at each end of the histogram. |
 
-The number of OME-TIFF pyramid levels is not a parameter — it is computed automatically from the image dimensions (smallest level kept within 3,000 × 3,000 px). The Gaussian blur kernel size and minimum object size used during background detection are also not parameters: detection always runs on a downsampled proxy capped at ~9 megapixels, so these are fixed internal constants tuned for that canvas rather than the source image's native resolution.
+The number of OME-TIFF pyramid levels is not a parameter. It is computed automatically from the final image dimensions (smallest level kept within 3,000 × 3,000 px). The Gaussian blur kernel size (25 px) and the speck-removal size (50 px) used during background detection are also not parameters: detection always runs on a downsampled proxy capped at 9 megapixels, so these are fixed internal constants expressed in proxy pixels rather than in the source image's native resolution.
 
-Returns `str` — path to the output OME-TIFF.
+Detection converts the proxy with `cv2.COLOR_RGB2GRAY`, so an image with fewer than 3 channels is promoted first: a single channel is replicated, and two channels gain a zero third channel. The promotion applies to the mask computation only, never to the stored pixel data. For those promoted images the background polarity is also probed (border median vs global median) and the grayscale inversion is skipped when the background is the darker class; 3-channel input always takes the bright-background path. `background_color` is independent of that probe, so a dark-background acquisition wants `background_color="black"`.
+
+Returns `str`, the path to the output OME-TIFF. When the output already exists and `force_recomputing=False`, it is returned without reloading or reprocessing the source image.
 
 **`preview_image()`**
 
@@ -148,7 +150,7 @@ def preview_image(self) -> np.ndarray:
     ...
 ```
 
-Loads and returns the raw image as a float32 `(H, W, C)` array for inspection without running preprocessing.
+Loads and returns the image as a float32 `(H, W, C)` array in `[0, 1]`, normalised as in step 1 (channel axis moved last, at most 3 channels) but with no enhancement, background removal or cropping applied.
 
 ---
 
@@ -175,7 +177,11 @@ class MicroscopyImageDataset(BaseDataset):
         ...
 ```
 
-All parameters are forwarded verbatim to each sample's `process_image()` call. Returns a `dict[str, str]` mapping sample IDs to output OME-TIFF paths. No merged output is produced for image modalities.
+All parameters are forwarded verbatim to each sample's `process_image()` call; `step_reporter` is attached to each sample instead (a default `StepReporter` is created when omitted). The constructor rejects any element of `samples` that is not a `MicroscopyImage` with `ValueError`.
+
+Exceptions raised while processing a sample are caught: `Error processing sample <sample_id>: <error>` is printed to the console, that sample is omitted from the result, and the loop continues. The call itself does not raise.
+
+Returns a `dict[str, str]` mapping sample IDs to output OME-TIFF paths. No merged output is produced for image modalities.
 
 **Example**
 
@@ -238,14 +244,14 @@ class MsiSample(BaseSample):
 | `double_ion_mode` | `bool` | If `True`, both `pos/` and `neg/` must each hold a complete `.imzML` + `.ibd` pair. |
 | `ion_mode` | `MsiIonMode` or `None` | Required when `double_ion_mode=False`. One of `"pos"` or `"neg"`. |
 
-When samples are built by the pipeline rather than constructed directly, these two arguments are inferred per sample: an ion mode counts as acquired when its subdirectory holds a complete `.imzML` + `.ibd` pair, and a subdirectory holding neither file is ignored. Constructing `MsiSample` yourself with `double_ion_mode=True` is stricter — it asserts both ion modes are present, so an empty subdirectory raises `FileNotFoundError`.
+When samples are built by the pipeline rather than constructed directly, these two arguments are inferred per sample: an ion mode counts as acquired when its subdirectory holds a complete `.imzML` + `.ibd` pair, and a subdirectory holding neither file is ignored. Constructing `MsiSample` yourself with `double_ion_mode=True` is stricter. It asserts both ion modes are present, so an empty subdirectory raises `FileNotFoundError`.
 
 **Key properties**
 
-- `ion_modes` — list of `MsiIonMode` values available in this sample
-- `foreground_mask` — boolean array indicating tissue vs. background spots
-- `recalibration_reference` — reference m/z vector(s) for mass recalibration
-- `min_intensity_threshold` — intensity threshold for recalibration
+- `ion_modes`: list of `MsiIonMode` values available in this sample
+- `foreground_mask`: boolean array indicating tissue vs. background spots
+- `recalibration_reference`: reference m/z vector(s) for mass recalibration
+- `min_intensity_threshold`: intensity threshold for recalibration
 
 ---
 
@@ -278,7 +284,7 @@ class MsiDataset(BaseDataset):
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `lipid_annotation_db` | `str` or `None` | `None` | Path to a CSV or JSON lipid annotation database. Required columns: `db_name`, `ionized_mass`, `ion_mode`. |
-| `mass_tolerance` | `int` | `10` | Adaptive mass tolerance in ppm for m/z consensus clustering. Must be a Python `int` — a float raises `ValueError`. |
+| `mass_tolerance` | `int` | `10` | Adaptive mass tolerance in ppm for m/z consensus clustering. Must be a Python `int`. A float raises `ValueError`. |
 | `frequency_threshold` | `float` | `0.01` | Minimum fraction of spectra in which an m/z must appear to be included in the reference grid. |
 | `intensity_normalization` | `MsiIntensityNormalization` | `"none"` | Normalization method (applied per sample and per ion mode): `"tic"`, `"log"`, `"clr"`, `"tic_mean_scaled"`, or `"none"`. `"tic"` makes each spectrum sum to 1; `"tic_mean_scaled"` rescales each spectrum to the mean total ion current over that sample's spots for that ion mode, preserving absolute scale (not comparable across samples). |
 | `recalibration_reference` | `dict` or `None` | `None` | Per-ion-mode reference m/z vectors for recalibration. |
@@ -345,27 +351,53 @@ class RamanImage(BaseSample):
 | `modality_name` | `str` | Modality name. |
 | `max_workers` | `int` | Maximum parallel workers for BaSiC correction and spectral cleaning. Default `8`. |
 
-The pipeline executed by `RamanDataset.process_dataset()` calls these methods in order:
+Input files are read from `<source_path>/<sample_id>/<modality_name>/`; outputs and intermediate caches are written to `<source_path>/<sample_id>/preprocessing/<modality_name>/`, which the constructor creates.
 
-1. `load_source()` — parse LIF file, extract tiles and metadata
-2. `basic_correct()` — BaSiC illumination correction (via `FOCUS_BaSiCpy` conda environment)
-3. `remove_background()` — Otsu segmentation on a quick-stitched PCA mosaic
-4. `process_raw_tiles()` — despike, Savitzky-Golay denoise, IASLS baseline, min-max normalize (RamanSPy pipeline, parallelized)
-5. `ashlar_stitch()` — tile stitching into final mosaic (via `FOCUS_ASHLAR` conda environment)
+**Pipeline methods**, called in this order by `RamanDataset.process_dataset()`:
+
+```python
+def load_source(self) -> None: ...
+def basic_correct(self, force_recomputing: bool = False) -> None: ...
+def remove_background(
+    self,
+    force_recomputing: bool = False,
+    bg_min_area_fraction: float = 0.05,
+    otsu_threshold_factor: float = 0.7,
+    min_object_size: int = 500,
+) -> None: ...
+def process_raw_tiles(
+    self,
+    wavenumbers: np.ndarray = None,
+    parallel: bool = True,
+    force_recomputing: bool = False,
+    savgol_window: int = 7,
+    savgol_polyorder: int = 3,
+) -> None: ...
+def ashlar_stitch(self, force_recomputing: bool = False) -> str: ...
+```
+
+1. `load_source()` loads the first `.lif` file in the input directory (`FileNotFoundError` if there is none): tile pixel data, tile stage coordinates, pixel size, spectral axis, and the per-scan channel ranges. Not cached.
+2. `basic_correct()`: BaSiC illumination correction per spectral channel, in the `FOCUS_BaSiCpy` conda environment, followed by a global min-max normalization to `[0, 1]`. Cached as `basic_corrected_tiles.npy`. Raises `RuntimeError` when `conda` or the environment is missing.
+3. `remove_background()`: Otsu segmentation on a quick-stitched PCA mosaic, back-projected to zero background pixels in the tiles. Cached as `segmented_tiles.npy`. Raises `RuntimeError` when `basic_correct()` has not run in this session, even if the cache exists.
+4. `process_raw_tiles()`: RamanSPy pipeline (Whitaker-Hayes despike, Savitzky-Golay denoise, IASLS baseline, per-spectrum min-max) over one work unit per tile and per spectral scan. `wavenumbers=None` uses the axis read in step 1; `parallel=False` runs the same per-unit function sequentially. Cached as `raman_corrected_tiles.npy`.
+5. `ashlar_stitch()` writes one ASHLAR cycle file per spectral scan, runs `tools/ASHLAR/main.py` in the `FOCUS_ASHLAR` conda environment, and renames the result to the final output path, which it returns. Reuses an existing output file unless `force_recomputing=True`.
+
+Each cached step loads its `.npy` instead of recomputing when the file exists and `force_recomputing` is `False`.
 
 **Key properties**
 
-- `raw` — raw tiles `(T, C, Y, X)` float32
-- `corrected` — BaSiC + background + spectrally cleaned tiles
-- `mosaic` — final stitched mosaic `(C, Y, X)`
-- `metadata` — `RamanMetadata` object
-- `wavenumbers` — wavenumber array `(W,)` float32
+- `raw`: tiles as loaded and intensity-scaled, `(T, C, Y, X)` float32
+- `corrected`: spectrally cleaned tiles, same shape; `None` until `process_raw_tiles()` has run
+- `mosaic`: final stitched mosaic `(C, Y, X)`, read back from the output OME-TIFF
+- `metadata`: `RamanMetadata` describing the merged stack
+- `wavenumbers`: wavenumber array `(C,)` float32, in cm⁻¹
+- `tiles_coordinates`: tile stage coordinates in µm, `(T, N_scans, 2)` float32
 
 ---
 
 ### `RamanMetadata`
 
-Stores metadata extracted from a Leica LIF file (scan dimensions, wavelength range, pixel size, tile coordinates). All fields are validated on assignment.
+Container for the metadata of one LIF image element (scan dimensions, wavelength range, pixel size, tile coordinates). Every field is a property that validates on assignment and raises `TypeError` on a wrong type or `ValueError` on an out-of-range value; all start as `None`.
 
 ```python
 class RamanMetadata:
@@ -382,6 +414,8 @@ class RamanMetadata:
     tiles_coordinates: np.ndarray  # shape (N, 2), float32
     pixel_size: np.ndarray         # shape (2,), float32
 ```
+
+`RamanImage.metadata` is not one of the parsed per-element objects: it is a summary built after merging. Its `tile_number` and `lambda_steps` are the merged tile array's first two axes, and its `scan_height` and `scan_width` are its last two. These two are swapped relative to the per-element metadata, because the per-element arrays are allocated as `(tiles, channels, scan_width, scan_height)`. Its `pixel_size` is the mean over the merged scans.
 
 ---
 
@@ -407,15 +441,20 @@ class RamanDataset(BaseDataset):
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `force_recomputing` | `bool` | `False` | Re-run even if output already exists. |
-| `max_workers` | `int` | `8` | Parallel workers for BaSiC and spectral cleaning. |
+| `force_recomputing` | `bool` | `False` | Re-run every step even if the output or an intermediate cache already exists. |
+| `max_workers` | `int` | `8` | Threads for BaSiC channels; `joblib` workers for spectral cleaning. Assigned onto every sample before it is processed, overriding the value passed to `RamanImage`. |
 | `savgol_window` | `int` | `7` | Savitzky-Golay filter window length. |
 | `savgol_polyorder` | `int` | `3` | Savitzky-Golay filter polynomial order. |
 | `bg_min_area_fraction` | `float` | `0.05` | Minimum contour area as fraction of total image area for background removal. |
 | `otsu_threshold_factor` | `float` | `0.7` | Multiplicative factor applied to the Otsu threshold. |
-| `min_object_size` | `int` | `500` | Minimum connected component size in pixels for morphological cleanup. |
+| `min_object_size` | `int` | `500` | Connected components of this many pixels or fewer are removed from the tissue mask. |
+| `step_reporter` | `StepReporter` or `None` | `None` | Progress sink; a default `StepReporter` is created when omitted. |
 
-Returns `dict[str, str]` mapping sample IDs to output OME-TIFF paths. No merged file is produced for Raman.
+Samples are processed one at a time. A sample whose output OME-TIFF already exists is skipped entirely (unless `force_recomputing=True`) and its existing path is returned. After a sample finishes, its three `.npy` caches are deleted.
+
+Exceptions raised while processing a sample are caught: `Error processing sample <sample_id>: <error>` is printed to the console, that sample is omitted from the result, and the loop continues. The call itself does not raise.
+
+Returns `dict[str, str]` mapping sample IDs to output OME-TIFF paths. No merged file is produced for Raman, so the result has no `"merged"` key.
 
 **Example**
 
@@ -490,16 +529,16 @@ Pipeline: load → flag mito genes in `.var["mt"]` → spot filtering → QC met
 
 Output AnnData structure:
 
-- `.X` — sparse CSR; raw counts unless `total_counts_normalize`/`log1p_transform` are set
-- `.layers["raw"]` — raw counts before normalization; **present only when `.X` was normalized**
-- `.obs_names` — spot names prefixed `<sample_id>_`
-- `.var["mt"]` — boolean mitochondrial flag
-- `.obs["sample_id"]` — categorical sample identifier
-- `.obs["cluster"]` — categorical per-sample cluster labels (the coarsened matrix, PCA embedding and neighbour graph are not persisted)
-- `.obs` QC — `total_counts`, `n_genes_by_counts`, `total_counts_mt`, `pct_counts_mt` and their `log1p_` variants
-- `.var` QC — `n_cells_by_counts`, `mean_counts`, `total_counts`, `pct_dropout_by_counts` and their `log1p_` variants
-- `.obsm["spatial"]` — float32 spatial coordinates
-- `.uns["spot_size"]` — float32 array of shape `(2,)`
+- `.X`: sparse CSR; raw counts unless `total_counts_normalize`/`log1p_transform` are set
+- `.layers["raw"]`: raw counts before normalization; **present only when `.X` was normalized**
+- `.obs_names`: spot names prefixed `<sample_id>_`
+- `.var["mt"]`: boolean mitochondrial flag
+- `.obs["sample_id"]`: categorical sample identifier
+- `.obs["cluster"]`: categorical per-sample cluster labels (the coarsened matrix, PCA embedding and neighbour graph are not persisted)
+- `.obs` QC: `total_counts`, `n_genes_by_counts`, `total_counts_mt`, `pct_counts_mt` and their `log1p_` variants
+- `.var` QC: `n_cells_by_counts`, `mean_counts`, `total_counts`, `pct_dropout_by_counts` and their `log1p_` variants
+- `.obsm["spatial"]`: float32 spatial coordinates
+- `.uns["spot_size"]`: float32 array of shape `(2,)`
 
 Cluster labels are computed on `.X` before normalization, so they always read raw counts. `calculate_qc_metrics` runs before the optional mito-gene removal, so `pct_counts_mt` describes the matrix prior to removal.
 
@@ -544,12 +583,12 @@ class SpatialTranscriptomicDataset(BaseDataset):
 
 Dataset-level pipeline:
 
-1. Preprocess each sample individually via `preprocess_data()` (the two gene-level thresholds are **not** forwarded — they are dataset-level only)
+1. Preprocess each sample individually via `preprocess_data()` (the two gene-level thresholds are **not** forwarded; they are dataset-level only)
 2. Return the cached merged file if it exists, `force_recomputing` is `False`, and its `.obs["sample_id"]` set equals the active sample set
 3. Read each per-sample `.uns["spot_size"]` with a backed read (`.X` never materialized)
 4. Concatenate on disk (`anndata.concat_on_disk`, `axis=0`, `join="outer"`, `fill_value=0`); `.uns` is dropped by the concat
 5. Recover raw counts: `.X = .layers.pop("raw", .X)`, so the layer is used when the per-sample files were normalized and `.X` otherwise
-6. Cross-sample gene filtering — skipped entirely when both thresholds are `None`
+6. Cross-sample gene filtering, skipped entirely when both thresholds are `None`
 7. Recompute `.var["mt"]` and QC metrics on the merged raw matrix
 8. Store `.layers["raw"]` (only if normalizing), then optionally normalize / log1p-transform
 9. Keep the per-sample `.obs["cluster"]` labels carried through the concat

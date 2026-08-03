@@ -211,6 +211,12 @@ class ModalityType(_AbstractEnum):
 	RAMAN = "raman"
 	ST = "st"
 
+# Modality types grouped by the shape of their data: image modalities carry a pixel grid,
+# spot modalities a set of discrete positions. Alignment, registration and config validation
+# all branch on this distinction — import these rather than redeclaring the lists.
+IMAGE_MODALITY_TYPES = (ModalityType.MICROSCOPY_IMAGE, ModalityType.RAMAN)
+SPOT_MODALITY_TYPES = (ModalityType.MSI, ModalityType.ST)
+
 # Maps modality type to the file extension used for preprocessed/aligned output
 MODALITY_FILE_EXTENSION = {
 	ModalityType.MICROSCOPY_IMAGE: "ome.tiff",

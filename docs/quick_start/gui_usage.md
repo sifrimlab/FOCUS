@@ -96,7 +96,7 @@ field.
 - **Lipid Annotation**: Enable/disable lipid database matching
 
 !!! note
-    Ion mode is not a GUI setting. Each sample's ion modes are detected from its data: an ion mode is used when its `pos/` or `neg/` subfolder holds a complete `.imzML` + `.ibd` pair. The GUI creates both subfolders for every MSI sample — if you only have one ion mode, leave the other empty.
+    Ion mode is not a GUI setting. Each sample's ion modes are detected from its data: an ion mode is used when its `pos/` or `neg/` subfolder holds a complete `.imzML` + `.ibd` pair. The GUI creates both subfolders for every MSI sample. If you only have one ion mode, leave the other empty.
 
 **Raman Spectroscopy Imaging:**
 - **Wavenumber Range**: Range to process
@@ -134,7 +134,10 @@ field.
 - **Patch Size**: Size of image patches (default: 224)
 - **Background Color**: White or black background handling
 
-Spot-interpolation registration is parameter-free in the GUI — the interpolation
+!!! warning "Feature Extraction expects H&E brightfield images"
+    Its model (Prov-GigaPath) is pretrained on H&E-stained brightfield tiles. Select it only for an H&E histological section imaged in RGB; for fluorescence, IHC or other stains select **None** as the registration type. The GUI does not restrict the choice and the pipeline does not check the stain. A non-H&E image is embedded without any error.
+
+Spot-interpolation registration is parameter-free in the GUI. The interpolation
 neighbourhood is derived automatically from each modality's spot size.
 
 #### Advanced Settings
@@ -172,8 +175,8 @@ neighbourhood is derived automatically from each modality's spot size.
 1. **Manual Alignment Required**: When alignment button appears
 2. Click **Open Alignment Tool** to launch alignment GUI
 3. Perform visual alignment (see [Alignment Guide](../pipeline/alignment.md))
-4. Close alignment tool when complete
-5. Pipeline continues automatically
+4. Confirm the last sample of that modality. The pipeline continues automatically, and the alignment tab can be closed afterwards
+5. The button reappears for the next non-reference modality, if there is one
 
 #### Registration Stage
 - Shows feature extraction or interpolation progress
@@ -232,95 +235,56 @@ The alignment tool is a separate web interface for interactive visual alignment 
 
 ### Interface Layout
 
-The alignment tool is divided into three main sections:
+The window is split into two parts: a display viewport (80% of the width) and a control panel (20%).
 
-**Left Panel: Modality Display**
-- Shows both reference and target modalities side by side
-- Reference modality is overlaid on top of the target modality
-- Reference modality can be moved; target modality is fixed
+**Display viewport**
+- Both modalities are drawn overlaid in the same viewport
+- The reference modality is the layer on top and the one that moves; the target modality is fixed and defines the coordinate space
+- Image modalities are shown at the lowest pyramid level of their OME-TIFF; spot modalities are coloured by cluster label
 
-**Center Controls: Camera vs. Alignment Mode**
-- **Camera Control**: Move the point of view (pan and zoom)
-- **Alignment Control**: Move the reference modality using transformation tools:
-  - **Translation**: Click and drag to move the reference modality across the x-y plane
-  - **Rotation**: Rotate the reference modality around its centroid
-  - **Scaling**: Scroll with mouse wheel to scale the reference modality up or down
-
-**Right Panel: Control Tools**
-- Show/hide specific spot clusters (for spot-based modalities)
-- Fine-tune transformation parameters
-- Reset all transformations to return to original state
-- **Confirm Alignment**: Click when satisfied with the overlay position
-
-### Alignment Modes
-
-The alignment tool automatically adapts to your modality types. In all modes, **transformations are applied only to the reference modality**. The target modality remains fixed. FOCUS will then use the computed reference-to-target alignment transform to locate reference spots/pixels in the target modality's coordinate space during the registration step.
-
-#### Image-to-Image Alignment
-
-Aligning a reference image modality to a target image modality.
-
-1. **Left panel**: Reference image (can be moved)
-2. **Right panel**: Target image (fixed, defines the coordinate space)
-3. **Controls**:
-   - Click and drag to translate the reference image
-   - Use rotation control to rotate reference around its center
-   - Scroll to scale the reference image up or down
-   - Use zoom/pan camera controls to inspect details
-   - Reset button returns reference to original position
-4. **Confirmation**: Click **Confirm Alignment** when the overlays match
-
-#### Spot-to-Image Alignment
-
-Aligning a reference spot-based modality to a target image modality.
-
-1. **Left panel**: Reference spots (can be moved as a group)
-2. **Right panel**: Target image (fixed, defines the coordinate space)
-3. **Controls**:
-   - Click and drag to translate reference spots across the target image
-   - Use rotation control to rotate reference spots around their centroid
-   - Scroll to scale the reference spots relative to the target
-   - Show/hide individual spot clusters in the right panel to verify alignment
-   - Use zoom/pan camera controls for precise positioning
-   - Reset button returns reference to original position
-4. **Confirmation**: Click **Confirm Alignment** when spots are correctly positioned
-
-#### Spot-to-Spot Alignment
-
-Aligning a reference spot-based modality to a target spot-based modality.
-
-1. **Left panel**: Reference spots (can be moved)
-2. **Right panel**: Target spots (fixed, define the coordinate space)
-3. **Controls**:
-   - Click and drag to translate reference spots to match target spots
-   - Use rotation control to align reference spot patterns with target pattern
-   - Scroll to scale reference spots if spatial resolution differs
-   - Show/hide specific spot clusters to verify correspondence
-   - Use zoom/pan camera controls for detailed inspection
-   - Reset button returns reference to original position
-4. **Confirmation**: Click **Confirm Alignment** when reference spots overlay target spots correctly
+**Control panel**: each layer has its own section, headed by that modality's name and type.
 
 ### Control Panel Tools
 
-The right control panel contains tools to fine-tune your alignment:
+**Mode**
+- **Aligner** (selected at start): the pointer acts on the reference layer
+- **Camera**: the pointer pans and zooms the view, leaving the transform untouched
 
-**Transformation Controls**
-- **Translation**: Click and drag the reference modality to move it across the x-y plane
-- **Rotation**: Rotate the reference modality around its centroid
-- **Scale**: Scroll with the mouse wheel to scale the reference modality relative to the target
+**Transform** (acts on the reference layer)
+- **Flip Horizontal** / **Flip Vertical**
+- **Scale** − / + with **Reset**
+- **Rotation °** − / + with **Reset**
+- **Reset Distortion**: undoes corner and edge dragging only
+- **Reset Transform**: returns the layer to its starting position
 
-**Camera Controls** (for precise viewing)
-- **Pan**: Click and drag the background to move your view
-- **Zoom**: Scroll to zoom in/out, or use camera control mode for finer control
-- **Reset View**: Return to the default zoom level and pan position
+**Pointer gestures in Aligner mode**
+- Drag inside the frame to translate
+- Drag a corner handle to move that corner alone; drag an edge handle to move its two corners together
+- Drag just outside a corner to rotate about the layer's centre
+- Mouse wheel to scale about the pointer
 
-**Cluster/Feature Controls** (for spot-based modalities)
-- **Show/Hide Clusters**: Toggle visibility of specific spot clusters to verify alignment
-- **Toggle Spot Classes**: Show/hide different classes or colors of spots
+**Per-layer controls**
+- **Opacity** (reference layer): how strongly it covers the target
+- **Spot Classes** with All / None: show or hide individual clusters of a spot layer
+- **Foreground** with All / FG / BG: restrict a spot layer to foreground or background spots
+- **View Zoom** − / + with **Reset**: zoom the viewport
 
-**Reset and Confirm**
-- **Reset Alignment**: Returns the reference modality to its original position (undo all transformations)
-- **Confirm Alignment**: Saves the alignment transform and advances to the next sample/modality
+**Confirm**
+- **Confirm Alignment**: saves the transform and loads the next sample
+
+### Alignment Modes
+
+The tool adapts to the modality types of the pair. In every mode the transform applies to the
+**reference** modality only; the target stays fixed and defines the coordinate space.
+
+| Pair | What you align | What FOCUS stores |
+|------|----------------|-------------------|
+| Spot reference → spot target | The reference spots onto the target spots | Reference spot coordinates in the target's frame |
+| Spot reference → image target | The reference spots onto the target image | Reference spot coordinates in the target image's pixel frame |
+| Image reference → image target | The reference image onto the target image | The target image cropped to the region the reference covers |
+
+An image reference paired with a spot modality is not supported and is rejected when the
+configuration is validated.
 
 ### Workflow
 
@@ -328,7 +292,7 @@ The right control panel contains tools to fine-tune your alignment:
 2. **Alignment**: Perform manual alignment as described above
 3. **Confirmation**: Click **Confirm Alignment** to save
 4. **Next Sample**: Tool automatically advances to next sample
-5. **Completion**: Close tool when all samples processed
+5. **Completion**: After the last sample of the modality is confirmed, the tool reports completion and the pipeline resumes; close the tab then
 
 ### Tips for Accurate Alignment
 
@@ -343,7 +307,7 @@ The right control panel contains tools to fine-tune your alignment:
 
 ### Automatic Configuration Saving
 
-The configuration is automatically saved as `focus_config.json` in the dataset directory every time you make a change. You do not need to click a save button—changes are saved immediately.
+The configuration is automatically saved as `focus_config.json` in the dataset directory every time you make a change. You do not need to click a save button. Changes are saved immediately.
 
 ### Loading Configurations
 
@@ -474,8 +438,6 @@ See [Configuration Reference](../configuration/config_fields.md) for detailed fi
 4. **Verify Coverage**: Ensure entire tissue is aligned
 
 ## Next Steps
-
-Now that you're familiar with the GUI:
 
 1. **Try the CLI**: Explore [CLI Usage](cli_usage.md) for automated execution
 2. **Learn Configuration**: Deep dive into [Configuration Reference](../configuration/config_fields.md)

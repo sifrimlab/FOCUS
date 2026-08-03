@@ -1,9 +1,9 @@
 #!/bin/bash
-# ── FOCUS — SLURM batch submission script ─────────────────────────────────────
+# FOCUS: SLURM batch submission script
 #
 # Runs the FOCUS pipeline non-interactively (CLI mode) on an HPC cluster.
-# By default it uses the Singularity/Apptainer container with GPU access — the
-# recommended deployment on most clusters. A host-install (conda) variant is
+# By default it uses the Singularity/Apptainer container with GPU access, which is
+# the recommended deployment on most clusters. A host-install (conda) variant is
 # included at the bottom; comment one block and uncomment the other to switch.
 #
 # Submit with:
@@ -16,10 +16,10 @@
 # Dry-run the directives (syntax check, no scheduling):
 #   sbatch --test-only slurm/submit_focus.sbatch
 #
-# ── Resource request ──────────────────────────────────────────────────────────
-# Tune these to your data. See docs/deployment/hpc.md (Performance Tuning):
+# Resource request. Tune these to your data. See docs/deployment/hpc.md
+# (Performance Tuning):
 #   - cpus-per-task  → Raman preprocessing parallelism (config max_workers)
-#   - mem            → MSI preprocessing peaks at ~40–100 GB per sample
+#   - mem            → MSI preprocessing peaks at ~40 to 100 GB per sample
 #   - gres=gpu       → only needed for feature_extraction (GigaPath) registration
 #SBATCH --job-name=focus_pipeline
 #SBATCH --nodes=1
@@ -32,7 +32,7 @@
 
 set -euo pipefail
 
-# ── User-configurable paths (override via --export, see header) ───────────────
+# User-configurable paths (override via --export, see header)
 : "${FOCUS_CONFIG:=/scratch/$USER/myproject/focus_config.json}"
 : "${FOCUS_SIF:=/scratch/$USER/focus.sif}"
 # Top-level directory to bind-mount into the container (must contain your data
@@ -44,9 +44,7 @@ echo "[FOCUS] Config:  $FOCUS_CONFIG"
 echo "[FOCUS] SIF:     $FOCUS_SIF"
 echo "[FOCUS] Workdir: $FOCUS_WORKDIR"
 
-# ══════════════════════════════════════════════════════════════════════════════
-# Option A — Singularity / Apptainer container (default, recommended)
-# ══════════════════════════════════════════════════════════════════════════════
+# Option A: Singularity / Apptainer container (default, recommended)
 module load singularity 2>/dev/null || module load apptainer 2>/dev/null || true
 module load cuda        2>/dev/null || true   # only needed for feature_extraction
 
@@ -59,10 +57,8 @@ RUNTIME="$(command -v singularity || command -v apptainer)"
     "$FOCUS_SIF" \
     --config "$FOCUS_CONFIG"
 
-# ══════════════════════════════════════════════════════════════════════════════
-# Option B — Host install (conda env created by install.sh). To use this path,
+# Option B: Host install (conda env created by install.sh). To use this path,
 # comment out Option A above and uncomment the block below.
-# ══════════════════════════════════════════════════════════════════════════════
 # module load miniconda3 2>/dev/null || module load anaconda3 2>/dev/null || true
 # module load cuda       2>/dev/null || true   # only needed for feature_extraction
 #

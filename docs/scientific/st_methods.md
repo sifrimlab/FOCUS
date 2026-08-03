@@ -1,5 +1,11 @@
 # Spatial Transcriptomics Preprocessing Methods
 
+Implementation reference for `focus/preprocessing/transcriptomic.py`.
+`SpatialTranscriptomicDataset.process_dataset()` preprocesses every sample through
+`SpatialTranscriptomic` (§3) and then builds the merged dataset (§4).
+
+---
+
 ## 1. Objective
 
 The ST preprocessing module transforms per-sample spatial transcriptomics AnnData files into quality-controlled, merge-ready datasets while preserving spatial coordinates and raw-count provenance.
@@ -10,11 +16,7 @@ For a sample with \(N\) observations (spots/cells) and \(G\) genes, the core obj
 X \in \mathbb{R}_{\ge 0}^{N\times G}
 \]
 
-with required spatial coordinates:
-
-\[
-\texttt{obsm['spatial']} \in \mathbb{R}^{N\times 2}
-\]
+with required spatial coordinates `obsm['spatial']` \(\in \mathbb{R}^{N\times 2}\).
 
 ---
 
@@ -28,10 +30,10 @@ Implementation (`SpatialTranscriptomic.load_data`) expects one `.h5ad` per sampl
 
 Spot footprint metadata is normalized by `_normalize_spot_size`:
 
-- missing -> `[1.0, 1.0]`
-- scalar \(a\) -> `[a, a]`
-- length-1 array -> isotropic `[a, a]`
-- length-2 array -> `[a_x, a_y]`
+- missing → `[1.0, 1.0]`
+- scalar \(a\) → `[a, a]`
+- length-1 array → isotropic `[a, a]`
+- length-2 array → `[a_x, a_y]`
 
 Stored as `float32` in `.uns['spot_size']`.
 
@@ -71,7 +73,7 @@ summaries to `.obs` (`total_counts`, `n_genes_by_counts`, `total_counts_mt`,
 
 When `remove_mitochondrial_genes=true`, the genes flagged in `.var['mt']` (§3.1) are
 dropped from the feature set. Because this step follows §3.3, the QC metrics already
-written to `.obs` — `pct_counts_mt` included — describe the matrix as it stood before
+written to `.obs`, including `pct_counts_mt`, describe the matrix as it stood before
 removal, and they are not recomputed here.
 
 ### 3.5 Observation index standardization
@@ -82,8 +84,16 @@ that prefix.
 ### 3.6 Per-sample clustering
 
 Cluster labels (`.obs['cluster']`) are consumed only by the alignment GUI for spot
-colouring. They are computed on `.X` at this point in the sequence — post-filter,
+colouring. They are computed on `.X` at this point in the sequence: post-filter,
 post-removal, and still raw counts, since §3.7 has not yet run.
+
+The routine is the shared `compute_cluster_labels` helper, also used by
+[MSI §6b](msi_methods.md#6b-per-sample-clustering); the coarsening grid and its 100,000-row cap are
+shared with the alignment GUI's display binning
+([Alignment §4b](alignment_methods.md#4b-display-coarsening-for-large-spot-sets)). The two modalities
+differ only in how the run matrix is normalized: ST holds raw counts, so it is total-count normalized
+and `log1p`-transformed (step 2 below), whereas MSI is already per-spot normalized and is
+re-normalized only when binning summed it.
 
 Let \(N\) be the spot count, \(G\) the gene count and \(C = 100{,}000\) the row cap.
 
@@ -186,11 +196,11 @@ passes in **at least one** sample:
 \]
 
 The number of samples in which a gene is detected therefore has no bearing on whether it is
-kept: a gene confined to a single sample survives on the strength of that sample alone. When
+kept: a gene confined to a single sample is kept on the basis of that sample alone. When
 both criteria are set, a gene must satisfy each of them in at least one sample, not
 necessarily the same one.
 
-#### A) Expression-frequency filter (`min_spots_per_gene = \theta`)
+#### A) Expression-frequency filter (`min_spots_per_gene` = θ)
 
 Within each sample \(s\) with \(N_s\) observations, gene \(g\) passes if:
 
@@ -200,7 +210,7 @@ Within each sample \(s\) with \(N_s\) observations, gene \(g\) passes if:
 
 Constraint enforced in code: \(0 < \theta < 1\).
 
-#### B) Count-per-expressed-spot ratio (`min_count_spots_ratio_per_gene = \rho`)
+#### B) Count-per-expressed-spot ratio (`min_count_spots_ratio_per_gene` = ρ)
 
 For each sample, define:
 
@@ -220,7 +230,7 @@ Unexpressed genes in a sample are neutral (neither pass nor fail that sample).
 After gene filtering:
 
 - `.var['mt']` is re-derived and QC metrics are **recomputed** on the merged raw matrix (`calculate_qc_metrics`, `qc_vars=['mt']`, `percent_top=None`), so `.obs`/`.var` QC reflect the retained spots and genes; the per-sample QC of §3.3 predates cross-sample filtering
-- `combined.layers['raw']` receives a copy of `.X`, under the same condition as §3.7 — only when at least one normalization step is enabled
+- `combined.layers['raw']` receives a copy of `.X`, under the same condition as §3.7: only when at least one normalization step is enabled
 - optional `normalize_total` (target sum \(10^4\)) and `log1p` are applied to merged `.X`
 - `.obs['sample_id']` and `.obs['cluster']` are stored as categoricals; the per-sample cluster labels carried through the concat are kept unchanged, so no clustering runs on the merged matrix
 - `.obsm['spatial']` is `float32`
@@ -238,13 +248,13 @@ registration in full.
 Per sample:
 
 ```text
-{dataset_path}/{sample_id}/preprocessing/{modality_name}/{modality_name}_{sample_id}_processed.h5ad
+{dataset_path}/{sample_id}/preprocessing/{modality}/{modality}_{sample_id}_processed.h5ad
 ```
 
 Merged:
 
 ```text
-{dataset_path}/merged/preprocessing/{modality_name}_merged_processed.h5ad
+{dataset_path}/merged/preprocessing/{modality}_merged_processed.h5ad
 ```
 
 ---

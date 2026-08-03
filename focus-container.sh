@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# ── FOCUS container launcher — macOS, Linux, WSL2 ────────────────────────────
+# FOCUS container launcher for macOS, Linux and WSL2
 #
 # Runs FOCUS inside Docker, Podman or Singularity/Apptainer.
 # The mount directory is mounted at the *same absolute path* inside the
@@ -23,7 +23,7 @@
 #   -h, --help           print this help
 #
 # Examples:
-#   # GUI mode — open http://localhost:5050 in your browser
+#   # GUI mode: open http://localhost:5050 in your browser
 #   focus-container.sh --mount /data/mylab
 #
 #   # CLI mode
@@ -37,7 +37,7 @@
 
 set -euo pipefail
 
-# ── Defaults ──────────────────────────────────────────────────────────────────
+# Defaults
 RUNTIME=""
 MOUNTS=()
 IMAGE="focus"
@@ -47,18 +47,19 @@ BUILD=0
 FOCUS_ARGS=()
 PORT=5050
 
-# ── Colours ───────────────────────────────────────────────────────────────────
+# Colours
 info()  { echo -e "\033[1;34m[INFO]\033[0m  $*"; }
 ok()    { echo -e "\033[1;32m[OK]\033[0m    $*"; }
 warn()  { echo -e "\033[1;33m[WARN]\033[0m  $*"; }
 die()   { echo -e "\033[1;31m[ERROR]\033[0m $*" >&2; exit 1; }
 
 usage() {
-    sed -n '3,40p' "$0" | sed 's/^# \{0,2\}//'
+    # Prints the header comment block: from line 3 to the first non-comment line.
+    sed -n '3,${/^[^#]/q;p;}' "$0" | sed 's/^# \{0,2\}//'
     exit 0
 }
 
-# ── Argument parsing ──────────────────────────────────────────────────────────
+# Argument parsing
 while [[ $# -gt 0 ]]; do
     case "$1" in
         -r|--runtime)   RUNTIME="$2";        shift 2 ;;
@@ -81,7 +82,7 @@ for i in "${!MOUNTS[@]}"; do
     MOUNTS[$i]="$(cd "${MOUNTS[$i]}" && pwd)"
 done
 
-# ── Runtime detection ─────────────────────────────────────────────────────────
+# Runtime detection
 detect_runtime() {
     for rt in docker podman singularity apptainer; do
         command -v "$rt" &>/dev/null && { echo "$rt"; return; }
@@ -92,13 +93,13 @@ detect_runtime() {
 [[ -z "$RUNTIME" ]] && RUNTIME="$(detect_runtime)"
 ok "Using runtime: $RUNTIME"
 
-# ── Detect GUI vs CLI mode ────────────────────────────────────────────────────
+# Detect GUI vs CLI mode
 GUI_MODE=1
 for arg in "${FOCUS_ARGS[@]}"; do
     [[ "$arg" == "--config" || "$arg" == "-c" ]] && GUI_MODE=0 && break
 done
 
-# ── Build ─────────────────────────────────────────────────────────────────────
+# Build
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 if [[ $BUILD -eq 1 ]]; then
@@ -126,7 +127,7 @@ if [[ $BUILD -eq 1 ]]; then
     esac
 fi
 
-# ── Mount flags ───────────────────────────────────────────────────────────────
+# Mount flags
 # For Docker/Podman: -v /abs/path:/abs/path  (same path both sides)
 # For Singularity:   --bind /abs/path        (Singularity maps to same path by default)
 
@@ -146,7 +147,7 @@ build_singularity_binds() {
     echo "$binds"
 }
 
-# ── Run ───────────────────────────────────────────────────────────────────────
+# Run
 case "$RUNTIME" in
 
     docker|podman)
@@ -174,7 +175,7 @@ case "$RUNTIME" in
 
         info "Mounted directories (same path inside container):"
         for m in "${MOUNTS[@]}"; do info "  $m"; done
-        [[ $GUI_MODE -eq 1 ]] && info "GUI mode — open http://localhost:${PORT} in your browser"
+        [[ $GUI_MODE -eq 1 ]] && info "GUI mode: open http://localhost:${PORT} in your browser"
 
         "$RUNTIME" run "${DOCKER_ARGS[@]}" "$IMAGE" "${FOCUS_ARGS[@]}"
         ;;
@@ -189,7 +190,7 @@ case "$RUNTIME" in
 
         info "Mounted directories (same path inside container):"
         for m in "${MOUNTS[@]}"; do info "  $m"; done
-        [[ $GUI_MODE -eq 1 ]] && info "GUI mode — open http://localhost:${PORT} in your browser"
+        [[ $GUI_MODE -eq 1 ]] && info "GUI mode: open http://localhost:${PORT} in your browser"
         [[ $GUI_MODE -eq 1 ]] && warn "On HPC: use 'ssh -L ${PORT}:localhost:${PORT} <host>' to access the GUI from your local machine."
 
         "$RUNTIME" run "${SING_ARGS[@]}" "$SIF" "${FOCUS_ARGS[@]}"

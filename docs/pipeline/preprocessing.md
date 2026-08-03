@@ -6,51 +6,60 @@ The preprocessing stage is the first step in the FOCUS pipeline, where raw data 
 
 For each modality defined in the configuration, FOCUS discovers all sample subdirectories, creates the output directory structure, and dispatches to the modality-specific processing pipeline. Preprocessing can be skipped for any modality if the output file already exists and `force_recomputing` is not set.
 
+!!! abstract "Scientific background"
+    For the algorithms, equations and implementation details behind each modality's pipeline, see
+    [MSI](../scientific/msi_methods.md), [Raman](../scientific/raman_methods.md),
+    [Microscopy](../scientific/microscopy_methods.md) and
+    [Spatial Transcriptomics](../scientific/st_methods.md) preprocessing methods.
+
 ## Modality-Specific Preprocessing
 
-Each modality undergoes specialized processing tailored to its data characteristics:
+Each modality has its own processing pipeline:
 
 ---
 
 ### 1. Microscopy Image Preprocessing
 
 **Input Formats**: `.ome.tiff`, `.ome.tif`, `.qptiff`, `.tiff`, `.tif`, `.czi` (searched in this priority order)  
-**Output Format**: Multi-resolution OME-TIFF, stored in the source file's dtype (`uint8`/`uint16` pass through; float sources stay `float32`), zlib-compressed with a predictor matched to the storage dtype
+**Output Format**: Multi-resolution OME-TIFF, stored in the source file's dtype (`uint8`/`uint16` pass through; float sources stay `float32`; other integer depths become `uint16`), zlib-compressed with a predictor matched to the storage dtype
+
+The pipeline has five labeled steps, reported as `1/5` … `5/5`. Steps 2 to 4 are switchable from the configuration; when one is off, its step line reports `not required`. A sample that raises does not stop the run: the exception is caught, `Error processing sample <sample_id>: <error>` is printed to the console, and the next sample is processed. A **missing input file** is the exception: it is raised while the sample objects are constructed, before processing begins, and aborts the modality.
 
 **Processing Steps**:
 
 1. **File Loading and Normalization**
-   - Detect file format (TIFF/OME-TIFF vs qpTIFF vs CZI)
+   - Load the first file matching the highest-priority extension present in the sample's modality directory
+   - For TIFF/OME-TIFF: read the first series at its base level; a pyramid already in the file is not reused
    - For qpTIFF: compare all series/pyramid levels by pixel count and load only the highest-resolution one
-   - For CZI: squeeze extra dimensions, use first scene only if multiple scenes are present
+   - For CZI: reduce leading axes by taking index 0 until three remain; a message is printed when the outermost axis holds more than one entry
    - Move channel axis to last position using a shape heuristic
-   - Convert to float32 in [0, 1] range (using dtype maximum or image maximum)
+   - Convert to float32 in [0, 1]: a `float32` array already at or below 1 is left as is, an integer array is divided by its dtype maximum, any other float array by its own maximum
    - Clip to at most 3 channels
 
 2. **Color Enhancement** (optional, `color_enhancement=True`)
    - Gamma correction: `I = I^gamma` (default γ=0.45, which brightens the image)
-   - Contrast stretching using percentile-based saturation (default: saturate 0.35% of pixels)
+   - Contrast stretching: one pair of percentiles, `contrast_saturation` and `100 − contrast_saturation`, so 0.35% saturated at each end by default. The pair is computed over the non-zero pixels of the whole image with all channels pooled, then applied as a clip-and-rescale to every channel. Above 9 megapixels of non-zero pixels the percentiles come from a strided subsample; the rescale still touches every pixel
 
-3. **Background Removal** (optional, `remove_background=True`) — runs on a downsampled proxy capped at ~9 megapixels rather than the full-resolution image (a tissue boundary is a smooth shape that doesn't need full-resolution input to locate), with the resulting mask upsampled back to full resolution before being applied
-   - Replace pure-black pixels with white to avoid thresholding artifacts
-   - Convert to grayscale and invert (white background becomes dark)
-   - Clip at `clip_percentile` (default: 99th percentile) then apply Gaussian blur (kernel fixed at 25 px, tuned for the detection-proxy canvas)
-   - Compute Otsu threshold on the blurred image, apply to unblurred grayscale
-   - Remove small connected components (fixed at < 50 pixels, tuned for the detection-proxy canvas)
+3. **Background Removal** (optional, `remove_background=True`). The tissue mask is detected once on a downsampled proxy capped at 9 megapixels and shared with step 4, so it is computed whenever background removal **or** cropping is enabled; the mask is upsampled back to full resolution before being applied
+   - Promote the proxy to 3 channels when it has fewer (a single channel is replicated, two channels gain a zero third channel), so the grayscale conversion accepts it
+   - Reduce to a grayscale whose bright class is the tissue. For a bright background: replace pixels that are 0 in every channel with white, convert to grayscale and invert. For a dark background: convert to grayscale and stop there. The polarity is probed only for promoted 1- and 2-channel images, by comparing the median of a border frame against the median of the whole grayscale; 3-channel images always take the bright-background path
+   - Clip at `clip_percentile` (default: 99th percentile) then apply Gaussian blur (kernel fixed at 25 px, in proxy pixels)
+   - Compute Otsu threshold on the blurred image, apply to the unblurred, unclipped grayscale. The clip and blur shape only the histogram the threshold value comes from, never the mask
+   - Remove connected components of 50 pixels or fewer (fixed, in proxy pixels)
    - Fill holes in the binary tissue mask
-   - Refine by contour area: keep only contours covering ≥ `min_object_coverage` fraction of image area (default: 1%)
+   - Refine by contour area: keep only contours covering ≥ `min_object_coverage` fraction of the proxy area (default: 1%)
    - Apply mask: tissue pixels are kept, background is filled with the background color
 
 4. **Tissue Cropping** (optional, `crop_to_tissue=True`)
-   - Identify non-background pixels from the filled background color
-   - Compute bounding box of tissue region
+   - Compute the bounding box of the step-3 tissue mask, in proxy coordinates, and scale it back to full resolution
    - Add `crop_margin` pixels on all sides (default: 250 px), clamped to image boundaries
+   - An entirely background mask raises `ValueError`
 
 5. **Pyramid Construction and Saving**
-   - Build resolution levels by successive 2× downsampling. The number of levels is **computed automatically** from the image dimensions so the smallest level fits within a 3,000 × 3,000 pixel cap (for GUI rendering); it is not configurable.
-   - Quantize each level from float32 back to the source file's original dtype (`uint8`/`uint16` pass through; float sources stay `float32`)
-   - Write as multi-image BigTIFF OME-TIFF with zlib compression and a predictor matched to the storage dtype (2 for integer, 3 for float)
-   - RGB images: interleaved `YXC` layout; single/multi-channel: separate planes per channel
+   - Build resolution levels by successive 2× downsampling (area interpolation) from the final image size. The number of levels is **computed automatically** so the smallest level fits within a 3,000 × 3,000 pixel cap (for GUI rendering); it is not configurable.
+   - Quantize each level from float32 to the storage dtype (`uint8`/`uint16` pass through; float sources stay `float32`; other integer depths become `uint16`)
+   - Write as multi-image BigTIFF OME-TIFF with zlib compression and a predictor matched to the storage dtype (2 for integer, 3 for float). Each level is one top-level IFD group, and the OME-XML for all levels sits in the first IFD's description
+   - RGB images: interleaved `YXC` layout; single/multi-channel: separate `minisblack` planes per channel
 
 **Parameters**:
 
@@ -58,16 +67,16 @@ Each modality undergoes specialized processing tailored to its data characterist
 |-----------|---------|-------------|
 | `color_enhancement` | `true` | Apply gamma correction and contrast stretching |
 | `gamma` | `0.45` | Gamma exponent (< 1 brightens, > 1 darkens) |
-| `contrast_saturation` | `0.35` | Percentage of pixels to saturate when stretching contrast |
+| `contrast_saturation` | `0.35` | Percentage of non-zero pixels saturated at each end of the histogram |
 | `remove_background` | `true` | Remove background using Otsu thresholding |
-| `background_color` | `"white"` | Color to fill removed background (`"white"` or `"black"`) |
+| `background_color` | `"white"` | Color to fill removed background (`"white"` or `"black"`; any other value raises `ValueError`) |
 | `clip_percentile` | `99` | Intensity percentile for clipping before blur |
-| `min_object_coverage` | `0.01` | Minimum tissue area fraction (0–1) for contour filtering |
+| `min_object_coverage` | `0.01` | Minimum tissue contour area, as a fraction of the detection-proxy area |
 | `crop_to_tissue` | `true` | Crop image to tissue bounding box |
 | `crop_margin` | `250` | Pixel margin added around the tissue bounding box |
 | `force_recomputing` | `false` | Reprocess even if output already exists |
 
-The number of pyramid resolution levels is not a parameter — it is computed automatically from the image size. The Gaussian blur kernel size and minimum object size used during tissue detection are also not parameters — detection always runs on a downsampled proxy capped at ~9 megapixels, so these are fixed internal constants tuned for that canvas rather than the source image's native resolution.
+The number of pyramid resolution levels is not a parameter: it is computed automatically from the image size. The Gaussian blur kernel size and the speck-removal size used during tissue detection are also not parameters. Detection always runs on a downsampled proxy capped at 9 megapixels, so these are fixed internal constants expressed in proxy pixels rather than in the source image's native resolution.
 
 **Output Files**:
 ```
@@ -80,7 +89,7 @@ The number of pyramid resolution levels is not a parameter — it is computed au
 ### 2. MSI (Mass Spectrometry Imaging) Preprocessing
 
 **Input Formats**: `.imzML` + `.ibd` pairs inside `pos/` and/or `neg/` subdirectories  
-**Output Format**: AnnData (`.h5ad`) — one per sample and one merged across all samples
+**Output Format**: AnnData (`.h5ad`), one per sample and one merged across all samples
 
 The MSI pipeline operates at the **dataset level**: all samples are processed together to compute a shared reference m/z backbone, ensuring consistent feature alignment across samples.
 
@@ -94,7 +103,7 @@ The MSI pipeline operates at the **dataset level**: all samples are processed to
    - Normalize physical coordinates to origin; shift to raster center
    - Compute raster bounding-box coordinates for each spot (in µm)
 
-2. **Background Detection** (optional, `detect_background=True` **and** `lipid_annotation_db` set — without a database the step is silently skipped and every spot is marked foreground)
+2. **Background Detection** (optional, `detect_background=True` **and** `lipid_annotation_db` set). Without a database the step is silently skipped and every spot is marked foreground
    - For each spot, compute three spectral complexity features: Shannon entropy of the normalized intensity distribution, number of detected peaks, and log(1 + TIC)
    - Add a 4th feature from the database (fraction of peaks matching the DB at the configured mass tolerance)
    - Min-max normalize each feature and average into a composite score
@@ -115,7 +124,7 @@ The MSI pipeline operates at the **dataset level**: all samples are processed to
    - Apply the row-wise offset to all m/z values in that row
 
 5. **Per-Sample m/z Backbone Computation**
-   - Pool all (recalibrated) m/z values of a sample — restricted to foreground spots only when background detection actually ran (see step 2), otherwise all spots
+   - Pool all (recalibrated) m/z values of a sample, restricted to foreground spots only when background detection ran (see step 2), otherwise all spots
    - Cluster nearby values using adaptive sliding-window clustering with weighted centroids (parallel, chunked)
    - Filter clusters by frequency: keep only those appearing in ≥ `frequency_threshold` fraction of the maximum cluster weight
 
@@ -135,8 +144,8 @@ The MSI pipeline operates at the **dataset level**: all samples are processed to
 9. **Intensity Normalization** (applied independently per sample and per ion mode)
    - `"tic"`: divide each spectrum by its total ion count (each spectrum sums to 1)
    - `"log"`: apply log(1 + x) transform
-   - `"clr"`: sparsity-preserving centered log-ratio — log-centers each spectrum over its nonzero entries only, leaving structural zeros at 0
-   - `"tic_mean_scaled"`: rescale each spectrum to the mean total ion count over that sample's spots for that ion mode (each spectrum's total becomes the mean TIC) — like `"tic"` but preserves an interpretable absolute intensity scale instead of forcing a sum of 1. The mean is per sample, so values are not comparable across samples
+   - `"clr"`: sparsity-preserving centered log-ratio. Log-centers each spectrum over its nonzero entries only, leaving structural zeros at 0
+   - `"tic_mean_scaled"`: rescale each spectrum to the mean total ion count over that sample's spots for that ion mode (each spectrum's total becomes the mean TIC). This is similar to `"tic"`, but it preserves an interpretable absolute intensity scale instead of forcing a sum of 1. The mean is per sample, so values are not comparable across samples
    - `"none"`: keep raw interpolated intensities
 
 10. **Per-Sample Cluster Labels** (used only to colour spots during alignment)
@@ -163,7 +172,7 @@ The MSI pipeline operates at the **dataset level**: all samples are processed to
 | `lipid_annotation_db` | `null` | Path to lipid annotation database (CSV or JSON with `db_name`, `ionized_mass`, `ion_mode` columns) |
 | `force_recomputing` | `false` | Reprocess even if output already exists |
 
-The defaults above are applied both by the pipeline's settings extractor (`_extract_msi_settings`) and by the `MsiDataset.process_dataset()` signature — config runs and direct Python calls agree. Note that `mass_tolerance` must be an `int`; a float raises `ValueError`.
+The defaults above are applied both by the pipeline's settings extractor (`_extract_msi_settings`) and by the `MsiDataset.process_dataset()` signature, so config runs and direct Python calls agree. `mass_tolerance` must be an `int`; a float raises `ValueError`.
 
 **Output Files**:
 ```
@@ -195,67 +204,72 @@ The defaults above are applied both by the pipeline's settings extractor (`_extr
 ### 3. Raman Spectroscopy Imaging Preprocessing
 
 **Input Formats**: `.lif` (Leica Image File format)  
-**Output Format**: Multi-channel OME-TIFF (hyperspectral, uint8, zlib-compressed)
+**Output Format**: Multi-channel OME-TIFF pyramid (hyperspectral, `uint8`, Adobe-Deflate compressed), written by ASHLAR
 
-The pipeline has five labeled steps. All steps are always executed; none can be individually disabled via configuration — only the per-step parameters are tunable. Intermediate results are cached as `.npy` files and deleted after the final OME-TIFF is produced.
+The pipeline has five labeled steps, reported as `1/5` … `5/5`. All steps are always executed; none can be individually disabled via configuration. Only the per-step parameters are tunable. Steps 2 to 4 cache their result as a `.npy` file, and the three caches are deleted once the sample's final OME-TIFF has been produced.
+
+A sample that raises does not stop the run: the exception is caught, `Error processing sample <sample_id>: <error>` is printed to the console, and the next sample is processed. The failed sample has no output file and is absent from the returned mapping.
 
 **Processing Steps**:
 
 1. **LIF File Loading and Metadata Parsing**
-   - Scan the input directory for the first `.lif` file
-   - Parse LIF XML metadata: scan dimensions (width, height), spectral parameters (wavenumber range, number of steps, laser pump wavelength), tile count, tile coordinates (µm), and pixel size (µm)
-   - Only tiled acquisitions (tile count ≥ 2) are processed; single-field images are skipped
-   - Extract raw tile data as float32 array of shape (T, C, Y, X) where T = tiles, C = spectral channels
-   - If multiple spectral scans are present in the LIF: concatenate along the channel axis and resolve wavenumber overlaps (re-scanned spectral regions are trimmed at the overlap boundary)
-   - Normalize to [0, 1] (divides by 255 or 65535 depending on data range)
-   - Compute wavenumber array from laser excitation range and Stokes shift
+   - Load the first `.lif` file found in the input directory
+   - Parse the LIF XML: the two spatial axis sizes and their pixel sizes (µm), the number of spectral steps, the tile count, the tile stage coordinates (µm), the excitation wavelength range, and the laser pump wavelength
+   - Only tile scans (tile count ≥ 2) are processed; single-field images and automatically stitched images are skipped
+   - Read tile pixel data into a float32 array of shape (T, C, Y, X), where T = tiles and C = spectral channels
+   - Compute the wavenumber axis over the excitation wavelength range: `ν̃ = (1/λ − 1/λ_stokes) × 10⁷`, where `λ_stokes` is the laser pump wavelength read from the LIF hardware settings and the factor `10⁷` converts nm⁻¹ to cm⁻¹
+   - If several tile-scan elements are present: concatenate them along the channel axis, record each one's channel range as a *spectra slice*, and, when the concatenated wavenumber axis is not monotonic, drop the one overlapping region, from the first monotonicity break back to the closest-matching wavenumber in the preceding block
+   - Rescale intensities once from the global maximum: ÷255 when it lies in (1, 255], ÷65535 when it lies in (255, 65535], `ValueError` above that, unchanged at or below 1
 
 2. **BaSiC Illumination Correction**
-   - Requires the `FOCUS_BaSiCpy` conda environment
-   - Each spectral channel is processed independently via a subprocess call to the BaSiCpy tool
-   - Channels are processed in parallel using a thread pool (up to `max_workers` threads)
-   - Output is globally normalized to [0, 1] across all channels and tiles
+   - Requires the `FOCUS_BaSiCpy` conda environment; its absence, or a missing `conda` on `PATH`, raises `RuntimeError`
+   - Each spectral channel is written to a temporary `.npy`, corrected by `tools/BaSiCpy/main.py` in a subprocess (`JAX_PLATFORM_NAME=cpu`), and read back
+   - Channels are dispatched in parallel through a thread pool (`max_workers` threads)
+   - The assembled stack is min-max normalized globally to [0, 1], using one minimum and maximum over all tiles and channels
+   - Result cached to `basic_corrected_tiles.npy`
 
 3. **Background Removal**
-   - Quick-stitch BaSiC-corrected tiles into a mosaic using weighted blending (distance-transform weights)
-   - Reduce the hyperspectral mosaic to a single grayscale image via PCA (1 component)
-   - Apply CLAHE for local contrast enhancement
-   - Compute Otsu threshold, scaled by `otsu_threshold_factor` (default: 0.7, lowers threshold to be more inclusive)
-   - Remove small objects (< `min_object_size` pixels, default: 500)
+   - Quick-stitch the BaSiC-corrected tiles into a preview mosaic using distance-transform weights
+   - Reduce the hyperspectral mosaic to one grayscale image via PCA (1 component) over the non-zero pixels, contrast-stretched between its 2nd and 98th percentiles
+   - Apply CLAHE (`clipLimit=2.0`, `tileGridSize=(8, 8)`)
+   - Compute the Otsu threshold on a copy clipped at the 95th percentile, multiply it by `otsu_threshold_factor` (default: 0.7; below 1.0 it lowers the threshold and keeps more pixels), and binarize the unclipped mosaic with it
+   - Remove connected components of `min_object_size` pixels or fewer (default: 500)
    - Fill holes in the binary mask
-   - Filter by contour area: keep contours covering ≥ `bg_min_area_fraction` of image area (default: 5%)
-   - Back-project the mosaic mask onto individual tiles to generate per-tile segmentation masks
-   - Zero out background regions in the BaSiC-corrected tiles
+   - Filter by contour area: keep external contours covering ≥ `bg_min_area_fraction` of the mosaic area (default: 5%) and fill them
+   - Back-project the mosaic mask onto individual tiles and multiply it into the BaSiC-corrected tiles, so background pixels become 0 in every channel
+   - Result cached to `segmented_tiles.npy`; step 4 operates on these masked tiles
 
-4. **Spectral Cleaning** (per tile, parallel)
-   - Skip zero-variance spectra (constant signal that causes numerical errors)
-   - Apply RamanSPy pipeline to each non-zero spectrum:
+4. **Spectral Cleaning** (one work unit per tile and spectra slice, parallel)
+   - Drop spectra whose consecutive-difference series has a MAD of exactly 0. These are flat spectra, including the background pixels zeroed in step 3, and they would divide by zero in the despiking z-score. Their pixels are written back as zeros
+   - Run the remaining spectra through the fixed RamanSPy pipeline:
      1. **Despiking**: Whitaker-Hayes cosmic ray removal
      2. **Denoising**: Savitzky-Golay filter (default: window=7, polyorder=3)
      3. **Baseline correction**: IASLS algorithm
-     4. **Normalization**: MinMax per-spectrum
-   - Tiles processed in parallel (up to `max_workers` workers)
+     4. **Normalization**: MinMax, per spectrum, to [0, 1]
+   - Work units are dispatched with `joblib` (`max_workers` workers)
    - Results cached to disk (`raman_corrected_tiles.npy`)
 
 5. **ASHLAR Stitching**
    - Requires the `FOCUS_ASHLAR` conda environment
-   - Flip y-axis of tile coordinates (Leica → OME-TIFF convention)
-   - Select the highest mean-intensity spectral channel within the first scan as the alignment reference
-   - Write per-cycle OME-TIFF input files with embedded physical coordinates and pixel size metadata
-   - Run ASHLAR via subprocess to stitch tiles with sub-pixel alignment
-   - Rename output to `<modality_name>_<sample_id>_processed.ome.tiff`
+   - Mirror the tile y coordinates within their own range (Leica → OME-TIFF convention), then scale the tiles by 255 and cast to `uint8`
+   - Select the alignment channel from the first spectra slice: the channel whose largest per-tile mean intensity is highest
+   - Write one OME-TIFF input file per spectra slice (one ASHLAR cycle), with per-tile positions and pixel size in µm
+   - Run `tools/ASHLAR/main.py` in a subprocess: `EdgeAligner` on the first cycle, a `LayerAligner` per further cycle, then a pyramid write with enough 2× levels for the smallest one to hold at most 9,000,000 pixels
+   - Rename ASHLAR's output to `<modality_name>_<sample_id>_processed.ome.tiff`
 
 **Parameters**:
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `max_workers` | `8` | Maximum parallel workers for BaSiC correction and spectral cleaning |
+| `max_workers` | `8` | Threads for BaSiC channels (step 2) and `joblib` workers for spectral cleaning (step 4) |
 | `savgol_window` | `7` | Savitzky-Golay filter window length for denoising |
-| `savgol_polyorder` | `3` | Savitzky-Golay filter polynomial order |
+| `savgol_polyorder` | `3` | Savitzky-Golay filter polynomial order; must be smaller than `savgol_window` |
 | `bg_min_area_fraction` | `0.05` | Minimum contour area as fraction of mosaic area for background removal |
 | `otsu_threshold_factor` | `0.7` | Multiplicative factor applied to the Otsu threshold before background segmentation |
-| `min_object_size` | `500` | Minimum connected component size in pixels for morphological cleanup |
-| `force_recomputing` | `false` | Reprocess even if output already exists |
+| `min_object_size` | `500` | Connected components of this many pixels or fewer are removed from the tissue mask |
+| `force_recomputing` | `false` | Reprocess even if the output or an intermediate cache already exists |
+
+The defaults are the `RamanImage` class constants, used both by the config settings extractor (`_extract_raman_settings`) and by the `RamanDataset.process_dataset()` signature.
 
 **Output Files**:
 ```
@@ -263,12 +277,14 @@ The pipeline has five labeled steps. All steps are always executed; none can be 
 └── <modality_name>_<sample_id>_processed.ome.tiff
 ```
 
+The OME-XML that ASHLAR writes carries the physical pixel size in µm but no channel names and no wavenumber values, so the spectral axis is not recoverable from the output file. Downstream stages address the mosaic in pixel coordinates.
+
 ---
 
 ### 4. Spatial Transcriptomics Preprocessing
 
-**Input Formats**: AnnData (`.h5ad`) — the first `.h5ad` file found in the sample directory  
-**Output Format**: AnnData (`.h5ad`) — one per sample and one merged
+**Input Formats**: AnnData (`.h5ad`), the first `.h5ad` file found in the sample directory  
+**Output Format**: AnnData (`.h5ad`), one per sample and one merged
 
 Supports any spot-based or cell-based spatial transcriptomics technology (Visium, Xenium, MERFISH, etc.) as long as the input AnnData has raw gene counts in `.X` and spatial coordinates in `.obsm["spatial"]`.
 
@@ -302,7 +318,7 @@ Supports any spot-based or cell-based spatial transcriptomics technology (Visium
 
 7. **Per-Sample Cluster Labels**
    - Stored in `.obs["cluster"]`; used to colour spots in the alignment GUI
-   - Computed on `.X` at this point — post-filter, post-removal, still raw counts
+   - Computed on `.X` at this point: post-filter, post-removal, still raw counts
    - Samples above 100,000 spots are first coarsened onto a uniform spatial grid of at most 100,000 cells, summing the spots in each cell into one pseudo-spot
    - The run matrix is normalized to 10,000 counts and log1p-transformed on a throwaway copy, then PCA (`min(50, n_rows-1, n_genes-1)` components) → neighbor graph (`min(15, n_rows-1)` neighbours) → Leiden (`resolution=0.5`, `flavor="igraph"`, `n_iterations=2`, `directed=False`); each cell's label propagates back to its spots
    - Only `.obs["cluster"]` is persisted. Fewer than 2 run rows, fewer than 2 usable PCs, or a single resulting cluster all give the label `'0'`. `random_state=0`
@@ -321,7 +337,7 @@ After per-sample preprocessing, all samples are merged. The merged file is reuse
 
 1. Read each per-sample `.uns["spot_size"]` with a backed read, without materializing `.X`
 2. Concatenate **on disk** (`anndata.concat_on_disk`) with **outer join**: genes absent from a sample are filled with 0 counts. `.uns` is dropped by the concat
-3. Restore raw counts on the merged object: `.X = .layers.pop("raw", .X)` — the layer exists only if the per-sample files were normalized, otherwise `.X` is already raw
+3. Restore raw counts on the merged object: `.X = .layers.pop("raw", .X)`. The layer exists only if the per-sample files were normalized, otherwise `.X` is already raw
 4. **Cross-sample gene filtering** (both optional; skipped entirely when both are `null`):
    - `min_spots_per_gene`: a sample passes for a gene when the gene is expressed in ≥ this fraction of that sample's spots
    - `min_count_spots_ratio_per_gene`: a sample passes when the gene's (total counts / expressed spots) ≥ this value; samples where the gene is unexpressed count as neither pass nor fail
@@ -385,7 +401,7 @@ FOCUS uses a consistent naming pattern for all preprocessed outputs.
 <modality_name>_<sample_id>_processed.<ext>
 ```
 
-**Merged Files** (omics modalities only — microscopy and Raman produce no merged output):
+**Merged Files** (omics modalities only; microscopy and Raman produce no merged output):
 ```
 <modality_name>_merged_processed.<ext>
 ```
@@ -403,9 +419,9 @@ FOCUS uses a consistent naming pattern for all preprocessed outputs.
 Each modality checks whether its output file already exists at the start of processing. If the file is found and `force_recomputing` is not set, the step is skipped and the cached path is returned. There is no hash- or timestamp-based validation: deleting the output file or setting `force_recomputing: true` is the only way to trigger reprocessing.
 
 !!! warning "Changing a processing setting does not invalidate the cache"
-    The cache key is the existence of the output file (plus, for the merged MSI/ST files, the set of active sample IDs) — **not** the processing settings. Editing a setting and re-running therefore returns the previously computed output unchanged, with no warning. After changing any processing setting, set `force_recomputing: true` for that modality (or delete its outputs) so the new value takes effect.
+    The cache key is the existence of the output file (plus, for the merged MSI/ST files, the set of active sample IDs), **not** the processing settings. Editing a setting and re-running therefore returns the previously computed output unchanged, with no warning. After changing any processing setting, set `force_recomputing: true` for that modality (or delete its outputs) so the new value takes effect.
 
-The Raman pipeline has intermediate caches (`basic_corrected_tiles.npy`, `segmented_tiles.npy`, `raman_corrected_tiles.npy`) that are checked independently at each step, allowing partial resume within a single sample. These intermediate files are deleted after the final OME-TIFF is produced.
+The Raman pipeline has intermediate caches (`basic_corrected_tiles.npy`, `segmented_tiles.npy`, `raman_corrected_tiles.npy`) that are checked independently at each step, allowing partial resume within a single sample. LIF loading is not cached and runs again on every attempt, since the tile coordinates, pixel size and spectra-slice boundaries feed the later steps. The three files are deleted once the sample's final OME-TIFF exists, so they are only ever found after an interrupted or failed run, which is when they are used. Like the output-level cache, they record no parameter values.
 
 ---
 
@@ -413,23 +429,24 @@ The Raman pipeline has intermediate caches (`basic_corrected_tiles.npy`, `segmen
 
 ### Execution model
 
-Modalities are processed one at a time, and within each modality samples are processed sequentially. This is intentional: peak RAM usage scales with a single sample — typical tissue sections require 40–50 GB, and large samples can require up to 100 GB. Loading multiple samples concurrently would multiply this requirement and cause out-of-memory failures.
+Modalities are processed one at a time, and within each modality samples are processed sequentially. Peak RAM usage scales with a single sample: typical tissue sections require 40 to 50 GB, and large samples can require up to 100 GB. Loading multiple samples concurrently would multiply this requirement and cause out-of-memory failures.
 
 Parallelism is exploited **within** a single sample's processing steps, where the data is already loaded into memory:
 
 | Modality | Intra-sample parallelism |
 |----------|--------------------------|
-| Microscopy | Single-threaded (image ops are already vectorized) |
+| Microscopy | No explicit parallelism: every step is a whole-array NumPy or OpenCV call |
 | MSI | m/z backbone clustering runs on a `ProcessPoolExecutor` across CPU cores; intensity interpolation uses `joblib` parallel workers (one chunk per core) |
-| Raman | BaSiC correction parallelizes spectral channels via a `ThreadPoolExecutor`; spectral cleaning parallelizes tiles via `joblib` |
+| Raman | BaSiC correction parallelizes spectral channels via a `ThreadPoolExecutor` (one subprocess per channel); spectral cleaning parallelizes tile × spectra-slice work units via `joblib` |
 | ST | Single-threaded (scanpy and scipy operations are internally vectorized) |
 
 ### Memory management
 
 The entire stack is built on natively compiled, memory-efficient libraries (NumPy, SciPy, pandas, numba/Numba JIT) that operate on contiguous arrays and avoid Python-level loops wherever possible. Key design decisions:
 
+- **Microscopy**: the full-resolution image is held once as a float32 `(H, W, C)` array. Tissue detection runs on a proxy capped at 9 megapixels and releases each intermediate (uint8 copy, blurred image, thresholded mask) as soon as it is consumed, and the contrast-stretch percentiles are estimated from a strided subsample above the same cap, so neither step allocates a second full-resolution working set.
 - **MSI**: spectra are read directly from the binary IBD file with `np.fromfile` (zero-copy memory mapping). Intensity matrices are kept as sparse CSR throughout. After each processing step the intermediate dense arrays are explicitly deleted and `gc.collect()` is called. The merge step uses an on-disk concatenation routine to avoid loading all samples simultaneously.
-- **Raman**: tiles are stored as a single contiguous `(T, C, Y, X)` float32 array. Intermediate `.npy` caches are written to disk and deleted from memory between pipeline stages to keep the working set small.
+- **Raman**: tiles are stored as a single contiguous `(T, C, Y, X)` float32 array, and each stage writes its result to a `.npy` cache so an interrupted run can resume from it. The raw, illumination-corrected/masked, and spectrally cleaned stacks are all held on the sample object for the duration of that sample; within background removal, the intermediate mask images are explicitly released as soon as they are consumed.
 - **MSI m/z clustering**: memory per chunk is estimated from available RAM at runtime (`psutil.virtual_memory().available`) before the job is dispatched, so the chunk count scales to the machine.
 - **ST**: sparse CSR matrices are used end-to-end; concatenation uses an outer join to avoid densifying the gene matrix.
 
@@ -502,20 +519,21 @@ sc.pl.umap(adata, color=["cluster", "foreground"])
 
 ### Raman
 
-The output OME-TIFF contains one channel per wavenumber bin. Useful checks:
+The output OME-TIFF holds one channel per spectral channel, ordered by scan. Useful checks:
 
 - Open in QuPath, Napari, or FIJI and inspect individual spectral channels for stitching artifacts or residual background.
 - Sum-project all channels to produce a pseudo-brightfield image and verify tissue coverage and tile alignment.
-- Load a subset of channels corresponding to known Raman bands (e.g., ~1004 cm⁻¹ phenylalanine, ~2850 cm⁻¹ lipids) and check spatial signal distribution.
+- Inspect channels at known Raman bands (e.g., ~1004 cm⁻¹ phenylalanine, ~2850 cm⁻¹ lipids). The output file does not store the wavenumber axis, so the channel index for a band has to be looked up in the axis computed from the LIF metadata (`RamanImage.wavenumbers` after `load_source()`).
 
 ```python
 import tifffile, numpy as np, matplotlib.pyplot as plt
 
 img = tifffile.imread("path/to/<modality>_<sample>_processed.ome.tiff")
-# img shape: (C, H, W) or (H, W, C) depending on how ASHLAR wrote it
+# Full-resolution pyramid level, shape (C, H, W); lower levels are in
+# tifffile.TiffFile(...).series[0].levels
 
 # Sum projection
-plt.imshow(img.sum(axis=0) if img.ndim == 3 else img.sum(axis=-1), cmap="gray")
+plt.imshow(img.sum(axis=0), cmap="gray")
 plt.title("Sum projection"); plt.colorbar(); plt.show()
 ```
 

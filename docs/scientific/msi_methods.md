@@ -1,5 +1,10 @@
 # MSI Preprocessing Methods
 
+Implementation reference for `focus/preprocessing/lipidomics.py`. `MsiDataset.process_dataset()`
+iterates over samples, each represented by an `MsiSample`, applying the stages below in order.
+
+---
+
 ## 1. Data model and inputs
 
 FOCUS processes MSI data from imzML/IBD pairs (single mode or dual mode via `pos/` and `neg/`).
@@ -109,8 +114,8 @@ dominated by uniformly sprayed matrix/standards.
 **Per-spot features.** For spot \(i\) with raw centroided intensities \(I_i=(I_{i,1},\dots,I_{i,k_i})\):
 
 - **Peak count** \(n_i = k_i\), the number of detected peaks.
-- **Total ion current** \(\mathrm{TIC}_i = \sum_{m} I_{i,m}\) (sum over the spot's *raw* peaks — note
-  this is the raw-peak TIC, distinct from the on-grid TIC used for normalization in §6).
+- **Total ion current** \(\mathrm{TIC}_i = \sum_{m} I_{i,m}\) (sum over the spot's *raw* peaks). This
+  is the raw-peak TIC, distinct from the on-grid TIC used for normalization in §6.
 - **Shannon entropy** of the intensity distribution \(p_{i,m}=I_{i,m}/\mathrm{TIC}_i\), restricted to
   \(p_{i,m}>0\):
 
@@ -123,7 +128,7 @@ H_i = -\sum_{m:\,p_{i,m}>0} p_{i,m}\,\log_2 p_{i,m}.
   \(\#\{\text{unique matched peaks}\}/n_i\).
 
 The feature set is \(\{H_i,\ n_i,\ \log(1+\mathrm{TIC}_i),\ (\text{hit ratio})_i\}\). Each feature is
-min–max normalized over valid spots (\(n_i>0\)) to \([0,1]\), and the composite score is their mean:
+min-max normalized over valid spots (\(n_i>0\)) to \([0,1]\), and the composite score is their mean:
 
 \[
 \text{score}_i = \frac{1}{F}\sum_{f=1}^{F} \frac{x^{(f)}_i - \min_j x^{(f)}_j}{\max_j x^{(f)}_j - \min_j x^{(f)}_j}.
@@ -144,7 +149,10 @@ defeats Otsu. The scores are modeled with Gaussian mixtures and selected by BIC:
 ### `sample_type: microgrid`
 
 Isolated single cells on a mostly-background grid; spatial cleanup is disabled (it would erase
-real cells). A 1D Otsu threshold maximizes between-class variance over the 256-bin score histogram,
+real cells). A 1D Otsu threshold maximizes between-class variance over the 256-bin score histogram.
+This is the same criterion used for image segmentation in
+[microscopy §3](microscopy_methods.md#3-background-removal-remove_background), applied here to the
+composite score instead of to pixel intensities:
 
 \[
 t^\* = \arg\max_{t}\ \sigma_b^2(t),\qquad
@@ -188,9 +196,8 @@ This is the natural grid for a *relative* tolerance: for \(m_1 < m_2\) within \(
 \]
 
 so one uniform grid resolves the tolerance identically across the whole mass range, and two peaks
-within tolerance lie at most \(\beta\) bins apart. Bins are deliberately **narrower** than the
-tolerance so that the grouping in §4.1.2 — not the grid — decides what is one candidate; boundary
-splits are healed there.
+within tolerance lie at most \(\beta\) bins apart. Bins are narrower than the tolerance, so the
+grouping in §4.1.2 determines what counts as one candidate. Boundary splits are resolved there.
 
 Per sample and ion mode the reduction accumulates, over occupied bins only,
 
@@ -201,8 +208,8 @@ n_b = \#\{\text{peaks in bin } b\},
 \]
 
 via `np.bincount` (a single linear pass, no sort). The representative mass of a bin is the exact
-mean \(\sigma_b / n_b\) of the raw values that fell in it — the grid only ever *indexes* peaks, it
-never replaces a measured mass with a bin centre. Samples are folded in one at a time and their raw
+mean \(\sigma_b / n_b\) of the raw values that fell in it. The grid only indexes peaks; it never
+replaces a measured mass with a bin centre. Samples are folded in one at a time and their raw
 peaks released immediately; what persists per sample is one `int32` array of occupied bin indices.
 Retained memory is therefore \(O(\ln(m_{\max}/m_{\min})/w)\), i.e. bounded by the **mass span and
 tolerance**, and independent of the number of spectra.
@@ -241,7 +248,8 @@ covers a still-uncovered sample. The selected \(\mu_g\) are returned in ascendin
 
 Because grouping precedes scoring, the \(N_\text{ref}\) references are \(N_\text{ref}\) *distinct*
 calibrants separated by more than \(\tau\), each reported at the weighted centroid \(\mu_g\) of all
-its measurements — a lower-variance estimate of the true mass than any single observation.
+its measurements. That centroid is a lower-variance estimate of the true mass than any single
+observation.
 
 The references are shared by the whole dataset: one set per ion mode, used by every sample. The
 per-sample quantity is the offset \(\Delta_x\) derived from them (§4.2).
@@ -270,7 +278,7 @@ a frequency cutoff (`frequency_threshold=0`) to form the final reference m/z vec
 
 Within each level, all m/z are rounded (6 decimals), sorted, and uniquified with counts, then:
 
-1. **Chunked clustering** (`cluster_unique_mz_chunk`, run in parallel — see below). A sliding window
+1. **Chunked clustering** (`cluster_unique_mz_chunk`, run in parallel; see below). A sliding window
    grows a weighted centroid \(c\): the next candidate \(a\) joins the cluster while its ppm distance
    to the **running centroid** is within tolerance, and \(c\) is updated as the count-weighted mean.
 2. **Chunk merging** (`merge_chunks`). Adjacent chunk centroids are merged when within tolerance,
@@ -323,7 +331,7 @@ All methods are applied **independently per ion mode** (each mode's matrix is no
 - `tic`: divide row by TIC (rows with TIC=0 use divisor 1); each spectrum then sums to 1
 - `log`: `log1p`
 - `clr`: sparsity-preserving centered log-ratio. For each spectrum, the log is taken over the nonzero entries only and centered by the mean log over that nonzero support; structural zeros are left at 0, so sparsity is preserved.
-- `tic_mean_scaled`: divide each spectrum by the scaling factor \(f_s = T_s / \bar{T}\), where \(T_s\) is the spot's total ion current and \(\bar{T}\) is the mean total ion current over that sample's spots for that ion mode (\(\bar{T}=0\) uses divisor 1; empty spots stay at 0). Each spectrum is thus rescaled to total \(\bar{T}\). Equivalent to `tic` multiplied by a per-sample constant — it removes per-spot total-intensity variation like `tic`, but preserves an interpretable absolute intensity scale instead of compressing every spectrum to sum 1. The mean is taken within each sample and ion mode, so it does not make intensities comparable across samples.
+- `tic_mean_scaled`: divide each spectrum by the scaling factor \(f_s = T_s / \bar{T}\), where \(T_s\) is the spot's total ion current and \(\bar{T}\) is the mean total ion current over that sample's spots for that ion mode (\(\bar{T}=0\) uses divisor 1; empty spots stay at 0). Each spectrum is thus rescaled to total \(\bar{T}\). Equivalent to `tic` multiplied by a per-sample constant. It removes per-spot total-intensity variation like `tic`, but preserves an interpretable absolute intensity scale instead of compressing every spectrum to sum 1. The mean is taken within each sample and ion mode, so it does not make intensities comparable across samples.
 
 Raw interpolated matrix is preserved in `.layers['raw']`; normalized matrix in `.X`.
 
@@ -332,19 +340,23 @@ Raw interpolated matrix is preserved in `.layers['raw']`; normalized matrix in `
 ## 6b. Per-sample clustering
 
 After normalization, per-sample cluster labels are computed (`compute_cluster_labels`) and stored in
-`.obs['cluster']`. They are consumed only by the alignment GUI for categorical spot colouring — no
-downstream algorithm uses them numerically — so the goal is a fast Leiden-*like* partition rather
-than an exact Leiden over every spot.
+`.obs['cluster']`. They are consumed only by the alignment GUI for categorical spot colouring, and no
+downstream algorithm uses them numerically. The routine therefore computes a fast Leiden-*like*
+partition instead of an exact Leiden over every spot.
+
+`compute_cluster_labels` is shared with [ST §3.6](st_methods.md#36-per-sample-clustering), and its
+coarsening grid and 100,000-row cap are shared with the alignment GUI's display binning
+([Alignment §4b](alignment_methods.md#4b-display-coarsening-for-large-spot-sets)).
 
 For a sample with \(n\) spots and cap \(C = 100{,}000\):
 
-- **\(n > C\)** — the spots are coarsened, which also aggregates the weak signal of an individual
-  ultra-high-resolution MSI spot into something PCA/Leiden can find structure in. A uniform spatial
-  grid of at most \(C\) cells is laid over the coordinates (never finer than the native spot
+- **\(n > C\)**: the spots are coarsened, which also aggregates the weak signal of an individual
+  ultra-high-resolution MSI spot into a signal where PCA/Leiden can resolve structure. A uniform
+  spatial grid of at most \(C\) cells is laid over the coordinates (never finer than the native spot
   spacing, so cells cannot fall between samples), and all spots in a cell are **summed** into one
   pseudo-spot. Since summing breaks the per-spot normalization, the pseudo-spots are total-count
   normalized to the median (no `log1p`, matching the unbinned path).
-- **\(n \le C\)** — no binning; Leiden runs on every spot, matrix used as-is.
+- **\(n \le C\)**: no binning; Leiden runs on every spot, matrix used as-is.
 
 Then \(\text{PCA} \to \text{kNN} \to \text{Leiden}\) on that matrix, with
 \(n_\text{pcs} = \min(50,\, n_\text{run}-1,\, n_\text{vars}-1)\),
@@ -353,7 +365,7 @@ Then \(\text{PCA} \to \text{kNN} \to \text{Leiden}\) on that matrix, with
 contributed to it.
 
 The binned matrix, PCA embedding and neighbour graph live on a throwaway `AnnData` and are never
-persisted — only the per-spot label array is. Samples with fewer than 2 run-rows or fewer than 2
+persisted; only the per-spot label array is. Samples with fewer than 2 run-rows or fewer than 2
 usable PCs, and samples resolving to a single cluster, receive the single label `'0'`. PCA and Leiden
 run with `random_state=0`.
 
@@ -387,13 +399,13 @@ Key fields:
 
 ## 8. Parameters reflected by implementation
 
-- `mass_tolerance` (default 10; must be an `int` — `process_dataset` rejects floats)
+- `mass_tolerance` (default 10; must be an `int`, since `process_dataset` rejects floats)
 - `frequency_threshold` (default 0.01)
 - `intensity_normalization` (default `none`, in both the settings extractor `_extract_msi_settings`
   and the `process_dataset` signature)
 - `recalibration_reference` (default `null`)
-- `min_intensity_threshold` (default `10000.0`)
+- `min_intensity_threshold` (default 10000.0)
 - `detect_background` (default `false`; effective only when `lipid_annotation_db` is also set)
 - `sample_type` (`tissue` or `microgrid`, default `tissue`)
 - `lipid_annotation_db` (optional CSV/JSON with `db_name`, `ionized_mass`, `ion_mode`)
-- `force_recomputing` (default false)
+- `force_recomputing` (default `false`)

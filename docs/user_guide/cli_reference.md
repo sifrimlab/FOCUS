@@ -19,9 +19,9 @@ focus --help                             # Show help and exit
 
 | Option | Short | Default | Description |
 |--------|-------|---------|-------------|
-| `--config PATH` | `-c` | — | Path to a JSON config file. If omitted, GUI mode starts. The path may be relative or absolute. |
-| `--debug` | — | `false` | Enable DEBUG-level console output, including werkzeug HTTP request logs. The log file always captures DEBUG regardless of this flag. |
-| `--help` | `-h` | — | Show the help message and exit. |
+| `--config PATH` | `-c` | n/a | Path to a JSON config file. If omitted, GUI mode starts. The path may be relative or absolute. |
+| `--debug` | n/a | `false` | Enable DEBUG-level console output, including werkzeug HTTP request logs. The log file always captures DEBUG regardless of this flag. |
+| `--help` | `-h` | n/a | Show the help message and exit. |
 
 ---
 
@@ -56,7 +56,7 @@ focus --help                             # Show help and exit
     !!! note "Interactive alignment in CLI mode"
         If your config requires manual alignment (at least one modality with `"alignment_strategy": "manual"` when `perform_alignment` or `perform_registration` is active), FOCUS will launch the interactive alignment GUI at `http://localhost:8000` and wait for you to complete the alignment before resuming the pipeline.
         
-        For truly automated/headless operation without manual alignment, use one of these approaches:
+        For automated/headless operation without manual alignment, use one of these approaches:
         
         1. **Skip alignment and registration entirely**: Set `"perform_alignment": false` and `"perform_registration": false`. The pipeline will only run preprocessing.
         
@@ -143,7 +143,7 @@ focus --config config.json --debug
 
 ## Running on HPC Without a Display
 
-CLI mode requires no display or browser. It is fully compatible with headless Linux servers and HPC batch schedulers.
+CLI mode requires no display or browser. It is compatible with headless Linux servers and HPC batch schedulers.
 
 ### Option 1: Pre-aligned data (no alignment needed)
 
@@ -188,7 +188,7 @@ focus
 
 ### SLURM batch job example
 
-The repository ships a ready-to-use, parameterised batch script,
+The repository ships a parameterised batch script,
 [`slurm/submit_focus.sbatch`](https://github.com/sifrimlab/FOCUS/blob/main/slurm/submit_focus.sbatch),
 covering both the Singularity container and host-install paths. Submit it with:
 
@@ -199,7 +199,7 @@ sbatch slurm/submit_focus.sbatch
 sbatch --export=ALL,FOCUS_CONFIG=/scratch/$USER/proj/config.json slurm/submit_focus.sbatch
 ```
 
-See [HPC & Headless Servers — SLURM Batch Script](../deployment/hpc.md#slurm-batch-script)
+See [HPC & Headless Servers: SLURM Batch Script](../deployment/hpc.md#slurm-batch-script)
 for the full breakdown of its directives and overridable variables. A minimal
 host-install job looks like:
 
@@ -220,7 +220,7 @@ focus --config /scratch/mylab/project/focus_config.json
 
 ## Batch Processing Multiple Datasets
 
-If you have a cohort where each subdirectory contains an independent dataset with its own config, you can process them sequentially with a simple shell loop:
+If you have a cohort where each subdirectory contains an independent dataset with its own config, you can process them sequentially with a shell loop:
 
 ```bash
 for config in /data/cohort/*/focus_config.json; do

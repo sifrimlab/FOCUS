@@ -127,7 +127,7 @@ const goBackFromCorruption = () => {
           >FOCUS</span>
         </div>
         <p class="text-gray-500 dark:text-gray-400 text-sm">
-          Flexible Multiomics data preprocessing and alignment pipeline
+          FOCUS: End-to-end preprocessing, alignment, and registration pipeline
         </p>
       </div>
 

@@ -6,6 +6,12 @@ Compilation is the final pipeline step. It assembles the per-modality registered
 
 Compilation performs **no new spatial alignment or feature computation**. It is an assembly step that (a) validates that each modality's rows are aligned to the reference, (b) drops reference spots that are uncovered in any modality, (c) namespaces feature names to keep them collision-free, and (d) writes the combined object to disk.
 
+!!! abstract "Scientific background"
+    For how this stage fits the overall method, see
+    [Scientific Overview](../scientific/overview.md#stage-4-compilation). Annotation labels promoted
+    here are produced earlier by
+    [Spatial Annotation Transfer](../scientific/annotation_transfer.md).
+
 ---
 
 ## 2. When it runs
@@ -15,7 +21,7 @@ Compilation runs only when **both** of these are true:
 - `perform_registration` is `true`, **and**
 - the **reference modality is spot-based** (`msi` or `st`).
 
-If the reference is image-based, or registration is disabled, the stage never runs and no `.h5mu` is produced — the final outputs are the per-modality merged files from earlier stages (`merged/alignment/`, `merged/registration/`, `merged/annotations/`). When enabled, compilation is the last stage (stage 4, or stage 5 when annotation transfer is also enabled).
+If the reference is image-based, or registration is disabled, the stage never runs and no `.h5mu` is produced. The final outputs are then the per-modality merged files from earlier stages (`merged/alignment/`, `merged/registration/`, `merged/annotations/`). When enabled, compilation is the last stage (stage 4, or stage 5 when annotation transfer is also enabled).
 
 Even when the stage runs, it **skips writing the MuData** (logging the reason to `focus.log`) if any of the following hold:
 
@@ -24,7 +30,7 @@ Even when the stage runs, it **skips writing the MuData** (logging the reason to
 - every reference spot is dropped by the coverage filter.
 
 !!! note "This is not the same as 'at least one modality registered'"
-    The entry gate depends on `perform_registration` and the reference type, not on counting registered modalities. The requirement that ≥2 modalities survive is enforced *inside* the stage — a modality is excluded if its merged registration file is missing or its rows cannot be aligned to the reference.
+    The entry gate depends on `perform_registration` and the reference type, not on counting registered modalities. The requirement that ≥2 modalities survive is enforced *inside* the stage: a modality is excluded if its merged registration file is missing or its rows cannot be aligned to the reference.
 
 ---
 
@@ -40,7 +46,7 @@ Even when the stage runs, it **skips writing the MuData** (logging the reason to
 For a spot-based reference, compilation proceeds as follows:
 
 1. **Load the anchor** and capture the shared arrays: `obsm['spatial']` (cast to `float32`), `obs['sample_id']`, and `uns['spot_size']` (if present). The anchor's observation count `n_anchor_obs` defines the expected row count for every modality.
-2. **Add the anchor modality** to the modality set (its `obsm['spatial']` and `uns['spot_size']` are removed here — they become top-level, see [§5](#5-output-structure)).
+2. **Add the anchor modality** to the modality set (its `obsm['spatial']` and `uns['spot_size']` are removed here; they become top-level, see [§5](#5-output-structure)).
 3. **Validate and add each target modality** (iterated in config declaration order). A target is included only if **all** of these hold; otherwise it is **skipped with a warning**:
     - its merged registration file exists;
     - its `n_obs` equals `n_anchor_obs`;
@@ -49,8 +55,8 @@ For a spot-based reference, compilation proceeds as follows:
 
     The element-wise `sample_id` check is a safety guard: matching row counts alone is not enough, because the per-sample concatenation order during registration can diverge from the anchor's. Mis-paired rows would otherwise produce a MuData that cannot be read back.
 4. **Drop uncovered spots.** A reference spot is removed from **all** modalities if its feature vector is **all-zero in any target modality**. This is why the final MuData can have fewer observations than the reference spot grid. All-zero rows come from two sources:
-    - **spot interpolation** — no target spot fell within the reference spot's spatial footprint (the spot lies outside the target tissue section);
-    - **feature extraction** — the image patch at the spot was essentially pure background (≥99% background pixels).
+    - **spot interpolation**: no target spot fell within the reference spot's spatial footprint (the spot lies outside the target tissue section);
+    - **feature extraction**: the image patch at the spot was at least 99% background pixels.
 
     If this leaves zero spots, compilation is skipped.
 5. **Synchronize observation names** across modalities to the (possibly filtered) anchor's `obs_names`, so row _i_ is the same reference spot everywhere.
@@ -70,11 +76,11 @@ Output path:
 
 Layout:
 
-- **`mod['<modality>']`** — one `AnnData` per modality, ordered anchor-first then by config declaration order. Each carries its `X`, `var`, and `obs`. Note: per-modality AnnData do **not** carry `obsm['spatial']` or `uns['spot_size']` — those are stored once at the top level.
-- **`obs['sample_id']`** — shared sample identifiers.
-- **`obs['spatial_annotation']`** — shared region labels, present only when annotation transfer ran.
-- **`obsm['spatial']`** — shared spot coordinates in the reference frame, shape `(n_obs, 2)`, `float32`.
-- **`uns['spot_size']`** — copied verbatim from the anchor (a length-2 `float32` array), present only if the anchor had it.
+- **`mod['<modality>']`**: one `AnnData` per modality, ordered anchor-first then by config declaration order. Each carries its `X`, `var`, and `obs`. Per-modality AnnData do **not** carry `obsm['spatial']` or `uns['spot_size']`; those are stored once at the top level.
+- **`obs['sample_id']`**: shared sample identifiers.
+- **`obs['spatial_annotation']`**: shared region labels, present only when annotation transfer ran.
+- **`obsm['spatial']`**: shared spot coordinates in the reference frame, shape `(n_obs, 2)`, `float32`.
+- **`uns['spot_size']`**: copied verbatim from the anchor (a length-2 `float32` array), present only if the anchor had it.
 
 ### Feature names are namespaced
 
@@ -90,7 +96,7 @@ mdata.mod["msi"].var_names     # e.g. 'msi:0', 'msi:1', ...
 ## 6. Common surprises
 
 - **Fewer spots than the reference grid.** The coverage filter ([step 4](#4-algorithm)) removes spots uncovered in any modality. Check `focus.log` for `Removing N/M anchor spots with no coverage`.
-- **A modality is missing from `.mod`.** It failed row-alignment validation ([step 3](#4-algorithm)) — look for the corresponding warning in `focus.log` (missing file, observation-count mismatch, or sample-ID sequence mismatch).
+- **A modality is missing from `.mod`.** It failed row-alignment validation ([step 3](#4-algorithm)). Look for the corresponding warning in `focus.log` (missing file, observation-count mismatch, or sample-ID sequence mismatch).
 - **No `.h5mu` was written.** See [§2](#2-when-it-runs) for the skip conditions; the reason is logged.
 - **Feature lookups fail.** Use the namespaced names (`{modality}:{name}`), not the bare ones.
 

@@ -20,12 +20,12 @@ Running `focus` **without** `--config` starts the GUI instead (see the
 
 | Option | Short | Default | Description |
 |--------|-------|---------|-------------|
-| `--config PATH` | `-c` | — | Path to a JSON config file (relative or absolute). If omitted, the GUI starts. |
-| `--debug` | — | `false` | Enable DEBUG-level console output (including werkzeug HTTP request logs). |
-| `--help` | `-h` | — | Show the help message and exit. |
+| `--config PATH` | `-c` | - | Path to a JSON config file (relative or absolute). If omitted, the GUI starts. |
+| `--debug` | - | `false` | Enable DEBUG-level console output (including werkzeug HTTP request logs). |
+| `--help` | `-h` | - | Show the help message and exit. |
 
 There are no other flags. (In particular, there is no `--verbose` or `--version`
-option, and FOCUS reads no runtime environment variables — `TORCH_VERSION` is only
+option, and FOCUS reads no runtime environment variables. `TORCH_VERSION` is only
 used by the installer.)
 
 ```bash
@@ -106,7 +106,7 @@ top-level flags `perform_alignment` and `perform_registration` control how far i
 ## Caching and Re-running
 
 FOCUS caches stage outputs under `dataset_path`. Re-running the same config reuses
-completed work and skips straight to what is missing. To force a stage to recompute,
+completed work and skips to what is missing. To force a stage to recompute,
 set `force_recomputing: true` in that modality's `processing_settings` (or
 `alignment_force_recomputing` / the registration settings' `force_recomputing`):
 
@@ -183,14 +183,14 @@ except Exception as e:
     print(f"Configuration error: {e}")
 ```
 
-The pipeline can also be driven directly from Python via `focus.orchestrator.run` — see
+The pipeline can also be driven directly from Python via `focus.orchestrator.run`. See
 [Using FOCUS as a Python Library](../user_guide/cli_reference.md#using-focus-as-a-python-library)
 and the [API Reference](../api/index.md). The Python API is not yet stabilised; prefer
 the CLI or GUI for production use.
 
 ## Next Steps
 
-1. **Try the GUI** — see the [GUI Usage Guide](gui_usage.md).
-2. **Full CLI reference** — see the [CLI Reference](../user_guide/cli_reference.md).
-3. **Prepare your data** — see [Preparing Your Data](../user_guide/data_preparation.md).
-4. **Configuration** — see the [Configuration Reference](../configuration/config_fields.md).
+1. **Try the GUI**: see the [GUI Usage Guide](gui_usage.md).
+2. **Full CLI reference**: see the [CLI Reference](../user_guide/cli_reference.md).
+3. **Prepare your data**: see [Preparing Your Data](../user_guide/data_preparation.md).
+4. **Configuration**: see the [Configuration Reference](../configuration/config_fields.md).

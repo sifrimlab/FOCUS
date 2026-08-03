@@ -28,12 +28,12 @@ Your browser may open automatically. If it does not, navigate to [http://localho
 
 ## Stage 1: Setup
 
-The first screen asks where your data lives.
+The first screen asks for the location of your data.
 
-1. **Dataset path** — Use the filesystem browser in the GUI to navigate to your `dataset_path` directory (the folder that contains your sample subdirectories), or paste the absolute path directly into the text field.
-2. **Config** — Choose one of:
-    - **Create new config** — Start fresh. FOCUS will scan the directory and auto-discover sample IDs from the names of the first-level subdirectories.
-    - **Load existing config** — If a `focus_config.json` already exists in the directory (from a previous run or a manual edit), load it to resume or modify it.
+1. **Dataset path**: Use the filesystem browser in the GUI to navigate to your `dataset_path` directory (the folder that contains your sample subdirectories), or paste the absolute path directly into the text field.
+2. **Config**: Choose one of:
+    - **Create new config**: Start fresh. FOCUS scans the directory and auto-discovers sample IDs from the names of the first-level subdirectories.
+    - **Load existing config**: If a `focus_config.json` already exists in the directory (from a previous run or a manual edit), load it to resume or modify it.
 
 !!! tip "Auto-discovery of sample IDs"
     FOCUS infers sample identifiers from the names of the subdirectories directly under `dataset_path`. Review the list of discovered samples on this screen to confirm the directory structure is correct before proceeding.
@@ -48,8 +48,8 @@ The configuration stage is divided into panels. Work through them top to bottom.
 
 Add each modality that is present in your dataset:
 
-- **Name** — The modality identifier. Must exactly match the subdirectory names inside your sample folders (case-sensitive).
-- **Type** — Select from the dropdown: `microscopy_image`, `msi`, `raman`, or `st`.
+- **Name**: The modality identifier. Must exactly match the subdirectory names inside your sample folders (case-sensitive).
+- **Type**: Select from the dropdown: `microscopy_image`, `msi`, `raman`, or `st`.
 
 Add as many modalities as your dataset contains. Use the remove button to delete entries you added by mistake.
 
@@ -76,12 +76,12 @@ Key defaults to review:
 
 For each non-reference modality, select the alignment strategy:
 
-- **Manual** (default) — Interactive visual alignment via the alignment GUI. Requires the alignment GUI (see Stage 3 below).
-- **Pre-aligned** — Skip the alignment GUI for this modality; assume the reference modality's coordinates are already expressed in the target modality's coordinate frame.
+- **Manual** (default): Interactive visual alignment via the alignment GUI. Requires the alignment GUI (see Stage 3 below).
+- **Pre-aligned**: Skip the alignment GUI for this modality; assume the reference modality's coordinates are already expressed in the target modality's coordinate frame.
 
 !!! info "When to use Pre-aligned"
     **Pre-aligned is applicable when:**
-    - The reference modality is spot-based (`st` or `msi`) — this is the constraint FOCUS enforces
+    - The reference modality is spot-based (`st` or `msi`). This is the constraint FOCUS enforces
     - The reference spots' coordinates are **already expressed in the target modality's coordinate frame** (most commonly an image's pixel coordinates, e.g. `microscopy_image`)
     
     **Example:** Your reference is a spatial transcriptomics (ST) dataset with spot coordinates that are already in the pixel frame of an H&E microscopy image (not in micrometers). In this case, you can select `alignment_strategy: "pre_aligned"` for the H&E target, and FOCUS will skip the manual alignment step, using the existing coordinates directly for registration.
@@ -92,10 +92,10 @@ For each non-reference modality, select the alignment strategy:
 
 For each non-reference modality, select the registration type and fill in any additional settings:
 
-- **None** — Align only; exclude from the final MuData.
-- **Spot interpolation** — Gaussian-weighted spot interpolation (CPU). For `msi` and `st`.
-- **Raman pixel interpolation** — the same Gaussian footprint interpolation applied to the hyperspectral OME-TIFF pixels (CPU). For `raman`.
-- **Feature extraction** — Prov-GigaPath patch embeddings (GPU required). Only available for `microscopy_image`.
+- **None**: Align only; exclude from the final MuData.
+- **Spot interpolation**: Gaussian-weighted spot interpolation (CPU). For `msi` and `st`.
+- **Raman pixel interpolation**: the same Gaussian footprint interpolation applied to the hyperspectral OME-TIFF pixels (CPU). For `raman`.
+- **Feature extraction**: Prov-GigaPath patch embeddings (GPU required). Only available for `microscopy_image`, and only appropriate when that image is an H&E-stained brightfield RGB section, which is what the model was pretrained on. For fluorescence, IHC or other stains, pick **None** instead: the GUI offers Feature extraction for every microscopy modality and nothing downstream checks the stain.
 
 If any modality uses **Feature extraction**, a HuggingFace token field will appear at the top of the configuration panel.
 
@@ -103,8 +103,8 @@ If any modality uses **Feature extraction**, a HuggingFace token field will appe
 
 If your samples include GeoJSON annotation files, expand this panel and fill in:
 
-- **Annotation modality** — The `name` of the modality whose directory contains the `.geojson` files.
-- **File type** — Select `geojson`.
+- **Annotation modality**: The `name` of the modality whose directory contains the `.geojson` files.
+- **File type**: Select `geojson`.
 
 Leave this section collapsed if you do not have annotation files.
 
@@ -123,7 +123,7 @@ Click **Start Processing** to run FOCUS with the current configuration. A live l
 The pipeline advances automatically through:
 
 1. Preprocessing (all modalities, all samples)
-2. Alignment (pauses for user interaction — see below)
+2. Alignment (pauses for user interaction, see below)
 3. Registration (all non-reference modalities, all samples)
 4. Compilation (merge into `multimodal_dataset.h5mu`)
 
@@ -135,35 +135,37 @@ When the pipeline reaches the alignment stage, processing pauses and a banner ap
 
 **Step 1: Open the alignment GUI**
 
-Click the **Open Alignment Tool** button in the banner. This opens the alignment GUI in a new browser tab at `localhost:8000`. You do not need to manually navigate to this URL—the button opens it automatically. The button remains in the banner while alignment is in progress.
+Click the **Open Alignment Tool** button in the banner. This opens the alignment GUI in a new browser tab at `localhost:8000`. You do not need to manually navigate to this URL. The button opens it automatically. The button remains in the banner while alignment is in progress. The banner covers one non-reference modality at a time, and reappears for the next one.
 
 **Step 2: Perform alignment**
 
-The alignment GUI displays the reference and target modalities side by side in the left section, with transformation controls in the right panel.
+The alignment GUI draws both modalities overlaid in one viewport, with the control panel on the right. The reference modality is the layer on top and the one that moves; the target modality is fixed.
 
-**For each sample and each non-reference modality:**
+**For each sample of the modality being aligned:**
 
-1. **Switch to Alignment Control Mode**: Select "Alignment Control" from the center controls to enable transformation tools.
+1. **Stay in Aligner mode**: the **Aligner** button (selected at start) makes the pointer act on the reference layer. **Camera** switches the pointer to panning and zooming the view.
 
-2. **Move the Reference Modality**: The left panel shows the reference modality overlaid on the target modality (right panel, fixed). Use the transformation controls to align them:
-   - **Translate**: Click and drag the reference modality to move it across the target
-   - **Rotate**: Use the rotation control to rotate the reference around its centroid
-   - **Scale**: Scroll the mouse wheel to scale the reference relative to the target
-   - **Flip**: Mirror the reference horizontally or vertically
-   - **Corner distortion**: Drag an individual corner (the others stay fixed) to apply a free-form, perspective-style warp
+2. **Move the reference modality** with the pointer:
+   - **Translate**: drag inside the reference layer's frame
+   - **Rotate**: drag just outside a corner, and the layer turns about its centre
+   - **Scale**: the mouse wheel, which scales about the pointer
+   - **Warp**: drag a corner handle to move that corner alone, or an edge handle to move its two corners together
 
-3. **Fine-Tune the Alignment**:
-   - Use the Camera Control mode to zoom and pan for detailed inspection
-   - Show/hide spot clusters (for spot-based modalities) to verify correspondence
-   - Reset the alignment at any time to start over
+   The panel adds **Flip Horizontal** / **Flip Vertical**, and **Scale** and **Rotation °** steppers if you prefer numeric control.
 
-4. **Verify Coverage**: Ensure the alignment is accurate across the entire tissue area, not just in one region.
+3. **Fine-tune**:
+   - **Opacity** changes how strongly the reference layer covers the target
+   - **Spot Classes** shows or hides individual clusters, and **Foreground** restricts a spot layer to foreground or background spots. Each spot layer has its own set
+   - **View Zoom** inspects details without touching the transform
+   - **Reset Distortion** undoes corner and edge drags only; **Reset Transform** returns the layer to its starting position
 
-5. **Confirm**: Click **Confirm Alignment** in the right control panel to save the transform and advance to the next sample or modality.
+4. **Verify Coverage**: check the alignment across the entire tissue area, not just in one region.
+
+5. **Confirm**: click **Confirm Alignment** at the bottom of the panel to save the transform and load the next sample.
 
 **Step 3: Complete alignment**
 
-Once all samples and modalities have been submitted, a **green message** appears in the alignment tab indicating that alignment is complete. You can now close the alignment tab. The main GUI automatically resumes processing—no action is needed.
+Once the last sample of that modality is confirmed, the alignment tab shows a completion message and the pipeline resumes on its own. Closing the tab does not advance the pipeline. If the dataset has more than one non-reference modality, the banner reappears for the next one and **Open Alignment Tool** opens a fresh session at the same address.
 
 !!! tip "Getting accurate alignment"
     Use anatomically distinctive features as visual references: tissue edges, blood vessels, branching structures, distinctive cell clusters, or staining artefacts. Make adjustments distributed across the full tissue area rather than clustering them in one region. This distributed approach produces more accurate transforms than concentrated adjustments.

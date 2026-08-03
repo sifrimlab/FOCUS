@@ -6,7 +6,10 @@ export default defineConfig({
   base: "./",
   build: {
     outDir: "../../src/focus/GUI/main/",
-    assetsDir: ""
+    assetsDir: "",
+    // outDir sits outside this project root, so Vite will not empty it on its
+    // own. Force it: only the current build's content-hashed assets remain.
+    emptyOutDir: true
   },
   server: {
     proxy: {

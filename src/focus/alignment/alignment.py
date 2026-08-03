@@ -1,14 +1,16 @@
-import os, h5py, tifffile, threading, anndata
+import os, h5py, tifffile, threading, anndata, logging
 import numpy as np
 from PIL import Image
 from sklearn.decomposition import NMF
 
 from focus.constants import MODALITY_ALIGNMENT, MODALITY_ALIGNMENT_MERGED
-from focus.constants import ModalityType
+from focus.constants import ModalityType, IMAGE_MODALITY_TYPES, SPOT_MODALITY_TYPES
 from focus.utils import write_h5ad_compat, concat_on_disk_compat, read_merged_sample_ids, hw_from_axes
 
 from focus.GUI.direct_mapping_alignment import DirectMappingAlignmentGUI
 from focus.preprocessing._utils import _spatial_bin_assignment, _SPATIAL_CAP
+
+logger = logging.getLogger("focus.alignment")
 
 # Spot datasets larger than this are coarsened onto a spatial grid before display (large raw
 # payloads crash the browser's XHR JSON parser). _SPATIAL_CAP is shared with preprocessing
@@ -27,9 +29,9 @@ _CLUSTER_PALETTE = [
 
 _H5AD_COMPRESSION = "gzip"
 
-# Modality type groupings
-_IMAGE_MODALITIES = [ModalityType.MICROSCOPY_IMAGE, ModalityType.RAMAN]
-_SPOT_MODALITIES = [ModalityType.MSI, ModalityType.ST]
+# Modality type groupings (shared with the orchestrator and config validation)
+_IMAGE_MODALITIES = IMAGE_MODALITY_TYPES
+_SPOT_MODALITIES = SPOT_MODALITY_TYPES
 
 
 def _generate_cluster_colors(labels: np.ndarray) -> dict[str, str]:
@@ -181,6 +183,27 @@ class DirectMappingAligner:
 			dataset_size=len(self._common_samples),
 			dataset_completed_event=self._dataset_completed_event
 		)
+
+	# --- Output paths ---
+
+	def _aligned_output_path(self, sample_id: str) -> str:
+		"""Path of this pair's aligned artefact.
+
+		Single source of truth for the writers and for every cache check, so a lookup can
+		never disagree with what was written.
+
+		IMAGE reference + IMAGE target: the artefact is the fixed (class-internal
+		``reference_modality``, i.e. the pipeline's non-reference) image cropped to the
+		overlap, so it carries THAT modality's name.
+
+		SPOT reference: the artefact is the reference modality's own AnnData, which
+		accumulates one ``obsm['{target}_spatial']`` key per target, so it carries the
+		reference modality's name.
+		"""
+		if (self._reference_modality_type in _IMAGE_MODALITIES
+				and self._target_modality_type in _IMAGE_MODALITIES):
+			return MODALITY_ALIGNMENT(self._path, sample_id, self._reference_modality_name, "ome.tiff")
+		return MODALITY_ALIGNMENT(self._path, sample_id, self._target_modality_name, "h5ad")
 
 	# --- Data Loading ---
 
@@ -419,8 +442,7 @@ class DirectMappingAligner:
 			for sample_index, sample_id in enumerate(self._common_samples):
 				# Check cache (use h5py to avoid loading full AnnData)
 				if not force_recomputing:
-					file_ext = "ome.tiff" if is_target_image else "h5ad"
-					aligned_target_file = MODALITY_ALIGNMENT(self._path, sample_id, self._target_modality_name, file_ext)
+					aligned_target_file = self._aligned_output_path(sample_id)
 					if os.path.exists(aligned_target_file):
 						if is_target_image:
 							continue
@@ -468,8 +490,7 @@ class DirectMappingAligner:
 					self._aligned_coordinates[sample_id] = aligned_coordinates.copy()
 
 		except Exception as e:
-			import traceback
-			print(f"[Alignment] Thread error: {e}\n{traceback.format_exc()}", flush=True)
+			logger.error(f"Alignment thread error: {e}", exc_info=True)
 			self._gui_interface.set_error(str(e))
 		finally:
 			self._dataset_completed_event.set()
@@ -544,7 +565,12 @@ class DirectMappingAligner:
 	# --- Save Results ---
 
 	def _save_image_to_image(self, aligned_samples: dict) -> dict:
-		"""IMAGE → IMAGE: crop reference to aligned bounding box, save as OME-TIFF with compression."""
+		"""IMAGE → IMAGE: crop the fixed image to the aligned bounding box, save as OME-TIFF.
+
+		The bounding box comes from the moving layer's mapped corners, so the crop keeps the
+		region of the fixed image that the moving image covers. The output carries the fixed
+		modality's name (see ``_aligned_output_path``).
+		"""
 		for sample_id, aligned_coords in self._aligned_coordinates.items():
 			reference_file = self._reference_modality[sample_id]
 
@@ -560,7 +586,7 @@ class DirectMappingAligner:
 				max_x, max_y = min(w, max_x), min(h, max_y)
 
 				if min_x >= max_x or min_y >= max_y:
-					print(f"Invalid crop for sample {sample_id}")
+					logger.error(f"Invalid crop for sample {sample_id}: no overlap between the aligned layers.")
 					continue
 
 				slices = [slice(None)] * len(img_shape)
@@ -570,7 +596,7 @@ class DirectMappingAligner:
 
 			alignment_folder = os.path.join(self._path, sample_id, "alignment")
 			os.makedirs(alignment_folder, exist_ok=True)
-			aligned_file = MODALITY_ALIGNMENT(self._path, sample_id, self._target_modality_name, "ome.tiff")
+			aligned_file = self._aligned_output_path(sample_id)
 
 			tifffile.imwrite(aligned_file, crop_data, compression='zlib')
 			aligned_samples[sample_id] = aligned_file
@@ -588,7 +614,7 @@ class DirectMappingAligner:
 		for sample_id, aligned_coords in self._aligned_coordinates.items():
 			alignment_folder = os.path.join(self._path, sample_id, "alignment")
 			os.makedirs(alignment_folder, exist_ok=True)
-			aligned_file = MODALITY_ALIGNMENT(self._path, sample_id, self._target_modality_name, "h5ad")
+			aligned_file = self._aligned_output_path(sample_id)
 
 			# Load existing aligned file to preserve previously added obsm keys;
 			# fall back to the preprocessed target file on the first pass.
@@ -606,7 +632,7 @@ class DirectMappingAligner:
 		# Generate merged aligned dataset
 		aligned_files = []
 		for sample_id in self._common_samples:
-			aligned_file = MODALITY_ALIGNMENT(self._path, sample_id, self._target_modality_name, "h5ad")
+			aligned_file = self._aligned_output_path(sample_id)
 			if os.path.exists(aligned_file):
 				aligned_files.append(aligned_file)
 				aligned_samples[sample_id] = aligned_file
@@ -649,7 +675,7 @@ class DirectMappingAligner:
 
 			alignment_folder = os.path.join(self._path, sample_id, "alignment")
 			os.makedirs(alignment_folder, exist_ok=True)
-			aligned_file = MODALITY_ALIGNMENT(self._path, sample_id, self._target_modality_name, "h5ad")
+			aligned_file = self._aligned_output_path(sample_id)
 
 			# Check if this specific obsm key already exists (may have been set by a previous pass)
 			needs_write = force_recomputing
@@ -674,8 +700,9 @@ class DirectMappingAligner:
 		# Build merged dataset
 		aligned_files = []
 		for sample_id in self._common_samples:
-			aligned_file = MODALITY_ALIGNMENT(self._path, sample_id, self._target_modality_name, "h5ad")
-			aligned_files.append(aligned_file)
+			aligned_file = self._aligned_output_path(sample_id)
+			if os.path.exists(aligned_file):
+				aligned_files.append(aligned_file)
 			aligned_samples[sample_id] = aligned_file
 
 		merged_file = MODALITY_ALIGNMENT_MERGED(self._path, self._target_modality_name, "h5ad")
@@ -698,8 +725,7 @@ class DirectMappingAligner:
 		is_target_image = self._target_modality_type in _IMAGE_MODALITIES
 		obsm_key = f'{self._reference_modality_name}_spatial'
 		for sample_id in self._common_samples:
-			file_ext = "ome.tiff" if is_target_image else "h5ad"
-			aligned_target_file = MODALITY_ALIGNMENT(self._path, sample_id, self._target_modality_name, file_ext)
+			aligned_target_file = self._aligned_output_path(sample_id)
 			if not os.path.exists(aligned_target_file):
 				return True
 			if not is_target_image:
@@ -718,8 +744,7 @@ class DirectMappingAligner:
 		if os.path.exists(merged_file):
 			return False
 		for sample_id in self._common_samples:
-			aligned_file = MODALITY_ALIGNMENT(self._path, sample_id, self._target_modality_name, "h5ad")
-			if os.path.exists(aligned_file):
+			if os.path.exists(self._aligned_output_path(sample_id)):
 				return True
 		return False
 
@@ -730,10 +755,9 @@ class DirectMappingAligner:
 		"""
 		aligned_samples: dict[str, str] = {}
 		is_target_image = self._target_modality_type in _IMAGE_MODALITIES
-		file_ext = "ome.tiff" if is_target_image else "h5ad"
 		aligned_files = []
 		for sample_id in self._common_samples:
-			aligned_file = MODALITY_ALIGNMENT(self._path, sample_id, self._target_modality_name, file_ext)
+			aligned_file = self._aligned_output_path(sample_id)
 			if os.path.exists(aligned_file):
 				aligned_samples[sample_id] = aligned_file
 				if not is_target_image:
@@ -806,6 +830,11 @@ class DirectMappingAligner:
 			aligned_samples = self._save_spot_alignment(aligned_samples)
 
 		elif is_ref_spot and is_target_image:
-			print("Reference Spot and Target Image alignment is not implemented yet.")
+			# Unreachable through the CLI/GUI: config validation rejects an image-based
+			# reference paired with a spot-based modality before the pipeline starts.
+			logger.error(
+				f"Aligning image reference '{self._target_modality_name}' to spot modality "
+				f"'{self._reference_modality_name}' is not supported; no aligned output was written."
+			)
 
 		return aligned_samples

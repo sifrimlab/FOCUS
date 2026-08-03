@@ -7,7 +7,7 @@ anndata
 mudata
 scanpy
 scikit-learn
-scikit-image
+scikit-image>=0.26
 opencv-python
 Pillow
 tifffile

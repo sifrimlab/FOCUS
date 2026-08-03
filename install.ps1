@@ -1,9 +1,9 @@
 <#
 .SYNOPSIS
-    FOCUS installation script — Windows (PowerShell).
+    FOCUS installation script for Windows (PowerShell).
 
 .DESCRIPTION
-    PowerShell port of install.sh with full feature parity: detects the system
+    PowerShell port of install.sh with the same behaviour: detects the system
     CUDA version, installs a CUDA-matched PyTorch from the pytorch.org wheel
     index (so the bundled CUDA does not clash with PyPI nvidia-* packages),
     creates the main FOCUS conda environment, installs the FOCUS package, and
@@ -31,20 +31,18 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-# Constraints file used to pin torch + torchvision so that later pip installs
-# cannot silently overwrite them from PyPI. Set by Install-PytorchPackages.
+# Pins torch + torchvision so that later pip installs cannot replace them from
+# PyPI. Set by Install-PytorchPackages.
 $script:TorchConstraints = $null
 
-# ── Helper: coloured status messages ──────────────────────────────────────────
 function Write-Info ($msg) { Write-Host "[INFO]  $msg" -ForegroundColor Cyan   }
 function Write-Ok   ($msg) { Write-Host "[OK]    $msg" -ForegroundColor Green  }
 function Write-Warn ($msg) { Write-Host "[WARN]  $msg" -ForegroundColor Yellow }
 function Write-Err  ($msg) { Write-Host "[ERROR] $msg" -ForegroundColor Red    }
 
-# ── Resolve the directory this script lives in ────────────────────────────────
 $ScriptDir = $PSScriptRoot
 
-# ── 1. Verify conda is available ──────────────────────────────────────────────
+# 1. Verify conda is available
 if (-not (Get-Command conda -ErrorAction SilentlyContinue)) {
     Write-Err "conda not found in PATH."
     Write-Host ""
@@ -59,7 +57,6 @@ if (-not (Get-Command conda -ErrorAction SilentlyContinue)) {
 }
 Write-Ok "conda found: $((conda --version) 2>&1)"
 
-# ── Helper: check whether a named conda env exists ────────────────────────────
 function Test-CondaEnv ([string]$Name) {
     $envs = & conda env list 2>$null
     foreach ($line in $envs) {
@@ -71,18 +68,16 @@ function Test-CondaEnv ([string]$Name) {
     return $false
 }
 
-# ── 2. Detect system CUDA and resolve the right PyTorch wheel index ───────────
+# 2. Detect system CUDA and resolve the right PyTorch wheel index
 #
 # Same rationale as install.sh: `pip install torch` from default PyPI pulls
-# separate nvidia-cuda-*-cu12 packages that clash with a system-managed CUDA.
-# The pytorch.org wheel index bundles CUDA inside the wheel and creates no
-# separate nvidia-* pip packages, so it coexists safely with any system CUDA.
+# separate nvidia-cuda-*-cu12 packages that clash with a system-managed CUDA. The
+# pytorch.org wheel index bundles CUDA inside the wheel and creates no separate
+# nvidia-* pip packages, so it coexists with any system CUDA.
 #
-# Detection priority:
-#   1. nvcc --version                         (CUDA toolkit version, most accurate)
-#   2. $env:CUDA_PATH / $env:CUDA_HOME         (nvcc.exe, version.json, version.txt)
-#   3. nvidia-smi                             (driver's max supported CUDA version)
-#   4. none found                             (CPU-only wheel)
+# Detection order: nvcc (CUDA toolkit version, most accurate), $env:CUDA_PATH and
+# $env:CUDA_HOME (nvcc.exe, version.json, version.txt), nvidia-smi (driver's
+# maximum supported version). None found means the CPU-only wheel.
 function Get-CudaVersion {
     # 1. nvcc in PATH
     if (Get-Command nvcc -ErrorAction SilentlyContinue) {
@@ -90,7 +85,7 @@ function Get-CudaVersion {
         if ($out -match 'release (\d+\.\d+)') { return $Matches[1] }
     }
 
-    # 2. CUDA_PATH / CUDA_HOME (CUDA_PATH is the Windows installer convention)
+    # 2. CUDA_PATH / CUDA_HOME. CUDA_PATH is the Windows installer convention.
     foreach ($cudaDir in @($env:CUDA_PATH, $env:CUDA_HOME)) {
         if (-not $cudaDir) { continue }
 
@@ -116,7 +111,7 @@ function Get-CudaVersion {
         }
     }
 
-    # 3. nvidia-smi — driver's maximum supported CUDA version
+    # 3. nvidia-smi: the driver's maximum supported CUDA version
     if (Get-Command nvidia-smi -ErrorAction SilentlyContinue) {
         $out = (& nvidia-smi 2>$null | Out-String)
         if ($out -match 'CUDA Version:\s*(\d+\.\d+)') { return $Matches[1] }
@@ -125,9 +120,9 @@ function Get-CudaVersion {
     return ""
 }
 
-# Maps a CUDA version string (e.g. "12.4") to the closest PyTorch wheel index
-# that is <= that version. Keep in sync with install.sh resolve_torch_index
-# and https://download.pytorch.org/whl/.
+# Maps a CUDA version string such as "12.4" to the closest PyTorch wheel index
+# that is <= that version. Keep in sync with resolve_torch_index in install.sh
+# and with https://download.pytorch.org/whl/.
 function Resolve-TorchIndex ([string]$CudaVer) {
     if (-not $CudaVer) { return "https://download.pytorch.org/whl/cpu" }
 
@@ -146,7 +141,7 @@ function Resolve-TorchIndex ([string]$CudaVer) {
     } elseif ($major -eq 11 -and $minor -ge 8) {
         return "https://download.pytorch.org/whl/cu118"
     } else {
-        Write-Warn "CUDA $CudaVer predates PyTorch's oldest supported wheel — using CPU build."
+        Write-Warn "CUDA $CudaVer predates PyTorch's oldest supported wheel. Using the CPU build."
         return "https://download.pytorch.org/whl/cpu"
     }
 }
@@ -158,38 +153,38 @@ function Get-PipVersion ([string]$EnvName, [string]$Package) {
     return ""
 }
 
-# Install the PyTorch ecosystem (torch, torchvision, timm, huggingface-hub)
-# into a conda env using a CUDA-matched wheel index.
+# Installs torch, torchvision, timm and huggingface-hub into a conda env using a
+# CUDA-matched wheel index.
 #
-# IMPORTANT: none of these packages may appear in requirements.txt or in
-# pyproject.toml [project.dependencies]. A later `pip install -r` / `pip install
-# -e .` would otherwise resolve them against default PyPI and overwrite the
-# CUDA-matched wheels. A pip constraints file is used as an additional guard.
+# None of these packages may appear in requirements.txt or in pyproject.toml
+# [project.dependencies]. A later `pip install -r` or `pip install -e .` would
+# resolve them against default PyPI and overwrite the CUDA-matched wheels. The pip
+# constraints file below is an additional guard.
 function Install-PytorchPackages ([string]$EnvName) {
     $cudaVer    = Get-CudaVersion
     $torchIndex = Resolve-TorchIndex $cudaVer
 
     if (-not $cudaVer) {
-        Write-Info "No CUDA detected — installing CPU-only PyTorch."
+        Write-Info "No CUDA detected. Installing CPU-only PyTorch."
     } else {
-        Write-Info "Detected CUDA $cudaVer — using PyTorch wheel index: $torchIndex"
+        Write-Info "Detected CUDA $cudaVer. Using PyTorch wheel index: $torchIndex"
         Write-Info "These wheels bundle CUDA internally and do not install separate"
         Write-Info "nvidia-* pip packages, avoiding conflicts with the system CUDA."
     }
 
-    # Step 1: torch + torchvision from the pytorch.org wheel index.
-    # Both must come from the same index (torchvision is version-locked to torch).
+    # Step 1: torch + torchvision from the pytorch.org wheel index. Both must come
+    # from the same index, since torchvision is version-locked to torch.
     # $env:TORCH_VERSION pins torch when the latest does not work on this system.
     $torchSpec = "torch"
     if ($env:TORCH_VERSION) {
         $torchSpec = "torch==$($env:TORCH_VERSION)"
-        Write-Info "TORCH_VERSION is set — installing $torchSpec"
+        Write-Info "TORCH_VERSION is set. Installing $torchSpec"
     }
 
     & conda run --no-capture-output -n $EnvName pip install $torchSpec torchvision --index-url $torchIndex
     if ($LASTEXITCODE -ne 0) { Write-Err "Failed to install torch/torchvision from $torchIndex."; exit 1 }
 
-    # Step 2: verify torch actually imports on this system.
+    # Step 2: verify torch imports on this system.
     & conda run --no-capture-output -n $EnvName python -c "import torch" 2>$null
     if ($LASTEXITCODE -ne 0) {
         $badVer = Get-PipVersion $EnvName "torch"
@@ -204,9 +199,9 @@ function Install-PytorchPackages ([string]$EnvName) {
     }
     Write-Ok "torch $(Get-PipVersion $EnvName 'torch')"
 
-    # Step 3: constraints file pinning torch + torchvision to the exact versions
-    # just installed. Subsequent `pip install` calls use `-c $TorchConstraints`
-    # so pip cannot replace them via transitive dependencies (e.g. timm).
+    # Step 3: pin torch + torchvision to the versions just installed. Later
+    # `pip install` calls use `-c $TorchConstraints` so pip cannot replace them
+    # through transitive dependencies such as timm.
     $script:TorchConstraints = [System.IO.Path]::GetTempFileName()
     $torchVer = Get-PipVersion $EnvName "torch"
     $tvVer    = Get-PipVersion $EnvName "torchvision"
@@ -217,13 +212,12 @@ function Install-PytorchPackages ([string]$EnvName) {
     Write-Info "  torch==$torchVer"
     Write-Info "  torchvision==$tvVer"
 
-    # Step 4: timm and huggingface-hub from default PyPI, constrained so pip
-    # cannot pull a different torch/torchvision through timm's dependencies.
+    # Step 4: timm and huggingface-hub from default PyPI, constrained so pip cannot
+    # pull a different torch or torchvision through timm's dependencies.
     & conda run --no-capture-output -n $EnvName pip install timm huggingface-hub -c $script:TorchConstraints
     if ($LASTEXITCODE -ne 0) { Write-Err "Failed to install timm/huggingface-hub."; exit 1 }
 }
 
-# ── Helper: create (or skip) a conda env and install from requirements.txt ───
 function Setup-Env {
     param(
         [string]$EnvName,
@@ -233,7 +227,7 @@ function Setup-Env {
     )
 
     if ((Test-CondaEnv $EnvName) -and (-not $Reinstall)) {
-        Write-Warn "Conda environment '$EnvName' already exists — skipping creation."
+        Write-Warn "Conda environment '$EnvName' already exists. Skipping creation."
         Write-Warn "Run with -Reinstall to recreate it from scratch."
         return
     }
@@ -260,16 +254,15 @@ function Setup-Env {
         }
         if ($LASTEXITCODE -ne 0) { Write-Err "pip install failed for '$EnvName'."; exit 1 }
     } else {
-        Write-Warn "No requirements.txt found at $ReqFile — skipping dependency install."
+        Write-Warn "No requirements.txt found at $ReqFile. Skipping dependency install."
     }
 }
 
-# ── 3. Main FOCUS environment ─────────────────────────────────────────────────
+# 3. Main FOCUS environment
 Write-Info "Setting up main FOCUS environment..."
 Setup-Env -EnvName "FOCUS" -ReqFile (Join-Path $ScriptDir "requirements.txt") -PythonVer "3.11" -InstallTorch $true
 
-# Install the FOCUS package itself as an editable install so that the 'focus'
-# console script entry point is registered.
+# Editable install, so the 'focus' console script entry point is registered.
 Write-Info "Installing FOCUS package into 'FOCUS' environment..."
 if ($script:TorchConstraints) {
     & conda run --no-capture-output -n FOCUS pip install -e $ScriptDir -c $script:TorchConstraints
@@ -279,7 +272,7 @@ if ($script:TorchConstraints) {
 if ($LASTEXITCODE -ne 0) { Write-Err "FOCUS package install failed."; exit 1 }
 Write-Ok "FOCUS package installed. You can now run 'focus [--config ...]' after activating the FOCUS env."
 
-# ── 4. Optional tool environments (tools\<Name>\) ─────────────────────────────
+# 4. Optional tool environments (tools\<Name>\)
 $toolsDir = Join-Path $ScriptDir "tools"
 if (Test-Path $toolsDir) {
     Get-ChildItem -Path $toolsDir -Directory | ForEach-Object {
@@ -290,7 +283,7 @@ if (Test-Path $toolsDir) {
         Write-Info "Setting up tool environment '$envName'..."
         Setup-Env -EnvName $envName -ReqFile $reqFile -PythonVer "3.11" -InstallTorch $false
 
-        # Install OpenJDK for Java-dependent tools (e.g. ASHLAR)
+        # OpenJDK is required by Java-dependent tools such as ASHLAR.
         if (Test-CondaEnv $envName) {
             Write-Info "Ensuring OpenJDK is present in '$envName'..."
             & conda install -y -n $envName -c conda-forge openjdk 2>$null
@@ -300,15 +293,13 @@ if (Test-Path $toolsDir) {
         }
     }
 } else {
-    Write-Info "No 'tools\' directory found — skipping tool environments."
+    Write-Info "No 'tools\' directory found. Skipping tool environments."
 }
 
-# ── Cleanup ───────────────────────────────────────────────────────────────────
 if ($script:TorchConstraints -and (Test-Path $script:TorchConstraints)) {
     Remove-Item -Force $script:TorchConstraints
 }
 
-# ── Done ──────────────────────────────────────────────────────────────────────
 Write-Host ""
 Write-Ok "All environments are ready."
 Write-Host ""

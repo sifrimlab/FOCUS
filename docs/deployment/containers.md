@@ -1,6 +1,6 @@
 # Container Deployment (Docker / Podman / Singularity)
 
-FOCUS ships a `Dockerfile`, a Singularity/Apptainer definition file (`focus.def`), and launcher scripts (`focus-container.sh` for macOS/Linux/WSL2, `focus-container.ps1` for Windows PowerShell). The key design principle is **same-path mounting**: the directory you choose to mount is mapped to the *identical absolute path* inside the container, so every path in your `focus_config.json` remains valid without any translation.
+FOCUS ships a `Dockerfile`, a Singularity/Apptainer definition file (`focus.def`), and launcher scripts (`focus-container.sh` for macOS/Linux/WSL2, `focus-container.ps1` for Windows PowerShell). FOCUS uses **same-path mounting**: the directory you choose to mount is mapped to the *identical absolute path* inside the container, so every path in your `focus_config.json` remains valid without translation.
 
 ---
 
@@ -26,10 +26,10 @@ FOCUS ships a `Dockerfile`, a Singularity/Apptainer definition file (`focus.def`
     podman build -t focus .
     ```
 
-    The image is based on `python:3.11-slim`, installs system libraries (`libgl1`, `libglib2.0-0`, `libgomp1`, `libsm6`, `libxext6`) for OpenCV and OpenMP, then installs the FOCUS Python dependencies, **the PyTorch ecosystem (torch, torchvision, timm, huggingface-hub)**, and the `focus` package itself. PyTorch is installed from the wheel index given by the `TORCH_INDEX` build arg, which defaults to the CPU index — so `feature_extraction` works out of the box on CPU.
+    The image is based on `python:3.11-slim`, installs system libraries (`libgl1`, `libglib2.0-0`, `libgomp1`, `libsm6`, `libxext6`) for OpenCV and OpenMP, then installs the FOCUS Python dependencies, **the PyTorch ecosystem (torch, torchvision, timm, huggingface-hub)**, and the `focus` package itself. PyTorch is installed from the wheel index given by the `TORCH_INDEX` build arg, which defaults to the CPU index, so `feature_extraction` works out of the box on CPU.
 
     !!! note "GPU (CUDA) images"
-        The PyTorch wheels at `download.pytorch.org` bundle the CUDA runtime inside the wheel, so a CUDA build runs on the same `python:3.11-slim` base — no CUDA base image needed. Pass the `TORCH_INDEX` build arg matching your target CUDA:
+        The PyTorch wheels at `download.pytorch.org` bundle the CUDA runtime inside the wheel, so a CUDA build runs on the same `python:3.11-slim` base. No CUDA base image is needed. Pass the `TORCH_INDEX` build arg matching your target CUDA:
 
         ```bash
         # CUDA 12.8+ (other indices: cu126, cu124, cu121, cu118)
@@ -42,7 +42,7 @@ FOCUS ships a `Dockerfile`, a Singularity/Apptainer definition file (`focus.def`
 
 === "Singularity / Apptainer"
 
-    Build from `focus.def` — no Docker daemon required; the definition bootstraps directly from `python:3.11-slim`:
+    Build from `focus.def`. No Docker daemon is required, and the definition bootstraps directly from `python:3.11-slim`:
 
     ```bash
     singularity build focus.sif focus.def
@@ -118,7 +118,7 @@ bash focus-container.sh --mount /path/to/your/data -- --config /path/to/your/dat
 bash focus-container.sh --gpu --mount /data/mylab -- --config /data/mylab/project/focus_config.json
 ```
 
-This passes `--gpus all` to Docker/Podman or `--nv` to Singularity/Apptainer at run time. **The image must contain a CUDA PyTorch build** for the GPU to be used — build it with `--gpu` as well (see *Build and run in one step* below), or via the `TORCH_INDEX` build arg.
+This passes `--gpus all` to Docker/Podman or `--nv` to Singularity/Apptainer at run time. **The image must contain a CUDA PyTorch build** for the GPU to be used. Build it with `--gpu` as well (see *Build and run in one step* below), or via the `TORCH_INDEX` build arg.
 
 **Mount multiple directories:**
 
@@ -142,7 +142,7 @@ Override the baked PyTorch wheel index explicitly with the `TORCH_INDEX` environ
 
 ## Running on Windows
 
-Use `focus-container.ps1` from a **PowerShell prompt**. Docker Desktop or Podman Desktop must be installed and running. Singularity/Apptainer is not natively supported on Windows — use [WSL2](https://learn.microsoft.com/en-us/windows/wsl/install) and run `focus-container.sh` from within the WSL2 terminal.
+Use `focus-container.ps1` from a **PowerShell prompt**. Docker Desktop or Podman Desktop must be installed and running. Singularity/Apptainer is not natively supported on Windows. Use [WSL2](https://learn.microsoft.com/en-us/windows/wsl/install) and run `focus-container.sh` from within the WSL2 terminal.
 
 Windows paths are automatically converted to the Unix-style paths that Docker/Podman use internally (`C:\data\mylab` → `/c/data/mylab`), preserving the directory tree so paths in your config file remain consistent.
 
@@ -191,7 +191,7 @@ If the alignment stage is reached, the alignment tool is served at port `8000`. 
 
 === "Singularity"
 
-    Singularity does not perform port mapping — the container inherits the host network namespace, so ports are accessible on the host directly without `-p` flags.
+    Singularity does not perform port mapping. The container inherits the host network namespace, so ports are accessible on the host directly without `-p` flags.
 
 ---
 

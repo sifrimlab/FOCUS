@@ -1,5 +1,5 @@
 site_name: FOCUS Documentation
-site_description: End-to-end preprocessing, alignment, and registration pipeline for spatial multiomics datasets
+site_description: 'FOCUS: End-to-end preprocessing, alignment, and registration pipeline'
 site_author: Lorenzo Venturelli
 repo_url: https://github.com/sifrimlab/FOCUS
 repo_name: sifrimlab/FOCUS
