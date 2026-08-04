@@ -29,6 +29,7 @@ No programming is required to use FOCUS. The entire pipeline is driven by a JSON
   - [Windows (Docker Desktop · Podman Desktop)](#windows-docker-desktop--podman-desktop)
   - [HPC / Headless Servers (Singularity · Apptainer)](#hpc--headless-servers-singularity--apptainer)
 - [Platform Compatibility](#platform-compatibility)
+- [Authors](#authors)
 - [License](#license)
 
 ---
@@ -447,9 +448,9 @@ See the [HPC & Headless Servers](docs/deployment/hpc.md) guide for the full brea
 
 ## Authors
 
-This framework has been developed in the context of the academic research conducted at the [`Laboratory of Multi-Omic Integrative Bioinformatics (LMIB)`](https://sifrimlab.org) with the key contributions of:
-- [`Lorenzo Venturelli`](https://www.kuleuven.be/wieiswie/en/person/00172804)
-- [`Jelle Jacobs`](https://www.kuleuven.be/wieiswie/en/person/00092825)
+This framework has been developed in the context of the academic research conducted at the [Laboratory of Multi-Omic Integrative Bioinformatics (LMIB)](https://sifrimlab.org) with the key contributions of:
+- [Lorenzo Venturelli](https://www.kuleuven.be/wieiswie/en/person/00172804)
+- [Jelle Jacobs](https://www.kuleuven.be/wieiswie/en/person/00092825)
 
 ---
 
