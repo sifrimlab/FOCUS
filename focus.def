@@ -33,17 +33,26 @@ From: python:3.11-slim
 
 %labels
     Author  Lorenzo Venturelli
-    Version 0.1.0
+    Version 1.0.0
     Description FOCUS: End-to-end preprocessing, alignment, and registration pipeline
 
 %environment
     export PATH=/opt/focus-env/bin:$PATH
     export PYTHONPATH=/opt/focus/src:$PYTHONPATH
 
+# gui_src is not built here: focus/GUI already holds the compiled Vue bundles.
+# It ships because the image redistributes those minified bundles, and under GNU
+# GPL v3 section 1 their Corresponding Source is the Vue/TypeScript source plus
+# build config. The upstream repository is private, so the section 6(d) "public
+# network server" route is unavailable and the source has to travel inside the
+# image. (Comments are kept out of %files itself: some Singularity versions
+# parse that section line by line and choke on them.)
 %files
-    requirements.txt  /opt/focus/requirements.txt
-    pyproject.toml    /opt/focus/pyproject.toml
-    src               /opt/focus/src
+    requirements.txt         /opt/focus/requirements.txt
+    pyproject.toml           /opt/focus/pyproject.toml
+    LICENSE                  /opt/focus/LICENSE
+    src                      /opt/focus/src
+    gui_src                  /opt/focus/gui_src
 
 %post
     # System dependencies

@@ -65,9 +65,19 @@ RUN pip install --no-cache-dir torch torchvision --index-url "${TORCH_INDEX}" \
  && python -c "import torch, torchvision, timm; print('torch', torch.__version__)"
 
 # Install the FOCUS package
-# Copy only the package source and build metadata (not gui_src, notebooks, etc.)
+# src/ and the build metadata are what get installed. gui_src/ is copied too,
+# but is NOT built here: focus/GUI already contains the compiled bundles. It is
+# present because the image redistributes those minified bundles, and under GNU
+# GPL v3 section 1 their Corresponding Source is the Vue/TypeScript source plus
+# build config. Shipping it in the image discharges that duty directly, which
+# matters because the upstream repository is private and so the section 6(d)
+# "public network server" route is unavailable.
+# .dockerignore already keeps node_modules/, dist/, .vite/ and *.tsbuildinfo
+# out of the build context, so this stays small.
 COPY pyproject.toml .
+COPY LICENSE .
 COPY src/ src/
+COPY gui_src/ gui_src/
 
 RUN pip install --no-cache-dir -e .
 

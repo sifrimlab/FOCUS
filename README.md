@@ -29,6 +29,7 @@ No programming is required to use FOCUS. The entire pipeline is driven by a JSON
   - [Windows (Docker Desktop · Podman Desktop)](#windows-docker-desktop--podman-desktop)
   - [HPC / Headless Servers (Singularity · Apptainer)](#hpc--headless-servers-singularity--apptainer)
 - [Platform Compatibility](#platform-compatibility)
+- [License](#license)
 
 ---
 
@@ -441,3 +442,28 @@ See the [HPC & Headless Servers](docs/deployment/hpc.md) guide for the full brea
 | GPU acceleration (feature extraction) | ✓ | - | ✓ | ✓ |
 
 > GPU acceleration via CUDA is not available on macOS (Apple Silicon uses MPS, which is not currently supported). All pipeline stages that do not use `feature_extraction` registration run fully on CPU and are supported on all platforms.
+
+---
+
+## License
+
+Copyright © 2025-2026 KU Leuven.
+
+FOCUS is distributed under the **GNU General Public License version 3 or later**, with additional terms under section 7 of that License. The full text is in [`LICENSE`](LICENSE).
+
+The GPL is required by FOCUS's dependencies: `leidenalg`, `cvxopt`, and `readlif` are GPLv3, and `igraph` is GPLv2 or later. Because these are hard runtime requirements, FOCUS cannot be distributed under a permissive or a non-commercial license.
+
+The section 7 additional terms require, in summary:
+
+- **Attribution.** The KU Leuven copyright notice, the identification of KU Leuven as source and copyright holder, and this license file must be preserved in all copies and modified versions.
+- **Marking of modified versions.** Modified versions must be renamed or re-versioned so they are not confused with the version distributed by KU Leuven, and must carry notices of what changed and when.
+- **Names and trademarks.** The "KU Leuven" and "FOCUS" names may not be used for publicity or endorsement, and no trademark rights are granted.
+- **No warranty and no support obligation**, supplementing sections 15 and 16 of the GPL.
+
+Intellectual property rights in FOCUS are retained by KU Leuven. The license grants the rights in the GPL version 3 and nothing beyond them.
+
+The compiled Vue interfaces in `focus/GUI` are minified build output. Their Corresponding Source is the Vue and TypeScript source in [`gui_src/`](gui_src), which ships in the FOCUS source distribution and inside container images at `/opt/focus/gui_src`.
+
+Enquiries about alternative licensing terms, trademark permission, or any use not covered by the GPL should be addressed to <lrd.ip@kuleuven.be>.
+
+If you use FOCUS in academic work, please cite it and acknowledge KU Leuven as the source.

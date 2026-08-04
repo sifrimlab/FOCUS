@@ -1,0 +1,30 @@
+# Source distribution contents.
+#
+# focus/GUI ships the *compiled* Vue bundles as package data (see
+# [tool.setuptools.package-data] in pyproject.toml). Under GNU GPL v3 section 1
+# the Corresponding Source for a minified bundle is the Vue/TypeScript source
+# plus the build configuration, so gui_src must travel with the release. It
+# lives outside src/, so setuptools would otherwise leave it out of the sdist
+# entirely and the release would ship object code with no source.
+#
+# gui_src goes in the SDIST ONLY, not the wheel: the sdist accompanying the
+# wheel in the same release satisfies section 6, and Vue sources in every
+# install would be dead weight.
+graft gui_src
+
+# Build intermediates: never shippable, and node_modules would dwarf the rest.
+prune gui_src/*/node_modules
+prune gui_src/*/dist
+prune gui_src/*/.vite
+prune gui_src/*/.vscode
+prune gui_src/*/.idea
+
+# Licensing and attribution files required by the GPL and by the permissive
+# licences of the bundled dependencies.
+include LICENSE
+include CONTRIBUTING.md
+include README.md
+include requirements.txt
+
+global-exclude .DS_Store *.tsbuildinfo *.py[cod]
+global-exclude __pycache__/*

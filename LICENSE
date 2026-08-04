@@ -1,21 +1,151 @@
-MIT License
+                                    FOCUS
+          End-to-end preprocessing, alignment, and registration pipeline
+                       for spatial multiomics and microscopy
 
-Copyright (c) 2026 Lorenzo Venturelli
+                       Copyright (C) 2025-2026 KU Leuven
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
 
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
+This program is free software: you can redistribute it and/or modify it under
+the terms of the GNU General Public License as published by the Free Software
+Foundation, either version 3 of the License, or (at your option) any later
+version, together with the additional terms set out below under section 7 of
+that License.
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+This program is distributed in the hope that it will be useful, but WITHOUT ANY
+WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A
+PARTICULAR PURPOSE. See the GNU General Public License for more details.
+
+Intellectual property rights in this program are retained by KU Leuven. No
+rights are conveyed beyond those granted by the GNU General Public License
+version 3 and the additional terms below.
+
+The Corresponding Source for the compiled graphical user interface distributed
+in focus/GUI is the Vue and TypeScript source in the gui_src directory of the
+FOCUS source distribution.
+
+Enquiries concerning alternative licensing terms, permission to use the KU
+Leuven or FOCUS names or trademarks, or any use not covered by the GNU General
+Public License version 3, should be addressed to lrd.ip@kuleuven.be.
+
+
+===============================================================================
+     ADDITIONAL TERMS PURSUANT TO SECTION 7 OF THE GNU GENERAL PUBLIC LICENSE
+                                   VERSION 3
+===============================================================================
+
+The following additional terms apply to the material in this program whose
+copyright is held by KU Leuven. They are supplemental terms permitted by
+section 7 of the GNU General Public License version 3. They do not modify,
+limit, or otherwise restrict the rights granted by that License, and in
+particular they do not restrict the freedom to run this program for any
+purpose, to study or modify it, or to redistribute it or modified versions of
+it, whether commercially or non-commercially.
+
+If any term in this section is held to be a further restriction within the
+meaning of section 7 of the GNU General Public License version 3, that term may
+be removed as provided in that section, and the remaining terms in this section
+continue to apply.
+
+Where this section and the GNU General Public License version 3 conflict, the
+GNU General Public License version 3 prevails.
+
+
+1. PRESERVATION OF AUTHOR ATTRIBUTIONS (section 7(b))
+
+   Pursuant to section 7(b) of the GNU General Public License version 3, you
+   must preserve, and may not remove, obscure, or alter, the following in all
+   copies of this program and in all modified versions of it that you convey:
+
+     (a) the copyright notice "Copyright (C) 2025-2026 KU Leuven";
+
+     (b) the identification of KU Leuven as the source and copyright holder of
+         this program;
+
+     (c) this LICENSE file in its entirety, including these additional terms;
+         and
+
+     (d) the author and contributor attributions contained in the source files
+         and in the package metadata of this program.
+
+   Where a work based on this program displays Appropriate Legal Notices, as
+   that term is defined in the GNU General Public License version 3, those
+   notices must include the copyright notice in (a) and the identification in
+   (b).
+
+
+2. MARKING OF MODIFIED VERSIONS (section 7(c))
+
+   Pursuant to section 7(c) of the GNU General Public License version 3:
+
+     (a) you may not misrepresent the origin of this program or of any material
+         in it; and
+
+     (b) if you modify this program and convey the modified version, you must
+         mark it in a reasonable manner as different from the original,
+         including by changing its version identifier or product name so that
+         it is not confused with the version distributed by KU Leuven, and you
+         must carry prominent notices stating that you changed it and giving
+         the date of any change, as required by section 5(a) of that License.
+
+
+3. NO USE OF NAMES FOR PUBLICITY (section 7(d))
+
+   Pursuant to section 7(d) of the GNU General Public License version 3, you
+   may not use the names "KU Leuven", "Katholieke Universiteit Leuven", or
+   "FOCUS", or the names of the authors or contributors of this program, for
+   publicity, advertising, endorsement, or promotional purposes in connection
+   with any product, service, view, or publication, without prior written
+   permission from KU Leuven.
+
+   No endorsement by KU Leuven of any user's views, products, or services is
+   implied by this License, by these additional terms, or by any use of this
+   program.
+
+
+4. NO TRADEMARK RIGHTS GRANTED (section 7(e))
+
+   Pursuant to section 7(e) of the GNU General Public License version 3, no
+   rights are granted under trademark law to use the trade names, trademarks,
+   service marks, or logos of KU Leuven, including the names "KU Leuven",
+   "Katholieke Universiteit Leuven", and "FOCUS", except for reasonable and
+   customary use in describing the origin of the material and for reproducing
+   the content of the notices required by section 1 of these additional terms.
+
+
+5. WARRANTY, SUPPORT, AND LIABILITY (section 7(a))
+
+   Pursuant to section 7(a) of the GNU General Public License version 3, and
+   supplementing sections 15 and 16 of that License:
+
+     (a) This program is provided "AS IS" by KU Leuven, without warranty of any
+         kind, whether express or implied. KU Leuven specifically disclaims any
+         implied warranties of merchantability and fitness for a particular
+         purpose, and does not warrant that use of this program will not
+         infringe any patent, copyright, trademark, or other right of any third
+         party. You use this program entirely at your own risk.
+
+     (b) Nothing in this License or in these additional terms obliges KU Leuven
+         to provide technical support, telephone assistance, maintenance,
+         debugging, consultation, end-user support, enhancements, or updates of
+         any kind.
+
+
+6. INDEMNIFICATION (section 7(f))
+
+   Pursuant to section 7(f) of the GNU General Public License version 3, if you
+   convey this program, or a modified version of it, with a contractual
+   assumption of liability to the recipient, you must indemnify KU Leuven and
+   the authors and contributors of this program for any liability that such
+   contractual assumption directly imposes on them.
+
+
+===============================================================================
+                            THIRD-PARTY COMPONENTS
+===============================================================================
+
+This program depends on, and in some distribution formats redistributes,
+third-party components licensed by their respective copyright holders. Each such
+component is governed by its own licence, which is distributed with that
+component. Nothing in this LICENSE alters those terms.
+
+

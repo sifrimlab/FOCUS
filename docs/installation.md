@@ -263,4 +263,7 @@ See the [Troubleshooting Guide](troubleshooting.md) for more.
 3. **Prepare your data**: see [Preparing Your Data](user_guide/data_preparation.md).
 4. **Learn configuration**: read [Config Structure](configuration/config_structure.md).
 
-FOCUS is released under the MIT License.
+FOCUS is distributed under the GNU General Public License version 3 or later,
+with additional terms under section 7 of that License covering attribution,
+marking of modified versions, names and trademarks, and warranty. Copyright ©
+2025-2026 KU Leuven. See `LICENSE` for the full text.

@@ -1,13 +1,19 @@
 [build-system]
-requires = ["setuptools>=64", "wheel"]
+requires = ["setuptools>=77", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "FOCUS"
-version = "0.1.0"
+version = "1.0.0"
 description = "FOCUS: End-to-end preprocessing, alignment, and registration pipeline"
 readme = "README.md"
-license = {text = "MIT"}
+# PEP 639 SPDX expression (needs setuptools >= 77, hence the build-system pin
+# above). GPL-3.0-or-later is forced by the dependency closure: leidenalg and
+# cvxopt are GPL-3.0-or-later, readlif is GPL-3.0, igraph is GPL-2.0-or-later.
+# Do not add a "License ::" classifier alongside this: PEP 639 forbids mixing
+# the two.
+license = "GPL-3.0-or-later"
+license-files = ["LICENSE"]
 authors = [
     {name = "Lorenzo Venturelli", email = "venturelli.lorenzo@proton.me"}
 ]
