@@ -4,7 +4,8 @@ FOCUS is an end-to-end preprocessing, alignment, and registration pipeline for *
 
 No programming is required to use FOCUS. The entire pipeline is driven by a JSON configuration file that can be built interactively through a web-based GUI.
 
-📖 **Full documentation: [sifrimlab.github.io/FOCUS](https://sifrimlab.github.io/FOCUS/)** (installation, user guide, per-modality docs, scientific methods, and deployment guides).
+**FOCUS pre-print paper** available on [bioRxiv](https://doi.org/10.64898/2026.08.04.742705)
+**Full documentation** available [here](https://sifrimlab.org/FOCUS/)
 
 ---
 
