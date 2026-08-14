@@ -91,7 +91,7 @@ onMounted(async () => {
 
       <!-- Documentation / Wiki -->
       <a
-        href="https://github.com/sifrimlab/FOCUS"
+        href="https://sifrimlab.org/FOCUS/"
         target="_blank"
         rel="noopener noreferrer"
         title="Documentation"
@@ -104,7 +104,7 @@ onMounted(async () => {
 
       <!-- Scientific paper -->
       <a
-        href="https://github.com/sifrimlab/FOCUS"
+        href="https://doi.org/10.64898/2026.08.04.742705"
         target="_blank"
         rel="noopener noreferrer"
         title="Scientific paper"
