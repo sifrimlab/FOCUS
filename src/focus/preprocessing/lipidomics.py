@@ -15,7 +15,8 @@ from joblib import Parallel, delayed
 from functools import partial
 import scanpy as sc
 import gc
-from scipy.ndimage import binary_fill_holes, binary_opening
+from scipy.ndimage import binary_fill_holes, binary_opening, median_filter, label as label_components
+from scipy.stats import norm as normal_distribution
 
 import focus.utils as utils
 from focus.constants import ImzMLFileParser, MsiIntensityNormalization, MsiSampleType, MsiMetadata, MsiIonMode, MsiPreprocessingParams
@@ -217,6 +218,25 @@ def interpolate_single(original_mz, original_intensity, reference_mz, mass_toler
 
 
 class MsiSample(BaseSample):
+
+	# Microgrid background detection (see _detect_microgrid_spots).
+	# Fraction of spots an ion must occur in to be treated as background (matrix, standards, coating).
+	_MICROGRID_BACKGROUND_OCCUPANCY = 0.5
+	# Side, in spots, of the median window that models the local background. Cells must cover less than
+	# half of it for the median to follow the background only.
+	_MICROGRID_BACKGROUND_WINDOW = 9
+	# Minimum robust z-score of a seed spot. Raised automatically on large slides (see _MICROGRID_SEED_ALPHA).
+	_MICROGRID_SEED_Z = 4.0
+	# Expected number of pure-noise seeds per slide; sets the multiple-testing seed threshold.
+	_MICROGRID_SEED_ALPHA = 0.01
+	# Robust z-score a spot needs to join a seed's connected component.
+	_MICROGRID_GROW_Z = 2.0
+	# Components above this size are reported as suspect (debris, matrix crystals) but kept.
+	_MICROGRID_MAX_COMPONENT_SPOTS = 25
+	# Fallback ppm tolerance for the background ion grid when no mass tolerance is given.
+	_MICROGRID_DEFAULT_TOLERANCE_PPM = 10
+	# Spectra concatenated per vectorised block.
+	_MICROGRID_BLOCK_SPECTRA = 20_000
 
 	def __init__(
 			self,
@@ -998,9 +1018,9 @@ class MsiSample(BaseSample):
 					   (e.g. 95 % tissue / 5 % background) where Otsu splits the dominant
 					   tissue mode instead of separating it from background. Morphological
 					   cleanup (hole filling + opening) is applied afterwards.
-		  "microgrid" -- isolated single cells in a grid pattern. Spatial cleanup is
-					   disabled (it would fill gaps and erase real cells). Otsu is used with
-					   a 25th-percentile floor to avoid discarding weak single-cell signals.
+		  "microgrid" -- isolated single cells on a mostly empty slide. Delegated to
+					   _detect_microgrid_spots, which models the background explicitly and
+					   detects cells as sparse local outliers.
 
 		Returns
 		-------
@@ -1012,6 +1032,15 @@ class MsiSample(BaseSample):
 			raise ValueError("intensity_vectors must have same length as mz_vectors")
 		if n_spots == 0:
 			return []
+
+		if self._sample_type == MsiSampleType.MICROGRID:
+			return self._detect_microgrid_spots(
+				mz_vectors=mz_vectors,
+				intensity_vectors=intensity_vectors,
+				ion_mode=ion_mode,
+				database=database,
+				mass_tolerance=mass_tolerance,
+			)
 
 		# ------------------------------------------------------------------
 		# 1. Per-spot spectral complexity features
@@ -1078,81 +1107,46 @@ class MsiSample(BaseSample):
 		score /= len(features)
 
 		# ------------------------------------------------------------------
-		# 4. Threshold: Otsu (microgrid) or GMM + BIC model selection (tissue)
+		# 4. Threshold: GMM + BIC model selection
 		# ------------------------------------------------------------------
 		valid_scores = score[valid]
 		lo, hi = valid_scores.min(), valid_scores.max()
 
 		tissue_mask = np.zeros(n_spots, dtype=bool)
 
-		if self._sample_type == MsiSampleType.MICROGRID:
-			# Microgrid: mostly background with isolated single cells.  Otsu with a
-			# 25th-percentile floor ensures at most 75 % of spots are discarded,
-			# protecting weak single-cell signals.
-			if hi - lo < 1e-12:
-				print(f"Tissue detection (microgrid): unimodal score distribution -- treating all {n_spots} spots as foreground.")
-				return np.where(valid)[0].tolist()
+		# Tissue section: use GMM + BIC to decide between unimodal (all tissue)
+		# and bimodal (tissue + background).  This handles imbalanced distributions
+		# (e.g. 95 % tissue / 5 % background) where Otsu tends to split the
+		# dominant tissue mode rather than separating it from background.
+		n_valid = valid_scores.shape[0]
+		if n_valid < 4 or hi - lo < 1e-12:
+			print(f"Tissue detection (tissue): degenerate score distribution -- treating all {n_spots} spots as foreground.")
+			return np.where(valid)[0].tolist()
 
-			scaled = ((valid_scores - lo) / (hi - lo) * 255).astype(np.uint8)
-			hist, _ = np.histogram(scaled, bins=256, range=(0, 255))
-			hist = hist.astype(np.float64)
-			total = hist.sum()
-			sum_total = np.dot(np.arange(256, dtype=np.float64), hist)
-			sum_bg, w_bg, max_between_var, best_t = 0.0, 0.0, 0.0, 0
-			for t in range(256):
-				w_bg += hist[t]
-				if w_bg == 0:
-					continue
-				w_fg = total - w_bg
-				if w_fg == 0:
-					break
-				sum_bg += t * hist[t]
-				mu_bg = sum_bg / w_bg
-				mu_fg = (sum_total - sum_bg) / w_fg
-				between_var = (w_bg / total) * (w_fg / total) * (mu_bg - mu_fg) ** 2
-				if between_var > max_between_var:
-					max_between_var = between_var
-					best_t = t
-			otsu_threshold = best_t / 255.0 * (hi - lo) + lo
-			floor_threshold = float(np.percentile(valid_scores, 25))
-			effective_threshold = min(otsu_threshold, floor_threshold)
-			tissue_mask[valid] = score[valid] >= effective_threshold
-			_log_info = f"otsu_thr={otsu_threshold:.4f}, floor_thr={floor_threshold:.4f}, effective_thr={effective_threshold:.4f}"
+		vs2d = valid_scores.reshape(-1, 1)
+		gmm1 = GaussianMixture(n_components=1, random_state=0).fit(vs2d)
+		gmm2 = GaussianMixture(n_components=2, random_state=0, n_init=3).fit(vs2d)
+		bic1, bic2 = gmm1.bic(vs2d), gmm2.bic(vs2d)
 
-		else:
-			# Tissue section: use GMM + BIC to decide between unimodal (all tissue)
-			# and bimodal (tissue + background).  This handles imbalanced distributions
-			# (e.g. 95 % tissue / 5 % background) where Otsu tends to split the
-			# dominant tissue mode rather than separating it from background.
-			n_valid = valid_scores.shape[0]
-			if n_valid < 4 or hi - lo < 1e-12:
-				print(f"Tissue detection (tissue): degenerate score distribution -- treating all {n_spots} spots as foreground.")
-				return np.where(valid)[0].tolist()
-
-			vs2d = valid_scores.reshape(-1, 1)
-			gmm1 = GaussianMixture(n_components=1, random_state=0).fit(vs2d)
-			gmm2 = GaussianMixture(n_components=2, random_state=0, n_init=3).fit(vs2d)
-			bic1, bic2 = gmm1.bic(vs2d), gmm2.bic(vs2d)
-
-			if bic1 <= bic2:
-				# BIC prefers unimodal model -- keep all valid spots as tissue
-				print(
-					f"Tissue detection (tissue): GMM BIC prefers 1-component "
-					f"(BIC1={bic1:.1f} <= BIC2={bic2:.1f}) -- treating all {n_spots} spots as foreground, "
-					f"n_features={len(features)}, ion_mode={ion_mode}"
-				)
-				return np.where(valid)[0].tolist()
-
-			# 2-component model wins: classify by posterior on the higher-mean component
-			tissue_comp = int(np.argmax(gmm2.means_.ravel()))
-			posteriors = gmm2.predict_proba(vs2d)[:, tissue_comp]
-			tissue_mask[valid] = posteriors >= 0.5
-			mu0, mu1 = gmm2.means_.ravel()
-			pi0, pi1 = gmm2.weights_
-			_log_info = (
-				f"GMM 2-comp (BIC1={bic1:.1f}, BIC2={bic2:.1f}), "
-				f"means=[{mu0:.3f},{mu1:.3f}], weights=[{pi0:.2f},{pi1:.2f}]"
+		if bic1 <= bic2:
+			# BIC prefers unimodal model -- keep all valid spots as tissue
+			print(
+				f"Tissue detection (tissue): GMM BIC prefers 1-component "
+				f"(BIC1={bic1:.1f} <= BIC2={bic2:.1f}) -- treating all {n_spots} spots as foreground, "
+				f"n_features={len(features)}, ion_mode={ion_mode}"
 			)
+			return np.where(valid)[0].tolist()
+
+		# 2-component model wins: classify by posterior on the higher-mean component
+		tissue_comp = int(np.argmax(gmm2.means_.ravel()))
+		posteriors = gmm2.predict_proba(vs2d)[:, tissue_comp]
+		tissue_mask[valid] = posteriors >= 0.5
+		mu0, mu1 = gmm2.means_.ravel()
+		pi0, pi1 = gmm2.weights_
+		_log_info = (
+			f"GMM 2-comp (BIC1={bic1:.1f}, BIC2={bic2:.1f}), "
+			f"means=[{mu0:.3f},{mu1:.3f}], weights=[{pi0:.2f},{pi1:.2f}]"
+		)
 
 		# ------------------------------------------------------------------
 		# 5. Spatial morphological cleanup (tissue section only)
@@ -1176,6 +1170,197 @@ class MsiSample(BaseSample):
 			f"Tissue detection ({self._sample_type}): kept {kept.size} / {n_spots} spots "
 			f"({_log_info}, n_features={len(features)}, ion_mode={ion_mode})"
 		)
+		return kept.tolist()
+
+	def _detect_microgrid_spots(
+			self,
+			mz_vectors: list[np.ndarray],
+			intensity_vectors: list[np.ndarray],
+			ion_mode: MsiIonMode,
+			database: pd.DataFrame | None = None,
+			mass_tolerance: int | None = None,
+	) -> list[int]:
+		"""
+		Identify cell spots on a microgrid slide as sparse local outliers against the background.
+
+		A microgrid acquisition covers the whole slide, so background spots are the large majority and
+		cells cover one or a few spots each. The detection therefore models the background and flags the
+		spots that depart from it, instead of splitting the score distribution into two classes.
+
+		1. Background ions: m/z bins (log-ppm grid, one mass tolerance wide) present in at least
+		   _MICROGRID_BACKGROUND_OCCUPANCY of the spots, dilated by one bin. Ions found on most of the
+		   slide come from matrix, sprayed standards and slide coating.
+		2. Per-spot features: log intensity of the non-background (cell) ions, cell-ion fraction of the
+		   TIC and, when a database is given, log intensity of the DB-matched cell ions.
+		3. Local background correction: each feature is rasterised on the pixel grid and the median over a
+		   _MICROGRID_BACKGROUND_WINDOW window is subtracted. Cells cover less than half of the window, so
+		   the median follows the background and removes deposition gradients and row drift. The residual
+		   is converted to a robust z-score (median / MAD).
+		4. Hysteresis threshold on the mean z-score: seeds need z >= max(_MICROGRID_SEED_Z, the Gaussian
+		   quantile giving _MICROGRID_SEED_ALPHA expected noise seeds on the slide). Spots with
+		   z >= _MICROGRID_GROW_Z that are 8-connected to a seed join it, so a cell spanning a few spots is
+		   kept whole.
+
+		Returns
+		-------
+		list[int]
+			Indices of spots classified as foreground (cell).
+		"""
+		n_spots = len(mz_vectors)
+		n_peaks = np.fromiter((len(mz) for mz in mz_vectors), dtype=np.int64, count=n_spots)
+		valid = n_peaks > 0
+		n_valid = int(valid.sum())
+		if n_valid == 0:
+			return []
+
+		tolerance_ppm = mass_tolerance if mass_tolerance is not None else self._MICROGRID_DEFAULT_TOLERANCE_PPM
+		log_bin_width = tolerance_ppm * 1e-6
+		block_spectra = self._MICROGRID_BLOCK_SPECTRA
+
+		# ------------------------------------------------------------------
+		# 1. Background ion set
+		# ------------------------------------------------------------------
+		occupied_bins, bin_counts, _ = _CalibrationReferenceSelector._reduce_spectra(
+			mz_vectors, log_bin_width, block_spectra)
+		background_bins = occupied_bins[bin_counts >= self._MICROGRID_BACKGROUND_OCCUPANCY * n_valid].astype(np.int64)
+		n_background_ions = background_bins.size
+		# Dilate by one bin: a background ion near a bin edge spreads over two adjacent bins.
+		background_bins = np.unique(np.concatenate([background_bins - 1, background_bins, background_bins + 1]))
+
+		db_masses = None
+		if database is not None and mass_tolerance is not None:
+			db_subset = database[database["ion_mode"] == ion_mode]
+			if not db_subset.empty:
+				db_masses = np.sort(db_subset["ionized_mass"].to_numpy(dtype=np.float64))
+
+		# ------------------------------------------------------------------
+		# 2. Per-spot features
+		# ------------------------------------------------------------------
+		tic = np.zeros(n_spots, dtype=np.float64)
+		cell_intensity = np.zeros(n_spots, dtype=np.float64)
+		db_cell_intensity = np.zeros(n_spots, dtype=np.float64) if db_masses is not None else None
+
+		for start in range(0, n_spots, block_spectra):
+			stop = min(start + block_spectra, n_spots)
+			block_len = stop - start
+			if n_peaks[start:stop].sum() == 0:
+				continue
+			mz = np.concatenate(mz_vectors[start:stop]).astype(np.float64, copy=False)
+			intensity = np.concatenate(intensity_vectors[start:stop]).astype(np.float64, copy=False)
+			spot = np.repeat(np.arange(block_len), n_peaks[start:stop])
+
+			tic[start:stop] = np.bincount(spot, weights=intensity, minlength=block_len)
+
+			positive = mz > 0.0
+			is_background = np.zeros(mz.size, dtype=bool)
+			bins = np.floor(np.log(mz[positive]) / log_bin_width).astype(np.int64)
+			if background_bins.size > 0:
+				idx = np.clip(np.searchsorted(background_bins, bins), 0, background_bins.size - 1)
+				is_background[positive] = background_bins[idx] == bins
+			is_cell = positive & ~is_background
+
+			cell_intensity[start:stop] = np.bincount(spot[is_cell], weights=intensity[is_cell], minlength=block_len)
+
+			if db_cell_intensity is not None:
+				cell_mz = mz[is_cell]
+				idx = np.searchsorted(db_masses, cell_mz)
+				left = db_masses[np.clip(idx - 1, 0, db_masses.size - 1)]
+				right = db_masses[np.clip(idx, 0, db_masses.size - 1)]
+				within = (np.abs(cell_mz - left) <= left * mass_tolerance * 1e-6) | \
+						 (np.abs(cell_mz - right) <= right * mass_tolerance * 1e-6)
+				db_cell_intensity[start:stop] = np.bincount(
+					spot[is_cell][within], weights=intensity[is_cell][within], minlength=block_len)
+
+			del mz, intensity, spot, positive, is_background, is_cell, bins
+
+		cell_fraction = np.divide(cell_intensity, tic, out=np.zeros(n_spots, dtype=np.float64), where=tic > 0)
+		# TIC itself is left out: on a microgrid it is dominated by matrix ions, and ion suppression can
+		# make it lower on cells than on the surrounding background.
+		features: list[np.ndarray] = [np.log1p(np.clip(cell_intensity, 0.0, None)), cell_fraction]
+		if db_cell_intensity is not None:
+			features.append(np.log1p(np.clip(db_cell_intensity, 0.0, None)))
+
+		# ------------------------------------------------------------------
+		# 3. Local background correction and robust z-scores
+		# ------------------------------------------------------------------
+		window = self._MICROGRID_BACKGROUND_WINDOW
+		pixel_coords = self._metadata[ion_mode].get(MsiMetadata.PIXEL_COORDINATES)  # (N, 2): (y, x)
+		grid_yx = None
+		if pixel_coords is not None and len(pixel_coords) == n_spots:
+			grid_yx = np.asarray(pixel_coords, dtype=np.int64)
+			grid_yx = grid_yx - grid_yx.min(axis=0)
+			grid_shape = tuple(int(v) for v in grid_yx.max(axis=0) + 1)
+		spatial = grid_yx is not None and min(grid_shape) >= window
+
+		def robust_z(values: np.ndarray) -> np.ndarray | None:
+			center = np.median(values)
+			scale = 1.4826 * np.median(np.abs(values - center))
+			if scale <= 1e-12:
+				scale = values.std()
+			if scale <= 1e-12:
+				return None
+			return (values - center) / scale
+
+		valid_yx = grid_yx[valid] if grid_yx is not None else None
+		z_sum = np.zeros(n_valid, dtype=np.float64)
+		n_used = 0
+		for feat in features:
+			values = feat[valid]
+			if spatial:
+				raster = np.full(grid_shape, np.median(values), dtype=np.float64)
+				raster[valid_yx[:, 0], valid_yx[:, 1]] = values
+				local_background = median_filter(raster, size=window, mode="reflect")
+				values = values - local_background[valid_yx[:, 0], valid_yx[:, 1]]
+			z = robust_z(values)
+			if z is not None:
+				z_sum += z
+				n_used += 1
+
+		if n_used == 0:
+			print(f"Tissue detection (microgrid): constant features -- no cell spots detected among {n_spots} spots.")
+			return []
+		score = robust_z(z_sum / n_used)
+		if score is None:
+			print(f"Tissue detection (microgrid): constant score -- no cell spots detected among {n_spots} spots.")
+			return []
+
+		# ------------------------------------------------------------------
+		# 4. Hysteresis threshold
+		# ------------------------------------------------------------------
+		seed_z = max(self._MICROGRID_SEED_Z, float(normal_distribution.isf(self._MICROGRID_SEED_ALPHA / n_valid)))
+		grow_z = min(self._MICROGRID_GROW_Z, seed_z)
+		valid_idx = np.flatnonzero(valid)
+		seeds = score >= seed_z
+
+		if grid_yx is not None:
+			grow_raster = np.zeros(grid_shape, dtype=bool)
+			grow_raster[valid_yx[:, 0], valid_yx[:, 1]] = score >= grow_z
+			components, _ = label_components(grow_raster, structure=np.ones((3, 3), dtype=bool))
+			spot_components = components[valid_yx[:, 0], valid_yx[:, 1]]
+			seed_components = np.unique(spot_components[seeds])
+			seed_components = seed_components[seed_components > 0]
+			cell = np.isin(spot_components, seed_components)
+			component_sizes = np.bincount(spot_components[cell])[seed_components] if seed_components.size else np.array([], dtype=np.int64)
+		else:
+			cell = seeds
+			component_sizes = np.ones(int(seeds.sum()), dtype=np.int64)
+
+		kept = valid_idx[cell]
+		n_components = component_sizes.size
+		n_large = int((component_sizes > self._MICROGRID_MAX_COMPONENT_SPOTS).sum())
+		size_info = f"sizes={int(component_sizes.min())}-{int(component_sizes.max())}" if n_components else "sizes=n/a"
+		print(
+			f"Tissue detection (microgrid): kept {kept.size} / {n_spots} spots in {n_components} cell(s) "
+			f"(seed_z={seed_z:.2f}, grow_z={grow_z:.2f}, {size_info}, background_ions={n_background_ions}, "
+			f"local_background={'on' if spatial else 'off'}, n_features={len(features)}, ion_mode={ion_mode})"
+		)
+		if n_large:
+			print(
+				f"Tissue detection (microgrid): {n_large} component(s) exceed "
+				f"{self._MICROGRID_MAX_COMPONENT_SPOTS} spots; check for debris or matrix crystals."
+			)
+		if kept.size == 0:
+			print("Tissue detection (microgrid): no cell spots detected; every spot will be treated as foreground.")
 		return kept.tolist()
 
 	def _recalibrate_mz_vector(
