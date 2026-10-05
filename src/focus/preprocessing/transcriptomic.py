@@ -249,6 +249,11 @@ class SpatialTranscriptomic(BaseSample):
         prefix = f"{self.sample_id}_"
         if not adata.obs_names.str.startswith(prefix).all():
             adata.obs_names = prefix + adata.obs_names.astype(str)
+        # A named index that shadows an obs column (e.g. Xenium 'cell_label') no longer
+        # matches it after prefixing; anndata refuses to write that, so drop the name.
+        # The column keeps the original, unprefixed IDs.
+        if adata.obs.index.name in adata.obs.columns:
+            adata.obs.index.name = None
 
         # 6. Per-sample cluster labels for alignment colouring (spatial-bin aggregation + Leiden).
         # Computed on an internal normalized representation so labels are meaningful regardless
