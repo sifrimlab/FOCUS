@@ -80,6 +80,36 @@ export interface PipelineStatus {
   sub_step_total: number;
   sub_step_progress: number;
   sub_step_items_total: number;
+  /** What sub_step progress counts ("sample", "tile", "patch", ...), when known. */
+  sub_step_unit: string | null;
+  /** Run history derived by the backend ProgressTracker (UNIX seconds). */
+  run_started_at: number | null;
+  server_now: number | null;
+  timeline: StageRecord[];
+  messages: MessageRecord[];
+}
+
+export interface ModalityRecord {
+  name: string;
+  started_at: number;
+  ended_at: number | null;
+  /** Samples seen while this modality was current, in order. */
+  samples: string[];
+}
+
+export interface StageRecord {
+  stage: string;
+  started_at: number;
+  ended_at: number | null;
+  failed: boolean;
+  /** Samples seen with no modality current (annotation transfer). */
+  samples: string[];
+  modalities: ModalityRecord[];
+}
+
+export interface MessageRecord {
+  t: number;
+  text: string;
 }
 
 export interface ValidationResult {

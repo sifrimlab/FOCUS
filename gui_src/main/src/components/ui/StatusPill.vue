@@ -1,11 +1,14 @@
 <script setup lang="ts">
-/** Small pill with a live dot (DESIGN.md 8.6), e.g. the running modality. */
-withDefaults(defineProps<{ live?: boolean }>(), { live: true });
+/** Small pill with a live dot (DESIGN.md 8.6), e.g. the run state. */
+withDefaults(defineProps<{
+  live?: boolean;
+  tone?: 'primary' | 'stage' | 'warning' | 'danger' | 'success';
+}>(), { live: true, tone: 'primary' });
 </script>
 
 <template>
   <span class="pill material-chrome type-caption text-fg1">
-    <span class="pill__dot" :class="{ 'pill__dot--live': live }" aria-hidden="true" />
+    <span class="pill__dot" :class="[`pill__dot--${tone}`, { 'pill__dot--live': live }]" aria-hidden="true" />
     <slot />
   </span>
 </template>
@@ -25,6 +28,10 @@ withDefaults(defineProps<{ live?: boolean }>(), { live: true });
   border-radius: var(--radius-full);
   background: var(--primary);
 }
+.pill__dot--stage   { background: var(--stage-accent); }
+.pill__dot--warning { background: var(--warning); }
+.pill__dot--danger  { background: var(--danger); }
+.pill__dot--success { background: var(--success); }
 .pill__dot--live { animation: focus-breathe 2.4s var(--ease-in-out) infinite; }
 
 @media (prefers-reduced-motion: reduce) {

@@ -1,4 +1,5 @@
 import os, logging, anndata
+from functools import partial
 import numpy as np
 import scipy.sparse
 import pandas as pd
@@ -147,7 +148,10 @@ def run(config: dict, progress_callback=None) -> dict:
 		logger.info("STAGE 2.5: Annotation Transfer")
 		logger.info("=" * 60)
 		_report(state="running", stage="annotation_transfer", stage_index=3, total_stages=n_stages,
-				message="Transferring spatial annotations...", sub_step=None, sub_step_index=0,
+				message="Transferring spatial annotations...",
+				current_modality=None, current_modality_index=0, total_modalities=0,
+				current_sample=None, current_sample_index=0, total_samples=0,
+				sub_step=None, sub_step_index=0,
 				sub_step_total=0, sub_step_progress=0, sub_step_items_total=0)
 		annotation_files = _run_annotation_transfer(
 			config, modality_files, aligned_files,
@@ -174,7 +178,10 @@ def run(config: dict, progress_callback=None) -> dict:
 		logger.info(f"STAGE {stage_reg}: Registration")
 		logger.info("=" * 60)
 		_report(state="running", stage="registration", stage_index=stage_reg, total_stages=n_stages,
-				message="Starting registration...", sub_step=None, sub_step_index=0,
+				message="Starting registration...",
+				current_modality=None, current_modality_index=0, total_modalities=0,
+				current_sample=None, current_sample_index=0, total_samples=0,
+				sub_step=None, sub_step_index=0,
 				sub_step_total=0, sub_step_progress=0, sub_step_items_total=0)
 		registered_files = _run_registration(config, modality_files, aligned_files, step_reporter,
 										   report=_report, stage_index=stage_reg, n_stages=n_stages,
@@ -198,7 +205,10 @@ def run(config: dict, progress_callback=None) -> dict:
 		logger.info(f"STAGE {stage_mudata}: Compiling multimodal dataset")
 		logger.info("=" * 60)
 		_report(state="running", stage="compiling", stage_index=stage_mudata, total_stages=n_stages,
-				message="Compiling multimodal dataset...", sub_step=None, sub_step_index=0,
+				message="Compiling multimodal dataset...",
+				current_modality=None, current_modality_index=0, total_modalities=0,
+				current_sample=None, current_sample_index=0, total_samples=0,
+				sub_step=None, sub_step_index=0,
 				sub_step_total=0, sub_step_progress=0, sub_step_items_total=0)
 		mudata_path = _compile_mudata(config, modality_files, registered_files, annotation_files)
 		if mudata_path:
@@ -321,10 +331,11 @@ def _run_alignment(config: dict, modality_files: dict, report, n_stages: int,
 	if exact_spots:
 		logger.info("Microgrid MSI modality found: alignment shows exact foreground spots with no coarsening or clustering")
 
-	for modality in modalities:
+	targets = [m for m in modalities if m[ModalityParameters.NAME] != ref_name]
+	for pair_idx, modality in enumerate(targets, 1):
 		mod_name = modality[ModalityParameters.NAME]
-		if mod_name == ref_name:
-			continue
+		# Every report for this pair carries its position among the aligned modalities.
+		report_pair = partial(report, current_modality_index=pair_idx, total_modalities=len(targets))
 
 		mod_type = modality[ModalityParameters.TYPE]
 
@@ -352,7 +363,7 @@ def _run_alignment(config: dict, modality_files: dict, report, n_stages: int,
 
 		if strategy == AlignmentStrategy.PRE_ALIGNED:
 			logger.info(f"Pre-aligned strategy for '{mod_name}' — using uniform alignment (no GUI)")
-			report(state="running", stage="alignment", stage_index=2, total_stages=n_stages,
+			report_pair(state="running", stage="alignment", stage_index=2, total_stages=n_stages,
 				   current_modality=mod_name,
 				   message=f"Applying pre-aligned coordinates for '{mod_name}'...",
 				   current_sample=None, current_sample_index=0, total_samples=0,
@@ -361,14 +372,15 @@ def _run_alignment(config: dict, modality_files: dict, report, n_stages: int,
 			aligned_files[mod_name] = aligner.uniform_aligned_dataset(force_recomputing=pair_force)
 		elif aligner.is_alignment_needed(force_recomputing=pair_force):
 			# Signal that alignment is starting — the GUI should show "Open Alignment Tool"
-			report(state="alignment_waiting", stage="alignment", stage_index=2, total_stages=n_stages,
+			report_pair(state="alignment_waiting", stage="alignment", stage_index=2, total_stages=n_stages,
 				   current_modality=mod_name,
+				   current_sample=None, current_sample_index=0, total_samples=0,
 				   message=f"Waiting for alignment of reference '{ref_name}' into '{mod_name}' space...",
 				   sub_step=None, sub_step_index=0, sub_step_total=0,
 				   sub_step_progress=0, sub_step_items_total=0)
 
 			def _on_gui_done():
-				report(state="running", stage="alignment", stage_index=2, total_stages=n_stages,
+				report_pair(state="running", stage="alignment", stage_index=2, total_stages=n_stages,
 					   current_modality=mod_name,
 					   message=f"Saving alignment results for '{mod_name}'...",
 					   sub_step=None, sub_step_index=0, sub_step_total=0,
@@ -381,7 +393,7 @@ def _run_alignment(config: dict, modality_files: dict, report, n_stages: int,
 					f"Reference '{ref_name}' already aligned into '{mod_name}' space — "
 					f"per-sample files cached, building merged dataset"
 				)
-				report(state="running", stage="alignment", stage_index=2, total_stages=n_stages,
+				report_pair(state="running", stage="alignment", stage_index=2, total_stages=n_stages,
 					   current_modality=mod_name,
 					   message=f"Per-sample alignment cached — building merged dataset for '{mod_name}'...",
 					   current_sample=None, current_sample_index=0, total_samples=0,
@@ -389,7 +401,7 @@ def _run_alignment(config: dict, modality_files: dict, report, n_stages: int,
 					   sub_step_progress=0, sub_step_items_total=0)
 			else:
 				logger.info(f"Reference '{ref_name}' already aligned into '{mod_name}' space — loading cached files")
-				report(state="running", stage="alignment", stage_index=2, total_stages=n_stages,
+				report_pair(state="running", stage="alignment", stage_index=2, total_stages=n_stages,
 					   current_modality=mod_name,
 					   message=f"Loading cached alignment for '{mod_name}'...",
 					   current_sample=None, current_sample_index=0, total_samples=0,
@@ -397,7 +409,7 @@ def _run_alignment(config: dict, modality_files: dict, report, n_stages: int,
 					   sub_step_progress=0, sub_step_items_total=0)
 			aligned_files[mod_name] = aligner.collect_aligned_files()
 
-		report(state="running", stage="alignment", stage_index=2, total_stages=n_stages,
+		report_pair(state="running", stage="alignment", stage_index=2, total_stages=n_stages,
 			   current_modality=mod_name,
 			   message=f"Alignment complete for '{mod_name}'")
 
@@ -555,19 +567,21 @@ def _run_registration(config: dict, modality_files: dict, aligned_files: dict, s
 
 	registered_files: dict[str, dict[str, str]] = {}
 
-	for modality in modalities:
+	targets = [
+		m for m in modalities
+		if m[ModalityParameters.NAME] != ref_name and m[ModalityParameters.REGISTRATION_TYPE] != RegistrationType.NONE
+	]
+	for reg_idx, modality in enumerate(targets, 1):
 		mod_name = modality[ModalityParameters.NAME]
 		reg_type = modality[ModalityParameters.REGISTRATION_TYPE]
-
-		if mod_name == ref_name or reg_type == RegistrationType.NONE:
-			continue
 
 		reg_settings = modality[ModalityParameters.REGISTRATION_SETTINGS]
 		logger.info(f"Registering '{mod_name}' using '{reg_type}' strategy")
 
 		if report:
 			report(state="running", stage="registration", stage_index=stage_index, total_stages=n_stages,
-				   current_modality=mod_name,
+				   current_modality=mod_name, current_modality_index=reg_idx, total_modalities=len(targets),
+				   current_sample=None, current_sample_index=0, total_samples=0,
 				   message=f"Performing registration in {DISPLAY_NAMES[reg_type]} mode",
 				   sub_step=None, sub_step_index=0, sub_step_total=0,
 				   sub_step_progress=0, sub_step_items_total=0)

@@ -34,9 +34,10 @@
 .swap-enter-from, .swap-leave-to { opacity: 0; }
 
 /* Shared keyframes used by several primitives. */
+/* Glow color can be overridden per scope with --breathe-color (stage accents). */
 @keyframes focus-breathe {
-  0%, 100% { box-shadow: 0 0 0 0 var(--primary-soft); }
-  50%      { box-shadow: 0 0 0 6px var(--primary-soft); }
+  0%, 100% { box-shadow: 0 0 0 0 var(--breathe-color, var(--primary-soft)); }
+  50%      { box-shadow: 0 0 0 6px var(--breathe-color, var(--primary-soft)); }
 }
 
 @keyframes focus-shimmer {

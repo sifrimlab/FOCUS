@@ -64,6 +64,11 @@ function defaultPipelineStatus(): PipelineStatus {
     sub_step_total: 0,
     sub_step_progress: 0,
     sub_step_items_total: 0,
+    sub_step_unit: null,
+    run_started_at: null,
+    server_now: null,
+    timeline: [],
+    messages: [],
   };
 }
 

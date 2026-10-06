@@ -682,7 +682,7 @@ class RamanImage(BaseSample):
 					self._raman_corrected_tiles[tile_index, start_ch:end_ch + 1] = processed_tile
 			else:
 				_reporter = getattr(self, '_step_reporter', None) or StepReporter()
-				for tile_idx in _reporter.tqdm(range(self._basic_corrected_tiles.shape[0]), desc="4/5 - Cleaning Raman Spectra"):
+				for tile_idx in _reporter.tqdm(range(self._basic_corrected_tiles.shape[0]), desc="4/5 - Cleaning Raman Spectra", unit="tile"):
 					for slice_index, (start_ch, end_ch) in enumerate(self._spectra_slices):
 						processed_tile, _, _ = _process_tile_parallel(
 							self._basic_corrected_tiles[tile_idx, start_ch:end_ch + 1, :, :],

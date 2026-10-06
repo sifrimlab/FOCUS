@@ -130,12 +130,16 @@ class StepReporter:
 		if not self._logger.hasHandlers():
 			print(msg)
 
-	def step(self, desc: str, current: int = 0, total: int = 0) -> None:
-		"""Announce a named step on every interface (console, log file, GUI)."""
-		self._emit(desc)
-		self._send(desc, current, total)
+	def step(self, desc: str, current: int = 0, total: int = 0, unit: str | None = None) -> None:
+		"""Announce a named step on every interface (console, log file, GUI).
 
-	def _send(self, desc: str, current: int, total: int) -> None:
+		``unit`` names what ``current``/``total`` count (e.g. "sample", "tile", "patch")
+		so the GUI can label item progress.
+		"""
+		self._emit(desc)
+		self._send(desc, current, total, unit)
+
+	def _send(self, desc: str, current: int, total: int, unit: str | None = None, extra: dict | None = None) -> None:
 		if self._callback:
 			idx, n = _parse_step_label(desc)
 			self._callback({
@@ -144,25 +148,34 @@ class StepReporter:
 				"sub_step_total": n,
 				"sub_step_progress": current,
 				"sub_step_items_total": total,
+				"sub_step_unit": unit,
+				**(extra or {}),
 			})
 
-	def _update(self, desc: str, current: int, total: int) -> None:
-		"""Update progress count without printing (called during tqdm iteration)."""
-		self._send(desc, current, total)
-
-	def update(self, desc: str, current: int, total: int) -> None:
+	def update(self, desc: str, current: int, total: int, unit: str | None = None) -> None:
 		"""Update item-level progress without printing to stdout (e.g. mid-loop updates)."""
-		self._send(desc, current, total)
+		self._send(desc, current, total, unit)
 
 	def tqdm(self, iterable, desc: str, total: int | None = None, **kwargs):
-		"""tqdm replacement that also reports progress to the GUI."""
+		"""tqdm replacement that also reports progress to the GUI.
+
+		When the items are samples (``unit="sample"``), the GUI also receives the
+		sample being processed, read from the item's ``sample_id`` when it has one.
+		"""
 		if total is None and hasattr(iterable, '__len__'):
 			total = len(iterable)
 		n = total or 0
-		self._send(desc, 0, n)  # Report step start; tqdm handles CLI display
+		unit = kwargs.get("unit")
+		self._send(desc, 0, n, unit)  # Report step start; tqdm handles CLI display
 		for i, item in enumerate(_tqdm_lib.tqdm(iterable, desc=desc, total=total, **kwargs)):
+			sample = _sample_context(item, i + 1, n) if unit == "sample" else None
+			if sample:
+				self._send(desc, i, n, unit, sample)
 			yield item
-			self._update(desc, i + 1, n)
+			self._send(desc, i + 1, n, unit, sample)
+		if unit == "sample" and self._callback:
+			# The loop is over: no sample is current until the next per-sample loop.
+			self._callback({"current_sample": None, "current_sample_index": 0, "total_samples": 0})
 
 	def message(self, msg: str, level: int = logging.INFO) -> None:
 		"""Report a status line to every available interface at once.
@@ -190,7 +203,16 @@ class StepReporter:
 				"sub_step_total": 0,
 				"sub_step_progress": 0,
 				"sub_step_items_total": 0,
+				"sub_step_unit": None,
 			})
+
+
+def _sample_context(item, index: int, total: int) -> dict | None:
+	"""Current-sample fields for an item of a per-sample loop, or None if it has no id."""
+	sample_id = item if isinstance(item, str) else getattr(item, "sample_id", None)
+	if not isinstance(sample_id, str):
+		return None
+	return {"current_sample": sample_id, "current_sample_index": index, "total_samples": total}
 
 
 def create_output_directories(path: str, sample_ids: list[str], modality_name: str) -> None:

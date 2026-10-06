@@ -40,6 +40,7 @@
   --color-danger-fg: var(--danger-fg);
   --color-data-2: var(--data-2);
   --color-data-2-fg: var(--data-2-fg);
+  --color-stage: var(--stage-accent);
 
   /* Surfaces */
   --color-inset: var(--mat-inset-fill);

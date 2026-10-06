@@ -16,6 +16,7 @@ from focus.constants import (
 )
 from focus.preprocessing._utils import discover_sample_ids, validate_path_readable
 from focus.sample_manager import SampleManager, _validate_sample_id
+from focus.GUI.progress_tracker import ProgressTracker
 
 
 _CONFIG_FILENAME = "focus_config.json"
@@ -34,6 +35,7 @@ class MainGUI:
 		self._config: dict = {}
 		self._pipeline_thread: threading.Thread | None = None
 		self._pipeline_status: dict = _default_status()
+		self._progress = ProgressTracker()
 		self._basedir = os.path.join(os.path.dirname(__file__), 'main')
 
 		# Silence werkzeug HTTP request logs unless debug mode is requested.
@@ -303,6 +305,7 @@ class MainGUI:
 			# Reset status
 			self._pipeline_status = _default_status()
 			self._pipeline_status["state"] = "running"
+			self._progress.reset()
 
 			# Run in background thread
 			self._pipeline_thread = threading.Thread(
@@ -314,7 +317,7 @@ class MainGUI:
 
 		@self.app.route('/api/status', methods=['GET'])
 		def get_status():
-			return jsonify(self._pipeline_status)
+			return jsonify(self._status_payload())
 
 		# --- Full state (for restoring the frontend on reload) ---
 
@@ -332,7 +335,7 @@ class MainGUI:
 					pass
 			return jsonify({
 				"config": self._config,
-				"status": self._pipeline_status,
+				"status": self._status_payload(),
 				"samples": samples,
 				"has_existing_config": has_existing_config,
 			})
@@ -364,6 +367,7 @@ class MainGUI:
 		def reset():
 			self._config = {}
 			self._pipeline_status = _default_status()
+			self._progress = ProgressTracker()
 			# Drop the finished worker-thread reference and reclaim memory so starting a new
 			# project begins from a clean slate. Only clear the thread when it isn't running,
 			# so a reset during an active run can't orphan the running pipeline.
@@ -394,11 +398,13 @@ class MainGUI:
 			self._pipeline_status["state"] = "completed"
 			self._pipeline_status["output_files"] = output_files
 			self._pipeline_status["message"] = "Pipeline completed successfully."
+			self._progress.observe(self._pipeline_status)
 
 		except Exception as e:
 			self._pipeline_status["state"] = "error"
 			self._pipeline_status["error"] = str(e)
 			self._pipeline_status["message"] = f"Error: {e}"
+			self._progress.observe(self._pipeline_status)
 			traceback.print_exc()
 
 		finally:
@@ -416,6 +422,11 @@ class MainGUI:
 	def _on_progress(self, status: dict):
 		"""Callback from orchestrator to update pipeline status."""
 		self._pipeline_status.update(status)
+		self._progress.observe(self._pipeline_status)
+
+	def _status_payload(self) -> dict:
+		"""Current status plus the run history (timing, samples seen, messages)."""
+		return {**self._pipeline_status, **self._progress.snapshot()}
 
 	# ── Auto-save ─────────────────────────────────────────────────────────
 
@@ -468,6 +479,7 @@ def _default_status() -> dict:
 		"sub_step_total": 0,
 		"sub_step_progress": 0,
 		"sub_step_items_total": 0,
+		"sub_step_unit": None,
 	}
 
 

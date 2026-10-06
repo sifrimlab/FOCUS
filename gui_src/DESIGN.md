@@ -170,6 +170,22 @@ Each role has five tokens:
 
 Filled buttons use the same `fill` in both modes. White text on a brighter dark-mode fill (for example `#3b82f6`) drops below 4.5:1.
 
+### 3.3.1 Pipeline stage accents
+
+Each main pipeline stage has an accent, cool to warm along the run, so the stage reads at a glance on the progress screen (rail marks, bars, chips) and in the backdrop.
+
+| Stage | Token | Light | Dark |
+|---|---|---|---|
+| Preprocessing | `--stage-preprocessing` | `#2563eb` | `#60a5fa` |
+| Alignment | `--stage-alignment` | `#4f46e5` | `#818cf8` |
+| Annotation transfer | `--stage-annotation` | `#7c3aed` | `#a78bfa` |
+| Registration | `--stage-registration` | `#e11d48` | `#fb7185` |
+| Compiling | `--stage-compiling` | `#c2410c` | `#fb923c` |
+
+- Any element with `data-stage="<stage id>"` exposes its accent as `--stage-accent` (and `bg-stage` / `text-stage` utilities). Components never name a stage color directly.
+- Accents are marks only (bars, dots, icons, outlines), at least 3:1 against every material. Text placed on an accent fill uses `--stage-on-accent` (white in light, near-black in dark), at least 4.5:1 on every accent.
+- State colors keep their meaning and take priority over the stage color: amber while waiting for manual alignment, red on error, green on completion.
+
 ### 3.4 Contrast
 
 WCAG AA is the floor: 4.5:1 for text under 18 px, 3:1 for large text and for non-text UI such as focus rings, toggle tracks and input outlines.
@@ -279,7 +295,12 @@ The backdrop layer carries `data-ambient`. It is derived from existing store sta
 | `data-ambient` | When | Hues (tokens) | Character |
 |---|---|---|---|
 | `idle` | SetupView, ConfigView | `--ambient-idle-1..3`: cool blues and indigo | Calm, neutral |
-| `run` | RunningView, processing | `--ambient-run-1..3`: blue, indigo, sky | Slow drift; the only state where fields move noticeably |
+| `run` | RunningView, stage unknown | `--ambient-run-1..3`: blue, indigo, sky | Slow drift; the only state where fields move noticeably |
+| `pre` | Running: preprocessing | `--ambient-pre-1..3`: blues | Slow drift |
+| `align` | Running: alignment | `--ambient-align-1..3`: indigos | Slow drift |
+| `annot` | Running: annotation transfer | `--ambient-annot-1..3`: violets | Slow drift |
+| `reg` | Running: registration | `--ambient-reg-1..3`: roses | Slow drift |
+| `comp` | Running: compiling | `--ambient-comp-1..3`: oranges | Slow drift |
 | `wait` | RunningView, manual alignment required | `--ambient-wait-1..3`: orange, peach, blue | Asks for attention without alarm |
 | `done` | CompleteView | `--ambient-done-1..3`: green, mint, blue | One bloom on entry, then still |
 | `err` | Error state in RunningView | `--ambient-err-1..3`: red, rose, indigo | Still, no drift |
@@ -635,6 +656,7 @@ How the main GUI (`gui_src/main/src`) implements this document. The alignment GU
 | `components/ui/` | Domain-agnostic primitives (12.3) |
 | `components/shell/` | Backdrop, chrome cluster, theme switcher, splash, brand |
 | `components/browser/` | `DirectoryList` (presentational) and `FilePicker` |
+| `components/running/` | Progress screen: `RunHeader`, `StageRail` / `StageRailItem`, `CurrentWorkCard` (`StepTrack`, `SampleTrack`), `ActivityLog`, alignment and error banners. View model in `composables/useRunProgress.ts` (provided once per view), run plan in `utils/runPlan.ts` |
 | `components/builder/` | Guided configuration builder: frame (`StepFrame`, `BuilderHeader`, `BuilderNav`), `steps/`, and per-step parts (`modalities/`, `settings/`, `review/`) |
 | `components/setup/`, `config/`, `running/`, `complete/` | Domain components of each view (`config/` keeps the schema-driven parameter form) |
 | `store/builder.ts` | Builder navigation state (step, unlocked steps, active modality, edit mode); UI only, never saved |
@@ -661,7 +683,7 @@ How the main GUI (`gui_src/main/src`) implements this document. The alignment GU
 | `Stepper` | Horizontal step indicator for guided flows (12.4); `stretch` fills the container width |
 | `OverflowMenu` | Ellipsis button with a small teleported action menu |
 | `StatusPill` | Chrome pill with a live dot |
-| `ProgressBar` | Determinate or shimmer progress |
+| `ProgressBar` | Determinate or shimmer progress; `tone="stage"` follows the stage accent |
 | `Disclosure` | Animated `<details>` section |
 | `DropZone`, `EmptyState` | Dashed wells for file drop (Setup config import step) and empty lists |
 | `InlineEntryForm` | Name entry row, paired with `useInlineEntry` |

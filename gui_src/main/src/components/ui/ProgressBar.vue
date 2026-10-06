@@ -7,7 +7,7 @@ import { computed } from 'vue';
 
 const props = withDefaults(defineProps<{
   value: number | null;
-  tone?: 'primary' | 'data-2' | 'success';
+  tone?: 'primary' | 'data-2' | 'success' | 'stage';
   label: string;
   active?: boolean;
 }>(), { tone: 'primary', active: true });
@@ -53,6 +53,7 @@ const clamped = computed(() => (props.value === null ? null : Math.min(100, Math
 .fill--primary { background-color: var(--primary); }
 .fill--data-2  { background-color: var(--data-2); }
 .fill--success { background-color: var(--success); }
+.fill--stage   { background-color: var(--stage-accent); }
 
 /* Sheen sweeping along the filled part while work is running. */
 .fill--active::after {

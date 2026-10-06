@@ -37,6 +37,11 @@ defineProps<{ state: AmbientState }>();
 
 .backdrop[data-ambient="idle"] { --field-1: var(--ambient-idle-1); --field-2: var(--ambient-idle-2); --field-3: var(--ambient-idle-3); --amp: 0.5; }
 .backdrop[data-ambient="run"]  { --field-1: var(--ambient-run-1);  --field-2: var(--ambient-run-2);  --field-3: var(--ambient-run-3); }
+.backdrop[data-ambient="pre"]   { --field-1: var(--ambient-pre-1);   --field-2: var(--ambient-pre-2);   --field-3: var(--ambient-pre-3); }
+.backdrop[data-ambient="align"] { --field-1: var(--ambient-align-1); --field-2: var(--ambient-align-2); --field-3: var(--ambient-align-3); }
+.backdrop[data-ambient="annot"] { --field-1: var(--ambient-annot-1); --field-2: var(--ambient-annot-2); --field-3: var(--ambient-annot-3); }
+.backdrop[data-ambient="reg"]   { --field-1: var(--ambient-reg-1);   --field-2: var(--ambient-reg-2);   --field-3: var(--ambient-reg-3); }
+.backdrop[data-ambient="comp"]  { --field-1: var(--ambient-comp-1);  --field-2: var(--ambient-comp-2);  --field-3: var(--ambient-comp-3); }
 .backdrop[data-ambient="wait"] { --field-1: var(--ambient-wait-1); --field-2: var(--ambient-wait-2); --field-3: var(--ambient-wait-3); }
 .backdrop[data-ambient="done"] { --field-1: var(--ambient-done-1); --field-2: var(--ambient-done-2); --field-3: var(--ambient-done-3); --amp: 0; }
 .backdrop[data-ambient="err"]  { --field-1: var(--ambient-err-1);  --field-2: var(--ambient-err-2);  --field-3: var(--ambient-err-3);  --amp: 0; }

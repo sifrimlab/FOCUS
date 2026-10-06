@@ -96,6 +96,18 @@
   --data-2:         #6366f1;               /* indigo: secondary data series (sample progress) */
   --data-2-fg:      #4338ca;
 
+  /* ---- Pipeline stages ------------------------------------- */
+  /* One accent per main stage, cool to warm. Marks only (bars, dots, icons),
+     never text; each is >= 3:1 on every material. */
+  --stage-preprocessing: #2563eb;
+  --stage-alignment:     #4f46e5;
+  --stage-annotation:    #7c3aed;
+  --stage-registration:  #e11d48;
+  --stage-compiling:     #c2410c;
+  --stage-accent:        var(--primary);
+  /* Text and icons placed on a stage accent fill (>= 4.5:1 on every accent). */
+  --stage-on-accent:     #ffffff;
+
   /* ---- Focus ------------------------------------------------- */
   --focus-color: rgb(37 99 235 / 0.45);
   --focus-ring: 0 0 0 3px var(--focus-color);
@@ -112,6 +124,12 @@
   --ambient-wait-1: #fb923c;  --ambient-wait-2: #fdba74;  --ambient-wait-3: #93c5fd;
   --ambient-done-1: #4ade80;  --ambient-done-2: #86efac;  --ambient-done-3: #93c5fd;
   --ambient-err-1:  #f87171;  --ambient-err-2:  #fca5a5;  --ambient-err-3:  #a5b4fc;
+  /* Pipeline stages while running, cool to warm (preprocessing -> compiling). */
+  --ambient-pre-1:   #93c5fd;  --ambient-pre-2:   #60a5fa;  --ambient-pre-3:   #bae6fd;
+  --ambient-align-1: #a5b4fc;  --ambient-align-2: #818cf8;  --ambient-align-3: #c7d2fe;
+  --ambient-annot-1: #c4b5fd;  --ambient-annot-2: #a78bfa;  --ambient-annot-3: #ddd6fe;
+  --ambient-reg-1:   #fda4af;  --ambient-reg-2:   #fb7185;  --ambient-reg-3:   #f9a8d4;
+  --ambient-comp-1:  #fdba74;  --ambient-comp-2:  #fb923c;  --ambient-comp-3:  #fed7aa;
 
   /* ---- Materials (Liquid Glass) ----------------------------- */
   /* content: cards. chrome: floating bars and pills.
@@ -239,6 +257,13 @@
 
   --focus-color: rgb(96 165 250 / 0.50);
 
+  --stage-preprocessing: #60a5fa;
+  --stage-alignment:     #818cf8;
+  --stage-annotation:    #a78bfa;
+  --stage-registration:  #fb7185;
+  --stage-compiling:     #fb923c;
+  --stage-on-accent:     #0b0d12;
+
   --backdrop-base: #0b0d12;
   --ambient-opacity: 0.55;
   --ambient-idle-1: #1e3a8a;  --ambient-idle-2: #312e81;  --ambient-idle-3: #172554;
@@ -246,6 +271,11 @@
   --ambient-wait-1: #7c2d12;  --ambient-wait-2: #9a3412;  --ambient-wait-3: #172554;
   --ambient-done-1: #14532d;  --ambient-done-2: #166534;  --ambient-done-3: #172554;
   --ambient-err-1:  #7f1d1d;  --ambient-err-2:  #991b1b;  --ambient-err-3:  #1e1b4b;
+  --ambient-pre-1:   #1e40af;  --ambient-pre-2:   #1e3a8a;  --ambient-pre-3:   #0c4a6e;
+  --ambient-align-1: #3730a3;  --ambient-align-2: #312e81;  --ambient-align-3: #1e1b4b;
+  --ambient-annot-1: #5b21b6;  --ambient-annot-2: #4c1d95;  --ambient-annot-3: #2e1065;
+  --ambient-reg-1:   #9f1239;  --ambient-reg-2:   #881337;  --ambient-reg-3:   #4c0519;
+  --ambient-comp-1:  #9a3412;  --ambient-comp-2:  #7c2d12;  --ambient-comp-3:  #431407;
 
   --mat-content-fill: rgb(28 30 36 / 0.84);
   --mat-chrome-fill:  rgb(28 30 36 / 0.62);
@@ -261,6 +291,16 @@
   --elev-2: 0 2px 4px rgb(0 0 0 / 0.30), 0 8px 24px rgb(0 0 0 / 0.35);
   --elev-3: 0 4px 8px rgb(0 0 0 / 0.35), 0 24px 64px -8px rgb(0 0 0 / 0.60);
 }
+
+
+/* ---- Stage accent scope ------------------------------------ */
+/* Any element with data-stage exposes that stage's accent as --stage-accent. */
+[data-stage="preprocessing"]       { --stage-accent: var(--stage-preprocessing); }
+[data-stage="alignment"]           { --stage-accent: var(--stage-alignment); }
+[data-stage="annotation_transfer"] { --stage-accent: var(--stage-annotation); }
+[data-stage="registration"]        { --stage-accent: var(--stage-registration); }
+[data-stage="compiling"]           { --stage-accent: var(--stage-compiling); }
+[data-stage] { --breathe-color: color-mix(in srgb, var(--stage-accent) 28%, transparent); }
 
 
 /* ---- Fallbacks ---------------------------------------------- */

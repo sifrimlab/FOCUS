@@ -131,7 +131,7 @@ Select **Start processing** to validate the configuration and launch the run. Va
 
 ## Stage 3: Running the Pipeline
 
-Click **Start Processing** to run FOCUS with the current configuration. A live log panel streams output from the pipeline process in real time. Progress bars show the current stage and per-sample progress.
+Click **Start processing** to run FOCUS with the current configuration. The progress screen updates live while the pipeline runs.
 
 ### Normal Progression
 
@@ -139,8 +139,17 @@ The pipeline advances automatically through:
 
 1. Preprocessing (all modalities, all samples)
 2. Alignment (pauses for user interaction, see below)
-3. Registration (all non-reference modalities, all samples)
-4. Compilation (merge into `multimodal_dataset.h5mu`)
+3. Annotation transfer (only when spatial annotations are enabled)
+4. Registration (all non-reference modalities with a registration method, all samples)
+5. Compilation (merge into `multimodal_dataset.h5mu`)
+
+Stages that the configuration turns off are not listed. The progress screen is organized from the general to the specific:
+
+- **Stages** (left column): every stage of the run with its status and duration. The running stage expands to list its modalities, each with its own status and duration. Each stage has its own color, used for its mark in the list, for the progress bars and highlights while it runs, and for the background: blue for preprocessing, indigo for alignment, violet for annotation transfer, rose for registration and orange for compiling. The background turns amber while the pipeline waits for manual alignment and red after an error.
+- **Current work** (right column): the stage and the modality being processed, with the modality's elapsed time. Below it, the current step of that modality (for example *Step 3 of 8*, with one segment per step) and, when the step counts items, how many are done (for example *1,840 of 4,096 tiles*). Below that, the samples of the modality: the current sample, a bar, and one chip per included sample marked as done, in progress or pending.
+- **Activity**: the latest messages from the pipeline, newest first, with the time they arrived. The history is kept by the server, so it survives a page reload.
+
+The total elapsed time of the run is shown at the top right.
 
 ### Alignment Stage: Visual Overlay
 
