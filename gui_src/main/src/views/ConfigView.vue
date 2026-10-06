@@ -10,7 +10,6 @@ import PipelineSettingsCard from '../components/config/PipelineSettingsCard.vue'
 import AnnotationsCard from '../components/config/AnnotationsCard.vue';
 import ModalitiesCard from '../components/config/ModalitiesCard.vue';
 import SamplesCard from '../components/config/SamplesCard.vue';
-import ConfigUploader from '../components/config/ConfigUploader.vue';
 import ValidationErrors from '../components/config/ValidationErrors.vue';
 
 const store = useMainStore();
@@ -37,7 +36,6 @@ const confirmReset = async () => {
     <AnnotationsCard />
     <ModalitiesCard />
     <SamplesCard />
-    <ConfigUploader />
 
     <Transition name="fade">
       <ValidationErrors v-if="store.validationErrors.length > 0" :errors="store.validationErrors" />

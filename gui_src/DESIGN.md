@@ -657,7 +657,7 @@ How the main GUI (`gui_src/main/src`) implements this document. The alignment GU
 | `StatusPill` | Chrome pill with a live dot |
 | `ProgressBar` | Determinate or shimmer progress |
 | `Disclosure` | Animated `<details>` section |
-| `DropZone`, `EmptyState` | Dashed wells for file drop and empty lists |
+| `DropZone`, `EmptyState` | Dashed wells for file drop (Setup config import step) and empty lists |
 | `InlineEntryForm` | Name entry row, paired with `useInlineEntry` |
 | `PageHeader`, `ActionBar` | View title and floating action bar |
 

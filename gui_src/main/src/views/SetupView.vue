@@ -1,5 +1,8 @@
 <script setup lang="ts">
-/** Setup: choose the dataset, confirm samples, resolve an existing config. */
+/**
+ * Setup: choose the dataset, confirm samples, then decide where the config
+ * comes from (resume the existing one, upload a file, or start empty).
+ */
 import { ref } from 'vue';
 import { useMainStore } from '../store/main';
 import BrandLockup from '../components/shell/BrandLockup.vue';
@@ -7,16 +10,24 @@ import DatasetPathCard from '../components/setup/DatasetPathCard.vue';
 import SamplesFoundCard from '../components/setup/SamplesFoundCard.vue';
 import ExistingConfigCard from '../components/setup/ExistingConfigCard.vue';
 import CorruptedConfigCard from '../components/setup/CorruptedConfigCard.vue';
+import ConfigImportCard from '../components/setup/ConfigImportCard.vue';
 
-type Step = 'path' | 'samples' | 'existing' | 'corrupted';
+type Step = 'path' | 'samples' | 'existing' | 'corrupted' | 'import';
 
 const store = useMainStore();
 const step = ref<Step>('path');
+const importReturnStep = ref<Step>('samples');
 const corruptedErrors = ref<string[]>([]);
+
+/** Open the import step, remembering where Back should return to. */
+const toImport = (from: Step) => {
+  importReturnStep.value = from;
+  step.value = 'import';
+};
 
 const confirmSamples = () => {
   if (store.hasExistingConfig) step.value = 'existing';
-  else store.goToConfig();
+  else toImport('samples');
 };
 
 const loadExisting = async () => {
@@ -27,11 +38,6 @@ const loadExisting = async () => {
     corruptedErrors.value = result.errors ?? ['Unknown error reading config file.'];
     step.value = 'corrupted';
   }
-};
-
-const overwriteCorrupted = async () => {
-  await store.autoSave();
-  store.goToConfig();
 };
 </script>
 
@@ -46,13 +52,14 @@ const overwriteCorrupted = async () => {
       <Transition name="fade" mode="out-in">
         <DatasetPathCard v-if="step === 'path'" @continue="step = 'samples'" />
         <SamplesFoundCard v-else-if="step === 'samples'" @confirm="confirmSamples" @back="step = 'path'" />
-        <ExistingConfigCard v-else-if="step === 'existing'" @load="loadExisting" @fresh="store.goToConfig()" />
+        <ExistingConfigCard v-else-if="step === 'existing'" @load="loadExisting" @fresh="toImport('existing')" />
         <CorruptedConfigCard
-          v-else
+          v-else-if="step === 'corrupted'"
           :errors="corruptedErrors"
-          @overwrite="overwriteCorrupted"
+          @fresh="toImport('corrupted')"
           @back="step = 'path'"
         />
+        <ConfigImportCard v-else @done="store.goToConfig()" @back="step = importReturnStep" />
       </Transition>
     </div>
   </div>

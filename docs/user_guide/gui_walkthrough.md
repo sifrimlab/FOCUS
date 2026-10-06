@@ -31,9 +31,13 @@ Your browser may open automatically. If it does not, navigate to [http://localho
 The first screen asks for the location of your data.
 
 1. **Dataset path**: Use the filesystem browser in the GUI to navigate to your `dataset_path` directory (the folder that contains your sample subdirectories), or paste the absolute path directly into the text field.
-2. **Config**: Choose one of:
-    - **Create new config**: Start fresh. FOCUS scans the directory and auto-discovers sample IDs from the names of the first-level subdirectories.
-    - **Load existing config**: If a `focus_config.json` already exists in the directory (from a previous run or a manual edit), load it to resume or modify it.
+2. **Samples**: FOCUS auto-discovers sample IDs from the names of the first-level subdirectories. Confirm that the list matches your dataset.
+3. **Existing config**: If a `focus_config.json` already exists in the directory (from a previous run or a manual edit), choose **Load existing config** to resume or modify it, or **Start fresh** to replace it. If the file cannot be read, FOCUS lists the errors; you can go back and repair the file, or start fresh.
+4. **Starting config**: Shown when the directory has no config, or after **Start fresh**. Choose one of:
+    - **Upload a config file**: Drag and drop a `focus_config.json` onto the drop area, or click it to browse. A summary of the file (modalities, reference, enabled steps, disabled samples) is shown before anything is applied. Click **Use this config** to load it. The `dataset_path` stored in the file is replaced by the folder selected in step 1. If the file fails validation, the errors are listed and nothing is applied. Validation requires every sample directory to contain a subdirectory for each modality defined in the file.
+    - **Start with an empty config**: Build a new configuration from scratch.
+
+    An existing or corrupted `focus_config.json` is replaced only after one of these two choices.
 
 !!! tip "Auto-discovery of sample IDs"
     FOCUS infers sample identifiers from the names of the subdirectories directly under `dataset_path`. Review the list of discovered samples on this screen to confirm the directory structure is correct before proceeding.

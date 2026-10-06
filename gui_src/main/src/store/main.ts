@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia';
 import { api } from '../api/client';
 import type { Schema, Config, PipelineStatus, Modality, OutputFiles } from '../api/types';
+import { errorMessage } from '../utils/errors';
 
 function emptyConfig(): Config {
   return {
@@ -163,16 +164,31 @@ export const useMainStore = defineStore('main', {
       return { success: false, corrupted: result.corrupted, errors: result.errors };
     },
 
-    async loadConfigFromFile(content: string) {
-      const result = await api.loadConfig({ content });
-      if (result.valid && result.config) {
-        this.config = normalizeConfig(result.config);
-        this.validationErrors = [];
-        return true;
-      } else {
-        this.validationErrors = result.errors || ['Invalid configuration file'];
-        return false;
+    /**
+     * Apply an uploaded config. The dataset folder chosen in Setup always wins
+     * over the file's own dataset_path, so the config is saved in that folder.
+     * On failure nothing is applied and the errors are returned to the caller.
+     */
+    async importConfig(data: Record<string, unknown>): Promise<{ ok: true } | { ok: false; errors: string[] }> {
+      try {
+        const result = await api.loadConfig({ content: { ...data, dataset_path: this.config.dataset_path } });
+        if (result.valid && result.config) {
+          this.config = normalizeConfig(result.config);
+          this.validationErrors = [];
+          return { ok: true };
+        }
+        return { ok: false, errors: result.errors?.length ? result.errors : ['Invalid configuration file'] };
+      } catch (e: unknown) {
+        return { ok: false, errors: [errorMessage(e, 'Could not load the configuration file')] };
       }
+    },
+
+    /** Start from an empty config in the selected dataset folder and save it. */
+    async startEmptyConfig() {
+      this.config = { ...emptyConfig(), dataset_path: this.config.dataset_path };
+      this.validationErrors = [];
+      this.manuallyAddedSamples = [];
+      await this.autoSave();
     },
 
     async addManualSample(name: string) {
