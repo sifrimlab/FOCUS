@@ -38,7 +38,10 @@ const STEP_PREFIX = /^\d+(?:-\d+)?\/\d+\s*[-–]\s*/;
 export function useRunProgress() {
   const store = useMainStore();
   const status = computed(() => store.pipelineStatus);
-  const { elapsed } = useServerClock(computed(() => status.value.server_now));
+  const connection = computed(() => store.connection);
+  /** The server is unreachable or lost the run: what is shown is the last known state. */
+  const offline = computed(() => connection.value !== 'online');
+  const { elapsed } = useServerClock(computed(() => status.value.server_now), offline);
 
   const finished = computed(() => status.value.state === 'completed' || status.value.state === 'error');
   const records = computed(() => new Map<string, StageRecord>(status.value.timeline.map(r => [r.stage, r])));
@@ -124,6 +127,8 @@ export function useRunProgress() {
 
   return {
     status,
+    connection,
+    offline,
     finished,
     jointStep,
     samplesVisible,

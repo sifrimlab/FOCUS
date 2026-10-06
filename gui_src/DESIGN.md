@@ -303,7 +303,7 @@ The backdrop layer carries `data-ambient`. It is derived from existing store sta
 | `comp` | Running: compiling | `--ambient-comp-1..3`: oranges | Slow drift |
 | `wait` | RunningView, manual alignment required | `--ambient-wait-1..3`: orange, peach, blue | Asks for attention without alarm |
 | `done` | CompleteView | `--ambient-done-1..3`: green, mint, blue | One bloom on entry, then still |
-| `err` | Error state in RunningView | `--ambient-err-1..3`: red, rose, indigo | Still, no drift |
+| `err` | RunningView: pipeline error, or run interrupted (server restarted) | `--ambient-err-1..3`: red, rose, indigo | Still, no drift |
 
 ### 5.2 Geometry
 
@@ -514,6 +514,7 @@ Mapping:
   - connectors are 2 px lines, `--separator-strong`, filling to `--success` as stages complete
   - stage labels in Caption below each circle
 - Step dots: 8 px, the same color logic. The active dot is 10 px; the scale change uses the snappy spring.
+- Lost connection: while the server does not answer, the progress screen shows the last known state frozen. Its root carries `data-offline`, which pauses every animation (breathing marks, sheens, pulses) and stops the elapsed timers, because live motion would claim progress the GUI cannot see. The only element that keeps animating is the warning banner's "Retrying…" pill (`.keep-live`).
 
 ### 8.8 Status line
 

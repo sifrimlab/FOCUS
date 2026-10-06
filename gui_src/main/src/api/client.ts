@@ -1,6 +1,9 @@
 import axios from 'axios';
 import type { Schema, Config, PipelineStatus, ValidationResult, SamplesResult, BrowseResult, BrowseFilesResult } from './types';
 
+/** A status poll slower than this counts as failed, so a hung backend is detected. */
+const STATUS_TIMEOUT_MS = 5000;
+
 const apiClient = axios.create({
   baseURL: '',
   headers: { 'Content-Type': 'application/json' },
@@ -58,7 +61,7 @@ export const api = {
   },
 
   async getStatus(): Promise<PipelineStatus> {
-    const r = await apiClient.get<PipelineStatus>('/api/status');
+    const r = await apiClient.get<PipelineStatus>('/api/status', { timeout: STATUS_TIMEOUT_MS });
     return r.data;
   },
 

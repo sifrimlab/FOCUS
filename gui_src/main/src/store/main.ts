@@ -7,6 +7,13 @@ import { useBuilderStore, type BuilderEntry } from './builder';
 
 export type ForceStage = 'preprocessing' | 'alignment' | 'registration';
 
+/** Backend reachability while a run is polled: lost after repeated failures, run-lost when the server no longer has the run. */
+export type Connection = 'online' | 'lost' | 'run-lost';
+
+const POLL_MS = 1500;
+/** Consecutive failed status polls before the connection is reported lost (about 5 s). */
+const LOST_AFTER_FAILURES = 3;
+
 function emptyConfig(): Config {
   return {
     dataset_path: '',
@@ -84,7 +91,11 @@ export const useMainStore = defineStore('main', {
     hasExistingConfig: false,
     isLoading: false,
     autoSaveTimeout: null as ReturnType<typeof setTimeout> | null,
-    statusPollInterval: null as ReturnType<typeof setInterval> | null,
+    statusPollTimer: null as ReturnType<typeof setTimeout> | null,
+    polling: false,
+    connection: 'online' as Connection,
+    failedPolls: 0,
+    lastContactAt: null as number | null,
   }),
 
   getters: {
@@ -131,6 +142,7 @@ export const useMainStore = defineStore('main', {
 
         // Restore pipeline status and derive the correct view
         this.pipelineStatus = state.status;
+        this.resetConnection();
         const s = state.status.state;
         if (s === 'running' || s === 'alignment_waiting') {
           this.currentView = 'running';
@@ -352,28 +364,59 @@ export const useMainStore = defineStore('main', {
       }
     },
 
+    /**
+     * Poll /api/status, one request at a time. Failures never stop polling:
+     * the backend may come back (network glitch) with the run still going.
+     */
     startStatusPolling() {
       this.stopStatusPolling();
-      this.statusPollInterval = setInterval(async () => {
-        try {
-          this.pipelineStatus = await api.getStatus();
-          if (this.pipelineStatus.state === 'completed') {
-            this.currentView = 'complete';
-            this.stopStatusPolling();
-          } else if (this.pipelineStatus.state === 'error') {
-            this.stopStatusPolling();
-          }
-        } catch {
-          // Keep polling on network hiccups
-        }
-      }, 1500);
+      this.resetConnection();
+      this.lastContactAt = Date.now();
+      this.polling = true;
+      this.statusPollTimer = setTimeout(() => this.pollStatus(), POLL_MS);
+    },
+
+    async pollStatus() {
+      try {
+        this.applyPolledStatus(await api.getStatus());
+      } catch {
+        this.failedPolls++;
+        if (this.failedPolls >= LOST_AFTER_FAILURES) this.connection = 'lost';
+      }
+      if (this.polling) this.statusPollTimer = setTimeout(() => this.pollStatus(), POLL_MS);
+    },
+
+    applyPolledStatus(next: PipelineStatus) {
+      this.failedPolls = 0;
+      this.lastContactAt = Date.now();
+      // /api/run sets 'running' before it returns, so 'idle' (or another run) means the server was restarted.
+      const prevStart = this.pipelineStatus.run_started_at;
+      if (next.state === 'idle' || (prevStart && next.run_started_at && next.run_started_at !== prevStart)) {
+        this.connection = 'run-lost';
+        this.stopStatusPolling();
+        return;
+      }
+      this.connection = 'online';
+      this.pipelineStatus = next;
+      if (next.state === 'completed') {
+        this.currentView = 'complete';
+        this.stopStatusPolling();
+      } else if (next.state === 'error') {
+        this.stopStatusPolling();
+      }
     },
 
     stopStatusPolling() {
-      if (this.statusPollInterval) {
-        clearInterval(this.statusPollInterval);
-        this.statusPollInterval = null;
+      this.polling = false;
+      if (this.statusPollTimer) {
+        clearTimeout(this.statusPollTimer);
+        this.statusPollTimer = null;
       }
+    },
+
+    resetConnection() {
+      this.connection = 'online';
+      this.failedPolls = 0;
     },
 
     async cleanupFiles() {
@@ -396,6 +439,7 @@ export const useMainStore = defineStore('main', {
       this.validationErrors = [];
       this.pipelineStatus = defaultPipelineStatus();
       this.hasExistingConfig = false;
+      this.resetConnection();
       this.currentView = 'setup';
     },
 
@@ -405,6 +449,8 @@ export const useMainStore = defineStore('main', {
 
     /** Open the configuration builder on its first step, or on Review for a complete config. */
     goToConfig(entry: BuilderEntry = 'review') {
+      this.stopStatusPolling();
+      this.resetConnection();
       useBuilderStore().start(entry);
       this.currentView = 'config';
     },

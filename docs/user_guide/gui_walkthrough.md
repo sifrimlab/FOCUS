@@ -151,6 +151,12 @@ Stages that the configuration turns off are not listed. The progress screen is o
 
 The total elapsed time of the run is shown at the top right.
 
+### Lost Connection to the Server
+
+The progress screen asks the server for the run status every 1.5 seconds. When three requests in a row fail or time out (about 5 seconds), a **Connection to the FOCUS server lost** banner appears, the status at the top right reads **Connection lost**, and the timers and animations stop at the last known state. The cause can be the network (for example an SSH tunnel that dropped) or the server process itself (for example killed after running out of memory); the browser cannot tell them apart. The GUI keeps retrying: if the server answers again and the run is still going, the banner disappears and the screen resumes on its own.
+
+If the server answers but has no running pipeline, the server was restarted and the run is lost. A **Run interrupted** banner replaces the warning, the background turns red, and **Back to configuration** returns to Review to start the run again.
+
 ### Alignment Stage: Visual Overlay
 
 When the pipeline reaches the alignment stage, processing pauses and a banner appears in the main GUI:

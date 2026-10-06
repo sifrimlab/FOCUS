@@ -24,7 +24,7 @@ export function useAmbientState() {
         return 'done';
       case 'running': {
         const { state, stage } = store.pipelineStatus;
-        if (state === 'error') return 'err';
+        if (state === 'error' || store.connection === 'run-lost') return 'err';
         if (state === 'alignment_waiting') return 'wait';
         return (stage && STAGE_AMBIENT[stage]) || 'run';
       }

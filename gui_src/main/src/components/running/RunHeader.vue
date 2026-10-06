@@ -8,6 +8,8 @@ import StatusPill from '../ui/StatusPill.vue';
 const run = injectRunProgress();
 
 const pill = computed(() => {
+  if (run.connection.value === 'lost') return { tone: 'warning' as const, label: 'Connection lost', live: false };
+  if (run.connection.value === 'run-lost') return { tone: 'danger' as const, label: 'Run interrupted', live: false };
   switch (run.status.value.state) {
     case 'alignment_waiting': return { tone: 'warning' as const, label: 'Waiting for alignment', live: true };
     case 'error': return { tone: 'danger' as const, label: 'Stopped with an error', live: false };
