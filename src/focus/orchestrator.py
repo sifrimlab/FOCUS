@@ -10,6 +10,7 @@ from focus.constants import (
 	AlignmentStrategy, AnnotationsParameters, AnnotationFileType,
 	MODALITY_ANNOTATION, MODALITY_ANNOTATION_MERGED, DISPLAY_NAMES,
 	IMAGE_MODALITY_TYPES, SPOT_MODALITY_TYPES,
+	MsiPreprocessingParams, MsiSampleType,
 )
 from focus.utils import write_h5ad_compat, concat_on_disk_compat, write_h5mu_compat, release_memory
 from focus.preprocessing import preprocess_modality
@@ -231,6 +232,22 @@ def _has_spot_modalities(config: dict) -> bool:
 	return ref_mod[ModalityParameters.TYPE] in _SPOT_MODALITIES
 
 
+def _is_microgrid_experiment(config: dict) -> bool:
+	"""Return True if any MSI modality in the config is a microgrid acquisition.
+
+	Microgrid alignment matches the pattern of foreground spots between grids, so in that case
+	every spot modality is shown in the alignment GUI at its exact spot positions (see
+	DirectMappingAligner exact_spots).
+	"""
+	for m in config[ConfigParameters.MODALITIES]:
+		if m[ModalityParameters.TYPE] != ModalityType.MSI:
+			continue
+		settings = m.get(ModalityParameters.PROCESSING_SETTINGS, {}) or {}
+		if settings.get(MsiPreprocessingParams.SAMPLE_TYPE, MsiSampleType.TISSUE) == MsiSampleType.MICROGRID:
+			return True
+	return False
+
+
 def _compute_effective_force_flags(config: dict) -> tuple[dict[str, bool], dict[str, bool]]:
 	"""
 	Derive effective force_recomputing flags for alignment and registration by cascading
@@ -300,6 +317,10 @@ def _run_alignment(config: dict, modality_files: dict, report, n_stages: int,
 
 	aligned_files: dict[str, dict[str, str]] = {}
 
+	exact_spots = _is_microgrid_experiment(config)
+	if exact_spots:
+		logger.info("Microgrid MSI modality found: alignment shows exact foreground spots with no coarsening or clustering")
+
 	for modality in modalities:
 		mod_name = modality[ModalityParameters.NAME]
 		if mod_name == ref_name:
@@ -324,6 +345,7 @@ def _run_alignment(config: dict, modality_files: dict, report, n_stages: int,
 			target_modality_name=ref_name,
 			reference_modality_type=mod_type,
 			target_modality_type=ref_type,
+			exact_spots=exact_spots,
 		)
 
 		strategy = modality.get(ModalityParameters.ALIGNMENT_STRATEGY, AlignmentStrategy.MANUAL)

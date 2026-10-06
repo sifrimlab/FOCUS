@@ -15,6 +15,8 @@ logger = logging.getLogger("focus.alignment")
 # Spot datasets larger than this are coarsened onto a spatial grid before display (large raw
 # payloads crash the browser's XHR JSON parser). _SPATIAL_CAP is shared with preprocessing
 # clustering so both stages build the identical grid — a bin's spots therefore share one label.
+# In exact-spot mode (microgrid experiments) no coarsening happens: only foreground spots are sent,
+# at their true positions and in a single class (see DirectMappingAligner._prepare_exact_spot_data).
 
 # Perceptually distinct palette for Leiden cluster coloring (up to 26 clusters, then cycles)
 
@@ -154,7 +156,8 @@ class DirectMappingAligner:
 			reference_modality_name: str,
 			target_modality_name: str,
 			reference_modality_type: str,
-			target_modality_type: str
+			target_modality_type: str,
+			exact_spots: bool = False
 		) -> None:
 
 		if not isinstance(path, str) or not isinstance(reference_modality, dict) or not isinstance(target_modality, dict):
@@ -171,6 +174,7 @@ class DirectMappingAligner:
 		self._target_modality_name = target_modality_name
 		self._reference_modality_type = reference_modality_type
 		self._target_modality_type = target_modality_type
+		self._exact_spots = exact_spots
 
 		# Only align samples present in both modalities
 		common = set(reference_modality.keys()) & set(target_modality.keys())
@@ -360,6 +364,9 @@ class DirectMappingAligner:
 		REAL (N, 2) coordinate array, kept on the backend so the user-defined transform is applied
 		to every original spot (not the bins) after confirmation. Nothing here is persisted.
 		"""
+		if self._exact_spots:
+			return self._prepare_exact_spot_data(filename, modality_name)
+
 		coordinates, spot_size, foreground_mask, cluster_labels, color_map = self._load_anndata_spots(filename)
 
 		# Build stable integer mapping for cluster labels (consecutive ints starting at 0)
@@ -418,6 +425,54 @@ class DirectMappingAligner:
 		# Spot coordinates are already in physical space, no scaling needed
 		scale_factors = np.array([1.0, 1.0])
 		return metadata, display_payload, coordinates, scale_factors
+
+	def _prepare_exact_spot_data(self, filename: str, modality_name: str):
+		"""Prepare spot modality data for the GUI in exact-spot mode (microgrid experiments).
+
+		Returns (metadata, display_payload, full_coordinates, scale_factors), like
+		``_prepare_spot_data``.
+
+		Microgrid alignment matches the pattern of foreground spots between grids, so spots are
+		never coarsened: each displayed spot sits at its true position with the true spot size.
+		Cluster labels are ignored and every spot gets class 0, because colouring carries no
+		information here and the GUI still expects a class per spot. Only foreground spots are sent,
+		which keeps the payload tractable for whole-slide acquisitions. The metadata flag
+		``foreground_only`` tells the GUI to replace the foreground filter with a notice. When no
+		spot is foreground, all spots are sent instead so the canvas is never empty.
+
+		``id`` is the original obs index and ``full_coordinates`` is the complete (N, 2) array, so
+		the confirmed transform is applied to every spot exactly as in the coarsened path.
+		"""
+		coordinates, spot_size, foreground_mask, _, _ = self._load_anndata_spots(filename)
+		color = _CLUSTER_PALETTE[0]
+		color_map = {"0": color}
+
+		foreground_only = bool(foreground_mask.any())
+		if foreground_only:
+			indices = np.flatnonzero(foreground_mask)
+		else:
+			logger.warning(f"No foreground spots in {filename}; showing all {len(coordinates)} spots.")
+			indices = np.arange(len(coordinates))
+
+		display_payload = [
+			{
+				"id": int(i),
+				"spatial": coordinates[i].tolist(),
+				"class": 0,
+				"foreground": bool(foreground_mask[i]),
+				"color": color,
+			}
+			for i in indices
+		]
+
+		metadata = {
+			"modality_type": "SPOT",
+			"modality_name": modality_name,
+			"spot_size": spot_size.tolist(),
+			"color_map": color_map,
+			"foreground_only": foreground_only,
+		}
+		return metadata, display_payload, coordinates, np.array([1.0, 1.0])
 
 	def _prepare_modality_data(self, filename: str, modality_name: str, modality_type: str):
 		"""Dispatch to the appropriate loader based on modality type.

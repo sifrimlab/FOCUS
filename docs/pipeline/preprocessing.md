@@ -104,11 +104,17 @@ The MSI pipeline operates at the **dataset level**: all samples are processed to
    - Compute raster bounding-box coordinates for each spot (in µm)
 
 2. **Background Detection** (optional, `detect_background=True` **and** `lipid_annotation_db` set). Without a database the step is silently skipped and every spot is marked foreground
-   - For each spot, compute three spectral complexity features: Shannon entropy of the normalized intensity distribution, number of detected peaks, and log(1 + TIC)
-   - Add a 4th feature from the database (fraction of peaks matching the DB at the configured mass tolerance)
-   - Min-max normalize each feature and average into a composite score
-   - **Tissue sections** (`sample_type="tissue"`): fit a 1-component and a 2-component Gaussian Mixture Model; use BIC to select between them. If the 2-component model wins, classify spots with posterior ≥ 0.5 on the higher-mean component as tissue. Apply morphological cleanup (hole filling + binary opening) on the pixel grid.
-   - **Microgrid samples** (`sample_type="microgrid"`): use Otsu thresholding with a 25th-percentile floor to protect weak single-cell signals; no spatial cleanup.
+   - **Tissue sections** (`sample_type="tissue"`):
+     - For each spot, compute three spectral complexity features: Shannon entropy of the normalized intensity distribution, number of detected peaks, and log(1 + TIC)
+     - Add a 4th feature from the database (fraction of peaks matching the DB at the configured mass tolerance)
+     - Min-max normalize each feature and average into a composite score
+     - Fit a 1-component and a 2-component Gaussian Mixture Model; use BIC to select between them. If the 2-component model wins, classify spots with posterior ≥ 0.5 on the higher-mean component as tissue. Apply morphological cleanup (hole filling + binary opening) on the pixel grid.
+   - **Microgrid samples** (`sample_type="microgrid"`): the acquisition covers the whole slide, so background is the large majority and each cell covers one or a few spots. Cells are detected as sparse local outliers against a background model.
+     - Background ions: m/z bins on a log-ppm grid one `mass_tolerance` wide present in ≥ 50% of spots, dilated by one bin (matrix, sprayed standards, slide coating)
+     - Per-spot features: log(1 + cell-ion intensity), where cell ions are all peaks outside the background ion set; cell-ion fraction of the TIC; with a database, log(1 + intensity of DB-matched cell ions). TIC is excluded because on a microgrid it tracks matrix ions and ion suppression can lower it on cells
+     - Local background correction: rasterise each feature on the pixel grid, subtract a 9 × 9 spot median filter (removes deposition gradients and row drift), convert the residual to a robust z-score (median, 1.4826 × MAD). Skipped when pixel coordinates are missing or the raster is smaller than the window
+     - Hysteresis threshold on the mean z-score: seeds at z ≥ max(4, Gaussian quantile for 0.01 expected noise seeds per slide); spots with z ≥ 2 that are 8-connected to a seed join its component
+     - No morphological cleanup. Components above 25 spots are logged as possible debris or matrix crystals and kept. When no cell is detected, every spot is marked foreground and a warning is printed
    - The foreground classification is stored as `obs["foreground"]`; all spots (including background) are included in the output and can be filtered downstream.
 
 3. **Recalibration Reference Selection**
@@ -168,7 +174,7 @@ The MSI pipeline operates at the **dataset level**: all samples are processed to
 | `recalibration_reference` | `null` | User-supplied reference m/z dict per ion mode; auto-computed if null |
 | `min_intensity_threshold` | `10000.0` | Minimum intensity for a peak to be used in recalibration offset estimation |
 | `detect_background` | `false` | Run background detection to classify tissue vs background spots. Requires `lipid_annotation_db`; without it the step is skipped |
-| `sample_type` | `"tissue"` | Sample type for background detection: `"tissue"` or `"microgrid"` |
+| `sample_type` | `"tissue"` | Sample type for background detection: `"tissue"` (GMM + BIC, morphological cleanup) or `"microgrid"` (local-outlier detection of sparse cells) |
 | `lipid_annotation_db` | `null` | Path to lipid annotation database (CSV or JSON with `db_name`, `ionized_mass`, `ion_mode` columns) |
 | `force_recomputing` | `false` | Reprocess even if output already exists |
 
@@ -190,7 +196,7 @@ The defaults above are applied both by the pipeline's settings extractor (`_extr
 | `.X` | Normalized interpolated intensities (sparse CSR, spots × m/z features) |
 | `.layers["raw"]` | Raw interpolated intensities before normalization (sparse CSR) |
 | `.obs["sample_id"]` | Categorical sample identifier |
-| `.obs["foreground"]` | Categorical boolean: tissue (True) vs background (False). Always present; all True when background detection did not run |
+| `.obs["foreground"]` | Categorical boolean: tissue or cell (True) vs background (False). Always present; all True when background detection did not run |
 | `.obs["cluster"]` | Categorical per-sample cluster labels (alignment colouring) |
 | `.obsm["spatial"]` | Physical spot center coordinates in µm, shape (N, 2), float32 |
 | `.obsm["raster_coordinates"]` | Raster bounding boxes in µm, shape (N, 2, 2): [[x1,y1],[x2,y2]] |
