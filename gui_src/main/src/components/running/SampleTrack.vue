@@ -1,9 +1,9 @@
 <script setup lang="ts">
 /**
- * Samples of the current modality (or stage), shown once: a count and one
- * chip per included sample (done / current / pending). During a
- * dataset-level step every chip is "joint" and a note explains why. Above
- * MAX_CHIPS the chips are replaced by a bar and the current sample's name.
+ * Samples of the current modality (or stage): a count, a bar, and one chip
+ * per included sample (done / current / pending). During a dataset-level
+ * step every chip is "joint" and a note replaces the bar. Above MAX_CHIPS
+ * the chips are omitted and the header names the current sample instead.
  */
 import { computed } from 'vue';
 import { injectRunProgress } from '../../composables/useRunProgress';
@@ -43,7 +43,7 @@ const percent = computed(() => (total.value ? Math.min(100, (doneCount.value / t
       Dataset-level step: all samples are processed jointly.
     </p>
 
-    <ProgressBar v-if="collapsed && !run.jointStep.value" tone="stage" label="Samples completed" :value="percent" :active="false" />
+    <ProgressBar v-if="!run.jointStep.value" tone="stage" label="Samples completed" :value="percent" :active="false" />
 
     <ul v-if="!collapsed" class="flex flex-wrap gap-1.5">
       <li
