@@ -3,11 +3,11 @@
 import PromptCard from './PromptCard.vue';
 import BaseButton from '../ui/BaseButton.vue';
 
-const emit = defineEmits<{ load: []; fresh: [] }>();
+const emit = defineEmits<{ load: []; fresh: []; back: [] }>();
 </script>
 
 <template>
-  <PromptCard title="Existing configuration found" icon="exclamation-triangle" tone="warning">
+  <PromptCard title="Existing configuration found" icon="exclamation-triangle" tone="warning" back @back="emit('back')">
     <p class="type-callout text-fg2">
       A <code class="type-mono-small rounded-tiny bg-inset px-1">focus_config.json</code> file already exists in this
       directory. Would you like to load it or start fresh?

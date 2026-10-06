@@ -52,14 +52,19 @@ const loadExisting = async () => {
       <Transition name="fade" mode="out-in">
         <DatasetPathCard v-if="step === 'path'" @continue="step = 'samples'" />
         <SamplesFoundCard v-else-if="step === 'samples'" @confirm="confirmSamples" @back="step = 'path'" />
-        <ExistingConfigCard v-else-if="step === 'existing'" @load="loadExisting" @fresh="toImport('existing')" />
+        <ExistingConfigCard
+          v-else-if="step === 'existing'"
+          @load="loadExisting"
+          @fresh="toImport('existing')"
+          @back="step = 'samples'"
+        />
         <CorruptedConfigCard
           v-else-if="step === 'corrupted'"
           :errors="corruptedErrors"
           @fresh="toImport('corrupted')"
-          @back="step = 'path'"
+          @back="step = 'existing'"
         />
-        <ConfigImportCard v-else @done="store.goToConfig()" @back="step = importReturnStep" />
+        <ConfigImportCard v-else @done="store.goToConfig($event)" @back="step = importReturnStep" />
       </Transition>
     </div>
   </div>

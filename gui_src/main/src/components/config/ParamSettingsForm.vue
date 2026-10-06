@@ -14,11 +14,15 @@ const props = defineProps<{
   specs: ParamSpecs;
   settings: Record<string, unknown>;
   emptyText: EmptyTextPolicy;
+  /** Parameter keys edited elsewhere (e.g. force_recomputing on Review). */
+  exclude?: string[];
 }>();
 
 const emit = defineEmits<{ update: [settings: Record<string, unknown>] }>();
 
-const entries = computed(() => sortParamEntries(props.specs));
+const entries = computed(() =>
+  sortParamEntries(props.specs).filter(([key]) => !props.exclude?.includes(key)),
+);
 
 const commit = (key: string, value: unknown) => emit('update', { ...props.settings, [key]: value });
 </script>

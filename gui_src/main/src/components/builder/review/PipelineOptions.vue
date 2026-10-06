@@ -1,20 +1,20 @@
 <script setup lang="ts">
-/** Optional spatial annotation loading: source modality and file type. */
+/** Global run options on Review: pipeline scope, spatial annotations, HuggingFace token. */
 import { computed } from 'vue';
-import { useMainStore } from '../../store/main';
-import type { SpatialAnnotations } from '../../api/types';
-import GlassCard from '../ui/GlassCard.vue';
-import CardHeader from '../ui/CardHeader.vue';
-import FormRow from '../ui/FormRow.vue';
-import SelectField from '../ui/SelectField.vue';
-import ToggleSwitch from '../ui/ToggleSwitch.vue';
+import { useMainStore } from '../../../store/main';
+import type { SpatialAnnotations } from '../../../api/types';
+import PipelineScope from '../PipelineScope.vue';
+import FormRow from '../../ui/FormRow.vue';
+import SelectField from '../../ui/SelectField.vue';
+import TextField from '../../ui/TextField.vue';
+import ToggleSwitch from '../../ui/ToggleSwitch.vue';
 
 const store = useMainStore();
 
 const annotations = computed(() => store.config.spatial_annotations);
 const fileTypes = computed(() => store.schema?.annotation_file_types ?? ['geojson']);
 
-const setEnabled = (on: boolean) => {
+const setAnnotations = (on: boolean) => {
   store.config.spatial_annotations = on
     ? ({
         modality_name: store.modalityNames[0] ?? '',
@@ -24,7 +24,7 @@ const setEnabled = (on: boolean) => {
   store.triggerAutoSave();
 };
 
-const update = (changes: Partial<SpatialAnnotations>) => {
+const updateAnnotations = (changes: Partial<SpatialAnnotations>) => {
   if (!store.config.spatial_annotations) return;
   Object.assign(store.config.spatial_annotations, changes);
   store.triggerAutoSave();
@@ -32,13 +32,14 @@ const update = (changes: Partial<SpatialAnnotations>) => {
 </script>
 
 <template>
-  <GlassCard class="flex flex-col gap-4">
-    <CardHeader title="Spatial annotations" />
+  <div class="flex flex-col gap-3">
+    <PipelineScope />
 
-    <FormRow label="Load spatial annotations">
-      <ToggleSwitch label="Load spatial annotations" :model-value="annotations !== null" @update:model-value="setEnabled" />
+    <div class="border-t border-separator" />
+
+    <FormRow label="Spatial annotations" hint="Transfer per-sample annotation files to the outputs.">
+      <ToggleSwitch label="Load spatial annotations" :model-value="annotations !== null" @update:model-value="setAnnotations" />
     </FormRow>
-
     <template v-if="annotations">
       <FormRow label="Annotation modality">
         <SelectField
@@ -46,27 +47,39 @@ const update = (changes: Partial<SpatialAnnotations>) => {
           :model-value="annotations.modality_name"
           placeholder="Select modality…"
           aria-label="Annotation modality"
-          @update:model-value="update({ modality_name: $event })"
+          @update:model-value="updateAnnotations({ modality_name: $event })"
         >
           <option v-for="name in store.modalityNames" :key="name" :value="name">{{ name }}</option>
         </SelectField>
       </FormRow>
-
       <FormRow label="Annotation file type">
         <SelectField
           class="w-56"
           :model-value="annotations.file_type"
           aria-label="Annotation file type"
-          @update:model-value="update({ file_type: $event })"
+          @update:model-value="updateAnnotations({ file_type: $event })"
         >
           <option v-for="ft in fileTypes" :key="ft" :value="ft">{{ ft }}</option>
         </SelectField>
       </FormRow>
-
       <p class="type-footnote text-fg3">
         FOCUS expects one annotation file per sample in
         <code class="type-mono-small rounded-tiny bg-inset px-1">{sample_id}/{{ annotations.modality_name }}/</code>.
       </p>
     </template>
-  </GlassCard>
+
+    <template v-if="store.needsHuggingfaceToken">
+      <div class="border-t border-separator" />
+      <FormRow label="HuggingFace token" hint="Needed by the feature-extraction registration method.">
+        <TextField
+          v-model="store.config.huggingface_token"
+          class="w-56"
+          type="password"
+          placeholder="hf_..."
+          aria-label="HuggingFace token"
+          @input="store.triggerAutoSave()"
+        />
+      </FormRow>
+    </template>
+  </div>
 </template>

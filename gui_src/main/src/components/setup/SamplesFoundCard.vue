@@ -17,6 +17,8 @@ const store = useMainStore();
     description="Verify the list matches your dataset before continuing."
     icon="check"
     tone="success"
+    back
+    @back="emit('back')"
   >
     <InsetWell v-if="store.samples.length > 0" padding="sm" class="max-h-[min(220px,30vh)] overflow-y-auto">
       <div
@@ -33,8 +35,7 @@ const store = useMainStore();
     </Banner>
 
     <template #actions>
-      <BaseButton variant="primary" size="xl" class="flex-1" @click="emit('confirm')">Confirm and continue</BaseButton>
-      <BaseButton variant="secondary" size="xl" @click="emit('back')">Back</BaseButton>
+      <BaseButton variant="primary" size="xl" block @click="emit('confirm')">Confirm and continue</BaseButton>
     </template>
   </PromptCard>
 </template>

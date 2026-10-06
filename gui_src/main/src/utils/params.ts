@@ -1,5 +1,5 @@
 /** Helpers for schema-driven parameter forms (processing and registration). */
-import type { ParamSpec } from '../api/types';
+import type { Modality, ParamSpec } from '../api/types';
 
 export type ParamSpecs = Record<string, ParamSpec>;
 
@@ -39,4 +39,13 @@ export function parseParamValue(spec: ParamSpec, raw: string, emptyText: EmptyTe
   }
   if (raw) return raw;
   return emptyText === 'null' || spec.nullable ? null : '';
+}
+
+/** Parameter key of the force-recompute flag; it is edited on Review, not in the settings forms. */
+export const FORCE_KEY = 'force_recomputing';
+
+/** True when a modality carries settings that a type or reference change would discard. */
+export function hasCustomSettings(m: Modality): boolean {
+  const custom = Object.keys(m.processing_settings ?? {}).some(k => k !== FORCE_KEY);
+  return custom || m.registration_type !== 'none' || m.alignment_strategy !== 'manual';
 }

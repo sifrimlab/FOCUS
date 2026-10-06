@@ -74,7 +74,7 @@ letter-spacing: var(--track-headline);
 | Title 1 | 600 | 24 / 30 | -0.019em | Page title, one per view: "Configuration builder", "Pipeline completed". |
 | Title 2 | 600 | 20 / 26 | -0.015em | Dialog title. Prompt card titles on Setup ("Samples found"). |
 | Title 3 | 600 | 17 / 22 | -0.011em | Card title: "Pipeline settings", "Modalities", "Samples", the running status card title. |
-| Headline | 600 | 15 / 20 | -0.006em | Sub-card title: modality name in ModalityCard, `<details>` section summaries ("Processing settings"), output section names. |
+| Headline | 600 | 15 / 20 | -0.006em | Sub-card title: `<details>` section summaries, output section names, row titles inside a card. |
 | Body | 400 | 14 / 20 | -0.003em | Default text, form values, list rows, dialog message. |
 | Body strong | 500 | 14 / 20 | -0.003em | Form labels, emphasized inline text, selected list row. |
 | Callout | 400 | 13 / 18 | 0 | Helper text under a control, banner body text, status line text. |
@@ -232,7 +232,7 @@ Materials are layered surfaces. Each one combines a translucent fill, `backdrop-
 | content | white .86 / `#1c1e24` .84 | 20 px | 160% | `--elev-1` | Cards: setup card, config cards, running card, output cards, cleanup card |
 | chrome | white .62 / `#1c1e24` .62 | 24 px | 180% | `--elev-2` | Top-right control cluster, sticky bottom action bar |
 | overlay | white .78 / `#202229` .80 | 40 px | 180% | `--elev-3` (dialog), `--elev-2` (popover) | ConfirmDialog panel, FilePicker dropdown, future menus and popovers |
-| inset | `rgb(118 118 128 / .08)` / `/ .18` | none | none | none | Wells inside a material: inputs, folder list, status line, nested ModalityCard, sample chip area, segmented control track |
+| inset | `rgb(118 118 128 / .08)` / `/ .18` | none | none | none | Wells inside a material: inputs, folder list, status line, config file preview, segmented control track |
 
 Reference recipe:
 
@@ -251,7 +251,7 @@ The saturation boost makes the ambient hue glow through the glass instead of tur
 ### 4.2 Rules
 
 1. **At most two glass layers overlap at any point.** For example, the overlay dialog over the content card over the backdrop. A glass surface is never placed inside another glass surface.
-2. **Nested containers use inset, not glass.** ModalityCard inside the Modalities card, the folder browser inside the setup card, and the status line inside the running card are inset wells.
+2. **Nested containers use inset, not glass.** The folder browser inside the setup card, the config file preview inside the import card, and the status line inside the running card are inset wells. Lists inside a card (modality rows, review rows) are plain rows separated by hairlines.
 3. **Chrome floats.** Chrome surfaces are detached from the window edges by at least `--space-3`, are fully rounded (`--radius-full` for pill clusters, `--radius-xl` for the action bar), and carry `--elev-2`.
 4. **Dialogs dim, not blur, the page.** The scrim is `--mat-scrim` with no blur, so the dialog's own glass is the only blur. This also avoids a second full-screen blur pass.
 5. **No glass on large scrolling regions.** A blur behind a long scrolling list repaints on every scroll frame. Scroll containers use content material on the parent and inset for the list.
@@ -422,7 +422,7 @@ Mapping:
 | Reset in the action bar | Destructive (tinted), large |
 | Emerald add | Icon with a plus, `--primary-fg` |
 | Red remove-all | Icon, `--danger-fg` |
-| Edit / remove in ModalityCard | Icon |
+| Remove modality, browse, menu | Icon |
 | Dialog confirm | Primary, or destructive filled for dangerous actions |
 | Dialog cancel | Secondary |
 
@@ -452,7 +452,7 @@ Mapping:
 - **No gray header strip.** The card title (Title 3, `--fg1`) sits at the top of the card body. Header actions (icon buttons) align right on the same baseline row.
 - An optional `--separator` hairline under the header row is allowed only when the card body is a list.
 - Stacked cards are `--card-gap` apart.
-- Nested ModalityCard: an inset well, `--radius-lg`, padding 16, title in Headline.
+- Nested containers inside a card: an inset well, `--radius-lg`, padding 16, title in Headline.
 - `<details>` sections inside cards: the summary row in Headline with a rotating chevron (rotation with `--ease-spring` over `--dur-base`). The content height animates where supported (`interpolate-size: allow-keywords`), otherwise it appears instantly.
 
 ### 8.5 Banners and notes
@@ -529,7 +529,7 @@ Mapping:
 
 ### 8.13 Empty states and drop zone
 
-- Empty modality list and ConfigUploader drop zone: an inset well with a 1.5 px dashed `--separator-strong` outline, `--radius-lg`, a centered 20 px icon in `--fg3`, and text in Callout `--fg3`.
+- Empty lists and the Setup config-import drop zone: an inset well with a 1.5 px dashed `--separator-strong` outline, `--radius-lg`, a centered 20 px icon in `--fg3`, and text in Callout `--fg3`.
 - Drag-over: the outline turns `--primary`, the bg `--primary-soft`, and the well scales to 1.01 with `--ease-spring`.
 
 ### 8.14 Scrollbars
@@ -628,13 +628,16 @@ How the main GUI (`gui_src/main/src`) implements this document. The alignment GU
 | `styles/typography.css` | `type-*`, `nums`, `ellipsis` utilities |
 | `styles/materials.css` | `material-content`, `material-chrome`, `material-overlay`, `material-popover`, `material-inset`, `scrim` |
 | `styles/transitions.css` | Shared Vue transitions: `view`, `fade`, `pop`, `popover`, `list`, `swap` |
+| `styles/layouts.css` | Grid templates shared by several components (`modality-columns`) |
 | `icons/paths.ts` | Icon registry |
 | `utils/` | `format.ts`, `errors.ts`, `params.ts` |
 | `composables/` | `useTheme`, `useDialog`, `useDirectoryBrowser`, `useInlineEntry`, `useAnchoredPopover`, `useAmbientState` |
 | `components/ui/` | Domain-agnostic primitives (12.3) |
 | `components/shell/` | Backdrop, chrome cluster, theme switcher, splash, brand |
 | `components/browser/` | `DirectoryList` (presentational) and `FilePicker` |
-| `components/setup/`, `config/`, `running/`, `complete/` | Domain components of each view |
+| `components/builder/` | Guided configuration builder: frame (`StepFrame`, `BuilderHeader`, `BuilderStepper`, `BuilderNav`), `steps/`, and per-step parts (`modalities/`, `settings/`, `review/`) |
+| `components/setup/`, `config/`, `running/`, `complete/` | Domain components of each view (`config/` keeps the schema-driven parameter form) |
+| `store/builder.ts` | Builder navigation state (step, unlocked steps, active modality, edit mode); UI only, never saved |
 | `views/` | Thin view compositions |
 
 ### 12.3 Primitive catalog
@@ -653,7 +656,10 @@ How the main GUI (`gui_src/main/src`) implements this document. The alignment GU
 | `SegmentedControl` | Sliding-thumb radio group |
 | `FormRow` | Label and control row |
 | `Banner` | Tinted message with icon, title, actions |
-| `ToggleChip` | On/off chip (sample inclusion) |
+| `ToggleChip` | On/off chip; `size="lg"` is a grid tile (sample inclusion) |
+| `RadioDot` | Single radio for picking one row (reference modality) |
+| `Stepper` | Horizontal step indicator for guided flows (12.4) |
+| `OverflowMenu` | Ellipsis button with a small teleported action menu |
 | `StatusPill` | Chrome pill with a live dot |
 | `ProgressBar` | Determinate or shimmer progress |
 | `Disclosure` | Animated `<details>` section |
@@ -662,4 +668,15 @@ How the main GUI (`gui_src/main/src`) implements this document. The alignment GU
 | `PageHeader`, `ActionBar` | View title and floating action bar |
 
 Before adding a new component, check this catalog. Extend a primitive with a variant when the need is visual; add a new primitive only for a new interaction pattern, and list it here.
+
+### 12.4 Guided flows
+
+Multi-step tasks (the configuration builder) follow one pattern:
+
+- **Frame.** Every step uses `StepFrame`: Title 1, a one-line description, an optional toolbar aligned with the title, then the content. The column width is the same on every step, so the frame does not move between steps.
+- **Progress.** A sticky `Stepper` in a chrome pill sits under the header. Completed and unlocked steps are clickable; locked steps are inert.
+- **Moving.** A floating `ActionBar` holds Back on the left and the forward action on the right. When the step is incomplete, the forward button is disabled and the reason is shown next to it in Footnote. The last step's forward action is the task's primary action (Start processing).
+- **Gating.** Steps unlock as the user progresses. Entering with complete data (a loaded config) unlocks every step and opens the last one.
+- **Targeted edits.** Leaving the final step to change one thing enters edit mode: the forward action becomes "Done, back to review", so the user returns without walking the remaining steps.
+- **Destructive side effects ask first.** A change that discards data entered in a later step (changing a modality type, changing the reference) shows a confirm dialog that names what will be reset.
 

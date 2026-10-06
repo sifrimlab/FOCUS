@@ -46,24 +46,37 @@ The first screen asks for the location of your data.
 
 ## Stage 2: Configuration
 
-The configuration stage is divided into panels. Work through them top to bottom. Changes are saved in real-time as you make them.
+The configuration builder guides you through four steps. The step indicator at the top shows where you are; completed steps can be reopened at any time by selecting them. The **Back** and **Next** buttons at the bottom move one step at a time, and **Next** stays disabled, with the reason shown next to it, until the current step is complete. Changes are saved to `focus_config.json` in `<dataset_path>` as you make them.
 
-### 1. Modality Definitions
+The header above the step indicator shows the dataset in use. Its menu (**⋯**) offers **Change dataset**, which returns to the Setup screen, and **Reset configuration**, which clears the configuration after a confirmation.
 
-Add each modality that is present in your dataset:
+When a configuration already exists (an existing `focus_config.json` that you load, an uploaded configuration file, or a session restored after a page reload), the builder opens directly on **Review** with every step unlocked.
+
+### 1. Samples
+
+Select which samples take part in the run. Each sample is a tile; select it to include or exclude it. Excluded samples are skipped entirely. The filter field narrows the tiles by name, and **Include all** / **Exclude all** apply to the tiles currently shown. At least one sample must be included.
+
+**Add sample** creates a new sample folder in the dataset. A new folder is empty: populate it with data files before starting processing.
+
+### 2. Modalities
+
+Add each modality present in your dataset, one row per modality:
 
 - **Name**: The modality identifier. Must exactly match the subdirectory names inside your sample folders (case-sensitive).
-- **Type**: Select from the dropdown: `microscopy_image`, `msi`, `raman`, or `st`.
+- **Type**: `Microscopy Image`, `MSI`, `Raman` or `Spatial Transcriptomics`.
+- **Reference**: The modality that defines the master coordinate system. All other modalities are aligned and registered onto this coordinate space. The first modality you add becomes the reference until you choose another one.
 
-Add as many modalities as your dataset contains. Use the remove button to delete entries you added by mistake.
+Changing the type of a modality resets its settings to the defaults of the new type, and making a modality the reference clears its registration settings, because the reference is never registered. In both cases the GUI asks for confirmation first.
 
-### 2. Reference Modality
+Below the list, **Pipeline steps** turns **Alignment** and **Registration** on or off for the whole run. Registration requires alignment, and both require at least two modalities.
 
-Select which of the declared modalities defines the master coordinate system. All other modalities will be aligned and registered onto this coordinate space.
+### 3. Modality settings
 
-### 3. Processing Settings
+The settings of one modality are shown at a time. The tabs at the top list every modality: the reference is marked with a star, and a check marks the modalities you have already reviewed. **Next** moves to the following modality, and after the last one to **Review**. The modality type cannot be changed here; change it in the Modalities step.
 
-Each modality has its own processing settings panel that appears after you define the modality type. The GUI shows the most commonly adjusted parameters with their defaults pre-filled. Hover over any field label to see a description.
+Each modality has up to three sections:
+
+**1. Preprocessing.** The parameters of the modality type, with their defaults pre-filled.
 
 Key defaults to review:
 
@@ -76,12 +89,12 @@ Key defaults to review:
 | `msi` | `intensity_normalization` | `"none"` |
 | `microscopy_image` | `gamma` | `0.45` |
 
-### 4. Alignment Settings
+**2. Alignment** (non-reference modalities only). How the reference is placed in the coordinate space of this modality. When the reference is spot-based, choose the strategy:
 
-For each non-reference modality, select the alignment strategy:
-
-- **Manual** (default): Interactive visual alignment via the alignment GUI. Requires the alignment GUI (see Stage 3 below).
+- **Manual** (default): Interactive visual alignment via the alignment GUI (see Stage 3 below).
 - **Pre-aligned**: Skip the alignment GUI for this modality; assume the reference modality's coordinates are already expressed in the target modality's coordinate frame.
+
+For other references, alignment is always manual and the section has no settings.
 
 !!! info "When to use Pre-aligned"
     **Pre-aligned is applicable when:**
@@ -92,29 +105,27 @@ For each non-reference modality, select the alignment strategy:
     
     **If your spot coordinates are in micrometers or physical units**, you must use **Manual** alignment to establish the correspondence with the target modality's coordinate system.
 
-### 5. Registration Settings
-
-For each non-reference modality, select the registration type and fill in any additional settings:
+**3. Registration** (non-reference modalities only). Select the registration method and fill in its settings:
 
 - **None**: Align only; exclude from the final MuData.
 - **Spot interpolation**: Gaussian-weighted spot interpolation (CPU). For `msi` and `st`.
 - **Raman pixel interpolation**: the same Gaussian footprint interpolation applied to the hyperspectral OME-TIFF pixels (CPU). For `raman`.
 - **Feature extraction**: Prov-GigaPath patch embeddings (GPU required). Only available for `microscopy_image`, and only appropriate when that image is an H&E-stained brightfield RGB section, which is what the model was pretrained on. For fluorescence, IHC or other stains, pick **None** instead: the GUI offers Feature extraction for every microscopy modality and nothing downstream checks the stain.
 
-If any modality uses **Feature extraction**, a HuggingFace token field will appear at the top of the configuration panel.
+The reference modality shows only the Preprocessing section.
 
-### 6. Spatial Annotations (Optional)
+### 4. Review
 
-If your samples include GeoJSON annotation files, expand this panel and fill in:
+Review summarizes the whole configuration and is where the run starts:
 
-- **Annotation modality**: The `name` of the modality whose directory contains the `.geojson` files.
-- **File type**: Select `geojson`.
+- **Samples**: how many samples are included and which are excluded. **Edit** reopens the Samples step.
+- **Modalities**: one row per modality with its type, alignment and registration. Select a row to open that modality's settings; **Edit list** reopens the Modalities step.
+- **Run options**: the **Alignment** and **Registration** switches, **Spatial annotations**, and the **HuggingFace token** when a modality uses Feature extraction. For spatial annotations, choose the modality whose directory contains the annotation files and the file type (`geojson`). FOCUS expects one annotation file per sample in `{sample_id}/{annotation modality}/`.
+- **Force recompute**: one row per modality with a switch per stage (Preprocessing, Alignment, Registration). A forced stage ignores cached results and runs again. Stages that do not run for a modality show a dash. Forcing a stage also re-runs the stages that depend on it, and those appear dimmed: forcing the reference's preprocessing re-runs every alignment and registration; forcing another modality's preprocessing re-runs its alignment and registration; forcing an alignment re-runs that modality's registration.
 
-Leave this section collapsed if you do not have annotation files.
+When you open a step or a modality from Review, the bottom bar shows **Done, back to review**, which returns to Review directly without walking through the remaining steps.
 
-### 7. Review Configuration
-
-The configuration is automatically saved to `focus_config.json` in `<dataset_path>` every time you make a change. You can review the JSON configuration at any time by opening the file in a text editor, or you can proceed directly to running the pipeline.
+Select **Start processing** to validate the configuration and launch the run. Validation errors, if any, are listed at the top of Review.
 
 ---
 

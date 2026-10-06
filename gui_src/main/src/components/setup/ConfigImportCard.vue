@@ -2,10 +2,12 @@
 /**
  * Setup step shown when there is no config to resume: upload a
  * focus_config.json (preview, then confirm) or start from an empty config.
- * Emits `done` once the store holds the chosen config.
+ * Emits `done` once the store holds the chosen config, with the builder
+ * entry point: Review for a complete uploaded config, Samples for an empty one.
  */
 import { computed, ref } from 'vue';
 import { useMainStore } from '../../store/main';
+import type { BuilderEntry } from '../../store/builder';
 import { readConfigFile, summarizeConfig } from '../../utils/configFile';
 import PromptCard from './PromptCard.vue';
 import ConfigPreview from './ConfigPreview.vue';
@@ -13,7 +15,7 @@ import DropZone from '../ui/DropZone.vue';
 import Banner from '../ui/Banner.vue';
 import BaseButton from '../ui/BaseButton.vue';
 
-const emit = defineEmits<{ done: []; back: [] }>();
+const emit = defineEmits<{ done: [entry: BuilderEntry]; back: [] }>();
 const store = useMainStore();
 
 const fileName = ref('');
@@ -39,24 +41,24 @@ const pick = async (file: File | null) => {
 };
 
 /** Run a store action with the busy state; emit done when it succeeds. */
-const finish = async (action: () => Promise<string[] | null>) => {
+const finish = async (entry: BuilderEntry, action: () => Promise<string[] | null>) => {
   busy.value = true;
   errors.value = [];
   try {
     const failed = await action();
     if (failed) errors.value = failed;
-    else emit('done');
+    else emit('done', entry);
   } finally {
     busy.value = false;
   }
 };
 
-const useFile = () => finish(async () => {
+const useFile = () => finish('review', async () => {
   const result = await store.importConfig(data.value!);
   return result.ok ? null : result.errors;
 });
 
-const startEmpty = () => finish(async () => {
+const startEmpty = () => finish('samples', async () => {
   await store.startEmptyConfig();
   return null;
 });
@@ -67,6 +69,9 @@ const startEmpty = () => finish(async () => {
     title="How do you want to start?"
     description="Load an existing configuration file, or build a new configuration from scratch."
     icon="document-arrow-up"
+    back
+    :back-disabled="busy"
+    @back="emit('back')"
   >
     <Transition name="fade" mode="out-in">
       <ConfigPreview v-if="fileName" :file-name="fileName" :summary="summary" @clear="clear" />
@@ -84,23 +89,16 @@ const startEmpty = () => finish(async () => {
     </Transition>
 
     <template #actions>
-      <div class="flex w-full flex-col gap-3">
-        <div class="flex gap-3">
-          <BaseButton
-            variant="primary"
-            size="xl"
-            class="flex-1"
-            :disabled="!data || busy"
-            @click="useFile"
-          >{{ busy && data ? 'Loading…' : 'Use this config' }}</BaseButton>
-          <BaseButton variant="secondary" size="xl" :disabled="busy" @click="startEmpty">
-            Start with an empty config
-          </BaseButton>
-        </div>
-        <BaseButton variant="plain" icon="arrow-left" class="self-start" :disabled="busy" @click="emit('back')">
-          Back
-        </BaseButton>
-      </div>
+      <BaseButton
+        variant="primary"
+        size="xl"
+        class="flex-1"
+        :disabled="!data || busy"
+        @click="useFile"
+      >{{ busy && data ? 'Loading…' : 'Use this config' }}</BaseButton>
+      <BaseButton variant="secondary" size="xl" :disabled="busy" @click="startEmpty">
+        Start with an empty config
+      </BaseButton>
     </template>
   </PromptCard>
 </template>

@@ -1,0 +1,6 @@
+/* Shared grid templates for layouts that span several components. */
+
+/* Modality overview: reference radio, name, type, remove action. */
+@utility modality-columns {
+  grid-template-columns: 64px minmax(0, 1fr) 220px 30px;
+}

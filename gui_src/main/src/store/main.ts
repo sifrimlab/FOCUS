@@ -2,6 +2,10 @@ import { defineStore } from 'pinia';
 import { api } from '../api/client';
 import type { Schema, Config, PipelineStatus, Modality, OutputFiles } from '../api/types';
 import { errorMessage } from '../utils/errors';
+import { paramDefaults } from '../utils/params';
+import { useBuilderStore, type BuilderEntry } from './builder';
+
+export type ForceStage = 'preprocessing' | 'alignment' | 'registration';
 
 function emptyConfig(): Config {
   return {
@@ -131,7 +135,7 @@ export const useMainStore = defineStore('main', {
         } else if (s === 'error') {
           this.currentView = 'running';  // RunningView shows the error UI
         } else if (state.config && state.config.modalities && state.config.modalities.length > 0) {
-          this.currentView = 'config';
+          this.goToConfig('review');
         }
         // else stay on 'setup' (the default)
       } catch {
@@ -199,8 +203,8 @@ export const useMainStore = defineStore('main', {
       this.triggerAutoSave();
     },
 
-    addModality(name: string) {
-      const defaultType = this.schema?.modality_types[0] || '';
+    addModality(name: string, type?: string) {
+      const defaultType = type || this.schema?.modality_types[0] || '';
       this.config.modalities.push({
         name,
         type: defaultType,
@@ -232,6 +236,27 @@ export const useMainStore = defineStore('main', {
       this.triggerAutoSave();
     },
 
+    /** Change a modality's type. Its settings no longer apply, so they reset to the new type's defaults. */
+    changeModalityType(index: number, type: string) {
+      this.updateModality(index, {
+        type,
+        processing_settings: paramDefaults(this.schema?.processing_params[type]),
+        registration_type: 'none',
+        registration_settings: {},
+        alignment_strategy: 'manual',
+      });
+    },
+
+    /** Set a force-recompute flag; each stage stores it in a different place of the modality. */
+    setForceFlag(index: number, stage: ForceStage, on: boolean) {
+      const m = this.config.modalities[index];
+      if (!m) return;
+      if (stage === 'preprocessing') m.processing_settings = { ...m.processing_settings, force_recomputing: on };
+      else if (stage === 'alignment') m.alignment_force_recomputing = on;
+      else m.registration_settings = { ...m.registration_settings, force_recomputing: on };
+      this.triggerAutoSave();
+    },
+
     removeAllModalities() {
       this.config.modalities = [];
       this.config.reference_modality = '';
@@ -249,6 +274,10 @@ export const useMainStore = defineStore('main', {
           // Auto-select reference if none is set
           if (!this.config.reference_modality && updates.name) {
             this.config.reference_modality = updates.name;
+          }
+          // Keep the spatial-annotation source in sync too
+          if (this.config.spatial_annotations?.modality_name === m.name) {
+            this.config.spatial_annotations.modality_name = updates.name;
           }
         }
         // Fire-and-forget: create modality subfolders when type changes
@@ -369,7 +398,9 @@ export const useMainStore = defineStore('main', {
       this.currentView = 'setup';
     },
 
-    goToConfig() {
+    /** Open the configuration builder on its first step, or on Review for a complete config. */
+    goToConfig(entry: BuilderEntry = 'review') {
+      useBuilderStore().start(entry);
       this.currentView = 'config';
     },
   },
