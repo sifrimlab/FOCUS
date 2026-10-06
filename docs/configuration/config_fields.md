@@ -293,7 +293,7 @@ Example:
 | `force_recomputing` | bool | `false` |
 
 - `intensity_normalization` allowed values: `"none"`, `"tic"`, `"log"`, `"clr"`, `"tic_mean_scaled"` (all applied per sample and per ion mode). `"tic"` makes each spectrum sum to 1; `"tic_mean_scaled"` rescales each spectrum to the mean total ion current over that sample's spots for that ion mode, preserving absolute intensity scale (values are therefore not comparable across samples).
-- `sample_type` allowed values: `"tissue"`, `"microgrid"`.
+- `sample_type` allowed values: `"tissue"`, `"microgrid"`. `"tissue"` separates a contiguous section from background with a GMM + BIC model and morphological cleanup. `"microgrid"` treats the slide as a dominant background with sparse cells of one or a few spots, and detects cells as local outliers against a background ion model.
 - `lipid_annotation_db`: path to a CSV or JSON file with columns `db_name`, `ionized_mass`, `ion_mode`.
 - `detect_background` only takes effect when `lipid_annotation_db` is also set. Without a database the detection step is skipped and every spot is flagged foreground.
 - `mass_tolerance` must be an integer; a float value raises `ValueError` during processing.

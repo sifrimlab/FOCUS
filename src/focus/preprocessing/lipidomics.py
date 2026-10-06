@@ -2167,6 +2167,11 @@ class MsiDataset(BaseDataset):
 			Minimum intensity threshold to consider a peak valid in the recalibration process.
 		detect_background : bool
 			If True, detects and stores the foreground mask for each sample. If False, the foreground mask covers all the spots.
+			Only effective when a lipid annotation database is set.
+		sample_type : str
+			Background detection strategy. "tissue" fits a GMM + BIC model on spectral complexity features and applies
+			morphological cleanup. "microgrid" detects sparse cells as local outliers against a background ion model
+			(see MsiSample._detect_microgrid_spots).
 		force_recomputing : bool
 			If True, forces recomputation of the reference M/Z vectors and interpolation even if they were already computed.
 			If False, the computation is skipped if the merged dataset already exists.

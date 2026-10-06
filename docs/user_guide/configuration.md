@@ -236,7 +236,7 @@ Additional settings for the chosen registration method. May be an empty object w
     | `intensity_normalization` | string | Normalization method (per sample and per ion mode): `"none"` (default), `"tic"`, `"log"`, `"clr"`, or `"tic_mean_scaled"` (rescales each spectrum to the mean total ion current over that sample's spots for that ion mode, preserving absolute scale; not comparable across samples). |
     | `min_intensity_threshold` | float | Minimum *peak* intensity for a peak to be used when estimating m/z recalibration offsets. Does not mask or filter spots. Default `10000.0`. |
     | `detect_background` | bool | Detect and flag off-tissue background spots in `obs["foreground"]` (all spots are still written). Only effective when `lipid_annotation_db` is also set. Default `false`. |
-    | `sample_type` | string | Background-detection strategy: `"tissue"` (GMM + BIC, default) or `"microgrid"` (Otsu with a 25th-percentile floor). |
+    | `sample_type` | string | Background-detection strategy: `"tissue"` (GMM + BIC, default) or `"microgrid"` (sparse cells on a background-dominated slide, detected as local outliers against a background ion model with median-filter background correction and a hysteresis threshold). |
     | `recalibration_reference` | dict or null | Pre-computed per-ion-mode reference m/z arrays. Computed from the dataset when `null`. Default `null`. |
     | `lipid_annotation_db` | string or null | Path to a CSV or JSON lipid database with columns `db_name`, `ionized_mass`, `ion_mode`. Default `null`. |
     | `force_recomputing` | bool | Reprocess even if output already exists. Default `false`. |

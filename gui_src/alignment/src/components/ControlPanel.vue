@@ -301,21 +301,26 @@ const toggleTgtClass = (cls: number) => {
           <button @click="store.targetClassFilter = []" class="text-[10px] text-blue-500 hover:underline">None</button>
         </div>
 
-        <h4 class="text-[11px] font-semibold uppercase tracking-wide text-gray-400 dark:text-gray-500 mt-2.5 mb-1">Foreground</h4>
-        <div class="flex bg-gray-100 dark:bg-gray-800 rounded-md p-0.5">
-          <button
-            @click="store.targetForegroundMode = 'all'"
-            :class="['flex-1 py-1 text-xs rounded transition-colors select-none', store.targetForegroundMode === 'all' ? 'bg-white dark:bg-gray-700 shadow text-slate-900 dark:text-slate-100 font-medium' : 'text-gray-400 dark:text-gray-500']"
-          >All</button>
-          <button
-            @click="store.targetForegroundMode = 'foreground'"
-            :class="['flex-1 py-1 text-xs rounded transition-colors select-none', store.targetForegroundMode === 'foreground' ? 'bg-white dark:bg-gray-700 shadow text-slate-900 dark:text-slate-100 font-medium' : 'text-gray-400 dark:text-gray-500']"
-          >FG</button>
-          <button
-            @click="store.targetForegroundMode = 'background'"
-            :class="['flex-1 py-1 text-xs rounded transition-colors select-none', store.targetForegroundMode === 'background' ? 'bg-white dark:bg-gray-700 shadow text-slate-900 dark:text-slate-100 font-medium' : 'text-gray-400 dark:text-gray-500']"
-          >BG</button>
-        </div>
+        <template v-if="!store.targetMeta?.foreground_only">
+          <h4 class="text-[11px] font-semibold uppercase tracking-wide text-gray-400 dark:text-gray-500 mt-2.5 mb-1">Foreground</h4>
+          <div class="flex bg-gray-100 dark:bg-gray-800 rounded-md p-0.5">
+            <button
+              @click="store.targetForegroundMode = 'all'"
+              :class="['flex-1 py-1 text-xs rounded transition-colors select-none', store.targetForegroundMode === 'all' ? 'bg-white dark:bg-gray-700 shadow text-slate-900 dark:text-slate-100 font-medium' : 'text-gray-400 dark:text-gray-500']"
+            >All</button>
+            <button
+              @click="store.targetForegroundMode = 'foreground'"
+              :class="['flex-1 py-1 text-xs rounded transition-colors select-none', store.targetForegroundMode === 'foreground' ? 'bg-white dark:bg-gray-700 shadow text-slate-900 dark:text-slate-100 font-medium' : 'text-gray-400 dark:text-gray-500']"
+            >FG</button>
+            <button
+              @click="store.targetForegroundMode = 'background'"
+              :class="['flex-1 py-1 text-xs rounded transition-colors select-none', store.targetForegroundMode === 'background' ? 'bg-white dark:bg-gray-700 shadow text-slate-900 dark:text-slate-100 font-medium' : 'text-gray-400 dark:text-gray-500']"
+            >BG</button>
+          </div>
+        </template>
+        <p v-else class="text-[10px] leading-snug text-gray-500 dark:text-gray-400 mt-2.5">
+          Microgrid mode: only foreground spots are shown, at their exact positions with no coarsening. The alignment is applied to all spots.
+        </p>
       </div>
     </div>
 
@@ -385,21 +390,26 @@ const toggleTgtClass = (cls: number) => {
           <button @click="store.referenceClassFilter = []" class="text-[10px] text-blue-500 hover:underline">None</button>
         </div>
 
-        <h4 class="text-[11px] font-semibold uppercase tracking-wide text-gray-400 dark:text-gray-500 mt-2.5 mb-1">Foreground</h4>
-        <div class="flex bg-gray-100 dark:bg-gray-800 rounded-md p-0.5">
-          <button
-            @click="store.referenceForegroundMode = 'all'"
-            :class="['flex-1 py-1 text-xs rounded transition-colors select-none', store.referenceForegroundMode === 'all' ? 'bg-white dark:bg-gray-700 shadow text-slate-900 dark:text-slate-100 font-medium' : 'text-gray-400 dark:text-gray-500']"
-          >All</button>
-          <button
-            @click="store.referenceForegroundMode = 'foreground'"
-            :class="['flex-1 py-1 text-xs rounded transition-colors select-none', store.referenceForegroundMode === 'foreground' ? 'bg-white dark:bg-gray-700 shadow text-slate-900 dark:text-slate-100 font-medium' : 'text-gray-400 dark:text-gray-500']"
-          >FG</button>
-          <button
-            @click="store.referenceForegroundMode = 'background'"
-            :class="['flex-1 py-1 text-xs rounded transition-colors select-none', store.referenceForegroundMode === 'background' ? 'bg-white dark:bg-gray-700 shadow text-slate-900 dark:text-slate-100 font-medium' : 'text-gray-400 dark:text-gray-500']"
-          >BG</button>
-        </div>
+        <template v-if="!store.referenceMeta?.foreground_only">
+          <h4 class="text-[11px] font-semibold uppercase tracking-wide text-gray-400 dark:text-gray-500 mt-2.5 mb-1">Foreground</h4>
+          <div class="flex bg-gray-100 dark:bg-gray-800 rounded-md p-0.5">
+            <button
+              @click="store.referenceForegroundMode = 'all'"
+              :class="['flex-1 py-1 text-xs rounded transition-colors select-none', store.referenceForegroundMode === 'all' ? 'bg-white dark:bg-gray-700 shadow text-slate-900 dark:text-slate-100 font-medium' : 'text-gray-400 dark:text-gray-500']"
+            >All</button>
+            <button
+              @click="store.referenceForegroundMode = 'foreground'"
+              :class="['flex-1 py-1 text-xs rounded transition-colors select-none', store.referenceForegroundMode === 'foreground' ? 'bg-white dark:bg-gray-700 shadow text-slate-900 dark:text-slate-100 font-medium' : 'text-gray-400 dark:text-gray-500']"
+            >FG</button>
+            <button
+              @click="store.referenceForegroundMode = 'background'"
+              :class="['flex-1 py-1 text-xs rounded transition-colors select-none', store.referenceForegroundMode === 'background' ? 'bg-white dark:bg-gray-700 shadow text-slate-900 dark:text-slate-100 font-medium' : 'text-gray-400 dark:text-gray-500']"
+            >BG</button>
+          </div>
+        </template>
+        <p v-else class="text-[10px] leading-snug text-gray-500 dark:text-gray-400 mt-2.5">
+          Microgrid mode: only foreground spots are shown, at their exact positions with no coarsening. The alignment is applied to all spots.
+        </p>
       </div>
 
       <button @click="store.confirm" class="w-full btn-primary mt-3 select-none">Confirm Alignment</button>

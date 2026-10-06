@@ -266,7 +266,7 @@ The window is split into two parts: a display viewport (80% of the width) and a 
 **Per-layer controls**
 - **Opacity** (reference layer): how strongly it covers the target
 - **Spot Classes** with All / None: show or hide individual clusters of a spot layer
-- **Foreground** with All / FG / BG: restrict a spot layer to foreground or background spots
+- **Foreground** with All / FG / BG: restrict a spot layer to foreground or background spots. In microgrid experiments (an MSI modality with `sample_type="microgrid"`) this toggle is replaced by a notice: only foreground spots are shown, at their exact positions and in one colour, and the alignment is applied to all spots
 - **View Zoom** − / + with **Reset**: zoom the viewport
 
 **Confirm**

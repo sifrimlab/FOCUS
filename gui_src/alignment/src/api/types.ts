@@ -13,6 +13,8 @@ export interface Metadata {
   image_shape?: [number, number];
   scaling_factor?: number;
   color_map?: Record<string, string>;
+  // Exact-spot mode (microgrid experiments): only foreground spots are sent
+  foreground_only?: boolean;
 }
 
 export interface Spot {
