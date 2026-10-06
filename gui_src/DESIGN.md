@@ -635,7 +635,7 @@ How the main GUI (`gui_src/main/src`) implements this document. The alignment GU
 | `components/ui/` | Domain-agnostic primitives (12.3) |
 | `components/shell/` | Backdrop, chrome cluster, theme switcher, splash, brand |
 | `components/browser/` | `DirectoryList` (presentational) and `FilePicker` |
-| `components/builder/` | Guided configuration builder: frame (`StepFrame`, `BuilderHeader`, `BuilderStepper`, `BuilderNav`), `steps/`, and per-step parts (`modalities/`, `settings/`, `review/`) |
+| `components/builder/` | Guided configuration builder: frame (`StepFrame`, `BuilderHeader`, `BuilderNav`), `steps/`, and per-step parts (`modalities/`, `settings/`, `review/`) |
 | `components/setup/`, `config/`, `running/`, `complete/` | Domain components of each view (`config/` keeps the schema-driven parameter form) |
 | `store/builder.ts` | Builder navigation state (step, unlocked steps, active modality, edit mode); UI only, never saved |
 | `views/` | Thin view compositions |
@@ -658,7 +658,7 @@ How the main GUI (`gui_src/main/src`) implements this document. The alignment GU
 | `Banner` | Tinted message with icon, title, actions |
 | `ToggleChip` | On/off chip; `size="lg"` is a grid tile (sample inclusion) |
 | `RadioDot` | Single radio for picking one row (reference modality) |
-| `Stepper` | Horizontal step indicator for guided flows (12.4) |
+| `Stepper` | Horizontal step indicator for guided flows (12.4); `stretch` fills the container width |
 | `OverflowMenu` | Ellipsis button with a small teleported action menu |
 | `StatusPill` | Chrome pill with a live dot |
 | `ProgressBar` | Determinate or shimmer progress |
@@ -674,7 +674,7 @@ Before adding a new component, check this catalog. Extend a primitive with a var
 Multi-step tasks (the configuration builder) follow one pattern:
 
 - **Frame.** Every step uses `StepFrame`: Title 1, a one-line description, an optional toolbar aligned with the title, then the content. The column width is the same on every step, so the frame does not move between steps.
-- **Progress.** A sticky `Stepper` in a chrome pill sits under the header. Completed and unlocked steps are clickable; locked steps are inert.
+- **Header.** One sticky chrome-material header, as wide as the content column, holds the context (the dataset path with a folder badge, plus the overflow menu) and, below a hairline, the `Stepper` in `stretch` mode spread across the full width. Content scrolls under it, so the glass blurs it. Completed and unlocked steps are clickable; locked steps are inert.
 - **Moving.** A floating `ActionBar` holds Back on the left and the forward action on the right. When the step is incomplete, the forward button is disabled and the reason is shown next to it in Footnote. The last step's forward action is the task's primary action (Start processing).
 - **Gating.** Steps unlock as the user progresses. Entering with complete data (a loaded config) unlocks every step and opens the last one.
 - **Targeted edits.** Leaving the final step to change one thing enters edit mode: the forward action becomes "Done, back to review", so the user returns without walking the remaining steps.

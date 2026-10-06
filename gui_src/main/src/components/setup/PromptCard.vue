@@ -2,7 +2,7 @@
 /**
  * Hero card for a Setup step: tinted status icon, Title 2, description,
  * body slot, an actions row (primary first, full width), and an optional
- * Back link to the previous step (`back`), placed the same way on every step.
+ * Back link to the previous step (`back`), top left, placed the same way on every step.
  */
 import GlassCard from '../ui/GlassCard.vue';
 import AppIcon from '../ui/AppIcon.vue';
@@ -23,6 +23,14 @@ const emit = defineEmits<{ back: [] }>();
 
 <template>
   <GlassCard hero padding="lg" class="flex flex-col gap-5">
+    <BaseButton
+      v-if="back"
+      variant="plain"
+      icon="arrow-left"
+      class="-mt-2 -ml-3 self-start"
+      :disabled="backDisabled"
+      @click="emit('back')"
+    >Back</BaseButton>
     <div class="flex items-start gap-3">
       <span v-if="icon" class="badge mt-0.5" :class="`badge--${tone ?? 'primary'}`">
         <AppIcon :name="icon" />
@@ -33,17 +41,7 @@ const emit = defineEmits<{ back: [] }>();
       </div>
     </div>
     <slot />
-    <div class="flex flex-col gap-3">
-      <div class="flex gap-3"><slot name="actions" /></div>
-      <BaseButton
-        v-if="back"
-        variant="plain"
-        icon="arrow-left"
-        class="self-start"
-        :disabled="backDisabled"
-        @click="emit('back')"
-      >Back</BaseButton>
-    </div>
+    <div class="flex gap-3"><slot name="actions" /></div>
   </GlassCard>
 </template>
 
