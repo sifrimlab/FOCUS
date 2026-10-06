@@ -1,0 +1,318 @@
+/* ============================================================
+   FOCUS design tokens, v1
+   Authoritative values for gui_src/DESIGN.md.
+
+   Used by gui_src/main (imported from src/styles/index.css and
+   mapped to Tailwind v4 utilities in src/styles/theme.css).
+   gui_src/alignment adopts it in a later pass.
+
+   Light theme is the default (:root). Dark theme applies when
+   <html> carries class="dark". The theme preference is stored in
+   <html data-theme="system|light|dark">; the .dark class is the
+   resolved result and is the only thing these tokens key on.
+   ============================================================ */
+
+
+/* ---- Fonts --------------------------------------------------- */
+/* Self-hosted through the Fontsource packages @fontsource-variable/inter
+   (opsz + wght axes) and @fontsource-variable/jetbrains-mono, imported
+   by each app's entry script. Vite bundles the woff2 files, so no font
+   is fetched from the network at runtime. Both fonts are SIL OFL. */
+
+
+:root {
+  color-scheme: light;
+
+  /* ---- Font stacks ------------------------------------------ */
+  --font-sans: "Inter Variable", "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: "JetBrains Mono Variable", "JetBrains Mono", ui-monospace, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  /* cv05: lowercase l with tail, so l / I / 1 differ in paths and sample IDs. */
+  --font-feature-sans: "kern", "liga", "calt", "cv05";
+  --font-feature-num:  "kern", "cv05", "tnum";           /* counts, progress, sizes */
+  --font-feature-mono: "kern", "zero";                    /* slashed zero */
+
+  /* ---- Type roles: weight size/line-height + tracking ------- */
+  /* Use as `font: var(--type-body); letter-spacing: var(--track-body);` */
+  --type-large-title: 700 30px/36px var(--font-sans);  --track-large-title: -0.022em;
+  --type-title-1:     600 24px/30px var(--font-sans);  --track-title-1:     -0.019em;
+  --type-title-2:     600 20px/26px var(--font-sans);  --track-title-2:     -0.015em;
+  --type-title-3:     600 17px/22px var(--font-sans);  --track-title-3:     -0.011em;
+  --type-headline:    600 15px/20px var(--font-sans);  --track-headline:    -0.006em;
+  --type-body:        400 14px/20px var(--font-sans);  --track-body:        -0.003em;
+  --type-body-strong: 500 14px/20px var(--font-sans);  --track-body-strong: -0.003em;
+  --type-callout:     400 13px/18px var(--font-sans);  --track-callout:      0;
+  --type-footnote:    400 12px/16px var(--font-sans);  --track-footnote:     0.003em;
+  --type-caption:     500 11px/14px var(--font-sans);  --track-caption:      0.006em;
+  --type-eyebrow:     600 11px/14px var(--font-sans);  --track-eyebrow:      0.06em;   /* uppercase only here */
+  --type-button:      500 14px/20px var(--font-sans);  --track-button:      -0.003em;
+  --type-button-lg:   600 15px/20px var(--font-sans);  --track-button-lg:   -0.006em;
+  --type-mono:        400 13px/18px var(--font-mono);  --track-mono:         0;
+  --type-mono-small:  400 12px/16px var(--font-mono);  --track-mono-small:   0;
+
+  /* ---- Brand (logo, splash, wordmark; fixed identity colors) - */
+  --brand-ink:    #0f172a;
+  --brand-accent: #2563eb;
+
+  /* ---- Labels (text ramp) ----------------------------------- */
+  --fg1: #0f1115;            /* primary text, titles */
+  --fg2: #3f4451;            /* secondary text, form labels */
+  --fg3: #5c6270;            /* hints, metadata (AA on every material) */
+  --fg4: #8e94a0;            /* placeholder and disabled only; not for information */
+  --fg-inverse: #ffffff;     /* text on filled buttons */
+
+  /* ---- Separators ------------------------------------------ */
+  --separator:        rgb(15 17 21 / 0.08);   /* hairlines inside cards, list dividers */
+  --separator-strong: rgb(15 17 21 / 0.16);   /* input outlines, dashed empty state */
+
+  /* ---- Accent (brand blue, Tailwind blue family) ------------ */
+  --primary:        #2563eb;               /* indicators, icons, progress fill */
+  --primary-fill:   #2563eb;               /* filled button bg (white text 5.2:1) */
+  --primary-hover:  #1d4ed8;
+  --primary-press:  #1e40af;
+  --primary-soft:   rgb(37 99 235 / 0.12); /* tinted bg: selected rows, info banners */
+  --primary-fg:     #1d4ed8;               /* links, text on soft, accent text */
+
+  /* ---- Semantic roles --------------------------------------- */
+  /* base = dots/icons/bars, fill = button bg with white text,
+     soft = tinted bg, fg = text on any material or on soft. */
+  --success:        #16a34a;
+  --success-fill:   #15803d;
+  --success-hover:  #166534;
+  --success-soft:   rgb(22 163 74 / 0.12);
+  --success-fg:     #166534;
+
+  --warning:        #f97316;               /* merges former yellow warning + orange force */
+  --warning-fill:   #c2410c;
+  --warning-hover:  #9a3412;
+  --warning-soft:   rgb(234 88 12 / 0.12);
+  --warning-fg:     #9a3412;
+
+  --danger:         #dc2626;
+  --danger-fill:    #dc2626;
+  --danger-hover:   #b91c1c;
+  --danger-soft:    rgb(220 38 38 / 0.12);
+  --danger-fg:      #b91c1c;
+
+  --data-2:         #6366f1;               /* indigo: secondary data series (sample progress) */
+  --data-2-fg:      #4338ca;
+
+  /* ---- Focus ------------------------------------------------- */
+  --focus-color: rgb(37 99 235 / 0.45);
+  --focus-ring: 0 0 0 3px var(--focus-color);
+
+  /* ---- Backdrop and ambient fields --------------------------- */
+  --backdrop-base: #eef1f6;
+  --ambient-opacity: 0.55;
+  --ambient-blur: 120px;
+  /* Per-state hue triplets; selected by [data-ambient] on the backdrop layer. */
+  --ambient-idle-1: #bfdbfe;  --ambient-idle-2: #c7d2fe;  --ambient-idle-3: #e0e7ff;
+  --ambient-run-1:  #93c5fd;  --ambient-run-2:  #a5b4fc;  --ambient-run-3:  #bae6fd;
+  --ambient-wait-1: #fdba74;  --ambient-wait-2: #fed7aa;  --ambient-wait-3: #bfdbfe;
+  --ambient-done-1: #86efac;  --ambient-done-2: #bbf7d0;  --ambient-done-3: #bfdbfe;
+  --ambient-err-1:  #fca5a5;  --ambient-err-2:  #fecaca;  --ambient-err-3:  #e0e7ff;
+
+  /* ---- Materials (Liquid Glass) ----------------------------- */
+  /* content: cards. chrome: floating bars and pills.
+     overlay: dialogs, popovers, dropdowns. inset: wells inside a material. */
+  --mat-content-fill: rgb(255 255 255 / 0.86);
+  --mat-content-blur: 20px;
+  --mat-content-sat:  160%;
+
+  --mat-chrome-fill:  rgb(255 255 255 / 0.62);
+  --mat-chrome-blur:  24px;
+  --mat-chrome-sat:   180%;
+
+  --mat-overlay-fill: rgb(255 255 255 / 0.78);
+  --mat-overlay-blur: 40px;
+  --mat-overlay-sat:  180%;
+
+  --mat-inset-fill:   rgb(118 118 128 / 0.08);
+  --mat-inset-hover:  rgb(118 118 128 / 0.14);
+
+  --mat-scrim:        rgb(15 17 21 / 0.28);   /* behind dialogs */
+  --fill-highlight:   inset 0 1px 0 0 rgb(255 255 255 / 0.18);  /* top sheen on filled buttons */
+
+  /* Specular top edge + hairline outline, applied as box-shadow on every glass surface. */
+  --mat-highlight: inset 0 1px 0 0 rgb(255 255 255 / 0.70);
+  --mat-hairline:  0 0 0 0.5px rgb(15 17 21 / 0.10);
+
+  /* ---- Elevation -------------------------------------------- */
+  --elev-1: 0 1px 2px rgb(15 17 21 / 0.04), 0 2px 8px rgb(15 17 21 / 0.04);            /* cards */
+  --elev-2: 0 2px 4px rgb(15 17 21 / 0.05), 0 8px 24px rgb(15 17 21 / 0.08);           /* chrome, popovers */
+  --elev-3: 0 4px 8px rgb(15 17 21 / 0.06), 0 24px 64px -8px rgb(15 17 21 / 0.20);     /* dialogs */
+
+  /* ---- Geometry --------------------------------------------- */
+  /* Concentric rule: outer radius = inner radius + padding between them. */
+  --radius-xs:   6px;     /* checkboxes, tiny badges */
+  --radius-sm:   8px;     /* icon buttons, small controls, list rows */
+  --radius-md:  10px;     /* inputs, selects, regular buttons */
+  --radius-lg:  12px;     /* inset wells, banners inside cards */
+  --radius-xl:  18px;     /* cards */
+  --radius-2xl: 22px;     /* dialogs, hero card */
+  --radius-full: 9999px;  /* pills, toggles, segmented controls, status pills, chips */
+
+  --control-sm: 24px;
+  --control-md: 30px;
+  --control-lg: 36px;
+  --control-xl: 44px;     /* hero CTA only (Setup Continue, Start processing) */
+
+  --space-0-5: 2px;
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-10: 40px;
+  --space-12: 48px;
+
+  --card-pad: 20px;       /* card body padding */
+  --card-gap: 16px;       /* vertical gap between stacked cards */
+
+  /* ---- Motion ----------------------------------------------- */
+  --dur-instant: 100ms;   /* press feedback */
+  --dur-fast:    160ms;   /* hover, color, toggles */
+  --dur-base:    240ms;   /* view changes, popovers */
+  --dur-slow:    380ms;   /* dialogs, progress width */
+  --dur-ambient: 1200ms;  /* backdrop state cross-fade */
+  --ambient-drift: 40s;   /* one full drift cycle of the backdrop fields */
+
+  --ease-out:    cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+  /* Critically-damped-ish spring, about 2 percent overshoot. Dialogs, popovers, views. */
+  --ease-spring: linear(0, 0.006, 0.025 2.8%, 0.101 6.1%, 0.539 18.9%, 0.721 25.3%, 0.849 31.5%,
+                        0.937 38.1%, 0.968 41.8%, 0.991 45.7%, 1.006 50.1%, 1.015 55%, 1.017 63.9%,
+                        1.001 85.6%, 1);
+  /* Snappier spring, about 5 percent overshoot. Toggle knobs, press release, chips. */
+  --ease-spring-snappy: linear(0, 0.014, 0.053 2.6%, 0.207 5.8%, 0.709 14.4%, 0.89 19%, 0.959 22.4%,
+                               1.014 26.2%, 1.04 29.9%, 1.05 33.6%, 1.047 37.7%, 1.016 48.7%,
+                               1.003 58.4%, 0.998 72.4%, 1);
+  --press-scale: 0.97;
+}
+
+
+/* ---- Dark theme --------------------------------------------- */
+.dark {
+  color-scheme: dark;
+
+  --brand-ink:    #f1f5f9;
+  --brand-accent: #60a5fa;
+
+  --fg1: #f4f5f7;
+  --fg2: #c6cad2;
+  --fg3: #9ba1ad;
+  --fg4: #6c7280;
+
+  --separator:        rgb(255 255 255 / 0.08);
+  --separator-strong: rgb(255 255 255 / 0.16);
+
+  --primary:        #3b82f6;
+  --primary-fill:   #2563eb;               /* same fill as light so white text keeps AA */
+  --primary-hover:  #3b82f6;
+  --primary-press:  #1d4ed8;
+  --primary-soft:   rgb(59 130 246 / 0.20);
+  --primary-fg:     #60a5fa;
+
+  --success:        #22c55e;
+  --success-fill:   #15803d;
+  --success-hover:  #16a34a;
+  --success-soft:   rgb(34 197 94 / 0.18);
+  --success-fg:     #4ade80;
+
+  --warning:        #fb923c;
+  --warning-fill:   #c2410c;
+  --warning-hover:  #ea580c;
+  --warning-soft:   rgb(249 115 22 / 0.18);
+  --warning-fg:     #fb923c;
+
+  --danger:         #ef4444;
+  --danger-fill:    #dc2626;
+  --danger-hover:   #ef4444;
+  --danger-soft:    rgb(239 68 68 / 0.20);
+  --danger-fg:      #f87171;
+
+  --data-2:         #818cf8;
+  --data-2-fg:      #a5b4fc;
+
+  --focus-color: rgb(96 165 250 / 0.50);
+
+  --backdrop-base: #0b0d12;
+  --ambient-opacity: 0.55;
+  --ambient-idle-1: #1e3a8a;  --ambient-idle-2: #312e81;  --ambient-idle-3: #172554;
+  --ambient-run-1:  #1e40af;  --ambient-run-2:  #3730a3;  --ambient-run-3:  #0c4a6e;
+  --ambient-wait-1: #7c2d12;  --ambient-wait-2: #9a3412;  --ambient-wait-3: #172554;
+  --ambient-done-1: #14532d;  --ambient-done-2: #166534;  --ambient-done-3: #172554;
+  --ambient-err-1:  #7f1d1d;  --ambient-err-2:  #991b1b;  --ambient-err-3:  #1e1b4b;
+
+  --mat-content-fill: rgb(28 30 36 / 0.84);
+  --mat-chrome-fill:  rgb(28 30 36 / 0.62);
+  --mat-overlay-fill: rgb(32 34 41 / 0.80);
+  --mat-inset-fill:   rgb(118 118 128 / 0.18);
+  --mat-inset-hover:  rgb(118 118 128 / 0.26);
+  --mat-scrim:        rgb(0 0 0 / 0.45);
+
+  --mat-highlight: inset 0 1px 0 0 rgb(255 255 255 / 0.08);
+  --mat-hairline:  0 0 0 0.5px rgb(255 255 255 / 0.10);
+
+  --elev-1: 0 1px 2px rgb(0 0 0 / 0.30), 0 2px 8px rgb(0 0 0 / 0.20);
+  --elev-2: 0 2px 4px rgb(0 0 0 / 0.30), 0 8px 24px rgb(0 0 0 / 0.35);
+  --elev-3: 0 4px 8px rgb(0 0 0 / 0.35), 0 24px 64px -8px rgb(0 0 0 / 0.60);
+}
+
+
+/* ---- Fallbacks ---------------------------------------------- */
+
+/* No linear() support: springs degrade to an ease-out with slight overshoot. */
+@supports not (transition-timing-function: linear(0, 1)) {
+  :root {
+    --ease-spring:        cubic-bezier(0.34, 1.12, 0.64, 1);
+    --ease-spring-snappy: cubic-bezier(0.34, 1.32, 0.64, 1);
+  }
+}
+
+/* No backdrop-filter, or the OS asks for less transparency:
+   every material becomes opaque, ambient fields fade out. */
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  :root {
+    --mat-content-fill: #ffffff;  --mat-chrome-fill: #f7f8fa;  --mat-overlay-fill: #ffffff;
+    --ambient-opacity: 0.25;
+  }
+  .dark {
+    --mat-content-fill: #1c1e24;  --mat-chrome-fill: #1a1c21;  --mat-overlay-fill: #202229;
+  }
+}
+@media (prefers-reduced-transparency: reduce) {
+  :root {
+    --mat-content-fill: #ffffff;  --mat-chrome-fill: #f7f8fa;  --mat-overlay-fill: #ffffff;
+    --mat-content-blur: 0px;  --mat-chrome-blur: 0px;  --mat-overlay-blur: 0px;
+    --ambient-opacity: 0;
+  }
+  .dark {
+    --mat-content-fill: #1c1e24;  --mat-chrome-fill: #1a1c21;  --mat-overlay-fill: #202229;
+  }
+}
+
+/* Reduced motion: no springs, no drift, no scale; fades stay. */
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --ease-spring:        var(--ease-out);
+    --ease-spring-snappy: var(--ease-out);
+    --press-scale: 1;
+    --ambient-drift: 0s;
+    --dur-base: 160ms;
+    --dur-slow: 200ms;
+  }
+}
+
+/* Windows high contrast and other forced-color modes: drop translucency,
+   let the system palette draw surfaces and outlines. */
+@media (forced-colors: active) {
+  :root, .dark {
+    --mat-content-fill: Canvas;  --mat-chrome-fill: Canvas;  --mat-overlay-fill: Canvas;
+    --mat-inset-fill: Canvas;    --mat-inset-hover: Canvas;
+    --mat-hairline: 0 0 0 1px CanvasText;
+    --mat-highlight: 0 0 0 0 transparent;
+    --ambient-opacity: 0;
+  }
+}

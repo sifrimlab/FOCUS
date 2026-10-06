@@ -12,6 +12,8 @@ export default defineConfig({
     emptyOutDir: true
   },
   server: {
+    // design-tokens.css lives one level up, shared by both GUIs.
+    fs: { allow: ['..'] },
     proxy: {
       '/api': 'http://localhost:5050'
     }

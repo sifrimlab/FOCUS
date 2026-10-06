@@ -1,0 +1,51 @@
+/* Shared Vue <Transition> / <TransitionGroup> classes (DESIGN.md 7.2).
+   Names: view, fade, pop, popover, list, swap. Reduced motion is handled by
+   token overrides (no scale/translate, shorter durations). */
+
+/* view: page change, out-in. Fade out fast, fade in with an 8px rise. */
+.view-enter-active { transition: opacity var(--dur-base) var(--ease-out), transform var(--dur-base) var(--ease-spring); }
+.view-leave-active { transition: opacity 120ms var(--ease-out); }
+.view-enter-from   { opacity: 0; transform: translateY(8px); }
+.view-leave-to     { opacity: 0; }
+
+/* fade: swapping content in place (prompt cards, banners). */
+.fade-enter-active, .fade-leave-active { transition: opacity var(--dur-base) var(--ease-out); }
+.fade-enter-from, .fade-leave-to { opacity: 0; }
+
+/* pop: dialogs. Spring in from 0.96, quick fade out to 0.98. */
+.pop-enter-active { transition: opacity var(--dur-base) var(--ease-out), transform var(--dur-slow) var(--ease-spring); }
+.pop-leave-active { transition: opacity 160ms var(--ease-out), transform 160ms var(--ease-out); }
+.pop-enter-from   { opacity: 0; transform: scale(0.96); }
+.pop-leave-to     { opacity: 0; transform: scale(0.98); }
+
+/* popover: dropdowns anchored to a trigger; set transform-origin on the element. */
+.popover-enter-active { transition: opacity var(--dur-fast) var(--ease-out), transform var(--dur-base) var(--ease-spring); }
+.popover-leave-active { transition: opacity 120ms var(--ease-out), transform 120ms var(--ease-out); }
+.popover-enter-from, .popover-leave-to { opacity: 0; transform: scale(0.96); }
+
+/* list: items entering and leaving a TransitionGroup. */
+.list-enter-active, .list-leave-active { transition: opacity var(--dur-base) var(--ease-out), transform var(--dur-base) var(--ease-spring); }
+.list-enter-from, .list-leave-to { opacity: 0; transform: scale(0.97); }
+.list-move { transition: transform var(--dur-base) var(--ease-spring); }
+
+/* swap: one-line text replaced in place (status line). */
+.swap-enter-active { transition: opacity var(--dur-fast) var(--ease-out); }
+.swap-leave-active { transition: opacity var(--dur-fast) var(--ease-out); position: absolute; }
+.swap-enter-from, .swap-leave-to { opacity: 0; }
+
+/* Shared keyframes used by several primitives. */
+@keyframes focus-breathe {
+  0%, 100% { box-shadow: 0 0 0 0 var(--primary-soft); }
+  50%      { box-shadow: 0 0 0 6px var(--primary-soft); }
+}
+
+@keyframes focus-shimmer {
+  from { transform: translateX(-100%); }
+  to   { transform: translateX(250%); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .view-enter-from, .pop-enter-from, .pop-leave-to,
+  .popover-enter-from, .popover-leave-to,
+  .list-enter-from, .list-leave-to { transform: none; }
+}

@@ -1,0 +1,69 @@
+/* Document defaults, focus, selection, scrollbars, theme switch fade. */
+
+@layer base {
+  html, body {
+    height: 100%;
+    font: var(--type-body);
+    letter-spacing: var(--track-body);
+    font-feature-settings: var(--font-feature-sans);
+    font-optical-sizing: auto;
+    color: var(--fg1);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+  }
+
+  /* Only the root paints the base color: a body background would cover the
+     ambient backdrop, which sits at z-index -1. */
+  html { background: var(--backdrop-base); }
+
+  code, kbd, samp, pre {
+    font-family: var(--font-mono);
+    font-feature-settings: var(--font-feature-mono);
+  }
+
+  ::selection {
+    background: var(--primary-soft);
+  }
+
+  /* Keyboard focus only (DESIGN.md 8.15). Outline follows border-radius. */
+  :focus { outline: none; }
+  :focus-visible {
+    outline: 3px solid var(--focus-color);
+    outline-offset: 1px;
+  }
+
+  button:not(:disabled), [role="button"]:not([aria-disabled="true"]), summary, label[for] {
+    cursor: pointer;
+  }
+
+  /* Scrollbars (DESIGN.md 8.14) */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--separator-strong) transparent;
+  }
+  ::-webkit-scrollbar { width: 8px; height: 8px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb {
+    background: var(--separator-strong);
+    border: 2px solid transparent;
+    background-clip: padding-box;
+    border-radius: 9999px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: var(--fg4);
+    border-width: 1px;
+    background-clip: padding-box;
+  }
+
+  /* Short color cross-fade while the theme switches (DESIGN.md 9). */
+  html.theme-transition,
+  html.theme-transition *,
+  html.theme-transition *::before,
+  html.theme-transition *::after {
+    transition: background-color var(--dur-fast) var(--ease-out),
+                color var(--dur-fast) var(--ease-out),
+                border-color var(--dur-fast) var(--ease-out),
+                box-shadow var(--dur-fast) var(--ease-out) !important;
+  }
+}

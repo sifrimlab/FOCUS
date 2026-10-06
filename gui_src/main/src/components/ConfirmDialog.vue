@@ -1,6 +1,8 @@
 <script setup lang="ts">
+/** Global confirm dialog driven by useDialog (DESIGN.md 8.9). Esc cancels, Enter confirms. */
 import { onMounted, onUnmounted } from 'vue';
 import { useDialog } from '../composables/useDialog';
+import BaseButton from './ui/BaseButton.vue';
 
 const { state, handleConfirm, handleCancel } = useDialog();
 
@@ -15,49 +17,29 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown));
 </script>
 
 <template>
-  <Transition name="dialog-fade">
+  <Transition name="fade">
+    <div v-if="state.visible" class="scrim fixed inset-0 z-[200]" aria-hidden="true" />
+  </Transition>
+  <Transition name="pop">
     <div
       v-if="state.visible"
-      class="fixed inset-0 z-[200] flex items-center justify-center bg-black/50 backdrop-blur-sm"
-      aria-modal="true"
+      class="pointer-events-none fixed inset-0 z-[201] flex items-center justify-center p-4"
       role="dialog"
+      aria-modal="true"
+      aria-labelledby="confirm-dialog-message"
     >
-      <div class="w-full max-w-sm mx-4 bg-white dark:bg-gray-800 rounded-2xl shadow-2xl border border-gray-200 dark:border-gray-700 overflow-hidden">
-        <!-- Body -->
-        <div class="px-6 pt-6 pb-5">
-          <p class="text-sm text-gray-800 dark:text-gray-100 leading-relaxed">{{ state.message }}</p>
-        </div>
-
-        <!-- Footer -->
-        <div class="flex gap-2 px-6 pb-5 justify-end">
-          <button
-            @click="handleCancel"
-            class="px-4 py-2 text-sm font-medium rounded-xl bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 text-gray-700 dark:text-gray-200 transition-colors"
-          >
-            {{ state.cancelLabel }}
-          </button>
-          <button
+      <div class="material-overlay rounded-dialog pointer-events-auto flex w-full max-w-sm flex-col gap-5 p-6">
+        <p id="confirm-dialog-message" class="type-body text-fg1">{{ state.message }}</p>
+        <div class="flex justify-end gap-2">
+          <BaseButton size="lg" @click="handleCancel">{{ state.cancelLabel }}</BaseButton>
+          <BaseButton
+            size="lg"
+            shape="rounded"
+            :variant="state.variant === 'danger' ? 'destructive-filled' : 'primary'"
             @click="handleConfirm"
-            class="px-4 py-2 text-sm font-semibold rounded-xl text-white transition-colors"
-            :class="state.variant === 'danger'
-              ? 'bg-red-600 hover:bg-red-700'
-              : 'bg-blue-600 hover:bg-blue-700'"
-          >
-            {{ state.confirmLabel }}
-          </button>
+          >{{ state.confirmLabel }}</BaseButton>
         </div>
       </div>
     </div>
   </Transition>
 </template>
-
-<style scoped>
-.dialog-fade-enter-active,
-.dialog-fade-leave-active {
-  transition: opacity 0.15s ease;
-}
-.dialog-fade-enter-from,
-.dialog-fade-leave-to {
-  opacity: 0;
-}
-</style>

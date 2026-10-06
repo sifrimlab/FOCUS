@@ -1,0 +1,46 @@
+/* Type roles (DESIGN.md 2.2). One utility per role sets font and tracking
+   together. Color is applied separately with the fg utilities. */
+
+@utility type-large-title { font: var(--type-large-title); letter-spacing: var(--track-large-title); }
+@utility type-title-1     { font: var(--type-title-1);     letter-spacing: var(--track-title-1); }
+@utility type-title-2     { font: var(--type-title-2);     letter-spacing: var(--track-title-2); }
+@utility type-title-3     { font: var(--type-title-3);     letter-spacing: var(--track-title-3); }
+@utility type-headline    { font: var(--type-headline);    letter-spacing: var(--track-headline); }
+@utility type-body        { font: var(--type-body);        letter-spacing: var(--track-body); }
+@utility type-body-strong { font: var(--type-body-strong); letter-spacing: var(--track-body-strong); }
+@utility type-callout     { font: var(--type-callout);     letter-spacing: var(--track-callout); }
+@utility type-footnote    { font: var(--type-footnote);    letter-spacing: var(--track-footnote); }
+@utility type-caption     { font: var(--type-caption);     letter-spacing: var(--track-caption); }
+@utility type-button      { font: var(--type-button);      letter-spacing: var(--track-button); }
+@utility type-button-lg   { font: var(--type-button-lg);   letter-spacing: var(--track-button-lg); }
+
+@utility type-eyebrow {
+  font: var(--type-eyebrow);
+  letter-spacing: var(--track-eyebrow);
+  text-transform: uppercase;
+}
+
+@utility type-mono {
+  font: var(--type-mono);
+  letter-spacing: var(--track-mono);
+  font-feature-settings: var(--font-feature-mono);
+}
+
+@utility type-mono-small {
+  font: var(--type-mono-small);
+  letter-spacing: var(--track-mono-small);
+  font-feature-settings: var(--font-feature-mono);
+}
+
+/* Tabular figures for any number that updates or aligns. */
+@utility nums {
+  font-feature-settings: var(--font-feature-num);
+}
+
+/* Ellipsis truncation that also works on flex children. */
+@utility ellipsis {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}

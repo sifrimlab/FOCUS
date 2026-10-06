@@ -1,0 +1,42 @@
+/* Liquid Glass materials (DESIGN.md 4). Each utility is a complete surface:
+   fill, backdrop blur + saturation, specular highlight, hairline, elevation.
+   Fallbacks (reduced transparency, no backdrop-filter, forced colors) are
+   handled by token overrides in design-tokens.css. */
+
+@utility material-content {
+  background: var(--mat-content-fill);
+  -webkit-backdrop-filter: blur(var(--mat-content-blur)) saturate(var(--mat-content-sat));
+  backdrop-filter: blur(var(--mat-content-blur)) saturate(var(--mat-content-sat));
+  box-shadow: var(--mat-highlight), var(--mat-hairline), var(--elev-1);
+}
+
+@utility material-chrome {
+  background: var(--mat-chrome-fill);
+  -webkit-backdrop-filter: blur(var(--mat-chrome-blur)) saturate(var(--mat-chrome-sat));
+  backdrop-filter: blur(var(--mat-chrome-blur)) saturate(var(--mat-chrome-sat));
+  box-shadow: var(--mat-highlight), var(--mat-hairline), var(--elev-2);
+}
+
+@utility material-overlay {
+  background: var(--mat-overlay-fill);
+  -webkit-backdrop-filter: blur(var(--mat-overlay-blur)) saturate(var(--mat-overlay-sat));
+  backdrop-filter: blur(var(--mat-overlay-blur)) saturate(var(--mat-overlay-sat));
+  box-shadow: var(--mat-highlight), var(--mat-hairline), var(--elev-3);
+}
+
+/* Overlay material at popover elevation (dropdowns, menus). */
+@utility material-popover {
+  background: var(--mat-overlay-fill);
+  -webkit-backdrop-filter: blur(var(--mat-overlay-blur)) saturate(var(--mat-overlay-sat));
+  backdrop-filter: blur(var(--mat-overlay-blur)) saturate(var(--mat-overlay-sat));
+  box-shadow: var(--mat-highlight), var(--mat-hairline), var(--elev-2);
+}
+
+/* Wells nested inside a material: tinted fill, no blur, no shadow. */
+@utility material-inset {
+  background: var(--mat-inset-fill);
+}
+
+@utility scrim {
+  background: var(--mat-scrim);
+}

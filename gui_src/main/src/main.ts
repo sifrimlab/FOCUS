@@ -1,31 +1,12 @@
-import { createApp } from 'vue'
-import { createPinia } from 'pinia'
-import './style.css'
-import App from './App.vue'
+import { createApp } from 'vue';
+import { createPinia } from 'pinia';
+import '@fontsource-variable/inter/opsz.css';
+import '@fontsource-variable/jetbrains-mono/wght.css';
+import './styles/index.css';
+import App from './App.vue';
+import { initTheme } from './composables/useTheme';
 
-function resolveInitialTheme(): 'light' | 'dark' {
-  try {
-    const mq = window.matchMedia('(prefers-color-scheme: dark)');
-    if (typeof mq?.matches === 'boolean') return mq.matches ? 'dark' : 'light';
-  } catch (_) { /* fall through */ }
-  return 'dark';
-}
-const theme = resolveInitialTheme();
-document.documentElement.classList.toggle('dark', theme === 'dark');
+// Resolve the theme before mounting so the first paint is correct.
+initTheme();
 
-try {
-  window.matchMedia('(prefers-color-scheme: dark)').addEventListener(
-    'change',
-    (e) => {
-      if (!localStorage.getItem('focus-theme-override')) {
-        document.documentElement.classList.toggle('dark', e.matches);
-      }
-    }
-  );
-} catch (_) {}
-
-const pinia = createPinia()
-const app = createApp(App)
-
-app.use(pinia)
-app.mount('#app')
+createApp(App).use(createPinia()).mount('#app');
