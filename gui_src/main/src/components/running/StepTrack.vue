@@ -1,17 +1,24 @@
 <script setup lang="ts">
 /**
- * Current step of the active modality: "Step 3 of 8", its label, one segment
- * per step, and item progress ("1,840 of 4,096 tiles") when the step counts items.
+ * Current step of the active modality: "Step 3 of 8", its name, one segment
+ * per step, and item progress ("1,840 of 4,096 tiles") when the step counts
+ * items other than samples. Sample progress is shown only by SampleTrack.
  */
 import { computed } from 'vue';
 import { injectRunProgress } from '../../composables/useRunProgress';
 import ProgressBar from '../ui/ProgressBar.vue';
 
+const props = defineProps<{
+  /** Show an indeterminate bar when the step reports no items (nothing else shows activity). */
+  idleShimmer: boolean;
+}>();
+
 const run = injectRunProgress();
 const s = run.status;
 
 const segments = computed(() => Array.from({ length: s.value.sub_step_total }, (_, i) => i + 1));
-const hasItems = computed(() => s.value.sub_step_items_total > 0);
+const hasItems = computed(() => s.value.sub_step_items_total > 0 && s.value.sub_step_unit !== 'sample');
+const showBar = computed(() => hasItems.value || (props.idleShimmer && !run.finished.value));
 const percent = computed(() => Math.min(100, (s.value.sub_step_progress / s.value.sub_step_items_total) * 100));
 
 const count = (n: number) => n.toLocaleString();
@@ -32,7 +39,6 @@ const segmentState = (n: number) =>
       <span v-if="s.sub_step_total > 0" class="type-footnote nums text-fg3">
         Step {{ s.sub_step_index }} of {{ s.sub_step_total }}
       </span>
-      <span v-else class="type-footnote text-fg3">Current step</span>
       <p class="type-headline text-fg1 ellipsis" :title="s.sub_step ?? ''">{{ run.stepLabel.value }}</p>
     </div>
 
@@ -40,12 +46,8 @@ const segmentState = (n: number) =>
       <span v-for="n in segments" :key="n" class="seg" :class="`seg--${segmentState(n)}`" />
     </div>
 
-    <div class="flex flex-col gap-1.5">
-      <ProgressBar
-        tone="stage"
-        :label="`Progress of ${run.stepLabel.value}`"
-        :value="hasItems ? percent : run.finished.value ? 100 : null"
-      />
+    <div v-if="showBar" class="flex flex-col gap-1.5">
+      <ProgressBar tone="stage" :label="`Progress of ${run.stepLabel.value}`" :value="hasItems ? percent : null" />
       <span v-if="hasItems" class="type-footnote nums text-fg3 self-end">
         {{ count(s.sub_step_progress) }} of {{ count(s.sub_step_items_total) }} {{ unitLabel }}
       </span>

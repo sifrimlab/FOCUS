@@ -18,11 +18,8 @@ const pill = computed(() => {
 </script>
 
 <template>
-  <header class="flex flex-wrap items-end justify-between gap-4">
-    <div class="flex flex-col gap-1">
-      <h1 class="type-title-1 text-fg1">Processing</h1>
-      <p class="type-callout text-fg3">Progress is updated live. You can leave this page open while the run continues.</p>
-    </div>
+  <header class="flex flex-wrap items-center justify-between gap-4">
+    <h1 class="type-title-1 text-fg1">Processing</h1>
     <div class="flex items-center gap-3">
       <StatusPill :tone="pill.tone" :live="pill.live">{{ pill.label }}</StatusPill>
       <span class="type-headline nums text-fg1" :title="'Total elapsed time'">

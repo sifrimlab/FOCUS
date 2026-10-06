@@ -679,6 +679,7 @@ How the main GUI (`gui_src/main/src`) implements this document. The alignment GU
 | `FormRow` | Label and control row |
 | `Banner` | Tinted message with icon, title, actions |
 | `ToggleChip` | On/off chip; `size="lg"` is a grid tile (sample inclusion) |
+| `TagLabel` | Read-only pill naming a category next to a title (e.g. modality type) |
 | `RadioDot` | Single radio for picking one row (reference modality) |
 | `Stepper` | Horizontal step indicator for guided flows (12.4); `stretch` fills the container width |
 | `OverflowMenu` | Ellipsis button with a small teleported action menu |

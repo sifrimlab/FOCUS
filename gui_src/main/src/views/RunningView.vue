@@ -3,6 +3,7 @@
  * Progress screen: stage rail on the left; on the right the current work
  * (stage, modality, step, samples), prompts, and the activity log. The root
  * carries data-stage so every accent follows the running stage's color.
+ * On wide windows the page fits the window and only the activity log scrolls.
  */
 import { useMainStore } from '../store/main';
 import { provideRunProgress } from '../composables/useRunProgress';
@@ -19,17 +20,17 @@ const run = provideRunProgress();
 
 <template>
   <div
-    class="mx-auto flex w-full max-w-6xl flex-col gap-8 px-6 pt-20 pb-12"
+    class="run-page mx-auto flex w-full max-w-6xl flex-col gap-8 px-6 pt-20 pb-8"
     :data-stage="run.activeStage.value?.id ?? run.status.value.stage ?? undefined"
   >
     <RunHeader />
 
-    <div class="run-grid grid items-start gap-6">
-      <div class="rail-col">
+    <div class="run-grid grid gap-6">
+      <div class="self-start">
         <StageRail />
       </div>
 
-      <div class="flex min-w-0 flex-col gap-6">
+      <div class="work-col flex min-w-0 flex-col gap-6">
         <Transition name="fade">
           <AlignmentWaitBanner
             v-if="run.status.value.state === 'alignment_waiting'"
@@ -43,17 +44,27 @@ const run = provideRunProgress();
             @back="store.goToConfig()"
           />
         </Transition>
-        <CurrentWorkCard />
-        <ActivityLog />
+        <CurrentWorkCard class="shrink-0" />
+        <ActivityLog class="log-card" />
       </div>
     </div>
   </div>
 </template>
 
 <style scoped>
+.run-page { min-height: 100%; }
 .run-grid { grid-template-columns: minmax(0, 1fr); }
+
 @media (min-width: 900px) {
-  .run-grid { grid-template-columns: minmax(260px, 300px) minmax(0, 1fr); }
-  .rail-col { position: sticky; top: 24px; }
+  /* Fit the window; below the min-height guard the page scrolls instead of clipping. */
+  .run-page { height: 100%; min-height: 600px; }
+  .run-grid {
+    flex: 1;
+    min-height: 0;
+    grid-template-columns: minmax(260px, 300px) minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr);
+  }
+  .work-col { min-height: 0; --log-max-height: none; }
+  .log-card { flex: 1; min-height: 160px; }
 }
 </style>

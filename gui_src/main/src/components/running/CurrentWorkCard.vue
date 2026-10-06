@@ -8,6 +8,7 @@ import { useMainStore } from '../../store/main';
 import { injectRunProgress } from '../../composables/useRunProgress';
 import { formatDuration } from '../../utils/duration';
 import GlassCard from '../ui/GlassCard.vue';
+import TagLabel from '../ui/TagLabel.vue';
 import StepTrack from './StepTrack.vue';
 import SampleTrack from './SampleTrack.vue';
 
@@ -39,9 +40,7 @@ const seconds = computed(() =>
 );
 
 const showSteps = computed(() => !!s.value.sub_step);
-const showSamples = computed(() =>
-  !!s.value.current_sample || Object.values(run.sampleStates.value).some(v => v === 'done'),
-);
+const showSamples = run.samplesVisible;
 </script>
 
 <template>
@@ -51,14 +50,17 @@ const showSamples = computed(() =>
         <span class="type-footnote text-fg2 flex items-center gap-2">
           <span class="accent-dot" aria-hidden="true" />{{ eyebrow }}
         </span>
-        <h2 class="type-title-2 text-fg1 ellipsis" :title="title">{{ title }}</h2>
-        <span v-if="modalityType" class="type-footnote text-fg3">{{ modalityType }}</span>
+        <div class="flex min-w-0 items-center gap-2.5">
+          <h2 class="type-title-2 text-fg1 ellipsis" :title="title">{{ title }}</h2>
+          <TagLabel v-if="modalityType">{{ modalityType }}</TagLabel>
+        </div>
       </div>
       <span v-if="seconds !== null" class="type-footnote nums text-fg3 shrink-0 pt-1">{{ formatDuration(seconds) }}</span>
     </header>
 
     <div v-if="showSteps" class="border-t border-separator py-5">
-      <StepTrack />
+      <!-- The current-sample chip already shows activity; the shimmer is only needed without it. -->
+      <StepTrack :idle-shimmer="!showSamples" />
     </div>
     <div v-if="showSamples" class="border-t border-separator pt-5 pb-1">
       <SampleTrack />

@@ -27,7 +27,11 @@ export interface StageProgress {
   modalities: ModalityProgress[];
 }
 
-export type SampleState = 'done' | 'current' | 'pending';
+/** 'joint': a dataset-level step is processing every sample at once. */
+export type SampleState = 'done' | 'current' | 'pending' | 'joint';
+
+/** Stages that work sample by sample (the others have no sample level). */
+const SAMPLE_STAGES: StageId[] = ['preprocessing', 'annotation_transfer', 'registration'];
 
 const STEP_PREFIX = /^\d+(?:-\d+)?\/\d+\s*[-–]\s*/;
 
@@ -86,9 +90,22 @@ export function useRunProgress() {
   /** Samples included in the run, in dataset order. */
   const includedSamples = computed(() => store.samples.filter(id => !store.config.ignore_samples.includes(id)));
 
+  /**
+   * A dataset-level step: a step is running, no sample is current, and the step
+   * does not count samples, inside a stage that otherwise works per sample
+   * (e.g. building the shared m/z axis or merging all samples).
+   */
+  const jointStep = computed(() => {
+    const s = status.value;
+    const stage = activeStage.value?.id;
+    return !finished.value && !!stage && SAMPLE_STAGES.includes(stage)
+      && !!s.sub_step && !s.current_sample && s.sub_step_unit !== 'sample';
+  });
+
   /** Done / current / pending per included sample, for the current modality (or the stage itself). */
   const sampleStates = computed<Record<string, SampleState>>(() => {
     const s = status.value;
+    if (jointStep.value) return Object.fromEntries(includedSamples.value.map(id => [id, 'joint' as const]));
     const seen = activeModality.value?.samples ?? activeRecord.value?.samples ?? [];
     // In a per-sample step (unit "sample"), the first `progress` samples of this pass are done.
     const done = new Set(s.sub_step_unit === 'sample' ? seen.slice(0, s.sub_step_progress) : seen);
@@ -100,9 +117,16 @@ export function useRunProgress() {
     return result;
   });
 
+  /** Whether the stage is at a point where samples are meaningful to show. */
+  const samplesVisible = computed(() =>
+    jointStep.value || !!status.value.current_sample || Object.values(sampleStates.value).includes('done'),
+  );
+
   return {
     status,
     finished,
+    jointStep,
+    samplesVisible,
     stages,
     activeStage,
     activeModality,
