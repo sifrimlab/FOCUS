@@ -56,8 +56,8 @@
   /* ---- Labels (text ramp) ----------------------------------- */
   --fg1: #0f1115;            /* primary text, titles */
   --fg2: #3f4451;            /* secondary text, form labels */
-  --fg3: #5c6270;            /* hints, metadata (AA on every material) */
-  --fg4: #8e94a0;            /* placeholder and disabled only; not for information */
+  --fg3: #4f5563;            /* hints, metadata (AA on every material) */
+  --fg4: #848a96;            /* placeholder and disabled only; not for information */
   --fg-inverse: #ffffff;     /* text on filled buttons */
 
   /* ---- Separators ------------------------------------------ */
@@ -70,7 +70,7 @@
   --primary-hover:  #1d4ed8;
   --primary-press:  #1e40af;
   --primary-soft:   rgb(37 99 235 / 0.12); /* tinted bg: selected rows, info banners */
-  --primary-fg:     #1d4ed8;               /* links, text on soft, accent text */
+  --primary-fg:     #1e40af;               /* links, text on soft, accent text */
 
   /* ---- Semantic roles --------------------------------------- */
   /* base = dots/icons/bars, fill = button bg with white text,
@@ -91,7 +91,7 @@
   --danger-fill:    #dc2626;
   --danger-hover:   #b91c1c;
   --danger-soft:    rgb(220 38 38 / 0.12);
-  --danger-fg:      #b91c1c;
+  --danger-fg:      #991b1b;
 
   --data-2:         #6366f1;               /* indigo: secondary data series (sample progress) */
   --data-2-fg:      #4338ca;
@@ -101,45 +101,47 @@
   --focus-ring: 0 0 0 3px var(--focus-color);
 
   /* ---- Backdrop and ambient fields --------------------------- */
-  --backdrop-base: #eef1f6;
-  --ambient-opacity: 0.55;
+  /* Mid-light cool gray, so cards read as lifted sheets rather than white on white
+     (mirrors the dark theme, where cards are lighter than the base). */
+  --backdrop-base: #d8dde5;
+  --ambient-opacity: 0.45;
   --ambient-blur: 120px;
   /* Per-state hue triplets; selected by [data-ambient] on the backdrop layer. */
-  --ambient-idle-1: #bfdbfe;  --ambient-idle-2: #c7d2fe;  --ambient-idle-3: #e0e7ff;
-  --ambient-run-1:  #93c5fd;  --ambient-run-2:  #a5b4fc;  --ambient-run-3:  #bae6fd;
-  --ambient-wait-1: #fdba74;  --ambient-wait-2: #fed7aa;  --ambient-wait-3: #bfdbfe;
-  --ambient-done-1: #86efac;  --ambient-done-2: #bbf7d0;  --ambient-done-3: #bfdbfe;
-  --ambient-err-1:  #fca5a5;  --ambient-err-2:  #fecaca;  --ambient-err-3:  #e0e7ff;
+  --ambient-idle-1: #93c5fd;  --ambient-idle-2: #a5b4fc;  --ambient-idle-3: #bfdbfe;
+  --ambient-run-1:  #60a5fa;  --ambient-run-2:  #818cf8;  --ambient-run-3:  #7dd3fc;
+  --ambient-wait-1: #fb923c;  --ambient-wait-2: #fdba74;  --ambient-wait-3: #93c5fd;
+  --ambient-done-1: #4ade80;  --ambient-done-2: #86efac;  --ambient-done-3: #93c5fd;
+  --ambient-err-1:  #f87171;  --ambient-err-2:  #fca5a5;  --ambient-err-3:  #a5b4fc;
 
   /* ---- Materials (Liquid Glass) ----------------------------- */
   /* content: cards. chrome: floating bars and pills.
      overlay: dialogs, popovers, dropdowns. inset: wells inside a material. */
-  --mat-content-fill: rgb(255 255 255 / 0.86);
+  --mat-content-fill: rgb(244 246 249 / 0.80);   /* soft off-white, never pure white */
   --mat-content-blur: 20px;
   --mat-content-sat:  160%;
 
-  --mat-chrome-fill:  rgb(255 255 255 / 0.62);
+  --mat-chrome-fill:  rgb(240 243 247 / 0.66);
   --mat-chrome-blur:  24px;
   --mat-chrome-sat:   180%;
 
-  --mat-overlay-fill: rgb(255 255 255 / 0.78);
+  --mat-overlay-fill: rgb(244 246 249 / 0.86);
   --mat-overlay-blur: 40px;
   --mat-overlay-sat:  180%;
 
-  --mat-inset-fill:   rgb(118 118 128 / 0.08);
-  --mat-inset-hover:  rgb(118 118 128 / 0.14);
+  --mat-inset-fill:   rgb(100 106 120 / 0.10);
+  --mat-inset-hover:  rgb(100 106 120 / 0.16);
 
-  --mat-scrim:        rgb(15 17 21 / 0.28);   /* behind dialogs */
+  --mat-scrim:        rgb(15 17 21 / 0.32);   /* behind dialogs */
   --fill-highlight:   inset 0 1px 0 0 rgb(255 255 255 / 0.18);  /* top sheen on filled buttons */
 
   /* Specular top edge + hairline outline, applied as box-shadow on every glass surface. */
-  --mat-highlight: inset 0 1px 0 0 rgb(255 255 255 / 0.70);
-  --mat-hairline:  0 0 0 0.5px rgb(15 17 21 / 0.10);
+  --mat-highlight: inset 0 1px 0 0 rgb(255 255 255 / 0.55);
+  --mat-hairline:  0 0 0 0.5px rgb(15 17 21 / 0.12);
 
   /* ---- Elevation -------------------------------------------- */
-  --elev-1: 0 1px 2px rgb(15 17 21 / 0.04), 0 2px 8px rgb(15 17 21 / 0.04);            /* cards */
-  --elev-2: 0 2px 4px rgb(15 17 21 / 0.05), 0 8px 24px rgb(15 17 21 / 0.08);           /* chrome, popovers */
-  --elev-3: 0 4px 8px rgb(15 17 21 / 0.06), 0 24px 64px -8px rgb(15 17 21 / 0.20);     /* dialogs */
+  --elev-1: 0 1px 2px rgb(15 17 21 / 0.06), 0 4px 12px rgb(15 17 21 / 0.06);            /* cards */
+  --elev-2: 0 2px 4px rgb(15 17 21 / 0.07), 0 8px 24px rgb(15 17 21 / 0.12);           /* chrome, popovers */
+  --elev-3: 0 4px 8px rgb(15 17 21 / 0.08), 0 24px 64px -8px rgb(15 17 21 / 0.24);     /* dialogs */
 
   /* ---- Geometry --------------------------------------------- */
   /* Concentric rule: outer radius = inner radius + padding between them. */
@@ -275,7 +277,7 @@
    every material becomes opaque, ambient fields fade out. */
 @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
   :root {
-    --mat-content-fill: #ffffff;  --mat-chrome-fill: #f7f8fa;  --mat-overlay-fill: #ffffff;
+    --mat-content-fill: #eef1f5;  --mat-chrome-fill: #e8ecf1;  --mat-overlay-fill: #f2f4f7;
     --ambient-opacity: 0.25;
   }
   .dark {
@@ -284,7 +286,7 @@
 }
 @media (prefers-reduced-transparency: reduce) {
   :root {
-    --mat-content-fill: #ffffff;  --mat-chrome-fill: #f7f8fa;  --mat-overlay-fill: #ffffff;
+    --mat-content-fill: #eef1f5;  --mat-chrome-fill: #e8ecf1;  --mat-overlay-fill: #f2f4f7;
     --mat-content-blur: 0px;  --mat-chrome-blur: 0px;  --mat-overlay-blur: 0px;
     --ambient-opacity: 0;
   }

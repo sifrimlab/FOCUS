@@ -138,8 +138,8 @@ Former roles and where they went:
 |---|---|---|---|
 | `--fg1` | `#0f1115` | `#f4f5f7` | Titles, primary text, values |
 | `--fg2` | `#3f4451` | `#c6cad2` | Form labels, secondary text |
-| `--fg3` | `#5c6270` | `#9ba1ad` | Hints, metadata, inactive icons |
-| `--fg4` | `#8e94a0` | `#6c7280` | Placeholder, disabled. Never information. |
+| `--fg3` | `#4f5563` | `#9ba1ad` | Hints, metadata, inactive icons |
+| `--fg4` | `#848a96` | `#6c7280` | Placeholder, disabled. Never information. |
 | `--fg-inverse` | `#ffffff` | `#ffffff` | Text on filled buttons |
 | `--separator` | `rgb(15 17 21 / .08)` | `rgb(255 255 255 / .08)` | Dividers inside cards, list rows |
 | `--separator-strong` | `rgb(15 17 21 / .16)` | `rgb(255 255 255 / .16)` | Input outlines, dashed empty state |
@@ -159,13 +159,13 @@ Each role has five tokens:
 | Role | | Light | Dark |
 |---|---|---|---|
 | primary | base / fill / hover | `#2563eb` / `#2563eb` / `#1d4ed8` | `#3b82f6` / `#2563eb` / `#3b82f6` |
-| | soft / fg | `rgb(37 99 235 / .12)` / `#1d4ed8` | `rgb(59 130 246 / .20)` / `#60a5fa` |
+| | soft / fg | `rgb(37 99 235 / .12)` / `#1e40af` | `rgb(59 130 246 / .20)` / `#60a5fa` |
 | success | base / fill / hover | `#16a34a` / `#15803d` / `#166534` | `#22c55e` / `#15803d` / `#16a34a` |
 | | soft / fg | `rgb(22 163 74 / .12)` / `#166534` | `rgb(34 197 94 / .18)` / `#4ade80` |
 | warning | base / fill / hover | `#f97316` / `#c2410c` / `#9a3412` | `#fb923c` / `#c2410c` / `#ea580c` |
 | | soft / fg | `rgb(234 88 12 / .12)` / `#9a3412` | `rgb(249 115 22 / .18)` / `#fb923c` |
 | danger | base / fill / hover | `#dc2626` / `#dc2626` / `#b91c1c` | `#ef4444` / `#dc2626` / `#ef4444` |
-| | soft / fg | `rgb(220 38 38 / .12)` / `#b91c1c` | `rgb(239 68 68 / .20)` / `#f87171` |
+| | soft / fg | `rgb(220 38 38 / .12)` / `#991b1b` | `rgb(239 68 68 / .20)` / `#f87171` |
 | data-2 | base / fg | `#6366f1` / `#4338ca` | `#818cf8` / `#a5b4fc` |
 
 Filled buttons use the same `fill` in both modes. White text on a brighter dark-mode fill (for example `#3b82f6`) drops below 4.5:1.
@@ -178,14 +178,14 @@ Contrast is measured against the **worst case**: the most saturated ambient fiel
 
 | Text token | Light min | Dark min |
 |---|---|---|
-| `--fg1` | 14.8 | 11.6 |
-| `--fg2` | 7.7 | 7.7 |
-| `--fg3` | 4.8 | 4.9 |
-| `--primary-fg` | 5.3 | 5.0 |
-| `--success-fg` | 5.6 | 7.3 |
-| `--warning-fg` | 5.7 | 5.6 |
-| `--danger-fg` | 5.1 | 4.6 |
-| `--data-2-fg` | 6.2 | 6.4 |
+| `--fg1` | 12.7 | 11.6 |
+| `--fg2` | 6.5 | 7.7 |
+| `--fg3` | 5.0 | 4.9 |
+| `--primary-fg` | 5.9 | 5.0 |
+| `--success-fg` | 4.8 | 7.3 |
+| `--warning-fg` | 4.9 | 5.6 |
+| `--danger-fg` | 5.6 | 4.6 |
+| `--data-2-fg` | 5.3 | 6.4 |
 
 | Pair | Ratio |
 |---|---|
@@ -229,10 +229,10 @@ Materials are layered surfaces. Each one combines a translucent fill, `backdrop-
 | Level | Fill (light / dark) | Blur | Saturate | Elevation | Used for |
 |---|---|---|---|---|---|
 | backdrop | `--backdrop-base` + ambient fields | n/a | n/a | n/a | Window background, one per page |
-| content | white .86 / `#1c1e24` .84 | 20 px | 160% | `--elev-1` | Cards: setup card, config cards, running card, output cards, cleanup card |
-| chrome | white .62 / `#1c1e24` .62 | 24 px | 180% | `--elev-2` | Top-right control cluster, sticky bottom action bar |
-| overlay | white .78 / `#202229` .80 | 40 px | 180% | `--elev-3` (dialog), `--elev-2` (popover) | ConfirmDialog panel, FilePicker dropdown, future menus and popovers |
-| inset | `rgb(118 118 128 / .08)` / `/ .18` | none | none | none | Wells inside a material: inputs, folder list, status line, config file preview, segmented control track |
+| content | `rgb(244 246 249)` .80 / `#1c1e24` .84 | 20 px | 160% | `--elev-1` | Cards: setup card, config cards, running card, output cards, cleanup card |
+| chrome | `rgb(240 243 247)` .66 / `#1c1e24` .62 | 24 px | 180% | `--elev-2` | Top-right control cluster, sticky bottom action bar |
+| overlay | `rgb(244 246 249)` .86 / `#202229` .80 | 40 px | 180% | `--elev-3` (dialog), `--elev-2` (popover) | ConfirmDialog panel, FilePicker dropdown, future menus and popovers |
+| inset | `rgb(100 106 120 / .10)` / `rgb(118 118 128 / .18)` | none | none | none | Wells inside a material: inputs, folder list, status line, config file preview, segmented control track |
 
 Reference recipe:
 
@@ -287,7 +287,7 @@ The backdrop layer carries `data-ambient`. It is derived from existing store sta
 ### 5.2 Geometry
 
 - Three radial fields, each 55 to 70 vw in diameter, blurred by `--ambient-blur` (120 px). They are positioned top-left, right, and bottom-center.
-- Opacity `--ambient-opacity` (0.55). The light palette uses the 200/300 Tailwind steps; the dark palette uses the 800/900 steps.
+- Opacity `--ambient-opacity`: 0.45 in light, 0.55 in dark. The light palette uses the 300/400 Tailwind steps over a mid-light cool-gray base (`#d8dde5`), so cards read as lifted off-white sheets instead of white on white; the dark palette uses the 800/900 steps.
 - A state change cross-fades all three hues over `--dur-ambient` (1200 ms) with `--ease-in-out`.
 - Drift: each field translates by up to 6 vw and scales between 0.95 and 1.05 over `--ambient-drift` (40 s), with phase offsets. Only `transform` and `opacity` animate, so the compositor handles it on the GPU. In `idle`, the drift amplitude is halved. In `done` and `err`, there is no drift.
 - An optional 2 to 3 percent monochrome noise overlay prevents gradient banding on 8-bit displays.
