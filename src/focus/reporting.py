@@ -182,13 +182,14 @@ class StepReporter:
 			self._add_line("step")
 			self._send()
 
-	def tqdm(self, iterable, index: int, total: int, name: str, *, unit: str | None = None,
+	def tqdm(self, iterable, step_index: int, step_total: int, name: str, *, unit: str | None = None,
 			id_of=None, **tqdm_kwargs):
-		"""Iterate with a console progress bar while reporting step ``index/total``.
+		"""Iterate with a console progress bar while reporting step ``step_index/step_total``.
 
 		With ``unit="sample"`` each item becomes the current sample and gets its
 		own line under the same step; the sample is cleared after the loop. Other
-		units (tile, channel, patch) only report item progress.
+		units (tile, channel, patch) only report item progress. ``total=`` keeps
+		its tqdm meaning: the number of items, for iterables without a length.
 		"""
 		n = tqdm_kwargs.pop("total", None)
 		if n is None and hasattr(iterable, "__len__"):
@@ -196,11 +197,11 @@ class StepReporter:
 		n = n or 0
 		per_sample = unit == "sample"
 		with self._lock:
-			self._open_step(index, total, name, unit, n, False)
+			self._open_step(step_index, step_total, name, unit, n, False)
 			if not per_sample:
 				self._add_line("step")
 			self._send()
-		label = format_step_label(index, total, name)
+		label = format_step_label(step_index, step_total, name)
 		try:
 			for i, item in enumerate(_tqdm_lib.tqdm(iterable, desc=label, total=n or None, unit=unit or "it", **tqdm_kwargs)):
 				with self._lock:
