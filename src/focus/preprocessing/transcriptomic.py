@@ -8,7 +8,7 @@ import scipy.sparse as sp
 
 from focus.constants import MODALITY_PREPROCESSING, MODALITY_PREPROCESSING_MERGED, STPreprocessingParams
 from focus.utils import write_h5ad_compat, read_merged_sample_ids, concat_on_disk_compat
-from focus.preprocessing._utils import StepReporter, compute_cluster_labels
+from focus.preprocessing._utils import compute_cluster_labels, get_reporter
 from focus.preprocessing.base import BaseSample, BaseDataset
 from focus.preprocessing._registry import ModalityHandler, register_modality
 
@@ -194,11 +194,11 @@ class SpatialTranscriptomic(BaseSample):
             Path to the preprocessed AnnData file.
         '''
 
-        reporter = step_reporter or StepReporter()
+        reporter = step_reporter or get_reporter()
         output_file = MODALITY_PREPROCESSING(self.source_path, self.sample_id, self.modality_name, "h5ad")
 
         if not force_recomputing and os.path.exists(output_file):
-            reporter.message(f"Sample {self.sample_id} already preprocessed. Using cached results.")
+            reporter.cached()
             return output_file
 
         # Validate filter parameters
@@ -232,9 +232,8 @@ class SpatialTranscriptomic(BaseSample):
         # Report how many spots survived the (opt-in) spot filters, on every interface.
         n_spots_retained = adata.n_obs
         pct_retained = (100.0 * n_spots_retained / n_spots_total) if n_spots_total else 0.0
-        reporter.message(
-            f"Sample {self.sample_id}: retained {n_spots_retained} / {n_spots_total} "
-            f"spots ({pct_retained:.1f}%) after filtering"
+        reporter.detail(
+            f"Retained {n_spots_retained} / {n_spots_total} spots ({pct_retained:.1f}%) after filtering"
         )
 
         # 4. QC metrics on the retained spots, with mitochondrial genes still present
@@ -379,17 +378,12 @@ class SpatialTranscriptomicDataset(BaseDataset):
         if min_count_spots_ratio_per_gene is not None and min_count_spots_ratio_per_gene <= 0:
             raise ValueError("min_count_spots_ratio_per_gene must be greater than 0.")
 
-        reporter = step_reporter or StepReporter()
+        reporter = step_reporter or get_reporter()
 
         # ---- Step 1: Preprocess each sample (cache-aware) ----
-        reporter.step("1/2 - Processing Spatial Transcriptomic Samples")
-
         processed_samples: dict[str, str] = {}
 
-        total_samples = len(self.samples)
-        for i, sample in enumerate(self.samples):
-            reporter.set_sample(sample.sample_id, i + 1, total_samples)
-
+        for sample in reporter.tqdm(self.samples, 1, 2, "Processing samples", unit="sample"):
             processed_samples[sample.sample_id] = sample.preprocess_data(
                 min_count_per_spot=min_count_per_spot,
                 max_count_per_spot=max_count_per_spot,
@@ -403,7 +397,7 @@ class SpatialTranscriptomicDataset(BaseDataset):
             )
 
         # ---- Step 2: Merge and cross-sample processing ----
-        reporter.step("2/2 - Generating combined Spatial Transcriptomic dataset")
+        reporter.step(2, 2, "Building combined dataset")
 
         merged_file = MODALITY_PREPROCESSING_MERGED(self.dataset_source_path, self.samples[0].modality_name, "h5ad")
 
@@ -413,7 +407,7 @@ class SpatialTranscriptomicDataset(BaseDataset):
             active_ids = {s.sample_id for s in self.samples}
             merged_ids = read_merged_sample_ids(merged_file)
             if merged_ids == active_ids:
-                reporter.message("Combined dataset already exists. Using cached results.")
+                reporter.cached()
                 processed_samples["merged"] = merged_file
                 return processed_samples
 
@@ -428,7 +422,7 @@ class SpatialTranscriptomicDataset(BaseDataset):
             if a.file is not None:
                 a.file.close()
 
-        reporter.message(f"Concatenating {len(self.samples)} samples...")
+        reporter.detail(f"Concatenating {len(self.samples)} samples")
         # Memory-efficient on-disk concatenation: streams each per-sample file instead of
         # holding all of them plus the result in RAM simultaneously. Outer join preserves
         # genes when panels differ across samples; absent genes are filled with 0 counts.
@@ -458,14 +452,14 @@ class SpatialTranscriptomicDataset(BaseDataset):
         gc.collect()
 
         # ---- Cross-sample gene filtering (single pass over per-sample submatrices) ----
-        reporter.message(f"{combined.n_vars} genes before cross-sample filtering")
+        reporter.detail(f"{combined.n_vars} genes before cross-sample filtering")
         if min_spots_per_gene is not None or min_count_spots_ratio_per_gene is not None:
             if min_spots_per_gene is not None:
-                reporter.message(f"Filtering genes by expression frequency (min_spots_per_gene={min_spots_per_gene})...")
+                reporter.detail(f"Filtering genes by expression frequency (min_spots_per_gene={min_spots_per_gene})")
             if min_count_spots_ratio_per_gene is not None:
-                reporter.message(f"Filtering genes by count/spot ratio (min_count_spots_ratio_per_gene={min_count_spots_ratio_per_gene})...")
+                reporter.detail(f"Filtering genes by count/spot ratio (min_count_spots_ratio_per_gene={min_count_spots_ratio_per_gene})")
             combined = self._filter_genes(combined, min_spots_per_gene, min_count_spots_ratio_per_gene)
-            reporter.message(f"{combined.n_vars} genes after cross-sample filtering")
+            reporter.detail(f"{combined.n_vars} genes after cross-sample filtering")
 
         # Recompute QC metrics on the final merged matrix (raw counts) so .obs/.var QC
         # reflect the retained spots and genes; per-sample QC predates cross-sample filtering.
@@ -480,10 +474,10 @@ class SpatialTranscriptomicDataset(BaseDataset):
 
         # ---- Normalize merged dataset ----
         if total_counts_normalize:
-            reporter.message("Normalizing total counts...")
+            reporter.detail("Normalizing total counts")
             sc.pp.normalize_total(combined, target_sum=self._NORMALIZE_TARGET_SUM, inplace=True)
         if log1p_transform:
-            reporter.message("Applying log1p transformation...")
+            reporter.detail("Applying log1p transformation")
             sc.pp.log1p(combined)
 
         # Per-sample cluster labels are already in .obs["cluster"] from concatenation
@@ -496,7 +490,7 @@ class SpatialTranscriptomicDataset(BaseDataset):
         combined.uns["spot_size"] = {sid: ss.tolist() for sid, ss in spot_sizes.items()}
 
         # Guarantee sparse CSR storage, then save with gzip compression
-        reporter.message("Saving combined dataset...")
+        reporter.detail("Saving combined dataset")
         _ensure_sparse_csr(combined)
         write_h5ad_compat(combined, merged_file, compression=self._H5AD_COMPRESSION)
         del combined

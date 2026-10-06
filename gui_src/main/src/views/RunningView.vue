@@ -35,7 +35,7 @@ const run = provideRunProgress();
 
       <div class="work-col flex min-w-0 flex-col gap-6">
         <Transition name="fade">
-          <ConnectionLostBanner v-if="run.connection.value === 'lost'" :last-contact-at="store.lastContactAt" />
+          <ConnectionLostBanner v-if="run.connection.value === 'lost'" />
         </Transition>
         <Transition name="fade">
           <PipelineErrorBanner v-if="run.connection.value === 'run-lost'" title="Run interrupted" @back="store.goToConfig()">

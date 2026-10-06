@@ -56,6 +56,7 @@ from focus.constants import (
 	MODALITY_FILE_EXTENSION,
 )
 from focus.preprocessing._utils import discover_sample_ids
+from focus.reporting import StepReporter
 
 
 def _collect_preprocessed_modality_files(config: dict, logger: logging.Logger) -> tuple[dict, list]:
@@ -210,10 +211,6 @@ def main() -> None:
 		logger.error("Input validation failed. Aborting alignment.")
 		sys.exit(1)
 
-	# No GUI progress sink in standalone mode; _run_alignment also logs via the focus logger.
-	def _report(**kwargs):
-		return None
-
 	logger.info("=" * 60)
 	logger.info("Running alignment stage only")
 	logger.info("=" * 60)
@@ -221,9 +218,10 @@ def main() -> None:
 	# force_overrides=None: re-alignment is governed solely by each modality's
 	# 'alignment_force_recomputing' and by whether cached aligned files already exist.
 	# The preprocessing-force cascade is not applied, since this script does not preprocess.
-	aligned_files = orchestrator._run_alignment(
-		config, modality_files, _report, n_stages=1, force_overrides=None,
-	)
+	# No GUI in standalone mode: the reporter writes progress to the console and focus.log.
+	reporter = StepReporter()
+	with reporter.stage("alignment", 1, 1):
+		aligned_files = orchestrator._run_alignment(config, modality_files, reporter, force_overrides=None)
 
 	# Summary. For multiple targets the per-sample/merged paths repeat across targets:
 	# they are the SAME reference file, which accumulates one obsm['{target}_spatial'] per

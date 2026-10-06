@@ -177,7 +177,7 @@ class MicroscopyImageDataset(BaseDataset):
         ...
 ```
 
-All parameters are forwarded verbatim to each sample's `process_image()` call; `step_reporter` is attached to each sample instead (a default `StepReporter` is created when omitted). The constructor rejects any element of `samples` that is not a `MicroscopyImage` with `ValueError`.
+All parameters are forwarded verbatim to each sample's `process_image()` call; `step_reporter` is attached to each sample instead (the running pipeline's reporter, `get_reporter()`, is used when omitted). The constructor rejects any element of `samples` that is not a `MicroscopyImage` with `ValueError`.
 
 Exceptions raised while processing a sample are caught: `Error processing sample <sample_id>: <error>` is printed to the console, that sample is omitted from the result, and the loop continues. The call itself does not raise.
 
@@ -448,7 +448,7 @@ class RamanDataset(BaseDataset):
 | `bg_min_area_fraction` | `float` | `0.05` | Minimum contour area as fraction of total image area for background removal. |
 | `otsu_threshold_factor` | `float` | `0.7` | Multiplicative factor applied to the Otsu threshold. |
 | `min_object_size` | `int` | `500` | Connected components of this many pixels or fewer are removed from the tissue mask. |
-| `step_reporter` | `StepReporter` or `None` | `None` | Progress sink; a default `StepReporter` is created when omitted. |
+| `step_reporter` | `StepReporter` or `None` | `None` | Progress sink; the running pipeline's reporter (`get_reporter()`) is used when omitted. |
 
 Samples are processed one at a time. A sample whose output OME-TIFF already exists is skipped entirely (unless `force_recomputing=True`) and its existing path is returned. After a sample finishes, its three `.npy` caches are deleted.
 

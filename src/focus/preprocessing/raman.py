@@ -1,6 +1,6 @@
 import tqdm, tifffile, os, subprocess, shlex
-from focus.preprocessing._utils import StepReporter
-import warnings, copy, cv2, shutil, json, time
+from focus.preprocessing._utils import get_reporter
+import warnings, copy, cv2, shutil, json, time, logging
 import numpy as np
 from readlif.reader import LifFile, LifImage
 import xml.etree.ElementTree as ET
@@ -15,6 +15,8 @@ import concurrent.futures
 from focus.constants import MODALITY_PREPROCESSING, RamanPreprocessingParams
 from focus.preprocessing.base import BaseSample, BaseDataset
 from focus.preprocessing._registry import ModalityHandler, register_modality
+
+logger = logging.getLogger("focus.preprocessing.raman")
 
 # Resolve tools directory relative to the project root (raman.py → preprocessing → focus → src → project_root → tools)
 _TOOLS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))), "tools")
@@ -278,12 +280,13 @@ class RamanImage(BaseSample):
 		"""Load the source data. Looks for supported file formats (LIF) in the input directory."""
 		os.makedirs(self.output_path, exist_ok=True)
 
-		reporter = getattr(self, '_step_reporter', None) or StepReporter()
+		reporter = getattr(self, '_step_reporter', None) or get_reporter()
 		found = False
 		with os.scandir(self.input_path) as it:
 			for entry in it:
 				if entry.is_file() and entry.name.lower().endswith('.lif'):
-					reporter.step(f"1/5 - Loading Raman data from LIF file: {entry.name}")
+					reporter.step(1, 5, "Loading LIF data")
+					reporter.detail(entry.name)
 					self._load_lif(os.path.join(self.input_path, entry.name))
 					found = True
 					break
@@ -354,7 +357,7 @@ class RamanImage(BaseSample):
 				continue
 
 			if None in [metadata.tile_number, metadata.lambda_steps, metadata.scan_width, metadata.scan_height]:
-				print(f"Warning: Image '{name}' is missing required metadata. Probably corrupted scan")
+				get_reporter().warning(f"Image '{name}' is missing required metadata (probably a corrupted scan)")
 				continue
 
 			image: LifImage = lif_file.get_image(metadata.index)
@@ -404,7 +407,7 @@ class RamanImage(BaseSample):
 		break_idx, closest_idx = self._check_wavenumbers_overlaps(stacked_wavenumbers)
 
 		if break_idx is not None and closest_idx is not None:
-			print(f"Detected overlapping wavenumbers at index {break_idx}. Removing overlapping region.")
+			get_reporter().detail(f"Overlapping wavenumbers at index {break_idx}: overlapping region removed")
 			stacked_wavenumbers = np.concatenate([stacked_wavenumbers[:closest_idx], stacked_wavenumbers[break_idx:]])
 			stacked_tiles = np.concatenate([stacked_tiles[:, :closest_idx, :, :], stacked_tiles[:, break_idx:, :, :]], axis=1)
 
@@ -600,7 +603,7 @@ class RamanImage(BaseSample):
 				metadata.tiles_coordinates = np.zeros((metadata.tile_number, 2), dtype=np.float32)
 
 				if len(tiles) != metadata.tile_number:
-					print(f"RuntimeWarning: For element {element_name}, expected {metadata.tile_number} tiles, but found {len(tiles)} tiles. Ignoring.")
+					get_reporter().warning(f"Element {element_name}: expected {metadata.tile_number} tiles, found {len(tiles)}; ignored")
 					continue
 
 				for tile_index, tile in enumerate(tiles):
@@ -665,13 +668,13 @@ class RamanImage(BaseSample):
 							savgol_window, savgol_polyorder
 						))
 
-				_reporter = getattr(self, '_step_reporter', None) or StepReporter()
+				_reporter = getattr(self, '_step_reporter', None) or get_reporter()
 				slice_result = list(
 					_reporter.tqdm(
 						Parallel(n_jobs=self._max_workers, return_as="generator")(
 							delayed(_process_tile_parallel)(*args) for args in units
 						),
-						desc="4/5 - Cleaning Raman Spectra (Parallel)",
+						4, 5, "Cleaning spectra",
 						total=len(units),
 						unit="tile"
 					)
@@ -681,8 +684,8 @@ class RamanImage(BaseSample):
 					start_ch, end_ch = self._spectra_slices[slice_index]
 					self._raman_corrected_tiles[tile_index, start_ch:end_ch + 1] = processed_tile
 			else:
-				_reporter = getattr(self, '_step_reporter', None) or StepReporter()
-				for tile_idx in _reporter.tqdm(range(self._basic_corrected_tiles.shape[0]), desc="4/5 - Cleaning Raman Spectra", unit="tile"):
+				_reporter = getattr(self, '_step_reporter', None) or get_reporter()
+				for tile_idx in _reporter.tqdm(range(self._basic_corrected_tiles.shape[0]), 4, 5, "Cleaning spectra", unit="tile"):
 					for slice_index, (start_ch, end_ch) in enumerate(self._spectra_slices):
 						processed_tile, _, _ = _process_tile_parallel(
 							self._basic_corrected_tiles[tile_idx, start_ch:end_ch + 1, :, :],
@@ -695,8 +698,8 @@ class RamanImage(BaseSample):
 			np.save(cache_file, self._raman_corrected_tiles)
 		else:
 			self._raman_corrected_tiles = np.load(cache_file)
-			_reporter = getattr(self, '_step_reporter', None) or StepReporter()
-			_reporter.step("4/5 - Loaded Clean Raman Spectra from disk. (Using cached results)")
+			_reporter = getattr(self, '_step_reporter', None) or get_reporter()
+			_reporter.step(4, 5, "Cleaning spectra", cached=True)
 
 	def basic_correct(self, force_recomputing: bool = False) -> None:
 		"""Apply BaSiC illumination correction to raw tiles via external conda environment."""
@@ -748,12 +751,12 @@ class RamanImage(BaseSample):
 				os.remove(output_file)
 				return channel_idx, corrected
 
-			_reporter = getattr(self, '_step_reporter', None) or StepReporter()
+			_reporter = getattr(self, '_step_reporter', None) or get_reporter()
 			self._basic_corrected_tiles = np.zeros_like(self._raw_tiles, dtype=np.float32)
 
 			with concurrent.futures.ThreadPoolExecutor(max_workers=self._max_workers) as executor:
 				futures = {executor.submit(run_correction, idx): idx for idx in range(self._raw_tiles.shape[1])}
-				for future in _reporter.tqdm(concurrent.futures.as_completed(futures), desc="2/5 - Applying BaSiC Correction", total=len(futures), unit='channel'):
+				for future in _reporter.tqdm(concurrent.futures.as_completed(futures), 2, 5, "BaSiC correction", total=len(futures), unit='channel'):
 					channel_idx, corrected_channel = future.result()
 					self._basic_corrected_tiles[:, channel_idx, :, :] = corrected_channel
 
@@ -767,8 +770,8 @@ class RamanImage(BaseSample):
 			np.save(cache_file, self._basic_corrected_tiles)
 		else:
 			self._basic_corrected_tiles = np.load(cache_file)
-			_reporter = getattr(self, '_step_reporter', None) or StepReporter()
-			_reporter.step("2/5 - Loaded BaSiC corrected tiles from disk. (Using cached results)")
+			_reporter = getattr(self, '_step_reporter', None) or get_reporter()
+			_reporter.step(2, 5, "BaSiC correction", cached=True)
 
 	def remove_background(self, force_recomputing: bool = False,
 		bg_min_area_fraction: float = _BG_MIN_AREA_FRACTION,
@@ -795,8 +798,8 @@ class RamanImage(BaseSample):
 		cache_file = os.path.join(self.output_path, "segmented_tiles.npy")
 
 		if force_recomputing or not os.path.exists(cache_file):
-			_reporter = getattr(self, '_step_reporter', None) or StepReporter()
-			_reporter.step("3/5 - Removing background from BaSiC corrected tiles")
+			_reporter = getattr(self, '_step_reporter', None) or get_reporter()
+			_reporter.step(3, 5, "Removing background")
 
 			self._quick_stitch()
 
@@ -826,7 +829,7 @@ class RamanImage(BaseSample):
 				cv2.drawContours(tissue_mask, large_contours, contourIdx=-1, color=255, thickness=cv2.FILLED)
 				segmentation_mask = tissue_mask.astype(bool)
 			else:
-				print("Warning: No contours found; cannot refine background mask.")
+				get_reporter().warning("No contours found: the background mask is not refined")
 			del seg_mask_uint8
 
 			tiles_masks = self._extract_tiles_segmentation_from_mosaic(
@@ -841,8 +844,8 @@ class RamanImage(BaseSample):
 			self._basic_corrected_tiles = segmented_tiles
 		else:
 			self._basic_corrected_tiles = np.load(cache_file)
-			_reporter = getattr(self, '_step_reporter', None) or StepReporter()
-			_reporter.step("3/5 - Loaded segmented BaSiC corrected tiles from disk. (Using cached results)")
+			_reporter = getattr(self, '_step_reporter', None) or get_reporter()
+			_reporter.step(3, 5, "Removing background", cached=True)
 
 	def _quick_stitch(self) -> None:
 		"""Stitch tiles into a quick mosaic (with blending) for background removal only."""
@@ -1023,8 +1026,9 @@ class RamanImage(BaseSample):
 				tiles=self.corrected,
 				coordinates=copy.deepcopy(self.tiles_coordinates)
 			)
-			_reporter = getattr(self, '_step_reporter', None) or StepReporter()
-			_reporter.step(f"5/5 - Stitching tiles with ASHLAR using channel {align_channel} as reference")
+			_reporter = getattr(self, '_step_reporter', None) or get_reporter()
+			_reporter.step(5, 5, "Stitching with ASHLAR")
+			_reporter.detail(f"Reference channel {align_channel}")
 
 			main_script = os.path.join(_TOOLS_DIR, "ASHLAR", "main.py")
 			if not os.path.isfile(main_script):
@@ -1048,11 +1052,11 @@ class RamanImage(BaseSample):
 			os.rename(default_output, output_file)
 
 			self._mosaic = tifffile.imread(output_file)
-			print(f"Sample {self.sample_id}: Stitched mosaic saved to {output_file}")
+			logger.debug(f"Sample {self.sample_id}: stitched mosaic saved to {output_file}")
 		else:
 			self._mosaic = tifffile.imread(output_file)
-			_reporter = getattr(self, '_step_reporter', None) or StepReporter()
-			_reporter.step(f"5/5 - Loaded ASHLAR stitched mosaic from disk. (Using cached results)")
+			_reporter = getattr(self, '_step_reporter', None) or get_reporter()
+			_reporter.step(5, 5, "Stitching with ASHLAR", cached=True)
 
 		return output_file
 
@@ -1101,11 +1105,9 @@ class RamanDataset(BaseDataset):
 		dict[str, str]
 			Maps sample IDs to output OME-TIFF paths.
 		"""
-		reporter = step_reporter or StepReporter()
+		reporter = step_reporter or get_reporter()
 		processed_samples = {}
-		total = len(self.samples)
-		for i, sample in enumerate(self.samples):
-			reporter.set_sample(sample.sample_id, i + 1, total)
+		for sample in reporter.samples(self.samples):
 			sample._max_workers = max_workers
 			sample._step_reporter = reporter
 
@@ -1128,7 +1130,7 @@ class RamanDataset(BaseDataset):
 					)
 					output_file = sample.ashlar_stitch(force_recomputing=force_recomputing)
 				else:
-					print(f"Sample {sample.sample_id} already processed. Using cached results.")
+					reporter.cached()
 					output_file = output_expected
 
 				processed_samples[sample.sample_id] = output_file
@@ -1139,7 +1141,7 @@ class RamanDataset(BaseDataset):
 					if os.path.exists(cache_path):
 						os.remove(cache_path)
 			except Exception as e:
-				print(f"Error processing sample {sample.sample_id}: {e}")
+				reporter.warning(f"Sample skipped: {e}")
 
 		return processed_samples
 

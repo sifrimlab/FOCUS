@@ -239,12 +239,10 @@ class DirectMappingAlignmentGUI:
         
         # Clear the user event
         self._user_event.clear()
-        print(f"Please align the coordinates for sample '{sample_id}' using the GUI.")
 
         # Wait for the user to save the aligned coordinates
         self._user_event.wait()
 
-        print(f"Aligned coordinates for sample '{sample_id}' have been saved.")
         self._sample_id = None
         self._sample_index = None
         self._reference_metadata = None

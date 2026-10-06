@@ -75,7 +75,7 @@ function defaultPipelineStatus(): PipelineStatus {
     run_started_at: null,
     server_now: null,
     timeline: [],
-    messages: [],
+    activity: [],
   };
 }
 
@@ -95,7 +95,6 @@ export const useMainStore = defineStore('main', {
     polling: false,
     connection: 'online' as Connection,
     failedPolls: 0,
-    lastContactAt: null as number | null,
   }),
 
   getters: {
@@ -371,7 +370,6 @@ export const useMainStore = defineStore('main', {
     startStatusPolling() {
       this.stopStatusPolling();
       this.resetConnection();
-      this.lastContactAt = Date.now();
       this.polling = true;
       this.statusPollTimer = setTimeout(() => this.pollStatus(), POLL_MS);
     },
@@ -388,7 +386,6 @@ export const useMainStore = defineStore('main', {
 
     applyPolledStatus(next: PipelineStatus) {
       this.failedPolls = 0;
-      this.lastContactAt = Date.now();
       // /api/run sets 'running' before it returns, so 'idle' (or another run) means the server was restarted.
       const prevStart = this.pipelineStatus.run_started_at;
       if (next.state === 'idle' || (prevStart && next.run_started_at && next.run_started_at !== prevStart)) {

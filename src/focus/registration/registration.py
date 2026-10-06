@@ -8,6 +8,7 @@ from focus.constants import ModalityType, RegistrationType
 from focus.utils import write_h5ad_compat, read_merged_sample_ids, registration_cache_valid, hw_from_axes
 
 from focus.registration.microscopy_image import MicroscopyImageFeatureExtractor
+from focus.reporting import get_reporter
 
 logger = logging.getLogger(__name__)
 
@@ -146,7 +147,6 @@ class FeatureExtractorRegistration:
 		"""
 		common_samples = sorted(set(image_files.keys()) & set(anchor_files.keys()) - {"merged"})
 		registered_files: dict[str, str] = {}
-		total_samples = len(common_samples)
 
 		# Feature extractor is created lazily — only if at least one sample needs (re)encoding.
 		# This avoids loading the pretrained model when all results are already cached.
@@ -154,11 +154,8 @@ class FeatureExtractorRegistration:
 
 		all_cached = True  # tracks whether all per-sample files came from valid cache
 
-		for sample_idx, sample_id in enumerate(common_samples, 1):
-			logger.info(f"Registering '{image_name}' for sample '{sample_id}'")
-
-			if step_reporter:
-				step_reporter.set_sample(sample_id, sample_idx, total_samples)
+		reporter = step_reporter or get_reporter()
+		for sample_id in reporter.samples(common_samples):
 
 			# Output path
 			reg_dir = os.path.join(self._path, sample_id, "registration")
@@ -171,9 +168,8 @@ class FeatureExtractorRegistration:
 			if coord_key not in anchor_adata.obsm:
 				# Only the aligned key locates the anchor spots in this image's pixel space;
 				# obsm['spatial'] is the anchor's own frame and would place patches elsewhere.
-				logger.error(
-					f"Anchor '{anchor_name}' sample '{sample_id}' missing obsm['{coord_key}']. "
-					f"Ensure alignment was performed. Skipping."
+				reporter.warning(
+					f"Sample skipped: the anchor '{anchor_name}' has no obsm['{coord_key}'] (was alignment performed?)"
 				)
 				all_cached = False
 				del anchor_adata
@@ -185,12 +181,12 @@ class FeatureExtractorRegistration:
 			if os.path.exists(registered_file) and not force_recomputing:
 				cached = anndata.read_h5ad(registered_file)
 				if registration_cache_valid(cached, len(patch_centers), self._REGISTRATION_TYPE):
-					logger.info(f"Using cached registration for sample '{sample_id}'")
+					reporter.cached()
 					registered_files[sample_id] = registered_file
 					del cached, anchor_adata
 					continue
-				logger.warning(
-					f"Cached registration for '{sample_id}' is stale "
+				reporter.warning(
+					f"Cached registration is stale "
 					f"(obs={cached.n_obs} vs anchor {len(patch_centers)}, "
 					f"type={cached.uns.get('registration_type')} vs {self._REGISTRATION_TYPE}); recomputing."
 				)
@@ -200,7 +196,7 @@ class FeatureExtractorRegistration:
 
 			# Load the model the first time a sample actually needs feature extraction
 			if feature_extractor is None:
-				logger.info("Loading feature extractor model...")
+				reporter.step(1, 3, "Loading feature extractor")
 				feature_extractor = MicroscopyImageFeatureExtractor(
 					path=self._path,
 					hf_token=self._hf_token,
@@ -241,6 +237,7 @@ class FeatureExtractorRegistration:
 			del feature_extractor
 
 		# Merge across samples
+		reporter.step(3, 3, "Merging samples")
 		registered_files = self._merge_samples(
 			registered_files, image_name,
 			force_recomputing=force_recomputing, all_per_sample_cached=all_cached,
@@ -277,11 +274,11 @@ class FeatureExtractorRegistration:
 			active_ids = set(sample_files.keys())
 			merged_ids = read_merged_sample_ids(merged_file)
 			if merged_ids == active_ids:
-				logger.info(f"Using cached merged registration for '{modality_name}'")
+				get_reporter().cached()
 				registered_files["merged"] = merged_file
 				return registered_files
 
-		logger.info(f"Merging registration files for '{modality_name}'")
+		logger.debug(f"Merging registration files for '{modality_name}'")
 		adata_list = []
 		for sample_id, filepath in sample_files.items():
 			adata = anndata.read_h5ad(filepath)
@@ -460,15 +457,11 @@ class SpotInterpolationRegistration:
 		"""
 		common_samples = sorted(set(anchor_files.keys()) & set(target_files.keys()) - {"merged"})
 		registered_files: dict[str, str] = {}
-		total_samples = len(common_samples)
 
 		all_cached = True  # tracks whether all per-sample files came from valid cache
 
-		for sample_idx, sample_id in enumerate(common_samples, 1):
-			logger.info(f"Registering '{target_name}' for sample '{sample_id}'")
-
-			if step_reporter:
-				step_reporter.set_sample(sample_id, sample_idx, total_samples)
+		reporter = step_reporter or get_reporter()
+		for sample_id in reporter.tqdm(common_samples, 1, 2, "Interpolating features onto anchor spots", unit="sample"):
 
 			# Output path
 			reg_dir = os.path.join(self._path, sample_id, "registration")
@@ -486,11 +479,11 @@ class SpotInterpolationRegistration:
 			if os.path.exists(registered_file) and not force_recomputing:
 				cached = anndata.read_h5ad(registered_file)
 				if registration_cache_valid(cached, anchor_adata.n_obs, self._REGISTRATION_TYPE):
-					logger.info(f"Using cached registration for sample '{sample_id}'")
+					reporter.cached()
 					registered_files[sample_id] = registered_file
 					continue
-				logger.warning(
-					f"Cached registration for '{sample_id}' is stale "
+				reporter.warning(
+					f"Cached registration is stale "
 					f"(obs={cached.n_obs} vs anchor {anchor_adata.n_obs}, "
 					f"type={cached.uns.get('registration_type')} vs {self._REGISTRATION_TYPE}); recomputing."
 				)
@@ -502,14 +495,13 @@ class SpotInterpolationRegistration:
 				if spot_size.size == 1:
 					spot_size = np.array([float(spot_size[0]), float(spot_size[0])], dtype=np.float32)
 			else:
-				logger.warning(f"No spot_size in anchor for sample '{sample_id}', using default [1.0, 1.0]")
+				reporter.warning("No spot_size in the anchor: using the default [1.0, 1.0]")
 				spot_size = np.array([1.0, 1.0], dtype=np.float32)
 
 			coord_key = f'{target_name}_spatial'
 			if coord_key not in anchor_adata.obsm:
-				logger.error(
-					f"Anchor '{anchor_name}' sample '{sample_id}' missing obsm['{coord_key}']. "
-					f"Ensure alignment was performed. Skipping."
+				reporter.warning(
+					f"Sample skipped: the anchor '{anchor_name}' has no obsm['{coord_key}'] (was alignment performed?)"
 				)
 				continue
 			anchor_coords = np.asarray(anchor_adata.obsm[coord_key], dtype=np.float32)
@@ -569,6 +561,7 @@ class SpotInterpolationRegistration:
 			del anchor_adata, target_adata, target_features, registered_features, registered_layers, adata
 
 		# Merge across samples
+		reporter.step(2, 2, "Merging samples")
 		registered_files = self._merge_samples(
 			registered_files, target_name,
 			force_recomputing=force_recomputing, all_per_sample_cached=all_cached,
@@ -597,11 +590,11 @@ class SpotInterpolationRegistration:
 			active_ids = set(sample_files.keys())
 			merged_ids = read_merged_sample_ids(merged_file)
 			if merged_ids == active_ids:
-				logger.info(f"Using cached merged registration for '{modality_name}'")
+				get_reporter().cached()
 				registered_files["merged"] = merged_file
 				return registered_files
 
-		logger.info(f"Merging registration files for '{modality_name}'")
+		logger.debug(f"Merging registration files for '{modality_name}'")
 		adata_list = []
 		for sample_id, filepath in sample_files.items():
 			adata = anndata.read_h5ad(filepath)

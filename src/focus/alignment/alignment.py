@@ -9,6 +9,7 @@ from focus.utils import write_h5ad_compat, concat_on_disk_compat, read_merged_sa
 
 from focus.GUI.direct_mapping_alignment import DirectMappingAlignmentGUI
 from focus.preprocessing._utils import _spatial_bin_assignment, _SPATIAL_CAP
+from focus.reporting import get_reporter
 
 logger = logging.getLogger("focus.alignment")
 
@@ -33,6 +34,16 @@ _H5AD_COMPRESSION = "gzip"
 
 # Modality type groupings (shared with the orchestrator and config validation)
 _IMAGE_MODALITIES = IMAGE_MODALITY_TYPES
+
+# Alignment steps of one modality pair, as (index, total, name) for StepReporter.
+_STEP_ALIGN = (1, 3, "Aligning samples")
+_STEP_SAVE = (2, 3, "Saving aligned coordinates")
+_STEP_MERGE = (3, 3, "Merging aligned samples")
+
+
+def _first(pair: tuple):
+	"""Sample id of a (sample_id, value) loop item."""
+	return pair[0]
 _SPOT_MODALITIES = SPOT_MODALITY_TYPES
 
 
@@ -157,7 +168,8 @@ class DirectMappingAligner:
 			target_modality_name: str,
 			reference_modality_type: str,
 			target_modality_type: str,
-			exact_spots: bool = False
+			exact_spots: bool = False,
+			reporter=None,
 		) -> None:
 
 		if not isinstance(path, str) or not isinstance(reference_modality, dict) or not isinstance(target_modality, dict):
@@ -175,6 +187,8 @@ class DirectMappingAligner:
 		self._reference_modality_type = reference_modality_type
 		self._target_modality_type = target_modality_type
 		self._exact_spots = exact_spots
+		# Steps: 1/3 Aligning samples, 2/3 Saving aligned coordinates, 3/3 Merging aligned samples.
+		self._reporter = reporter or get_reporter()
 
 		# Only align samples present in both modalities
 		common = set(reference_modality.keys()) & set(target_modality.keys())
@@ -494,17 +508,20 @@ class DirectMappingAligner:
 			force_recomputing = kwargs.get("force_recomputing", False)
 
 			is_target_image = self._target_modality_type in _IMAGE_MODALITIES
-			for sample_index, sample_id in enumerate(self._common_samples):
+			samples = self._reporter.tqdm(self._common_samples, *_STEP_ALIGN, unit="sample")
+			for sample_index, sample_id in enumerate(samples):
 				# Check cache (use h5py to avoid loading full AnnData)
 				if not force_recomputing:
 					aligned_target_file = self._aligned_output_path(sample_id)
 					if os.path.exists(aligned_target_file):
 						if is_target_image:
+							self._reporter.cached()
 							continue
 						obsm_key = f'{self._reference_modality_name}_spatial'
 						with h5py.File(aligned_target_file, 'r') as f:
 							obsm = f.get('obsm')
 							if obsm is not None and obsm_key in obsm:
+								self._reporter.cached()
 								continue
 
 				# Prepare data for both modalities
@@ -545,7 +562,8 @@ class DirectMappingAligner:
 					self._aligned_coordinates[sample_id] = aligned_coordinates.copy()
 
 		except Exception as e:
-			logger.error(f"Alignment thread error: {e}", exc_info=True)
+			logger.debug("Alignment thread error", exc_info=True)
+			self._reporter.warning(f"Alignment failed: {e}")
 			self._gui_interface.set_error(str(e))
 		finally:
 			self._dataset_completed_event.set()
@@ -626,7 +644,8 @@ class DirectMappingAligner:
 		region of the fixed image that the moving image covers. The output carries the fixed
 		modality's name (see ``_aligned_output_path``).
 		"""
-		for sample_id, aligned_coords in self._aligned_coordinates.items():
+		for sample_id, aligned_coords in self._reporter.tqdm(
+				list(self._aligned_coordinates.items()), *_STEP_SAVE, unit="sample", id_of=_first):
 			reference_file = self._reference_modality[sample_id]
 
 			min_x, max_x = int(np.nanmin(aligned_coords[:, 0])), int(np.nanmax(aligned_coords[:, 0]))
@@ -641,7 +660,7 @@ class DirectMappingAligner:
 				max_x, max_y = min(w, max_x), min(h, max_y)
 
 				if min_x >= max_x or min_y >= max_y:
-					logger.error(f"Invalid crop for sample {sample_id}: no overlap between the aligned layers.")
+					self._reporter.warning("Invalid crop: the aligned layers do not overlap; no output written")
 					continue
 
 				slices = [slice(None)] * len(img_shape)
@@ -666,7 +685,8 @@ class DirectMappingAligner:
 		and updated rather than recreated from scratch, so previously added obsm keys are
 		preserved.
 		"""
-		for sample_id, aligned_coords in self._aligned_coordinates.items():
+		for sample_id, aligned_coords in self._reporter.tqdm(
+				list(self._aligned_coordinates.items()), *_STEP_SAVE, unit="sample", id_of=_first):
 			alignment_folder = os.path.join(self._path, sample_id, "alignment")
 			os.makedirs(alignment_folder, exist_ok=True)
 			aligned_file = self._aligned_output_path(sample_id)
@@ -694,7 +714,9 @@ class DirectMappingAligner:
 
 		if aligned_files:
 			merged_file = MODALITY_ALIGNMENT_MERGED(self._path, self._target_modality_name, "h5ad")
-			if not os.path.exists(merged_file) or self._aligned_coordinates:
+			rebuild = not os.path.exists(merged_file) or bool(self._aligned_coordinates)
+			self._reporter.step(*_STEP_MERGE, cached=not rebuild)
+			if rebuild:
 				alignment_folder = os.path.join(self._path, "merged", "alignment")
 				os.makedirs(alignment_folder, exist_ok=True)
 				concat_on_disk_compat(
@@ -724,9 +746,8 @@ class DirectMappingAligner:
 		aligned_samples: dict[str, str] = {}
 		obsm_key = f'{self._reference_modality_name}_spatial'
 
-		for sample_id, processed_target_file in self._target_modality.items():
-			if sample_id == "merged":
-				continue
+		per_sample = [(sid, f) for sid, f in self._target_modality.items() if sid != "merged"]
+		for sample_id, processed_target_file in self._reporter.tqdm(per_sample, *_STEP_ALIGN, unit="sample", id_of=_first):
 
 			alignment_folder = os.path.join(self._path, sample_id, "alignment")
 			os.makedirs(alignment_folder, exist_ok=True)
@@ -742,7 +763,9 @@ class DirectMappingAligner:
 				else:
 					needs_write = True
 
-			if needs_write:
+			if not needs_write:
+				self._reporter.cached()
+			else:
 				# Load existing aligned file to preserve other obsm keys; fall back to preprocessed.
 				if os.path.exists(aligned_file) and not force_recomputing:
 					adata = anndata.read_h5ad(aligned_file)
@@ -763,7 +786,9 @@ class DirectMappingAligner:
 		merged_file = MODALITY_ALIGNMENT_MERGED(self._path, self._target_modality_name, "h5ad")
 		aligned_samples["merged"] = merged_file
 
-		if not os.path.exists(merged_file) or force_recomputing:
+		rebuild = not os.path.exists(merged_file) or force_recomputing
+		self._reporter.step(*_STEP_MERGE, cached=not rebuild)
+		if rebuild:
 			alignment_folder = os.path.join(self._path, "merged", "alignment")
 			os.makedirs(alignment_folder, exist_ok=True)
 			concat_on_disk_compat(
@@ -810,6 +835,8 @@ class DirectMappingAligner:
 		"""
 		aligned_samples: dict[str, str] = {}
 		is_target_image = self._target_modality_type in _IMAGE_MODALITIES
+		self._reporter.step(*_STEP_ALIGN, cached=True)
+		self._reporter.step(*_STEP_SAVE, cached=True)
 		aligned_files = []
 		for sample_id in self._common_samples:
 			aligned_file = self._aligned_output_path(sample_id)
@@ -821,6 +848,7 @@ class DirectMappingAligner:
 			merged_file = MODALITY_ALIGNMENT_MERGED(self._path, self._target_modality_name, "h5ad")
 			active_ids = set(self._common_samples)
 			merged_ids = read_merged_sample_ids(merged_file) if os.path.exists(merged_file) else None
+			self._reporter.step(*_STEP_MERGE, cached=merged_ids == active_ids)
 			if merged_ids != active_ids:
 				alignment_folder = os.path.join(self._path, "merged", "alignment")
 				os.makedirs(alignment_folder, exist_ok=True)
@@ -887,7 +915,7 @@ class DirectMappingAligner:
 		elif is_ref_spot and is_target_image:
 			# Unreachable through the CLI/GUI: config validation rejects an image-based
 			# reference paired with a spot-based modality before the pipeline starts.
-			logger.error(
+			self._reporter.warning(
 				f"Aligning image reference '{self._target_modality_name}' to spot modality "
 				f"'{self._reference_modality_name}' is not supported; no aligned output was written."
 			)

@@ -8,7 +8,7 @@ from scipy.ndimage import binary_fill_holes
 from ome_types.model import OME, Image, Pixels, Channel, TiffData, Plane
 
 import focus.utils as utils
-from focus.preprocessing._utils import StepReporter
+from focus.preprocessing._utils import get_reporter
 from focus.constants import SegmentationBackgroundColor, MicroscopyImageProcessingParams
 from focus.constants import MODALITY_PREPROCESSING
 from focus.preprocessing.base import BaseSample, BaseDataset
@@ -105,7 +105,7 @@ class MicroscopyImage(BaseSample):
 		# Squeeze extra dimensions (CZI can have 5+ dims)
 		if image.ndim > 3:
 			if image.shape[0] > 1:
-				print("WARNING: CZI file has multiple scenes. Using only the first one.")
+				get_reporter().warning("The CZI file has multiple scenes: only the first one is used")
 			while image.ndim > 3:
 				image = image[0]
 
@@ -128,7 +128,7 @@ class MicroscopyImage(BaseSample):
 			best_index = max(range(len(levels)), key=lambda i: sizes[i][0] * sizes[i][1])
 			if len(levels) > 1:
 				h, w = sizes[best_index]
-				print(f"INFO: qpTIFF file has {len(levels)} candidate resolutions across series; using the highest-resolution one ({h}x{w}).")
+				get_reporter().detail(f"qpTIFF file with {len(levels)} candidate resolutions: using the highest ({h}x{w})")
 			image = levels[best_index].asarray()
 
 		input_dtype = image.dtype
@@ -446,7 +446,7 @@ class MicroscopyImage(BaseSample):
 			cv2.drawContours(tissue_mask, large_contours, contourIdx=-1, color=255, thickness=cv2.FILLED)
 			segmentation_mask = tissue_mask.astype(bool)
 		else:
-			print("Warning: No contours found; cannot refine background mask.")
+			get_reporter().warning("No contours found: the background mask is not refined")
 		del seg_uint8
 
 		return segmentation_mask
@@ -615,23 +615,23 @@ class MicroscopyImage(BaseSample):
 
 		output_ome_tiff = MODALITY_PREPROCESSING(self.source_path, self.sample_id, self.modality_name, 'ome.tiff')
 
-		reporter = getattr(self, '_step_reporter', None) or StepReporter()
+		reporter = getattr(self, '_step_reporter', None) or get_reporter()
 
 		if not force_recomputing and os.path.exists(output_ome_tiff):
-			print(f"Processed image already exists. Using cached results.")
+			reporter.cached()
 			return output_ome_tiff
 
-		# 1. Load
-		reporter.step(f"1/5 - Loading image from {self.filename}")
+		# 1. Load. Skipped optional steps (2-4) are not announced.
+		reporter.step(1, 5, "Loading image")
+		reporter.detail(os.path.basename(self.filename))
 		image, input_dtype = self._load_image(self.filename)
 
 		# 2. Color enhancement
 		if color_enhancement:
-			reporter.step(f"2/5 - Enhancing colors (gamma={gamma}, saturation={contrast_saturation})")
+			reporter.step(2, 5, "Enhancing colors")
+			reporter.detail(f"gamma={gamma}, saturation={contrast_saturation}")
 			image = utils.gamma_correction(image, gamma=gamma)
 			image = utils.enhance_contrast(image, saturated_pixels=contrast_saturation, max_stat_pixels=self._DETECTION_MAX_PIXELS)
-		else:
-			reporter.step(f"2/5 - Color enhancement not required")
 
 		# Ensure float32 after enhancement
 		if image.dtype != np.float32:
@@ -639,30 +639,25 @@ class MicroscopyImage(BaseSample):
 
 		# 3. Background removal + 4. Crop share one low-resolution tissue-detection pass
 		if remove_background or crop_to_tissue:
-			reporter.step(f"3/5 - Detecting tissue (downsampled proxy)")
+			if remove_background:
+				reporter.step(3, 5, "Removing background")
 			mask, scale = self._compute_tissue_mask(
 				image,
 				min_object_coverage=min_object_coverage,
 				clip_percentile=clip_percentile
 			)
 			if remove_background:
-				reporter.step(f"3/5 - Removing background")
 				image = self._remove_background(image, mask, scale, background_color=background_color)
-			else:
-				reporter.step(f"3/5 - Background removal not required")
 
 			if crop_to_tissue:
-				reporter.step(f"4/5 - Cropping to tissue area (margin={crop_margin}px)")
+				reporter.step(4, 5, "Cropping to tissue")
+				reporter.detail(f"margin={crop_margin}px")
 				image = self._crop_image(image, mask, scale, margin=crop_margin)
-			else:
-				reporter.step(f"4/5 - Cropping not required")
-		else:
-			reporter.step(f"3/5 - Background removal not required")
-			reporter.step(f"4/5 - Cropping not required")
 
 		# 5. Save
 		n_levels = self._compute_pyramid_levels(*image.shape[:2])
-		reporter.step(f"5/5 - Saving OME-TIFF ({n_levels} pyramid levels, cap={self._MAX_PYRAMID_PIXELS} px)")
+		reporter.step(5, 5, "Saving OME-TIFF")
+		reporter.detail(f"{n_levels} pyramid levels, cap={self._MAX_PYRAMID_PIXELS} px")
 		self._save_image_pyramid(image, output_ome_tiff, input_dtype)
 		return output_ome_tiff
 
@@ -698,11 +693,9 @@ class MicroscopyImageDataset(BaseDataset):
 		dict[str, str]
 			Maps sample IDs to output OME-TIFF paths.
 		"""
-		reporter = step_reporter or StepReporter()
+		reporter = step_reporter or get_reporter()
 		processed_samples = {}
-		total = len(self.samples)
-		for i, sample in enumerate(self.samples):
-			reporter.set_sample(sample.sample_id, i + 1, total)
+		for sample in reporter.samples(self.samples):
 			sample._step_reporter = reporter
 			try:
 				output_file = sample.process_image(
@@ -719,7 +712,7 @@ class MicroscopyImageDataset(BaseDataset):
 				)
 				processed_samples[sample.sample_id] = output_file
 			except Exception as e:
-				print(f"Error processing sample {sample.sample_id}: {e}")
+				reporter.warning(f"Sample skipped: {e}")
 		return processed_samples
 
 

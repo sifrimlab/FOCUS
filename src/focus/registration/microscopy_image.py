@@ -189,7 +189,7 @@ class MicroscopyImageFeatureExtractor:
 		batch_size = self._estimate_batch_size(sample)
 
 		if step_reporter:
-			step_reporter.step("Extracting patch embeddings", 0, n_patches, unit="patch")
+			step_reporter.step(2, 3, "Extracting patch embeddings", unit="patch", items_total=n_patches)
 
 		embeddings = None            # anchor: preallocated (M, D); free-form: stays None
 		fg_emb_chunks: list[np.ndarray] = []   # free-form accumulation
@@ -226,7 +226,7 @@ class MicroscopyImageFeatureExtractor:
 			processed = end
 			pbar.update(end - start)
 			if step_reporter:
-				step_reporter.update("Extracting patch embeddings", processed, n_patches, unit="patch")
+				step_reporter.update(processed, n_patches)
 			start = end
 		pbar.close()
 

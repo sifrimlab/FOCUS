@@ -10,6 +10,7 @@ import tifffile
 from focus.constants import MODALITY_REGISTRATION, MODALITY_REGISTRATION_MERGED, RegistrationType
 from focus.utils import write_h5ad_compat, read_merged_sample_ids, registration_cache_valid, hw_from_axes
 from focus.registration.registration import SpotInterpolationRegistration
+from focus.reporting import get_reporter
 
 logger = logging.getLogger(__name__)
 
@@ -210,14 +211,10 @@ class RamanPixelInterpolationRegistration:
         """
         common_samples = sorted(set(anchor_files.keys()) & set(target_files.keys()) - {"merged"})
         registered_files: dict[str, str] = {}
-        total_samples = len(common_samples)
         all_cached = True
 
-        for sample_idx, sample_id in enumerate(common_samples, 1):
-            logger.info(f"Registering '{target_name}' (raman pixel) for sample '{sample_id}'")
-
-            if step_reporter:
-                step_reporter.set_sample(sample_id, sample_idx, total_samples)
+        reporter = step_reporter or get_reporter()
+        for sample_id in reporter.tqdm(common_samples, 1, 2, "Interpolating Raman pixels onto anchor spots", unit="sample"):
 
             reg_dir = os.path.join(self._path, sample_id, "registration")
             os.makedirs(reg_dir, exist_ok=True)
@@ -230,11 +227,11 @@ class RamanPixelInterpolationRegistration:
             if os.path.exists(registered_file) and not force_recomputing:
                 cached = anndata.read_h5ad(registered_file)
                 if registration_cache_valid(cached, anchor_adata.n_obs, self._REGISTRATION_TYPE):
-                    logger.info(f"Using cached raman pixel registration for sample '{sample_id}'")
+                    reporter.cached()
                     registered_files[sample_id] = registered_file
                     continue
-                logger.warning(
-                    f"Cached registration for '{sample_id}' is stale "
+                reporter.warning(
+                    f"Cached registration is stale "
                     f"(obs={cached.n_obs} vs anchor {anchor_adata.n_obs}, "
                     f"type={cached.uns.get('registration_type')} vs {self._REGISTRATION_TYPE}); recomputing."
                 )
@@ -246,14 +243,13 @@ class RamanPixelInterpolationRegistration:
                 if spot_size.size == 1:
                     spot_size = np.array([float(spot_size[0]), float(spot_size[0])], dtype=np.float32)
             else:
-                logger.warning(f"No spot_size in anchor for sample '{sample_id}', using default [1.0, 1.0]")
+                reporter.warning("No spot_size in the anchor: using the default [1.0, 1.0]")
                 spot_size = np.array([1.0, 1.0], dtype=np.float32)
 
             coord_key = f'{target_name}_spatial'
             if coord_key not in anchor_adata.obsm:
-                logger.error(
-                    f"Anchor '{anchor_name}' sample '{sample_id}' missing obsm['{coord_key}']. "
-                    f"Ensure alignment was performed. Skipping."
+                reporter.warning(
+                    f"Sample skipped: the anchor '{anchor_name}' has no obsm['{coord_key}'] (was alignment performed?)"
                 )
                 continue
             anchor_coords = np.asarray(anchor_adata.obsm[coord_key], dtype=np.float32)
@@ -284,9 +280,9 @@ class RamanPixelInterpolationRegistration:
                 # The anchor spots fall entirely outside the Raman image: there is no tissue
                 # overlap, so assign zero spectral vectors (mirrors how _interpolate_features
                 # treats non-overlapping spots for spot-based targets).
-                logger.warning(
-                    f"Sample '{sample_id}': all {anchor_coords.shape[0]} anchor spots fall outside "
-                    f"the Raman image bounds; assigning zero spectral vectors (no overlap)."
+                reporter.warning(
+                    f"All {anchor_coords.shape[0]} anchor spots fall outside the Raman image: "
+                    f"zero spectral vectors assigned (no overlap)"
                 )
                 registered_features = np.zeros(
                     (anchor_coords.shape[0], len(channel_names)), dtype=np.float32
@@ -314,6 +310,7 @@ class RamanPixelInterpolationRegistration:
             # Free the loaded Raman pixels and interpolated output before the next sample.
             del anchor_adata, pixel_coords, pixel_features, registered_features, adata
 
+        reporter.step(2, 2, "Merging samples")
         registered_files = self._merge_samples(
             registered_files, target_name,
             force_recomputing=force_recomputing, all_per_sample_cached=all_cached,
@@ -340,11 +337,11 @@ class RamanPixelInterpolationRegistration:
             active_ids = set(sample_files.keys())
             merged_ids = read_merged_sample_ids(merged_file)
             if merged_ids == active_ids:
-                logger.info(f"Using cached merged raman pixel registration for '{modality_name}'")
+                get_reporter().cached()
                 registered_files["merged"] = merged_file
                 return registered_files
 
-        logger.info(f"Merging raman pixel registration files for '{modality_name}'")
+        logger.debug(f"Merging raman pixel registration files for '{modality_name}'")
         adata_list = []
         for sample_id, filepath in sample_files.items():
             adata = anndata.read_h5ad(filepath)

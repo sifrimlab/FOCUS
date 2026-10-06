@@ -1,13 +1,12 @@
 import os
-import re
 import gc
 import logging
 
 import numpy as np
 import scipy.sparse as sp
-import tqdm as _tqdm_lib
 
 from focus.constants import FocusOutputDirectories
+from focus.reporting import StepReporter, get_reporter  # noqa: F401  (re-exported for pipeline modules)
 
 # Samples above this spot count are coarsened onto a spatially-uniform grid of at most this
 # many bins: all spots in a bin are SUMMED into one pseudo-spot, Leiden runs on the bins, and
@@ -91,128 +90,6 @@ def find_imzml_pair(directory: str) -> tuple[str, str] | None:
 		f"{_IMZML_EXTENSION} + {_IBD_EXTENSION} pair, or be left empty if that ion mode was "
 		f"not acquired."
 	)
-
-
-def _parse_step_label(desc: str) -> tuple[int, int]:
-	"""Parse '3/9 - ...' → (3, 9). Returns (0, 0) if the pattern is not found."""
-	m = re.match(r'^(\d+)/(\d+)', desc)
-	if m:
-		return int(m.group(1)), int(m.group(2))
-	return 0, 0
-
-
-class StepReporter:
-	"""Single, unified reporting interface for the whole pipeline.
-
-	Every textual line is fanned out to all *available* sinks through one call:
-	  - console + the focus.log file, via the shared ``focus`` logger;
-	  - the web GUI, via the optional ``callback`` (absent in headless runs).
-
-	Sinks degrade gracefully and independently: the file handler only exists once
-	a dataset path is known (``setup_logging``), the GUI callback only when a GUI is
-	attached, and if no logging handlers are configured at all we fall back to
-	``print`` so the console is never silent. Prefer ``reporter.message(...)`` over
-	bare ``print()`` / ``logging`` so output reaches every interface at once.
-	"""
-
-	def __init__(self, callback=None):
-		self._callback = callback
-		self._logger = logging.getLogger("focus")
-
-	def _emit(self, msg: str, level: int = logging.INFO) -> None:
-		"""Fan a line out to the console + log file (via the 'focus' logger).
-
-		Falls back to ``print`` when the logger has no handlers (e.g. a bare
-		StepReporter() in a script or test that never called ``setup_logging``),
-		so the console is never silent regardless of how FOCUS is launched.
-		"""
-		self._logger.log(level, msg)
-		if not self._logger.hasHandlers():
-			print(msg)
-
-	def step(self, desc: str, current: int = 0, total: int = 0, unit: str | None = None) -> None:
-		"""Announce a named step on every interface (console, log file, GUI).
-
-		``unit`` names what ``current``/``total`` count (e.g. "sample", "tile", "patch")
-		so the GUI can label item progress.
-		"""
-		self._emit(desc)
-		self._send(desc, current, total, unit)
-
-	def _send(self, desc: str, current: int, total: int, unit: str | None = None, extra: dict | None = None) -> None:
-		if self._callback:
-			idx, n = _parse_step_label(desc)
-			self._callback({
-				"sub_step": desc,
-				"sub_step_index": idx,
-				"sub_step_total": n,
-				"sub_step_progress": current,
-				"sub_step_items_total": total,
-				"sub_step_unit": unit,
-				**(extra or {}),
-			})
-
-	def update(self, desc: str, current: int, total: int, unit: str | None = None) -> None:
-		"""Update item-level progress without printing to stdout (e.g. mid-loop updates)."""
-		self._send(desc, current, total, unit)
-
-	def tqdm(self, iterable, desc: str, total: int | None = None, **kwargs):
-		"""tqdm replacement that also reports progress to the GUI.
-
-		When the items are samples (``unit="sample"``), the GUI also receives the
-		sample being processed, read from the item's ``sample_id`` when it has one.
-		"""
-		if total is None and hasattr(iterable, '__len__'):
-			total = len(iterable)
-		n = total or 0
-		unit = kwargs.get("unit")
-		self._send(desc, 0, n, unit)  # Report step start; tqdm handles CLI display
-		for i, item in enumerate(_tqdm_lib.tqdm(iterable, desc=desc, total=total, **kwargs)):
-			sample = _sample_context(item, i + 1, n) if unit == "sample" else None
-			if sample:
-				self._send(desc, i, n, unit, sample)
-			yield item
-			self._send(desc, i + 1, n, unit, sample)
-		if unit == "sample" and self._callback:
-			# The loop is over: no sample is current until the next per-sample loop.
-			self._callback({"current_sample": None, "current_sample_index": 0, "total_samples": 0})
-
-	def message(self, msg: str, level: int = logging.INFO) -> None:
-		"""Report a status line to every available interface at once.
-
-		Writes to the console and the focus.log file (via the 'focus' logger) and,
-		when a GUI is attached, to the web GUI message log (callback). This is the
-		single unified reporting call — use it instead of print()/logging so a line
-		reaches all sinks, degrading gracefully when one (e.g. the GUI in a headless
-		run, or the log file before setup_logging) is unavailable. Pass ``level`` to
-		emit at a different logging level (e.g. logging.WARNING)."""
-		self._emit(msg, level)
-		if self._callback:
-			self._callback({"message": msg})
-
-	def set_sample(self, sample_id: str, index: int, total: int) -> None:
-		"""Set the current sample context and reset sub-step fields. Reports on every interface."""
-		self._emit(f"[{index}/{total}] Processing sample: {sample_id}")
-		if self._callback:
-			self._callback({
-				"current_sample": sample_id,
-				"current_sample_index": index,
-				"total_samples": total,
-				"sub_step": None,
-				"sub_step_index": 0,
-				"sub_step_total": 0,
-				"sub_step_progress": 0,
-				"sub_step_items_total": 0,
-				"sub_step_unit": None,
-			})
-
-
-def _sample_context(item, index: int, total: int) -> dict | None:
-	"""Current-sample fields for an item of a per-sample loop, or None if it has no id."""
-	sample_id = item if isinstance(item, str) else getattr(item, "sample_id", None)
-	if not isinstance(sample_id, str):
-		return None
-	return {"current_sample": sample_id, "current_sample_index": index, "total_samples": total}
 
 
 def create_output_directories(path: str, sample_ids: list[str], modality_name: str) -> None:

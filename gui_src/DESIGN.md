@@ -516,6 +516,15 @@ Mapping:
 - Step dots: 8 px, the same color logic. The active dot is 10 px; the scale change uses the snappy spring.
 - Lost connection: while the server does not answer, the progress screen shows the last known state frozen. Its root carries `data-offline`, which pauses every animation (breathing marks, sheens, pulses) and stops the elapsed timers, because live motion would claim progress the GUI cannot see. The only element that keeps animating is the warning banner's "Retrying…" pill (`.keep-live`).
 
+### 8.7.1 Activity log
+
+- One line per progress change, newest first, in a two-column grid: time (Mono small, `--fg3`), then the line.
+- Segment order is fixed: step (`i/n` in Footnote `--fg3`, name in Callout), sample (Mono small, `--fg2`), modality (`TagLabel`), stage (6 px dot in the stage's own `--stage-accent` via `data-stage`, label in Footnote `--fg3`), then a `cached` `TagLabel` when the result came from cache. Segments that do not apply are omitted.
+- The newest line's step name is `--fg1`; older ones `--fg2`.
+- A finished step: check icon, name in `--fg3`, duration in Footnote with tabular numerals; it shows sample and modality only.
+- Detail lines sit under their line in the second column, Footnote `--fg3`; warnings use `--warning-fg` with a 12 px triangle icon; errors use `--danger-fg`.
+- Separators fall between line groups, never between a line and its details.
+
 ### 8.8 Status line
 
 - Inset well, `--radius-lg`, Mono 13/18, `--fg2`.
@@ -657,7 +666,7 @@ How the main GUI (`gui_src/main/src`) implements this document. The alignment GU
 | `components/ui/` | Domain-agnostic primitives (12.3) |
 | `components/shell/` | Backdrop, chrome cluster, theme switcher, splash, brand |
 | `components/browser/` | `DirectoryList` (presentational) and `FilePicker` |
-| `components/running/` | Progress screen: `RunHeader`, `StageRail` / `StageRailItem`, `CurrentWorkCard` (`StepTrack`, `SampleTrack`), `ActivityLog`, alignment and error banners. View model in `composables/useRunProgress.ts` (provided once per view), run plan in `utils/runPlan.ts` |
+| `components/running/` | Progress screen: `RunHeader`, `StageRail` / `StageRailItem`, `CurrentWorkCard` (`StepTrack`, `SampleTrack`), `ActivityLog` (`ActivityLine`), alignment and error banners. View model in `composables/useRunProgress.ts` (provided once per view), run plan in `utils/runPlan.ts` |
 | `components/builder/` | Guided configuration builder: frame (`StepFrame`, `BuilderHeader`, `BuilderNav`), `steps/`, and per-step parts (`modalities/`, `settings/`, `review/`) |
 | `components/setup/`, `config/`, `running/`, `complete/` | Domain components of each view (`config/` keeps the schema-driven parameter form) |
 | `store/builder.ts` | Builder navigation state (step, unlocked steps, active modality, edit mode); UI only, never saved |

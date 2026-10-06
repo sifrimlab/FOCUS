@@ -85,19 +85,37 @@ BaseDataset._check_cache(output_path: str, force_recomputing: bool) -> bool
 
 ## Progress reporting utility
 
-`StepReporter` lives in `focus.preprocessing._utils`. Preprocessing and orchestration use it for CLI and GUI progress updates.
+`StepReporter` lives in `focus.reporting` (re-exported by `focus.preprocessing._utils`). It is the single reporting interface of the pipeline. Every progress change becomes one activity line with the same structure on the console, in `focus.log` and in the GUI:
 
-```python
-from focus.preprocessing._utils import StepReporter
+```
+[step] [sample] [modality] [stage]
 ```
 
-Main methods:
+For example `[4/8 - Computing per-sample m/z backbones] [S01] [MSI] [Preprocessing]`. A finished step adds a line with its duration (`... done in 12.4s`), except when the step was served from cache. Detail lines start with `-`, warnings with `!`.
 
-- `step(desc, current=0, total=0)`
-- `update(desc, current, total)`
-- `tqdm(iterable, desc, total=None, **kwargs)`
-- `message(msg)`
-- `set_sample(sample_id, index, total)`
+```python
+from focus.reporting import StepReporter, get_reporter
+```
+
+Context, opened by the orchestrator:
+
+- `stage(stage_id, index, total)` and `modality(name, index, total)`: context managers. The open step closes when they end.
+- `samples(items, id_of=None)`: iterates samples whose steps are reported inside the loop. Each item becomes the current sample; the sample is cleared when the loop ends.
+
+Steps and progress:
+
+- `step(index, total, name, *, unit=None, items_total=0, cached=False)`: starts step `index/total`. Labels carry no parameters; values go to `detail()`.
+- `tqdm(iterable, index, total, name, *, unit=None, id_of=None, **kwargs)`: a console progress bar for step `index/total`. With `unit="sample"` each item becomes the current sample and gets its own line.
+- `update(current, total=None)`: item progress inside the open step (tiles, patches). It never produces a line.
+- `cached()`: marks the current line as served from cache.
+
+Free text and run state:
+
+- `detail(msg)`, `warning(msg)`: lines attached to the current context.
+- `set_state(state, **extra)`: run state changes such as `alignment_waiting`.
+- `finish()`, `fail(exc)`: end of the run.
+
+Code without a reporter handle uses `get_reporter()`, which returns the reporter of the running pipeline, or a console-only one outside a run.
 
 ---
 

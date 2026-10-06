@@ -8,7 +8,7 @@ every update and derives what the snapshot alone cannot provide:
 - timing: when the run, each stage and each modality started and ended;
 - the samples seen in each (stage, modality), or in the stage itself when it
   has no modality level (annotation transfer), in order;
-- a bounded history of status messages.
+- a bounded history of the activity lines built by ``focus.reporting``.
 
 It is reporting-only: it never changes the status the pipeline reports.
 Times are UNIX timestamps in seconds; ``server_now`` lets the browser correct
@@ -21,7 +21,9 @@ import threading
 import time
 from collections import deque
 
-_MAX_MESSAGES = 50
+_MAX_ACTIVITY = 500
+# A 'patch' (e.g. a line marked cached after it was sent) targets one of the latest lines.
+_PATCH_WINDOW = 20
 
 
 class ProgressTracker:
@@ -31,14 +33,14 @@ class ProgressTracker:
 		self._lock = threading.Lock()
 		self._run_started_at: float | None = None
 		self._timeline: list[dict] = []
-		self._messages: deque[dict] = deque(maxlen=_MAX_MESSAGES)
+		self._activity: deque[dict] = deque(maxlen=_MAX_ACTIVITY)
 
 	def reset(self) -> None:
 		"""Start tracking a new run."""
 		with self._lock:
 			self._run_started_at = time.time()
 			self._timeline = []
-			self._messages.clear()
+			self._activity.clear()
 
 	def observe(self, status: dict) -> None:
 		"""Record what changed in the merged status since the previous call."""
@@ -48,8 +50,6 @@ class ProgressTracker:
 			now = time.time()
 			state = status.get("state")
 			stage = status.get("stage")
-
-			self._observe_message(status.get("message"), now)
 
 			if state in ("completed", "error"):
 				self._close_open(now, failed=state == "error")
@@ -80,6 +80,23 @@ class ProgressTracker:
 				if sample not in seen:
 					seen.append(sample)
 
+	def record(self, ops: list[dict] | None) -> None:
+		"""Apply activity operations from the reporter: append 'add' lines, update 'patch' targets."""
+		if not ops:
+			return
+		with self._lock:
+			if self._run_started_at is None:
+				return
+			for op in ops:
+				fields = {k: v for k, v in op.items() if k != "op"}
+				if op["op"] == "add":
+					self._activity.append(fields)
+				elif op["op"] == "patch":
+					for i in range(len(self._activity) - 1, max(-1, len(self._activity) - 1 - _PATCH_WINDOW), -1):
+						if self._activity[i]["id"] == fields["id"]:
+							self._activity[i].update(fields)
+							break
+
 	def snapshot(self) -> dict:
 		"""History fields merged into every status response."""
 		with self._lock:
@@ -94,17 +111,10 @@ class ProgressTracker:
 					}
 					for stage in self._timeline
 				],
-				"messages": list(self._messages),
+				"activity": [dict(e) for e in self._activity],
 			}
 
 	# ── internals (lock held) ─────────────────────────────────────────────
-
-	def _observe_message(self, text, now: float) -> None:
-		if not text:
-			return
-		if self._messages and self._messages[-1]["text"] == text:
-			return
-		self._messages.append({"t": now, "text": text})
 
 	def _close_open(self, now: float, failed: bool = False) -> None:
 		"""End the open stage and modality; on error, mark the open stage as failed."""

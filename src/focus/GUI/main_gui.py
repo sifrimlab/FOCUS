@@ -36,6 +36,8 @@ class MainGUI:
 		self._pipeline_thread: threading.Thread | None = None
 		self._pipeline_status: dict = _default_status()
 		self._progress = ProgressTracker()
+		# The pipeline thread writes the status while request threads read it.
+		self._status_lock = threading.Lock()
 		self._basedir = os.path.join(os.path.dirname(__file__), 'main')
 
 		# Silence werkzeug HTTP request logs unless debug mode is requested.
@@ -303,9 +305,10 @@ class MainGUI:
 			self._auto_save()
 
 			# Reset status
-			self._pipeline_status = _default_status()
-			self._pipeline_status["state"] = "running"
-			self._progress.reset()
+			with self._status_lock:
+				self._pipeline_status = _default_status()
+				self._pipeline_status["state"] = "running"
+				self._progress.reset()
 
 			# Run in background thread
 			self._pipeline_thread = threading.Thread(
@@ -366,8 +369,9 @@ class MainGUI:
 		@self.app.route('/api/reset', methods=['POST'])
 		def reset():
 			self._config = {}
-			self._pipeline_status = _default_status()
-			self._progress = ProgressTracker()
+			with self._status_lock:
+				self._pipeline_status = _default_status()
+				self._progress = ProgressTracker()
 			# Drop the finished worker-thread reference and reclaim memory so starting a new
 			# project begins from a clean slate. Only clear the thread when it isn't running,
 			# so a reset during an active run can't orphan the running pipeline.
@@ -395,16 +399,16 @@ class MainGUI:
 				progress_callback=self._on_progress,
 			)
 
-			self._pipeline_status["state"] = "completed"
-			self._pipeline_status["output_files"] = output_files
-			self._pipeline_status["message"] = "Pipeline completed successfully."
-			self._progress.observe(self._pipeline_status)
+			with self._status_lock:
+				self._pipeline_status["state"] = "completed"
+				self._pipeline_status["output_files"] = output_files
+				self._progress.observe(self._pipeline_status)
 
 		except Exception as e:
-			self._pipeline_status["state"] = "error"
-			self._pipeline_status["error"] = str(e)
-			self._pipeline_status["message"] = f"Error: {e}"
-			self._progress.observe(self._pipeline_status)
+			with self._status_lock:
+				self._pipeline_status["state"] = "error"
+				self._pipeline_status["error"] = str(e)
+				self._progress.observe(self._pipeline_status)
 			traceback.print_exc()
 
 		finally:
@@ -420,13 +424,17 @@ class MainGUI:
 				pass
 
 	def _on_progress(self, status: dict):
-		"""Callback from orchestrator to update pipeline status."""
-		self._pipeline_status.update(status)
-		self._progress.observe(self._pipeline_status)
+		"""Callback from the reporter: full current context plus new activity operations."""
+		ops = status.pop("activity", None)
+		with self._status_lock:
+			self._pipeline_status.update(status)
+			self._progress.observe(self._pipeline_status)
+			self._progress.record(ops)
 
 	def _status_payload(self) -> dict:
-		"""Current status plus the run history (timing, samples seen, messages)."""
-		return {**self._pipeline_status, **self._progress.snapshot()}
+		"""Current status plus the run history (timing, samples seen, activity)."""
+		with self._status_lock:
+			return {**self._pipeline_status, **self._progress.snapshot()}
 
 	# ── Auto-save ─────────────────────────────────────────────────────────
 

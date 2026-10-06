@@ -33,7 +33,7 @@ export type SampleState = 'done' | 'current' | 'pending' | 'joint';
 /** Stages that work sample by sample (the others have no sample level). */
 const SAMPLE_STAGES: StageId[] = ['preprocessing', 'annotation_transfer', 'registration'];
 
-const STEP_PREFIX = /^\d+(?:-\d+)?\/\d+\s*[-–]\s*/;
+const STEP_PREFIX = /^\d+\/\d+\s*-\s*/;
 
 export function useRunProgress() {
   const store = useMainStore();

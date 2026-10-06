@@ -86,7 +86,7 @@ export interface PipelineStatus {
   run_started_at: number | null;
   server_now: number | null;
   timeline: StageRecord[];
-  messages: MessageRecord[];
+  activity: ActivityEntry[];
 }
 
 export interface ModalityRecord {
@@ -107,9 +107,25 @@ export interface StageRecord {
   modalities: ModalityRecord[];
 }
 
-export interface MessageRecord {
+/**
+ * One activity line built by the backend reporter (src/focus/reporting.py):
+ * [step] [sample] [modality] [stage]. 'step' marks a progress change, 'done'
+ * a finished step with its duration; detail, warning and error carry text
+ * attached to the line before them.
+ */
+export interface ActivityEntry {
+  id: number;
   t: number;
-  text: string;
+  kind: 'step' | 'done' | 'detail' | 'warning' | 'error';
+  stage: string | null;
+  modality: string | null;
+  sample: string | null;
+  step: string | null;
+  step_index: number;
+  step_total: number;
+  cached: boolean;
+  seconds?: number;
+  text?: string;
 }
 
 export interface ValidationResult {

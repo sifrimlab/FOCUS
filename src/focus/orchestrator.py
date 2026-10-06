@@ -1,5 +1,4 @@
 import os, logging, anndata
-from functools import partial
 import numpy as np
 import scipy.sparse
 import pandas as pd
@@ -15,7 +14,7 @@ from focus.constants import (
 )
 from focus.utils import write_h5ad_compat, concat_on_disk_compat, write_h5mu_compat, release_memory
 from focus.preprocessing import preprocess_modality
-from focus.preprocessing._utils import StepReporter
+from focus.reporting import StepReporter, use_reporter, get_reporter
 from focus.alignment.alignment import DirectMappingAligner
 # NOTE: the registration engines are imported lazily inside _run_registration() rather
 # than here, because focus.registration.microscopy_image imports torch / timm /
@@ -49,50 +48,45 @@ def run(config: dict, progress_callback=None) -> dict:
 		Keys: "preprocessing", "alignment", "annotations", "registration", "multimodal".
 	"""
 
+	reporter = StepReporter(callback=progress_callback)
+	# Code without a reporter handle (deep helpers) reports through get_reporter().
+	use_reporter(reporter)
+	try:
+		output_files = _run_stages(config, reporter)
+		reporter.finish()
+		return output_files
+	except Exception as e:
+		reporter.fail(e)
+		raise
+	finally:
+		use_reporter(None)
+
+
+def _run_stages(config: dict, reporter: StepReporter) -> dict:
+	"""The pipeline stages, each reported as a stage context (see focus.reporting)."""
 	dataset_path = config[ConfigParameters.DATASET_PATH]
 	modalities = config[ConfigParameters.MODALITIES]
-	ref_name = config[ConfigParameters.REFERENCE_MODALITY]
 	output_files: dict = {}
 
 	ann_enabled = config.get(ConfigParameters.SPATIAL_ANNOTATIONS) is not None
 	n_stages = 5 if ann_enabled else 4
 
-	def _report(**kwargs):
-		if progress_callback:
-			progress_callback(kwargs)
-
-	step_reporter = StepReporter(callback=progress_callback)
-
 	# --- Stage 1: Preprocessing (always runs, caching is internal) ---
-	logger.info("=" * 60)
-	logger.info("STAGE 1: Preprocessing")
-	logger.info("=" * 60)
-	_report(state="running", stage="preprocessing", stage_index=1, total_stages=n_stages,
-			message="Starting preprocessing...", sub_step=None, sub_step_index=0,
-			sub_step_total=0, sub_step_progress=0, sub_step_items_total=0)
-
 	modality_files: dict[str, dict[str, str]] = {}
-	total_modalities = len(modalities)
-	for mod_idx, modality in enumerate(modalities, 1):
-		mod_name = modality[ModalityParameters.NAME]
-		mod_type = modality[ModalityParameters.TYPE]
-		logger.info(f"Preprocessing modality '{mod_name}' (type: {mod_type})")
-		_report(state="running", stage="preprocessing", stage_index=1, total_stages=n_stages,
-				current_modality=mod_name, current_modality_index=mod_idx, total_modalities=total_modalities,
-				current_sample=None, current_sample_index=0, total_samples=0,
-				message=f"Preprocessing '{mod_name}'",
-				sub_step=None, sub_step_index=0, sub_step_total=0,
-				sub_step_progress=0, sub_step_items_total=0)
-
-		modality_files[mod_name] = preprocess_modality(
-			path=dataset_path,
-			modality_name=mod_name,
-			modality_type=mod_type,
-			preprocessing_settings=modality[ModalityParameters.PROCESSING_SETTINGS],
-			step_reporter=step_reporter,
-			ignore_samples=config.get(ConfigParameters.IGNORE_SAMPLES, []),
-		)
-		logger.info(f"Preprocessing complete for '{mod_name}': {len(modality_files[mod_name])} samples")
+	with reporter.stage("preprocessing", 1, n_stages):
+		total_modalities = len(modalities)
+		for mod_idx, modality in enumerate(modalities, 1):
+			mod_name = modality[ModalityParameters.NAME]
+			mod_type = modality[ModalityParameters.TYPE]
+			with reporter.modality(mod_name, mod_idx, total_modalities):
+				modality_files[mod_name] = preprocess_modality(
+					path=dataset_path,
+					modality_name=mod_name,
+					modality_type=mod_type,
+					preprocessing_settings=modality[ModalityParameters.PROCESSING_SETTINGS],
+					step_reporter=reporter,
+					ignore_samples=config.get(ConfigParameters.IGNORE_SAMPLES, []),
+				)
 
 	# Collect preprocessing outputs — per_modality groups per-sample files by modality name
 	pre_merged: list[str] = []
@@ -117,17 +111,8 @@ def run(config: dict, progress_callback=None) -> dict:
 	# --- Stage 2: Alignment ---
 	aligned_files: dict[str, dict[str, str]] = {}
 	if config[ConfigParameters.PERFORM_ALIGNMENT]:
-		logger.info("=" * 60)
-		logger.info("STAGE 2: Alignment")
-		logger.info("=" * 60)
-		_report(state="running", stage="alignment", stage_index=2, total_stages=n_stages,
-				message="Starting alignment...",
-				current_modality=None, current_modality_index=0, total_modalities=0,
-				current_sample=None, current_sample_index=0, total_samples=0,
-				sub_step=None, sub_step_index=0, sub_step_total=0,
-				sub_step_progress=0, sub_step_items_total=0)
-		aligned_files = _run_alignment(config, modality_files, _report, n_stages,
-									   force_overrides=alignment_force)
+		with reporter.stage("alignment", 2, n_stages):
+			aligned_files = _run_alignment(config, modality_files, reporter, force_overrides=alignment_force)
 		aln_merged: list[str] = []
 		aln_per_modality: dict[str, list[str]] = {}
 		for mod_name, mod_files in aligned_files.items():
@@ -144,19 +129,8 @@ def run(config: dict, progress_callback=None) -> dict:
 	# --- Stage 2.5: Annotation Transfer ---
 	annotation_files: dict[str, str] = {}
 	if ann_enabled:
-		logger.info("=" * 60)
-		logger.info("STAGE 2.5: Annotation Transfer")
-		logger.info("=" * 60)
-		_report(state="running", stage="annotation_transfer", stage_index=3, total_stages=n_stages,
-				message="Transferring spatial annotations...",
-				current_modality=None, current_modality_index=0, total_modalities=0,
-				current_sample=None, current_sample_index=0, total_samples=0,
-				sub_step=None, sub_step_index=0,
-				sub_step_total=0, sub_step_progress=0, sub_step_items_total=0)
-		annotation_files = _run_annotation_transfer(
-			config, modality_files, aligned_files,
-			report=_report, stage_index=3, n_stages=n_stages,
-		)
+		with reporter.stage("annotation_transfer", 3, n_stages):
+			annotation_files = _run_annotation_transfer(config, modality_files, aligned_files, reporter)
 		ann_merged: list[str] = []
 		ann_per_modality: dict[str, list[str]] = {}
 		for sid, path in annotation_files.items():
@@ -166,7 +140,6 @@ def run(config: dict, progress_callback=None) -> dict:
 				ann_per_modality.setdefault("reference", []).append(path)
 		if ann_merged or ann_per_modality:
 			output_files["annotations"] = {"merged": ann_merged, "per_modality": ann_per_modality}
-		logger.info("Annotation transfer complete.")
 
 	stage_reg = 4 if ann_enabled else 3
 	stage_mudata = 5 if ann_enabled else 4
@@ -174,18 +147,9 @@ def run(config: dict, progress_callback=None) -> dict:
 	# --- Stage 3/4: Registration ---
 	registered_files: dict[str, dict[str, str]] = {}
 	if config[ConfigParameters.PERFORM_REGISTRATION]:
-		logger.info("=" * 60)
-		logger.info(f"STAGE {stage_reg}: Registration")
-		logger.info("=" * 60)
-		_report(state="running", stage="registration", stage_index=stage_reg, total_stages=n_stages,
-				message="Starting registration...",
-				current_modality=None, current_modality_index=0, total_modalities=0,
-				current_sample=None, current_sample_index=0, total_samples=0,
-				sub_step=None, sub_step_index=0,
-				sub_step_total=0, sub_step_progress=0, sub_step_items_total=0)
-		registered_files = _run_registration(config, modality_files, aligned_files, step_reporter,
-										   report=_report, stage_index=stage_reg, n_stages=n_stages,
-										   force_overrides=registration_force)
+		with reporter.stage("registration", stage_reg, n_stages):
+			registered_files = _run_registration(config, modality_files, aligned_files, reporter,
+											   force_overrides=registration_force)
 		reg_merged: list[str] = []
 		reg_per_modality: dict[str, list[str]] = {}
 		for mod_name, mod_files in registered_files.items():
@@ -201,29 +165,15 @@ def run(config: dict, progress_callback=None) -> dict:
 
 	# --- Stage 4/5: Compile MuData ---
 	if config[ConfigParameters.PERFORM_REGISTRATION] and _has_spot_modalities(config):
-		logger.info("=" * 60)
-		logger.info(f"STAGE {stage_mudata}: Compiling multimodal dataset")
-		logger.info("=" * 60)
-		_report(state="running", stage="compiling", stage_index=stage_mudata, total_stages=n_stages,
-				message="Compiling multimodal dataset...",
-				current_modality=None, current_modality_index=0, total_modalities=0,
-				current_sample=None, current_sample_index=0, total_samples=0,
-				sub_step=None, sub_step_index=0,
-				sub_step_total=0, sub_step_progress=0, sub_step_items_total=0)
-		mudata_path = _compile_mudata(config, modality_files, registered_files, annotation_files)
+		with reporter.stage("compiling", stage_mudata, n_stages):
+			mudata_path = _compile_mudata(config, modality_files, registered_files, annotation_files, reporter)
 		if mudata_path:
 			output_files["multimodal"] = {"merged": [mudata_path], "per_modality": {}}
 		# Covers _compile_mudata's early-return paths (all spots filtered / <2 modalities),
 		# which skip its internal release.
 		release_memory(gpu=False)
 
-	logger.info("=" * 60)
 	logger.info("FOCUS pipeline completed successfully.")
-	logger.info("=" * 60)
-
-	_report(state="completed", stage=None, stage_index=n_stages, total_stages=n_stages,
-			message="Pipeline completed successfully.", output_files=output_files)
-
 	return output_files
 
 
@@ -302,7 +252,7 @@ def _compute_effective_force_flags(config: dict) -> tuple[dict[str, bool], dict[
 	return alignment_force, registration_force
 
 
-def _run_alignment(config: dict, modality_files: dict, report, n_stages: int,
+def _run_alignment(config: dict, modality_files: dict, reporter: StepReporter,
 				   force_overrides: dict[str, bool] | None = None) -> dict:
 	"""
 	Align the reference modality into each non-reference modality's coordinate system.
@@ -329,96 +279,52 @@ def _run_alignment(config: dict, modality_files: dict, report, n_stages: int,
 
 	exact_spots = _is_microgrid_experiment(config)
 	if exact_spots:
-		logger.info("Microgrid MSI modality found: alignment shows exact foreground spots with no coarsening or clustering")
+		reporter.detail("Microgrid MSI modality found: alignment shows exact foreground spots with no coarsening or clustering")
 
 	targets = [m for m in modalities if m[ModalityParameters.NAME] != ref_name]
 	for pair_idx, modality in enumerate(targets, 1):
 		mod_name = modality[ModalityParameters.NAME]
-		# Every report for this pair carries its position among the aligned modalities.
-		report_pair = partial(report, current_modality_index=pair_idx, total_modalities=len(targets))
-
 		mod_type = modality[ModalityParameters.TYPE]
 
 		pair_force = (force_overrides or {}).get(
 			mod_name, modality.get(ModalityParameters.ALIGNMENT_FORCE_RECOMPUTING, False)
 		)
 
-		logger.info(f"Aligning reference '{ref_name}' into '{mod_name}' coordinate space (force_recomputing={pair_force})")
+		with reporter.modality(mod_name, pair_idx, len(targets)):
+			# The non-reference modality is the FIXED frame; the reference is the MOVING target.
+			# This produces obsm['{mod_name}_spatial'] on the reference AnnData — the reference
+			# spots expressed in the non-reference modality's coordinate system.
+			aligner = DirectMappingAligner(
+				path=dataset_path,
+				reference_modality=modality_files[mod_name],
+				target_modality=modality_files[ref_name],
+				reference_modality_name=mod_name,
+				target_modality_name=ref_name,
+				reference_modality_type=mod_type,
+				target_modality_type=ref_type,
+				exact_spots=exact_spots,
+				reporter=reporter,
+			)
 
-		# The non-reference modality is the FIXED frame; the reference is the MOVING target.
-		# This produces obsm['{mod_name}_spatial'] on the reference AnnData — the reference
-		# spots expressed in the non-reference modality's coordinate system.
-		aligner = DirectMappingAligner(
-			path=dataset_path,
-			reference_modality=modality_files[mod_name],
-			target_modality=modality_files[ref_name],
-			reference_modality_name=mod_name,
-			target_modality_name=ref_name,
-			reference_modality_type=mod_type,
-			target_modality_type=ref_type,
-			exact_spots=exact_spots,
-		)
+			strategy = modality.get(ModalityParameters.ALIGNMENT_STRATEGY, AlignmentStrategy.MANUAL)
 
-		strategy = modality.get(ModalityParameters.ALIGNMENT_STRATEGY, AlignmentStrategy.MANUAL)
-
-		if strategy == AlignmentStrategy.PRE_ALIGNED:
-			logger.info(f"Pre-aligned strategy for '{mod_name}' — using uniform alignment (no GUI)")
-			report_pair(state="running", stage="alignment", stage_index=2, total_stages=n_stages,
-				   current_modality=mod_name,
-				   message=f"Applying pre-aligned coordinates for '{mod_name}'...",
-				   current_sample=None, current_sample_index=0, total_samples=0,
-				   sub_step=None, sub_step_index=0, sub_step_total=0,
-				   sub_step_progress=0, sub_step_items_total=0)
-			aligned_files[mod_name] = aligner.uniform_aligned_dataset(force_recomputing=pair_force)
-		elif aligner.is_alignment_needed(force_recomputing=pair_force):
-			# Signal that alignment is starting — the GUI should show "Open Alignment Tool"
-			report_pair(state="alignment_waiting", stage="alignment", stage_index=2, total_stages=n_stages,
-				   current_modality=mod_name,
-				   current_sample=None, current_sample_index=0, total_samples=0,
-				   message=f"Waiting for alignment of reference '{ref_name}' into '{mod_name}' space...",
-				   sub_step=None, sub_step_index=0, sub_step_total=0,
-				   sub_step_progress=0, sub_step_items_total=0)
-
-			def _on_gui_done():
-				report_pair(state="running", stage="alignment", stage_index=2, total_stages=n_stages,
-					   current_modality=mod_name,
-					   message=f"Saving alignment results for '{mod_name}'...",
-					   sub_step=None, sub_step_index=0, sub_step_total=0,
-					   sub_step_progress=0, sub_step_items_total=0)
-
-			aligned_files[mod_name] = aligner.align_dataset(force_recomputing=pair_force, on_gui_done=_on_gui_done)
-		else:
-			if aligner.needs_merged_build():
-				logger.info(
-					f"Reference '{ref_name}' already aligned into '{mod_name}' space — "
-					f"per-sample files cached, building merged dataset"
+			if strategy == AlignmentStrategy.PRE_ALIGNED:
+				reporter.detail(f"Pre-aligned: '{ref_name}' coordinates are used as they are, without the alignment tool")
+				aligned_files[mod_name] = aligner.uniform_aligned_dataset(force_recomputing=pair_force)
+			elif aligner.is_alignment_needed(force_recomputing=pair_force):
+				# The GUI shows "Open alignment tool" while the state is alignment_waiting.
+				reporter.set_state("alignment_waiting")
+				reporter.detail(f"Waiting for the alignment tool: align '{ref_name}' into '{mod_name}' space")
+				aligned_files[mod_name] = aligner.align_dataset(
+					force_recomputing=pair_force, on_gui_done=lambda: reporter.set_state("running"),
 				)
-				report_pair(state="running", stage="alignment", stage_index=2, total_stages=n_stages,
-					   current_modality=mod_name,
-					   message=f"Per-sample alignment cached — building merged dataset for '{mod_name}'...",
-					   current_sample=None, current_sample_index=0, total_samples=0,
-					   sub_step=None, sub_step_index=0, sub_step_total=0,
-					   sub_step_progress=0, sub_step_items_total=0)
 			else:
-				logger.info(f"Reference '{ref_name}' already aligned into '{mod_name}' space — loading cached files")
-				report_pair(state="running", stage="alignment", stage_index=2, total_stages=n_stages,
-					   current_modality=mod_name,
-					   message=f"Loading cached alignment for '{mod_name}'...",
-					   current_sample=None, current_sample_index=0, total_samples=0,
-					   sub_step=None, sub_step_index=0, sub_step_total=0,
-					   sub_step_progress=0, sub_step_items_total=0)
-			aligned_files[mod_name] = aligner.collect_aligned_files()
+				aligned_files[mod_name] = aligner.collect_aligned_files()
 
-		report_pair(state="running", stage="alignment", stage_index=2, total_stages=n_stages,
-			   current_modality=mod_name,
-			   message=f"Alignment complete for '{mod_name}'")
-
-		logger.info(f"Alignment complete for '{mod_name}': {len(aligned_files[mod_name])} files")
-
-		# Drop this pair's aligner (and its accumulated _aligned_coordinates / GUI
-		# payloads) before the next pair. Its interactive server has already shut down.
-		del aligner
-		release_memory(gpu=False)
+			# Drop this pair's aligner (and its accumulated _aligned_coordinates / GUI
+			# payloads) before the next pair. Its interactive server has already shut down.
+			del aligner
+			release_memory(gpu=False)
 
 	return aligned_files
 
@@ -427,9 +333,7 @@ def _run_annotation_transfer(
 	config: dict,
 	modality_files: dict[str, dict[str, str]],
 	aligned_files: dict[str, dict[str, str]],
-	report=None,
-	stage_index: int = 3,
-	n_stages: int = 5,
+	reporter: StepReporter | None = None,
 ) -> dict[str, str]:
 	"""
 	Transfer spatial annotations from the annotation modality to the reference modality spots.
@@ -451,10 +355,10 @@ def _run_annotation_transfer(
 	ann_cfg = config[ConfigParameters.SPATIAL_ANNOTATIONS]
 	ann_mod_name = ann_cfg[AnnotationsParameters.MODALITY_NAME]
 
+	reporter = reporter or get_reporter()
 	result: dict[str, str] = {}
 
 	per_sample_ids = [sid for sid in modality_files[ref_name] if sid != "merged"]
-	total_samples = len(per_sample_ids)
 
 	# Build annotation paths once — one GeoJSON per sample in the annotation modality folder
 	annotation_paths: dict[str, str] = {}
@@ -465,22 +369,12 @@ def _run_annotation_transfer(
 
 	# --- Per-sample annotation transfer ---
 	per_sample_annotated: list[str] = []
-	for i, sample_id in enumerate(per_sample_ids, 1):
-		if report:
-			report(state="running", stage="annotation_transfer",
-				   stage_index=stage_index, total_stages=n_stages,
-				   current_sample=sample_id, current_sample_index=i, total_samples=total_samples,
-				   message=f"Transferring annotations for sample '{sample_id}'...",
-				   sub_step=None, sub_step_index=0, sub_step_total=0,
-				   sub_step_progress=0, sub_step_items_total=0)
-
-		logger.info(f"[{i}/{total_samples}] Sample '{sample_id}': reading reference file...")
+	for sample_id in reporter.tqdm(per_sample_ids, 1, 2, "Transferring annotations", unit="sample"):
 		ref_path = modality_files[ref_name][sample_id]
 		ref_sample = None
 		ann_sample = None
 		try:
 			ref_sample = anndata.read_h5ad(ref_path, backed='r')
-			logger.info(f"[{i}/{total_samples}] Sample '{sample_id}': {ref_sample.n_obs} obs — extracting coordinates...")
 
 			if ann_mod_name == ref_name:
 				coords_sample = np.asarray(ref_sample.obsm['spatial'])
@@ -491,10 +385,9 @@ def _run_annotation_transfer(
 				ann_sample = None
 
 			sids_sample = np.asarray(ref_sample.obs['sample_id'])
-			logger.info(f"[{i}/{total_samples}] Sample '{sample_id}': running spatial query on {len(coords_sample)} points...")
 			ann_labels = transfer_annotations(coords_sample, sids_sample, annotation_paths)
 			n_annotated = int(np.sum(ann_labels != None))  # noqa: E711
-			logger.info(f"[{i}/{total_samples}] Sample '{sample_id}': {n_annotated}/{len(coords_sample)} spots annotated — writing output...")
+			reporter.detail(f"{n_annotated}/{len(coords_sample)} spots annotated")
 			ref_sample.obs['spatial_annotation'] = pd.Categorical(ann_labels)
 
 			sample_out = MODALITY_ANNOTATION(dataset_path, sample_id, ref_name, "h5ad")
@@ -502,7 +395,6 @@ def _run_annotation_transfer(
 			write_h5ad_compat(ref_sample, sample_out)
 			result[sample_id] = sample_out
 			per_sample_annotated.append(sample_out)
-			logger.info(f"[{i}/{total_samples}] Sample '{sample_id}': done.")
 		finally:
 			# Guarantee the backed HDF5 handles are released even if the spatial
 			# query or the write raises — otherwise an mmap/file handle leaks per sample.
@@ -515,14 +407,7 @@ def _run_annotation_transfer(
 
 	# --- Merge annotated per-sample files ---
 	if per_sample_annotated:
-		if report:
-			report(state="running", stage="annotation_transfer",
-				   stage_index=stage_index, total_stages=n_stages,
-				   current_sample=None, current_sample_index=total_samples, total_samples=total_samples,
-				   message="Merging annotated samples...",
-				   sub_step=None, sub_step_index=0, sub_step_total=0,
-				   sub_step_progress=0, sub_step_items_total=0)
-
+		reporter.step(2, 2, "Merging annotated samples")
 		merged_out = MODALITY_ANNOTATION_MERGED(dataset_path, ref_name, "h5ad")
 		os.makedirs(os.path.dirname(merged_out), exist_ok=True)
 		concat_on_disk_compat(
@@ -530,14 +415,13 @@ def _run_annotation_transfer(
 			merge="same", uns_merge="same",
 		)
 		result["merged"] = merged_out
-		logger.info(f"Annotated merged reference saved to {merged_out}")
+		logger.debug(f"Annotated merged reference saved to {merged_out}")
 
 	release_memory(gpu=False)
 	return result
 
 
-def _run_registration(config: dict, modality_files: dict, aligned_files: dict, step_reporter=None,
-					  report=None, stage_index: int = 3, n_stages: int = 4,
+def _run_registration(config: dict, modality_files: dict, aligned_files: dict, step_reporter: StepReporter,
 					  force_overrides: dict[str, bool] | None = None) -> dict:
 	"""
 	Register each non-reference modality that has a registration_type != 'none'.
@@ -554,13 +438,6 @@ def _run_registration(config: dict, modality_files: dict, aligned_files: dict, s
 	dict
 		{modality_name: {sample_id: registered_file_path}}
 	"""
-	# Imported here (not at module top) so that importing this module to run only the
-	# alignment stage does not load torch / timm / huggingface_hub. See the import note
-	# at the top of this file.
-	from focus.registration.registration import FeatureExtractorRegistration, SpotInterpolationRegistration
-	from focus.registration.spot_aggregation import SpotAggregationRegistration
-	from focus.registration.raman_pixel import RamanPixelInterpolationRegistration
-
 	dataset_path = config[ConfigParameters.DATASET_PATH]
 	modalities = config[ConfigParameters.MODALITIES]
 	ref_name = config[ConfigParameters.REFERENCE_MODALITY]
@@ -576,90 +453,98 @@ def _run_registration(config: dict, modality_files: dict, aligned_files: dict, s
 		reg_type = modality[ModalityParameters.REGISTRATION_TYPE]
 
 		reg_settings = modality[ModalityParameters.REGISTRATION_SETTINGS]
-		logger.info(f"Registering '{mod_name}' using '{reg_type}' strategy")
+		with step_reporter.modality(mod_name, reg_idx, len(targets)):
+			step_reporter.detail(f"Method: {DISPLAY_NAMES[reg_type]}")
+			if not _register_modality(
+				reg_type, mod_name, ref_name, dataset_path, config, reg_settings,
+				modality_files, aligned_files, registered_files, step_reporter, force_overrides,
+			):
+				continue
 
-		if report:
-			report(state="running", stage="registration", stage_index=stage_index, total_stages=n_stages,
-				   current_modality=mod_name, current_modality_index=reg_idx, total_modalities=len(targets),
-				   current_sample=None, current_sample_index=0, total_samples=0,
-				   message=f"Performing registration in {DISPLAY_NAMES[reg_type]} mode",
-				   sub_step=None, sub_step_index=0, sub_step_total=0,
-				   sub_step_progress=0, sub_step_items_total=0)
-
-		if reg_type == RegistrationType.FEATURE_EXTRACTION:
-			engine = FeatureExtractorRegistration(
-				path=dataset_path,
-				hf_token=config[ConfigParameters.HUGGINGFACE_TOKEN]
-			)
-			# aligned_files[mod_name] contains the aligned reference AnnData, which holds
-			# obsm['{mod_name}_spatial'] — the reference spots in the image's coordinate space.
-			# FeatureExtractorRegistration reads that key to locate where to extract patches.
-			registered_files[mod_name] = engine.register_dataset(
-				image_files=modality_files[mod_name],
-				anchor_files=aligned_files[mod_name],
-				image_name=mod_name,
-				anchor_name=ref_name,
-				force_recomputing=(force_overrides or {}).get(mod_name, reg_settings.get("force_recomputing", False)),
-				background_color=reg_settings.get("background_color", None),
-				patch_size=reg_settings.get("patch_size", 224),
-				step_reporter=step_reporter,
-			)
-
-		elif reg_type == RegistrationType.SPOT_INTERPOLATION:
-			engine = SpotInterpolationRegistration(path=dataset_path)
-			# aligned_files[mod_name] contains the aligned reference AnnData with
-			# obsm['{mod_name}_spatial'] (reference coords in the non-ref modality's space).
-			# modality_files[mod_name] contains the non-ref modality's preprocessed AnnData
-			# with its own obsm['spatial'] and feature matrix X.
-			registered_files[mod_name] = engine.register_dataset(
-				anchor_files=aligned_files[mod_name],
-				target_files=modality_files[mod_name],
-				anchor_name=ref_name,
-				target_name=mod_name,
-				force_recomputing=(force_overrides or {}).get(mod_name, reg_settings.get("force_recomputing", False)),
-				step_reporter=step_reporter,
-			)
-
-		elif reg_type == RegistrationType.SPOT_AGGREGATION:
-			engine = SpotAggregationRegistration(path=dataset_path)
-			# Same inputs as SPOT_INTERPOLATION; the only difference is the per-footprint
-			# reduction (sum of target spots instead of a Gaussian-weighted average).
-			registered_files[mod_name] = engine.register_dataset(
-				anchor_files=aligned_files[mod_name],
-				target_files=modality_files[mod_name],
-				anchor_name=ref_name,
-				target_name=mod_name,
-				force_recomputing=(force_overrides or {}).get(mod_name, reg_settings.get("force_recomputing", False)),
-				step_reporter=step_reporter,
-			)
-
-		elif reg_type == RegistrationType.RAMAN_PIXEL_INTERPOLATION:
-			engine = RamanPixelInterpolationRegistration(path=dataset_path)
-			# anchor_files[mod_name]: aligned anchor h5ad with obsm['{mod_name}_spatial']
-			#   (anchor spots in the Raman image's pixel coordinate system).
-			# modality_files[mod_name]: ASHLAR-stitched Raman OME-TIFF files.
-			registered_files[mod_name] = engine.register_dataset(
-				anchor_files=aligned_files[mod_name],
-				target_files=modality_files[mod_name],
-				anchor_name=ref_name,
-				target_name=mod_name,
-				force_recomputing=(force_overrides or {}).get(mod_name, reg_settings.get("force_recomputing", False)),
-				step_reporter=step_reporter,
-			)
-
-		else:
-			logger.warning(f"Unknown registration type '{reg_type}' for '{mod_name}', skipping.")
-			continue
-
-		logger.info(f"Registration complete for '{mod_name}'")
-
-		# Free the engine (and, for FeatureExtraction, the pretrained GigaPath model it
-		# loaded) plus any cached GPU blocks before the next modality / stage. Reached only
-		# on paths that bound `engine` — the two `continue`s above skip it.
-		del engine
+		# The engine (and, for FeatureExtraction, the pretrained GigaPath model it loaded)
+		# went out of scope with _register_modality: free it and any cached GPU blocks
+		# before the next modality / stage.
 		release_memory(gpu=True)
 
 	return registered_files
+
+
+def _register_modality(reg_type, mod_name, ref_name, dataset_path, config, reg_settings,
+					   modality_files, aligned_files, registered_files, step_reporter, force_overrides) -> bool:
+	"""Run one modality's registration engine; False when the type is unknown."""
+	# Imported here (not at module top) so that importing this module to run only the
+	# alignment stage does not load torch / timm / huggingface_hub. See the import note
+	# at the top of this file.
+	from focus.registration.registration import FeatureExtractorRegistration, SpotInterpolationRegistration
+	from focus.registration.spot_aggregation import SpotAggregationRegistration
+	from focus.registration.raman_pixel import RamanPixelInterpolationRegistration
+
+	if reg_type == RegistrationType.FEATURE_EXTRACTION:
+		engine = FeatureExtractorRegistration(
+			path=dataset_path,
+			hf_token=config[ConfigParameters.HUGGINGFACE_TOKEN]
+		)
+		# aligned_files[mod_name] contains the aligned reference AnnData, which holds
+		# obsm['{mod_name}_spatial'] — the reference spots in the image's coordinate space.
+		# FeatureExtractorRegistration reads that key to locate where to extract patches.
+		registered_files[mod_name] = engine.register_dataset(
+			image_files=modality_files[mod_name],
+			anchor_files=aligned_files[mod_name],
+			image_name=mod_name,
+			anchor_name=ref_name,
+			force_recomputing=(force_overrides or {}).get(mod_name, reg_settings.get("force_recomputing", False)),
+			background_color=reg_settings.get("background_color", None),
+			patch_size=reg_settings.get("patch_size", 224),
+			step_reporter=step_reporter,
+		)
+
+	elif reg_type == RegistrationType.SPOT_INTERPOLATION:
+		engine = SpotInterpolationRegistration(path=dataset_path)
+		# aligned_files[mod_name] contains the aligned reference AnnData with
+		# obsm['{mod_name}_spatial'] (reference coords in the non-ref modality's space).
+		# modality_files[mod_name] contains the non-ref modality's preprocessed AnnData
+		# with its own obsm['spatial'] and feature matrix X.
+		registered_files[mod_name] = engine.register_dataset(
+			anchor_files=aligned_files[mod_name],
+			target_files=modality_files[mod_name],
+			anchor_name=ref_name,
+			target_name=mod_name,
+			force_recomputing=(force_overrides or {}).get(mod_name, reg_settings.get("force_recomputing", False)),
+			step_reporter=step_reporter,
+		)
+
+	elif reg_type == RegistrationType.SPOT_AGGREGATION:
+		engine = SpotAggregationRegistration(path=dataset_path)
+		# Same inputs as SPOT_INTERPOLATION; the only difference is the per-footprint
+		# reduction (sum of target spots instead of a Gaussian-weighted average).
+		registered_files[mod_name] = engine.register_dataset(
+			anchor_files=aligned_files[mod_name],
+			target_files=modality_files[mod_name],
+			anchor_name=ref_name,
+			target_name=mod_name,
+			force_recomputing=(force_overrides or {}).get(mod_name, reg_settings.get("force_recomputing", False)),
+			step_reporter=step_reporter,
+		)
+
+	elif reg_type == RegistrationType.RAMAN_PIXEL_INTERPOLATION:
+		engine = RamanPixelInterpolationRegistration(path=dataset_path)
+		# anchor_files[mod_name]: aligned anchor h5ad with obsm['{mod_name}_spatial']
+		#   (anchor spots in the Raman image's pixel coordinate system).
+		# modality_files[mod_name]: ASHLAR-stitched Raman OME-TIFF files.
+		registered_files[mod_name] = engine.register_dataset(
+			anchor_files=aligned_files[mod_name],
+			target_files=modality_files[mod_name],
+			anchor_name=ref_name,
+			target_name=mod_name,
+			force_recomputing=(force_overrides or {}).get(mod_name, reg_settings.get("force_recomputing", False)),
+			step_reporter=step_reporter,
+		)
+
+	else:
+		step_reporter.warning(f"Unknown registration type '{reg_type}', skipping")
+		return False
+
+	return True
 
 
 def _compute_valid_spot_mask(
@@ -704,12 +589,14 @@ def _compile_mudata(
 	modality_files: dict,
 	registered_files: dict,
 	annotation_files: dict | None = None,
+	reporter: StepReporter | None = None,
 ) -> str | None:
 	"""
 	Compile a final MuData object with paired observations across modalities.
 
 	Returns the path to the saved MuData file, or None if compilation was skipped.
 	"""
+	reporter = reporter or get_reporter()
 	dataset_path = config[ConfigParameters.DATASET_PATH]
 	modalities = config[ConfigParameters.MODALITIES]
 	ref_name = config[ConfigParameters.REFERENCE_MODALITY]
@@ -717,7 +604,7 @@ def _compile_mudata(
 
 	# Only compile if anchor is spot-based
 	if ref_mod[ModalityParameters.TYPE] not in _SPOT_MODALITIES:
-		logger.info("Anchor modality is not spot-based; skipping MuData compilation.")
+		reporter.warning("The reference modality is not spot-based: the multimodal dataset is not compiled")
 		return None
 
 	# Load anchor: prefer annotated file (from Stage 2.5) when available
@@ -726,9 +613,10 @@ def _compile_mudata(
 	else:
 		anchor_merged = modality_files[ref_name].get("merged")
 	if anchor_merged is None or not os.path.exists(anchor_merged):
-		logger.warning(f"No merged file for anchor '{ref_name}', skipping MuData compilation.")
+		reporter.warning(f"No merged file for the reference '{ref_name}': the multimodal dataset is not compiled")
 		return None
 
+	reporter.step(1, 3, "Loading registered modalities")
 	anchor_adata = anndata.read_h5ad(anchor_merged)
 
 	# Shared obs/obsm/uns come from the anchor
@@ -767,15 +655,14 @@ def _compile_mudata(
 
 		merged_path = registered_files[mod_name].get("merged")
 		if merged_path is None or not os.path.exists(merged_path):
-			logger.warning(f"No merged registration file for '{mod_name}', skipping in MuData.")
+			reporter.warning(f"'{mod_name}' has no merged registration file and is left out")
 			continue
 
 		reg_adata = anndata.read_h5ad(merged_path)
 
 		if reg_adata.n_obs != n_anchor_obs:
-			logger.warning(
-				f"Observation count mismatch for '{mod_name}': "
-				f"{reg_adata.n_obs} vs anchor {n_anchor_obs}. Skipping in MuData."
+			reporter.warning(
+				f"'{mod_name}' is left out: {reg_adata.n_obs} observations vs {n_anchor_obs} in the reference"
 			)
 			del reg_adata
 			continue
@@ -785,17 +672,16 @@ def _compile_mudata(
 		# registration._merge_samples can diverge from preprocessing's order, and
 		# silently mis-pairing spots produces a MuData that mudata cannot read back.
 		if 'sample_id' not in reg_adata.obs.columns:
-			logger.warning(
-				f"Registered modality '{mod_name}' has no obs['sample_id']; cannot verify "
-				"row alignment with anchor. Skipping in MuData."
+			reporter.warning(
+				f"'{mod_name}' is left out: it has no obs['sample_id'], so its rows cannot be "
+				"matched to the reference"
 			)
 			del reg_adata
 			continue
 		reg_sample_ids = reg_adata.obs['sample_id'].astype(str).to_numpy()
 		if not np.array_equal(reg_sample_ids, anchor_sample_ids):
-			logger.warning(
-				f"Sample-ID sequence mismatch between anchor '{ref_name}' and '{mod_name}'. "
-				"Refusing to compile with misaligned rows; skipping this modality."
+			reporter.warning(
+				f"'{mod_name}' is left out: its sample order differs from the reference '{ref_name}'"
 			)
 			del reg_adata
 			continue
@@ -808,26 +694,25 @@ def _compile_mudata(
 		mod_dict[mod_name] = reg_adata
 
 	# Filter anchor spots with no coverage in any target modality
+	reporter.step(2, 3, "Filtering uncovered spots")
 	valid_mask = _compute_valid_spot_mask(mod_dict, ref_name, n_anchor_obs)
 	if valid_mask is not None:
 		n_removed = int(np.sum(~valid_mask))
-		logger.info(
-			f"Removing {n_removed}/{n_anchor_obs} anchor spots with no coverage "
-			f"in at least one target modality."
+		reporter.detail(
+			f"{n_removed}/{n_anchor_obs} reference spots removed: no coverage in at least one modality"
 		)
 		mod_dict = {k: v[valid_mask].copy() for k, v in mod_dict.items()}
 		shared_spatial = shared_spatial[valid_mask]
 		shared_sample_id = shared_sample_id[valid_mask]
 		n_anchor_obs = int(np.sum(valid_mask))
 		if n_anchor_obs == 0:
-			logger.warning(
-				"All anchor spots filtered out (no spot has coverage in all modalities). "
-				"Skipping MuData compilation."
+			reporter.warning(
+				"No reference spot has coverage in all modalities: the multimodal dataset is not compiled"
 			)
 			return None
 
 	if len(mod_dict) < 2:
-		logger.info("Only one modality available for MuData, skipping compilation.")
+		reporter.warning("Only one modality is available: the multimodal dataset is not compiled")
 		return None
 
 	# Synchronise obs_names across modalities using the (possibly filtered) anchor.
@@ -859,6 +744,7 @@ def _compile_mudata(
 	)
 
 	# Build MuData
+	reporter.step(3, 3, "Writing MuData")
 	mdata = mudata.MuData(mod_dict)
 
 	mdata.obs['sample_id'] = shared_sample_id.values
@@ -869,12 +755,12 @@ def _compile_mudata(
 	# Propagate spatial annotations (if present) to top-level mdata.obs
 	if 'spatial_annotation' in mod_dict[ref_name].obs.columns:
 		mdata.obs['spatial_annotation'] = mod_dict[ref_name].obs['spatial_annotation'].values
-		logger.info("Spatial annotation labels promoted to mdata.obs['spatial_annotation']")
+		logger.debug("Spatial annotation labels promoted to mdata.obs['spatial_annotation']")
 
 	output_path = MULTIMODAL_DATASET(dataset_path, "h5mu")
 	os.makedirs(os.path.dirname(output_path), exist_ok=True)
 	write_h5mu_compat(mdata, output_path)
-	logger.info(f"MuData saved to {output_path} with {len(mod_dict)} modalities, {n_anchor_obs} observations")
+	reporter.detail(f"Saved {output_path}: {len(mod_dict)} modalities, {n_anchor_obs} observations")
 
 	# Drop the compiled MuData and every modality AnnData it holds (anchor + all registered
 	# modalities are resident at once here) before returning to the orchestrator.

@@ -2,7 +2,7 @@ import numpy as np
 import scipy.sparse as sp
 import mmap
 import os, tqdm, psutil
-from focus.preprocessing._utils import StepReporter, compute_cluster_labels, find_imzml_pair
+from focus.preprocessing._utils import get_reporter, compute_cluster_labels, find_imzml_pair
 from collections import defaultdict
 from sklearn.linear_model import LinearRegression
 from sklearn.mixture import GaussianMixture
@@ -23,6 +23,26 @@ from focus.constants import ImzMLFileParser, MsiIntensityNormalization, MsiSampl
 from focus.constants import MODALITY_PREPROCESSING, MODALITY_PREPROCESSING_MERGED
 from focus.preprocessing.base import BaseSample, BaseDataset
 from focus.preprocessing._registry import ModalityHandler, register_modality
+import logging
+
+logger = logging.getLogger("focus.preprocessing.lipidomics")
+
+# MSI dataset preprocessing steps, in order; 1, 2, 4 and 7 run per sample.
+_DATASET_STEPS = (
+	"Loading MSI data",
+	"Selecting tissue spots",
+	"Selecting recalibration references",
+	"Computing per-sample m/z backbones",
+	"Building global m/z backbone",
+	"Annotating features",
+	"Interpolating intensities",
+	"Merging samples",
+)
+
+
+def _step(index: int) -> tuple[int, int, str]:
+	"""(index, total, name) of MSI dataset step ``index`` for StepReporter."""
+	return index, len(_DATASET_STEPS), _DATASET_STEPS[index - 1]
 
 
 @njit(cache=True)
@@ -668,9 +688,6 @@ class MsiSample(BaseSample):
 		# Read every spectrum via memory-mapped I/O and validate with np.isfinite.
 		# Each worker thread opens its own mmap so file reads are truly parallel.
 		# np.frombuffer creates zero-copy views — no extra allocation per spectrum.
-		_reporter = getattr(self, '_step_reporter', None)
-		if _reporter:
-			_reporter.message(f"Verifying file integrity for sample {self.sample_id}")
 
 		n_workers = utils.available_cpus() or 1
 		chunk_size = max(1, -(-n_spectra // n_workers))  # ceiling division
@@ -786,7 +803,7 @@ class MsiSample(BaseSample):
 			def _fmt(idx, pix=pix, phys=phys):
 				return f"pixel=({pix[idx, 0]},{pix[idx, 1]}) phys=({phys[idx, 0]:.1f},{phys[idx, 1]:.1f})"
 
-			print(
+			logger.debug(
 				f"[filter_unpaired_spots] {mode_label} extremes:\n"
 				f"  min_x  {_fmt(int(np.argmin(pix[:, 0])))}\n"
 				f"  max_x  {_fmt(int(np.argmax(pix[:, 0])))}\n"
@@ -827,9 +844,9 @@ class MsiSample(BaseSample):
 			if flip_y:
 				neg_pixel_coords[:, 1] = max_y + min_y - neg_pixel_coords[:, 1]
 			self._metadata[MsiIonMode.NEGATIVE][MsiMetadata.PIXEL_COORDINATES] = neg_pixel_coords
-			print(f"[filter_unpaired_spots] Applied pixel axis flip to NEGATIVE: flip_x={flip_x}, flip_y={flip_y}")
+			get_reporter().detail(f"Pixel axis flip applied to the NEGATIVE mode (flip_x={flip_x}, flip_y={flip_y})")
 		else:
-			print(f"[filter_unpaired_spots] No pixel axis flip needed")
+			logger.debug("[filter_unpaired_spots] No pixel axis flip needed")
 
 		# Build structured arrays AFTER the flip so comparisons use corrected coordinates
 		dtype = [('x', pos_pixel_coords.dtype), ('y', pos_pixel_coords.dtype)]
@@ -858,8 +875,8 @@ class MsiSample(BaseSample):
 
 		pos_shape_filtered = (int(pos_pixel_coords[pos_indices, 0].max()), int(pos_pixel_coords[pos_indices, 1].max()))
 		neg_shape_filtered = (int(neg_pixel_coords[neg_indices, 0].max()), int(neg_pixel_coords[neg_indices, 1].max()))
-		print(f"[filter_unpaired_spots] POSITIVE grid shape after intersection: {pos_shape_filtered}")
-		print(f"[filter_unpaired_spots] NEGATIVE grid shape after intersection: {neg_shape_filtered}")
+		logger.debug(f"[filter_unpaired_spots] POSITIVE grid shape after intersection: {pos_shape_filtered}")
+		logger.debug(f"[filter_unpaired_spots] NEGATIVE grid shape after intersection: {neg_shape_filtered}")
 
 		# Filter positive mode metadata
 		self._metadata[MsiIonMode.POSITIVE][MsiMetadata.PIXEL_COORDINATES] = pos_pixel_coords[pos_indices]
@@ -921,16 +938,10 @@ class MsiSample(BaseSample):
 				self._metadata[mode][MsiMetadata.INTENSITIES_BINARY_METADATA] = (
 					self._metadata[mode][MsiMetadata.INTENSITIES_BINARY_METADATA][keep]
 				)
-				_reporter = getattr(self, '_step_reporter', None)
-				msg = (
-					f"[Sample '{self.sample_id}' – {str(mode).upper()} mode] "
-					f"Filtered {len(corrupt_indices):,} corrupted datapoint(s) "
+				get_reporter().warning(
+					f"{str(mode).upper()} mode: filtered {len(corrupt_indices):,} corrupted datapoint(s) "
 					f"({len(corrupt_indices) / n_total * 100:.1f}% of {n_total:,} spectra)"
 				)
-				if _reporter:
-					_reporter.message(msg)
-				else:
-					print(msg)
 
 		# If there are both ion modes, correct the physical coordinates offset between the two
 		if self.double_ion_mode:
@@ -1120,7 +1131,7 @@ class MsiSample(BaseSample):
 		# dominant tissue mode rather than separating it from background.
 		n_valid = valid_scores.shape[0]
 		if n_valid < 4 or hi - lo < 1e-12:
-			print(f"Tissue detection (tissue): degenerate score distribution -- treating all {n_spots} spots as foreground.")
+			get_reporter().detail(f"Tissue detection (tissue): degenerate score distribution -- treating all {n_spots} spots as foreground.")
 			return np.where(valid)[0].tolist()
 
 		vs2d = valid_scores.reshape(-1, 1)
@@ -1130,7 +1141,7 @@ class MsiSample(BaseSample):
 
 		if bic1 <= bic2:
 			# BIC prefers unimodal model -- keep all valid spots as tissue
-			print(
+			get_reporter().detail(
 				f"Tissue detection (tissue): GMM BIC prefers 1-component "
 				f"(BIC1={bic1:.1f} <= BIC2={bic2:.1f}) -- treating all {n_spots} spots as foreground, "
 				f"n_features={len(features)}, ion_mode={ion_mode}"
@@ -1166,7 +1177,7 @@ class MsiSample(BaseSample):
 					tissue_mask[i] = raster[pixel_coords[i, 0], pixel_coords[i, 1]]
 
 		kept = np.where(tissue_mask)[0]
-		print(
+		get_reporter().detail(
 			f"Tissue detection ({self._sample_type}): kept {kept.size} / {n_spots} spots "
 			f"({_log_info}, n_features={len(features)}, ion_mode={ion_mode})"
 		)
@@ -1317,11 +1328,11 @@ class MsiSample(BaseSample):
 				n_used += 1
 
 		if n_used == 0:
-			print(f"Tissue detection (microgrid): constant features -- no cell spots detected among {n_spots} spots.")
+			get_reporter().detail(f"Tissue detection (microgrid): constant features -- no cell spots detected among {n_spots} spots.")
 			return []
 		score = robust_z(z_sum / n_used)
 		if score is None:
-			print(f"Tissue detection (microgrid): constant score -- no cell spots detected among {n_spots} spots.")
+			get_reporter().detail(f"Tissue detection (microgrid): constant score -- no cell spots detected among {n_spots} spots.")
 			return []
 
 		# ------------------------------------------------------------------
@@ -1349,18 +1360,18 @@ class MsiSample(BaseSample):
 		n_components = component_sizes.size
 		n_large = int((component_sizes > self._MICROGRID_MAX_COMPONENT_SPOTS).sum())
 		size_info = f"sizes={int(component_sizes.min())}-{int(component_sizes.max())}" if n_components else "sizes=n/a"
-		print(
+		get_reporter().detail(
 			f"Tissue detection (microgrid): kept {kept.size} / {n_spots} spots in {n_components} cell(s) "
 			f"(seed_z={seed_z:.2f}, grow_z={grow_z:.2f}, {size_info}, background_ions={n_background_ions}, "
 			f"local_background={'on' if spatial else 'off'}, n_features={len(features)}, ion_mode={ion_mode})"
 		)
 		if n_large:
-			print(
+			get_reporter().warning(
 				f"Tissue detection (microgrid): {n_large} component(s) exceed "
 				f"{self._MICROGRID_MAX_COMPONENT_SPOTS} spots; check for debris or matrix crystals."
 			)
 		if kept.size == 0:
-			print("Tissue detection (microgrid): no cell spots detected; every spot will be treated as foreground.")
+			get_reporter().detail("Tissue detection (microgrid): no cell spots detected; every spot will be treated as foreground.")
 		return kept.tolist()
 
 	def _recalibrate_mz_vector(
@@ -2205,6 +2216,7 @@ class MsiDataset(BaseDataset):
 					raise ValueError(f'Reference M/Z vector for mode {mode} must be a numpy array.')
 
 		processed_samples = {}
+		reporter = step_reporter or get_reporter()
 
 		# STEP 0: Check if the computation is complete and can be skipped
 		if not force_recomputing:
@@ -2236,7 +2248,8 @@ class MsiDataset(BaseDataset):
 
 			# If the merged dataset already exists and force_recompute is False, skip the computation
 			if all_sample_computed:
-				print("All samples have already been processed and merged dataset exists. Using cached results.")
+				for index, name in enumerate(_DATASET_STEPS, 1):
+					reporter.step(index, len(_DATASET_STEPS), name, cached=True)
 				return processed_samples
 
 		# STEP 0b: Partial-resume cache discovery
@@ -2306,17 +2319,15 @@ class MsiDataset(BaseDataset):
 						self.reference_mz[mode_enum] = np.array([], dtype=np.float32)
 						self.lipid_annotations[mode_enum] = np.array([], dtype=object)
 
-				print(f"Partial-resume: reusing {len(processed_samples)} cached per-sample file(s); "
-					  f"reprocessing {len(samples_to_process)} sample(s).")
+				reporter.detail(f"Partial resume: {len(processed_samples)} cached sample file(s) reused, "
+								f"{len(samples_to_process)} sample(s) to process")
 
 		iter_samples = samples_to_process
 
-		reporter = step_reporter or StepReporter()
-		print("Processing Lipidomic Dataset")
 		reference_mz_samples: dict[MsiIonMode, list[np.float32]] = {MsiIonMode.POSITIVE: [], MsiIonMode.NEGATIVE: []}
 
 		# STEP 1: Initialize each sample to load the metadata
-		for sample in reporter.tqdm(iter_samples, desc="1/8 - Loading MSI data", unit="sample"):
+		for sample in reporter.tqdm(iter_samples, *_step(1), unit="sample"):
 			sample._step_reporter = reporter
 			sample.initialize_sample()
 			sample._sample_type = sample_type
@@ -2332,7 +2343,7 @@ class MsiDataset(BaseDataset):
 			# raw spectra first is what used to be both slow and a source of OOM.
 			selector = _CalibrationReferenceSelector(mass_tolerance)
 
-			for sample in reporter.tqdm(iter_samples, desc="2/8 - Selecting high-confidence tissue spots", unit="sample"):
+			for sample in reporter.tqdm(iter_samples, *_step(2), unit="sample"):
 				raw_mz, _, filtered_mz, _ = sample.load_payload(annotation_db=self.lipid_annotation_db,
 																mass_tolerance=mass_tolerance,
 																detect_background=detect_background)
@@ -2344,19 +2355,19 @@ class MsiDataset(BaseDataset):
 				gc.collect()
 
 			# Compute the recalibration reference from the dataset
-			reporter.step(
-				"3/8 - Selecting recalibration reference M/Z values from the dataset and filtering background datapoints")
+			reporter.step(*_step(3))
 			recalibration_reference = selector.select(number_of_references=5)
 			del selector  # Free memory
 			gc.collect()
 		else:
 			# Dummy call to still filter the datapoints in each sample
-			for sample in reporter.tqdm(iter_samples, desc="2/8 - Selecting high-confidence tissue spots", unit="sample"):
+			for sample in reporter.tqdm(iter_samples, *_step(2), unit="sample"):
 				_, _, _, _ = sample.load_payload(annotation_db=self.lipid_annotation_db, mass_tolerance=mass_tolerance,
 												 detect_background=detect_background)
 				gc.collect()
 
-			reporter.step("3/8 - Using provided recalibration reference M/Z values.")
+			reporter.step(*_step(3))
+			reporter.detail("Using the provided recalibration reference m/z values")
 
 		# Store the recalibration reference in each sample to reprocess
 		for sample in iter_samples:
@@ -2365,8 +2376,7 @@ class MsiDataset(BaseDataset):
 
 		if not has_partial_cache:
 			# STEP 3: For each ion mode in each sample, compute the reference M/Z vector
-			for sample in reporter.tqdm(iter_samples, desc="4/8 - Computing reference M/Z backbone for each sample",
-										unit="sample"):
+			for sample in reporter.tqdm(iter_samples, *_step(4), unit="sample"):
 				raw_mz, _, filtered_mz, _ = sample.load_payload(annotation_db=self.lipid_annotation_db,
 																mass_tolerance=mass_tolerance)
 				for mode in sample.ion_modes:
@@ -2381,7 +2391,7 @@ class MsiDataset(BaseDataset):
 				gc.collect()
 
 			# STEP 4: Compute the global reference M/Z vector for each ion mode. No frequency thresholding is applied here
-			reporter.step("5/8 - Computing global reference M/Z backbone for the dataset")
+			reporter.step(*_step(5))
 			for mode in reference_mz_samples.keys():
 				if len(reference_mz_samples[mode]) > 0:
 					self.reference_mz[mode] = self._compute_reference_mz(
@@ -2395,11 +2405,12 @@ class MsiDataset(BaseDataset):
 			del reference_mz_samples  # Free memory
 			gc.collect()
 
-			print(
-				f"Selected {len(self.reference_mz.get(MsiIonMode.POSITIVE, []))} M/Z values for POSITIVE mode and {len(self.reference_mz.get(MsiIonMode.NEGATIVE, []))} M/Z values for NEGATIVE mode as reference backbone.")
+			reporter.detail(
+				f"Reference backbone: {len(self.reference_mz.get(MsiIonMode.POSITIVE, []))} m/z values (POSITIVE), "
+				f"{len(self.reference_mz.get(MsiIonMode.NEGATIVE, []))} m/z values (NEGATIVE)")
 
 			# STEP 5: For each ion mode, annotate the reference M/Z vector if a lipid annotation database is provided
-			reporter.step("6/8 - Annotating features (backbone M/Z values) for each ion mode")
+			reporter.step(*_step(6))
 			self.lipid_annotations: dict[MsiIonMode, np.ndarray] = {}
 			if self.lipid_annotation_db is not None:
 				for mode in self.reference_mz.keys():
@@ -2409,7 +2420,9 @@ class MsiDataset(BaseDataset):
 						mass_tolerance=mass_tolerance
 					)
 		else:
-			reporter.step("4-6/8 - Reusing cached reference M/Z backbone and annotations from per-sample files")
+			# The backbone and annotations come from the cached per-sample files.
+			for index in (4, 5, 6):
+				reporter.step(*_step(index), cached=True)
 
 		# Build var metadata (shared across all samples); reads self.reference_mz and self.lipid_annotations,
 		# which are either freshly computed above or pulled from the partial-resume cache.
@@ -2446,9 +2459,7 @@ class MsiDataset(BaseDataset):
 		write_futures = []
 
 		try:
-			for sample in reporter.tqdm(iter_samples,
-										desc="7/8 - Interpolating intensities and saving per-sample AnnData",
-										unit="sample"):
+			for sample in reporter.tqdm(iter_samples, *_step(7), unit="sample"):
 				sample_id = sample.sample_id
 				ref_mode = MsiIonMode.POSITIVE if MsiIonMode.POSITIVE in sample.ion_modes else MsiIonMode.NEGATIVE
 
@@ -2608,7 +2619,7 @@ class MsiDataset(BaseDataset):
 		gc.collect()
 
 		# STEP 9: Merge all samples into a single dataset (memory-efficient on-disk concat)
-		reporter.step("8/8 - Merging all samples into a single dataset")
+		reporter.step(*_step(8))
 		merged_file = MODALITY_PREPROCESSING_MERGED(self.dataset_source_path, self.samples[0].modality_name, 'h5ad')
 
 		if processed_samples:
