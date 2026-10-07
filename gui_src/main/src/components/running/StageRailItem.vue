@@ -5,7 +5,7 @@
  */
 import type { StageProgress } from '../../composables/useRunProgress';
 import { formatDuration } from '../../utils/duration';
-import AppIcon from '../ui/AppIcon.vue';
+import AppIcon from '@focus/ui/components/ui/AppIcon.vue';
 
 defineProps<{ stage: StageProgress; index: number }>();
 </script>

@@ -3,7 +3,7 @@
 import { useMainStore } from '../../../store/main';
 import { useBuilderStore } from '../../../store/builder';
 import type { Modality } from '../../../api/types';
-import AppIcon from '../../ui/AppIcon.vue';
+import AppIcon from '@focus/ui/components/ui/AppIcon.vue';
 
 const store = useMainStore();
 const builder = useBuilderStore();

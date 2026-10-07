@@ -1,6 +1,6 @@
 <script setup lang="ts">
 /** Server-side validation errors that block the pipeline start. */
-import Banner from '../ui/Banner.vue';
+import Banner from '@focus/ui/components/ui/Banner.vue';
 
 defineProps<{ errors: string[] }>();
 </script>

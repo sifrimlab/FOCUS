@@ -10,14 +10,26 @@ name: Build GUI
 # pre-installed GitHub CLI (`gh`) authenticated with the built-in GITHUB_TOKEN.
 # No third-party/marketplace actions.
 #
-# Both Vite configs write their build straight into src/focus/GUI/<app>/
-# (see gui_src/<app>/vite.config.ts → build.outDir), so no copy step is needed.
+# gui_src/ is an npm workspace (shared design system, main, alignment) with one
+# lockfile, gui_src/package-lock.json. `npm run build` lints, type-checks and
+# builds both apps; each Vite config writes straight into src/focus/GUI/<app>/
+# (gui_src/<app>/vite.config.ts → outDir, via gui_src/shared/vite.base.ts), so
+# no copy step is needed. `npm test` runs the alignment golden tests, which
+# fail if the alignment numerics change.
+#
+# Pull requests touching the GUI get the same lint, test and build as a check;
+# only pushes to main (or a manual run) rebuild the output and open the PR.
 
 on:
   push:
     branches: [main]
     paths:
       - 'gui_src/**'
+      - '.github/workflows/build-gui.yml'
+  pull_request:
+    paths:
+      - 'gui_src/**'
+      - '.github/workflows/build-gui.yml'
   workflow_dispatch:
 
 # contents: write  → push the rebuilt-GUI branch
@@ -43,35 +55,36 @@ jobs:
         with:
           node-version-file: '.nvmrc'
           cache: 'npm'
-          cache-dependency-path: |
-            gui_src/main/package-lock.json
-            gui_src/alignment/package-lock.json
+          cache-dependency-path: gui_src/package-lock.json
 
       # Clear stale compiled assets first. Vite's outDir lives outside the
       # project root, so Vite does not empty it automatically. Wiping here
       # keeps the output free of orphaned, content-hashed chunks. `git rm`
       # stages the deletions; the build then recreates the dirs.
       - name: Clear previous build output
+        if: github.event_name != 'pull_request'
         run: |
           git rm -r --quiet --ignore-unmatch src/focus/GUI/main src/focus/GUI/alignment || true
 
-      - name: Build main GUI
-        working-directory: gui_src/main
-        run: |
-          npm ci
-          npm run build
+      - name: Install GUI dependencies
+        working-directory: gui_src
+        run: npm ci
 
-      - name: Build alignment GUI
-        working-directory: gui_src/alignment
-        run: |
-          npm ci
-          npm run build
+      - name: Test GUIs
+        working-directory: gui_src
+        run: npm test
+
+      # Lint, type-check and build both apps into src/focus/GUI/{main,alignment}.
+      - name: Build GUIs
+        working-directory: gui_src
+        run: npm run build
 
       # Open (or update) a PR only when the compiled output actually changed.
       # The PR targets main from a dedicated branch, so it never pushes to a
       # protected main directly. Force-pushing the fixed branch updates an
       # already-open PR in place.
       - name: Open PR with rebuilt GUI
+        if: github.event_name != 'pull_request'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |

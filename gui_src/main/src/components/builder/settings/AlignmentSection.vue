@@ -8,9 +8,9 @@ import { computed } from 'vue';
 import { useMainStore } from '../../../store/main';
 import type { Modality } from '../../../api/types';
 import SettingsSection from './SettingsSection.vue';
-import FormRow from '../../ui/FormRow.vue';
-import SelectField from '../../ui/SelectField.vue';
-import Banner from '../../ui/Banner.vue';
+import FormRow from '@focus/ui/components/ui/FormRow.vue';
+import SelectField from '@focus/ui/components/ui/SelectField.vue';
+import Banner from '@focus/ui/components/ui/Banner.vue';
 
 const props = defineProps<{ index: number }>();
 const store = useMainStore();

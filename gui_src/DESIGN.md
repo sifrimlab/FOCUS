@@ -1,10 +1,10 @@
 # FOCUS GUI design language
 
-Version 1. Scope: the main orchestration GUI (`gui_src/main`). The alignment GUI (`gui_src/alignment`) adopts the same language in a later pass.
+Version 2. Scope: both GUIs, the main orchestration GUI (`gui_src/main`) and the manual alignment GUI (`gui_src/alignment`). They share one implementation of this system, the `@focus/ui` package in `gui_src/shared`.
 
 This document is the single source of truth for the look and feel of the FOCUS GUIs. Every visual change under `gui_src/` follows it. Token values live in [`design-tokens.css`](design-tokens.css); this document explains how to use them. If the two ever disagree, `design-tokens.css` holds the value and this document holds the rule, and both are updated in the same change.
 
-Status: implemented in the main GUI (see [Code organization](#12-code-organization)). The alignment GUI still runs on its previous styling. See [Adoption roadmap](#10-adoption-roadmap).
+Status: implemented in both GUIs (see [Code organization](#12-code-organization) and [Adoption roadmap](#10-adoption-roadmap)).
 
 ---
 
@@ -29,7 +29,7 @@ Status: implemented in the main GUI (see [Code organization](#12-code-organizati
 
 The visual reference is current macOS and iOS: Liquid Glass materials, SF-style typographic hierarchy, spring motion. FOCUS is a scientific tool used for long sessions on dense forms, so the reference is applied with restraint.
 
-1. **Content is solid, chrome is glass.** Forms, lists and results sit on near-opaque material and stay readable. Translucency is reserved for elements that float above content: the top-right control cluster, the sticky action bar, dialogs, popovers and dropdowns.
+1. **Content is solid, chrome is glass.** Forms, lists and results sit on near-opaque material and stay readable. Translucency is reserved for elements that float above content: the top-right control cluster, the sticky action bar, the floating controls of the alignment canvas, dialogs, popovers and dropdowns.
 2. **One accent.** Blue (`--primary`) marks the primary action, selection, focus and progress. All other color carries state.
 3. **State is never color alone.** Every state uses color plus at least one of: an icon, a text label, or a shape change. This covers color-blind users and grayscale screenshots in papers.
 4. **Motion explains change.** Motion shows where something came from, what changed, or that the system is alive. No decorative loops apart from the ambient backdrop and progress indicators.
@@ -47,7 +47,7 @@ The visual reference is current macOS and iOS: Liquid Glass materials, SF-style 
 | Sans (UI) | **Inter** variable, with the `opsz` axis | `@fontsource-variable/inter` (opsz + wght) | Neutral grotesk close to SF Pro in proportions and metrics, so the macOS feel carries to Linux and Windows. The variable font gives exact weights and automatic optical sizing. Rendering is the same on every OS. |
 | Mono | **JetBrains Mono** variable | `@fontsource-variable/jetbrains-mono` (wght) | Tall x-height that matches Inter, a clear slashed zero, and distinct `l I 1 0 O` shapes. Paths and sample IDs stay unambiguous. |
 
-The fonts are self-hosted because the GUI often runs on offline HPC nodes and containers, where a Google Fonts `@import` fails and the UI falls back silently to the system font. The Fontsource packages are imported in `src/main.ts`; Vite copies their woff2 files into the build, so no font is fetched at runtime. Both fonts are SIL OFL.
+The fonts are self-hosted because the GUI often runs on offline HPC nodes and containers, where a Google Fonts `@import` fails and the UI falls back silently to the system font. The Fontsource packages are imported once, in `shared/bootstrap.ts`; Vite copies their woff2 files into the build, so no font is fetched at runtime. Both fonts are SIL OFL.
 
 OpenType features:
 
@@ -186,6 +186,21 @@ Each main pipeline stage has an accent, cool to warm along the run, so the stage
 - Accents are marks only (bars, dots, icons, outlines), at least 3:1 against every material. Text placed on an accent fill uses `--stage-on-accent` (white in light, near-black in dark), at least 4.5:1 on every accent.
 - State colors keep their meaning and take priority over the stage color: amber while waiting for manual alignment, red on error, green on completion.
 
+### 3.3.2 Alignment canvas and layer marks
+
+| Token | Light | Dark | Use |
+|---|---|---|---|
+| `--canvas-ground` | `#e3e4e6` | `#111214` | Surface under the alignment layers. Neutral, with no hue, so stain and tissue colors are judged against gray. |
+| `--canvas-handle` | `--primary` | `--primary` | Distort frame stroke and handle outline |
+| `--canvas-handle-fill` | `#ffffff` | `#ffffff` | Handle fill at rest |
+| `--canvas-handle-halo` | `rgb(15 17 21 / .45)` | `rgb(0 0 0 / .55)` | Wide stroke under the frame, so it stays legible on bright and dark images |
+| `--layer-target` | `#0284c7` | `#38bdf8` | Identity dot of the moving layer (cool, like its cluster palette) |
+| `--layer-reference` | `#d97706` | `#fbbf24` | Identity dot of the fixed layer (warm, like its cluster palette) |
+
+- The layer marks are dots only and always sit next to the layer name.
+- The cluster palettes (`alignment/src/utils/colors.ts`) are data colors, outside this system.
+- Pixi draws with the token values: `canvas/canvasPalette.ts` resolves them through a probe element and re-reads them when the theme changes.
+
 ### 3.4 Contrast
 
 WCAG AA is the floor: 4.5:1 for text under 18 px, 3:1 for large text and for non-text UI such as focus rings, toggle tracks and input outlines.
@@ -271,6 +286,7 @@ The saturation boost makes the ambient hue glow through the glass instead of tur
 3. **Chrome floats.** Chrome surfaces are detached from the window edges by at least `--space-3`, are fully rounded (`--radius-full` for pill clusters, `--radius-xl` for the action bar), and carry `--elev-2`.
 4. **Dialogs dim, not blur, the page.** The scrim is `--mat-scrim` with no blur, so the dialog's own glass is the only blur. This also avoids a second full-screen blur pass.
 5. **No glass on large scrolling regions.** A blur behind a long scrolling list repaints on every scroll frame. Scroll containers use content material on the parent and inset for the list.
+6. **Chrome may float over the alignment canvas.** The Pixi canvases render on demand (`autoStart: false`), so the blur behind the floating controls is recomputed only when the canvas changes, and only over the small control surfaces. Content material and large surfaces never cover the canvas.
 
 ### 4.3 Fallbacks
 
@@ -304,6 +320,8 @@ The backdrop layer carries `data-ambient`. It is derived from existing store sta
 | `wait` | RunningView, manual alignment required | `--ambient-wait-1..3`: orange, peach, blue | Asks for attention without alarm |
 | `done` | CompleteView | `--ambient-done-1..3`: green, mint, blue | One bloom on entry, then still |
 | `err` | RunningView: pipeline error, or run interrupted (server restarted) | `--ambient-err-1..3`: red, rose, indigo | Still, no drift |
+
+The alignment GUI uses the same states on its full-screen states: loading a sample `align`, finished `done`, error and backend not running `err`, viewport too small `idle`. Its workspace covers the backdrop with `--canvas-ground` (3.3.2).
 
 ### 5.2 Geometry
 
@@ -363,9 +381,23 @@ A 4 pt grid (`--space-1` = 4 px, up to `--space-12` = 48 px).
 | Form rows (label/control) | 12 vertical, 16 between label column and control |
 | Inside a well | 12 padding, rows 4 apart |
 | Icon to text in a button | 6 |
-| Chrome cluster offset from the viewport edges | 16 |
+| Floating chrome offset from the viewport edges (chrome cluster, action bar, alignment controls) | `--hud-inset` 16 (utilities `top-hud`, `right-hud`, `bottom-hud`, `p-hud`) |
 
-Layout widths and view structure stay as they are in v1 (`max-w-lg`, `max-w-4xl`, `max-w-2xl`). Layout changes belong to a later pass.
+Layout widths and view structure of the main GUI stay as they are in v1 (`max-w-lg`, `max-w-4xl`, `max-w-2xl`).
+
+### 6.4 Stacking
+
+One z-index scale, in `design-tokens.css`, mapped to `z-*` utilities. Raw z-index values are not used.
+
+| Token / utility | Value | Layer |
+|---|---|---|
+| `--z-sticky` / `z-sticky`, `z-hud` | 10 | Sticky action bar, alignment canvas controls |
+| `--z-header` / `z-header` | 20 | Sticky builder header |
+| `--z-chrome` / `z-chrome` | 50 | Top-right chrome cluster |
+| `--z-popover` / `z-popover` | 60 | Dropdowns and menus, above the chrome |
+| `--z-splash` / `z-splash` | 100 | Splash screen |
+| `--z-toast` / `z-toast` | 150 | Toasts |
+| `--z-dialog` / `z-dialog`, `z-dialog-panel` | 200, 201 | Dialog scrim and panel |
 
 ---
 
@@ -548,7 +580,7 @@ Mapping:
 
 ### 8.11 Chrome cluster (top-right controls)
 
-- One chrome-material pill, 16 px from the top and right, holding the GitHub / Docs / Paper icon buttons, a 1 px × 16 px `--separator` divider, and the theme segmented control.
+- One chrome-material pill (`ChromeSurface`), 16 px from the top and right, holding the GitHub / Docs / Paper icon buttons, a 1 px × 16 px `Separator`, and the theme segmented control. Both GUIs show the same cluster.
 - Icon buttons are 30 square with `--radius-full`.
 - Theme control: a three-segment control (System / Light / Dark) with icons (computer-desktop, sun, moon), each labeled with a tooltip and an accessible name. The track is inset; the thumb is white (light) or `#3a3d45` (dark) with `--elev-1`.
 
@@ -581,7 +613,35 @@ Mapping:
 - Stroke 1.5 at 16 and 20 px. Use 20 px for solid variants and the mini set at 16 px when available.
 - `currentColor` only. Icon color follows the text color of its context. Icons never use raw palette colors.
 - Sizes: 16 inline with text and in buttons, 20 in icon buttons and banners, 40 for hero status (Complete).
-- Icon paths live in one registry, `src/icons/paths.ts` (Heroicons v2 outline data plus filled brand marks), and are rendered through `<AppIcon name>`. New icons are added there, never pasted into templates.
+- Icon paths live in one registry, `shared/icons/paths.ts` (Heroicons v2 outline data plus filled brand marks), and are rendered through `<AppIcon name>`. New icons are added there, never pasted into templates.
+
+### 8.17 Canvas workspace (alignment GUI)
+
+The canvas fills the window on `--canvas-ground`. Every control floats above it on chrome material, `--hud-inset` from the edges, in a grid (`hud-grid` in `alignment/src/styles/layouts.css`). The grid ignores the pointer, so empty areas pass input to the canvas; only the controls capture it. The canvas size never depends on the controls.
+
+| Area | Contents | Frequency |
+|---|---|---|
+| Top left | Sample badge: brand mark, "Alignment", sample ID (Mono small), compact progress, "3 of 12" | Glanced at |
+| Top right | Chrome cluster (8.11) | Rare |
+| Left edge, centered | Tool rail: vertical segmented mode (Aligner, Camera), flips, then a menu with Reset distortion and Reset transform | Mode and flips often, resets rarely |
+| Bottom left | Layer dock: the moving layer panel above the fixed one | Often |
+| Bottom center | Transform bar: scale, rotation, then view zoom (8.18) | Often |
+| Bottom right | Confirm alignment, hero primary button | Once per sample |
+
+- Below 1280 px (the single row needs about 1250) the transform bar takes its own row above the dock and the confirm button, so nothing overlaps. Below 720 px the workspace is replaced by a status screen.
+- **Layer panel.** A chrome panel (`--radius-xl`). The header, a `Disclosure` summary, shows the identity dot (3.3.2), the modality name and its type as a `TagLabel`; it opens the details: cluster chips with their color (`ToggleChip` in an inset well, with All and None), the spots shown (All, Foreground, Background) or the microgrid note, and the spot size. The moving layer also keeps its opacity slider visible below. Panels start collapsed; their state survives sample changes.
+- **Distort frame.** The quad outline is drawn twice: a 3.5 px `--canvas-handle-halo` stroke, then a 1.5 px `--canvas-handle` stroke. Corner handles are 6 px circles and edge handles 8 px squares, filled `--canvas-handle-fill` with a `--canvas-handle` outline; the handle being dragged is filled `--canvas-handle` and drawn larger. Hit radii do not change with the look. The rotate cursor is an OS cursor, drawn in black and white.
+- Each sample starts at its fit: the moving layer centered on the fixed one (spot layers Y-flipped like the reference). Reset transform returns to that fit; a window resize moves both layers together.
+- The workspace has no view transition: its canvases unmount at once when a sample starts loading.
+
+### 8.18 Numeric stepper and range slider
+
+- `NumberStepper`: Caption label, a minus icon button, a Mono number field (`TextField`, 96 px), a plus icon button, then an optional reset icon button (`arrow-uturn-left`). The step buttons repeat while held (once on press, then every 100 ms, `useHoldRepeat`) and step once per Enter or Space. Units sit in the field as a Footnote suffix (°, ×). Every keystroke emits the parsed value, even when it equals the current one.
+- `RangeSlider`: Caption label, a 4 px track in `--mat-inset-fill` filled with `--primary` up to the thumb, a 16 px thumb styled like the segmented-control thumb, and a Footnote readout with tabular figures.
+
+### 8.19 Status screen
+
+Full-screen states (loading, finished, error, offline, viewport too small) use one `StatusScreen`: a hero `GlassCard` centered over the ambient backdrop, with a 48 px round badge (the role's `soft` fill, a 24 px icon in the role's `base` color), Title 1, a Body message in `--fg2`, optional metadata in Footnote, an optional verbatim detail (error text) in a Mono small inset well, an optional progress bar (indeterminate when the total is unknown), and actions in a footer slot.
 
 ---
 
@@ -592,20 +652,20 @@ Mapping:
 - The legacy key `focus-theme-override` is removed on startup. It only meant "ignore OS changes this session" and stored no theme, so every user starts on `system`.
 - A theme switch cross-fades colors over `--dur-fast`. A temporary `theme-transition` class on `<html>` enables `transition: background-color, color, box-shadow` for 200 ms, then is removed, so normal interactions are unaffected.
 - `color-scheme` is set per theme so native controls (select menus, scrollbars, date pickers) match.
-- Fonts come from the Fontsource packages imported in `src/main.ts` (see 2.1). No network font requests.
-- Implementation: `src/composables/useTheme.ts`. `initTheme()` runs before the app mounts, so the first paint already has the right theme.
+- Fonts come from the Fontsource packages imported in `shared/bootstrap.ts` (see 2.1). No network font requests.
+- Implementation: `shared/composables/useTheme.ts`. `mountFocusApp()` (`shared/bootstrap.ts`) calls `initTheme()` before the app mounts, so the first paint already has the right theme.
 
 ---
 
 ## 10. Adoption roadmap
 
-The order for implementation passes. Steps 1 to 4 are done for the main GUI.
+The order for implementation passes. All steps are done.
 
 1. **Foundation** (done). Bundle the fonts. Move `design-tokens.css` into the build of `gui_src/main`, replacing `colors_and_type.css`. Map tokens to Tailwind v4 utilities via `@theme` (for example `bg-material-content`, `text-fg2`, `rounded-card`) so templates stay utility-based. Add the backdrop layer and `data-ambient`.
 2. **Primitives** (done). Shared components for Button, IconButton, Card, Toggle, SegmentedControl, TextField, Select, Banner, ProgressBar and InsetList. The repeated markup (6 toggles, about 8 card headers, about 15 inputs, 2 folder browsers) is replaced by these.
 3. **Views** (done). Migrate App shell (chrome cluster), SetupView, ConfigView with ModalityCard and the forms, RunningView with StageProgress, CompleteView with OutputSummary, then ConfirmDialog. Each view is visually checked in light, dark, reduced transparency and reduced motion.
 4. **Lint guard** (done). `npm run lint:design` (`scripts/check-design.mjs`) fails on raw palette classes, `dark:` color variants and hex colors in `.vue` files. It runs as the first step of `npm run build`.
-5. **Alignment GUI.** Share the tokens (one file used by both apps), then apply the same materials to its sidebar and screens. Glass is not placed over the live Pixi canvas.
+5. **Alignment GUI** (done). The design system moved to the shared `@focus/ui` package, used by both apps. The alignment GUI was rebuilt canvas-first (8.17) on the shared primitives, with golden tests that prove its alignment numerics unchanged (`alignment/README.md`).
 
 ---
 
@@ -639,38 +699,66 @@ Every GUI change is checked against this list.
 
 ## 12. Code organization
 
-How the main GUI (`gui_src/main/src`) implements this document. The alignment GUI follows the same layout when it adopts the system.
+How the GUIs implement this document. `gui_src/` is an npm workspace with three packages: `shared` (`@focus/ui`, the design system), `main` and `alignment`. Install once in `gui_src/`; run app scripts with `-w main` or `-w alignment`.
 
 ### 12.1 Rules
 
 - **Views compose, primitives style.** Views and domain components arrange primitives with Tailwind layout utilities (flex, grid, gap, padding, width). Color, radius, type, material and state styling live in the primitives or in the token-backed utilities. A view never restyles a primitive; it picks a variant through props.
 - **One concern per file.** Each component or composable does one thing. Shared logic lives in a composable, shared formatting in `utils/`.
 - **Tokens are the only source of values.** The Tailwind default palette, radii, shadows and text sizes are cleared in `styles/theme.css`. Only semantic utilities exist: `text-fg2`, `bg-primary-soft`, `rounded-card`, `type-headline`, `material-content`.
-- **Guarded.** `npm run lint:design` must pass. It runs inside `npm run build`.
+- **Shared first.** Anything both apps use (styles, icons, primitives, shell, generic composables) lives in `shared/`. An app keeps only what is specific to it.
+- **Guarded.** `npm run lint:design` must pass in each app (main checks `src` and `../shared`, alignment checks `src`). It runs inside `npm run build`.
 
 ### 12.2 Layout
 
+Shared package (`gui_src/shared`, imported as `@focus/ui/...`):
+
 | Path | Contents |
 |---|---|
-| `../design-tokens.css` | All token values (shared by both GUIs) |
-| `styles/index.css` | Style entry: tokens, Tailwind, partials |
+| `../design-tokens.css` | All token values |
+| `styles/index.css` | Style entry: tokens, Tailwind, partials, `@source` for the shared components |
 | `styles/theme.css` | Token to Tailwind utility mapping |
 | `styles/base.css` | Document defaults, focus, scrollbars, theme fade |
 | `styles/typography.css` | `type-*`, `nums`, `ellipsis` utilities |
 | `styles/materials.css` | `material-content`, `material-chrome`, `material-overlay`, `material-popover`, `material-inset`, `scrim` |
 | `styles/transitions.css` | Shared Vue transitions: `view`, `fade`, `pop`, `popover`, `list`, `swap` |
-| `styles/layouts.css` | Grid templates shared by several components (`modality-columns`) |
 | `icons/paths.ts` | Icon registry |
-| `utils/` | `format.ts`, `errors.ts`, `params.ts` |
-| `composables/` | `useTheme`, `useDialog`, `useDirectoryBrowser`, `useInlineEntry`, `useAnchoredPopover`, `useAmbientState` |
 | `components/ui/` | Domain-agnostic primitives (12.3) |
-| `components/shell/` | Backdrop, chrome cluster, theme switcher, splash, brand |
+| `components/shell/` | `AmbientBackdrop`, `ChromeCluster`, `ThemeSwitcher`, `BrandMark`, `BrandWordmark`, `BrandLockup` |
+| `composables/` | `useTheme`, `useAnchoredPopover`, `useHoldRepeat` |
+| `types/ambient.ts` | `AmbientState` |
+| `bootstrap.ts` | `mountFocusApp`: fonts, theme before first paint, Pinia, mount |
+| `vite.base.ts` | Vite settings shared by both apps |
+| `scripts/check-design.mjs` | Design lint, takes the directories to scan |
+
+Main GUI (`gui_src/main/src`):
+
+| Path | Contents |
+|---|---|
+| `styles/index.css`, `styles/layouts.css` | Shared styles plus this app's grid templates (`modality-columns`) |
+| `utils/` | `format.ts`, `errors.ts`, `params.ts`, ... |
+| `composables/` | `useDialog`, `useDirectoryBrowser`, `useInlineEntry`, `useAmbientState`, `useRunProgress`, `useServerClock` |
+| `components/shell/` | `SplashScreen` |
 | `components/browser/` | `DirectoryList` (presentational) and `FilePicker` |
 | `components/running/` | Progress screen: `RunHeader`, `StageRail` / `StageRailItem`, `CurrentWorkCard` (`StepTrack`, `SampleTrack`), `ActivityLog` (`ActivityLine`), alignment and error banners. View model in `composables/useRunProgress.ts` (provided once per view), run plan in `utils/runPlan.ts` |
 | `components/builder/` | Guided configuration builder: frame (`StepFrame`, `BuilderHeader`, `BuilderNav`), `steps/`, and per-step parts (`modalities/`, `settings/`, `review/`) |
 | `components/setup/`, `config/`, `running/`, `complete/` | Domain components of each view (`config/` keeps the schema-driven parameter form) |
 | `store/builder.ts` | Builder navigation state (step, unlocked steps, active modality, edit mode); UI only, never saved |
 | `views/` | Thin view compositions |
+
+Alignment GUI (`gui_src/alignment/src`):
+
+| Path | Contents |
+|---|---|
+| `styles/index.css`, `styles/layouts.css` | Shared styles plus the HUD grid (`hud-grid`) |
+| `canvas/` | `ReferenceCanvas`, `TargetCanvas` (thin wiring) and their modules: `usePixiLayer` (lifecycle), `viewTransform`, `layerFit`, `targetGeometry`, `targetCommands`, `targetDrag`, `useTargetPointer`, `useTargetContent`, `spotLayer`, `contentTransform`, `distortOverlay`, `canvasPalette` |
+| `composables/` | `useAppScreen`, `useViewportGuard`, `useLayer` (role-keyed view of a layer), `useClassFilter`, `useTransformControls` |
+| `screens/statusScreens.ts` | Full-screen states as data, rendered by `StatusScreen` |
+| `workspace/` | `AlignmentWorkspace`, `CanvasStage`, `HudLayer`, and `hud/` (`SampleBadge`, `ToolRail`, `TransformBar`, `LayerDock`, `LayerPanel`, `ClassFilterList`, `ForegroundFilter`, `SpotSizeFields`) |
+| `store/main.ts`, `store/ui.ts` | Alignment state; UI-only panel state, never sent |
+| `utils/` | `matrix.ts`, `export.ts` (the exported alignment), `colors.ts` (cluster palettes) |
+
+The alignment math (`utils/matrix.ts`, `utils/export.ts`, `canvas/layerFit.ts`, `canvas/targetCommands.ts`, `canvas/targetDrag.ts`, `canvas/targetGeometry.ts`) is guarded by the golden tests in `alignment/tests/`. A visual change never edits it.
 
 ### 12.3 Primitive catalog
 
@@ -680,25 +768,30 @@ How the main GUI (`gui_src/main/src`) implements this document. The alignment GU
 | `BaseButton` | Text button: `variant`, `size`, `shape`, `icon`, `block` |
 | `IconButton` | Icon-only button or link with a required `label` |
 | `GlassCard` | Content-material card; `hero` for the focal card |
+| `ChromeSurface` | Floating chrome material; `shape` pill or panel |
+| `Separator` | Short hairline between control groups in chrome; vertical or horizontal |
 | `InsetWell` | Nested container (inset material) |
 | `CardHeader` | Title row with meta and actions slots |
 | `FieldShell` | Shared field box (fill, radius, focus ring, error) |
 | `TextField`, `SelectField` | Inputs built on `FieldShell` |
 | `ToggleSwitch` | `role="switch"`, `tone` primary or warning |
-| `SegmentedControl` | Sliding-thumb radio group |
+| `SegmentedControl` | Sliding-thumb radio group; `orientation="vertical"` for tool rails |
+| `NumberStepper` | Labelled number field with hold-to-repeat step buttons and optional reset (8.18) |
+| `RangeSlider` | Labelled slider with readout (8.18) |
 | `FormRow` | Label and control row |
 | `Banner` | Tinted message with icon, title, actions |
 | `ToggleChip` | On/off chip; `size="lg"` is a grid tile (sample inclusion) |
 | `TagLabel` | Read-only pill naming a category next to a title (e.g. modality type) |
 | `RadioDot` | Single radio for picking one row (reference modality) |
 | `Stepper` | Horizontal step indicator for guided flows (12.4); `stretch` fills the container width |
-| `OverflowMenu` | Ellipsis button with a small teleported action menu |
+| `OverflowMenu` | Ellipsis button with a small teleported action menu; `placement` below (`bottom-end`) or beside (`right-end`) |
 | `StatusPill` | Chrome pill with a live dot |
 | `ProgressBar` | Determinate or shimmer progress; `tone="stage"` follows the stage accent |
-| `Disclosure` | Animated `<details>` section |
+| `Disclosure` | Animated `<details>` section; `v-model:open`, `summary` slot |
 | `DropZone`, `EmptyState` | Dashed wells for file drop (Setup config import step) and empty lists |
 | `InlineEntryForm` | Name entry row, paired with `useInlineEntry` |
 | `PageHeader`, `ActionBar` | View title and floating action bar |
+| `StatusScreen` | Full-screen state card (8.19) |
 
 Before adding a new component, check this catalog. Extend a primitive with a variant when the need is visual; add a new primitive only for a new interaction pattern, and list it here.
 

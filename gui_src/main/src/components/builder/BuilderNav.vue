@@ -7,8 +7,8 @@
 import { computed } from 'vue';
 import { useMainStore } from '../../store/main';
 import { useBuilderStore, BUILDER_STEPS } from '../../store/builder';
-import ActionBar from '../ui/ActionBar.vue';
-import BaseButton from '../ui/BaseButton.vue';
+import ActionBar from '@focus/ui/components/ui/ActionBar.vue';
+import BaseButton from '@focus/ui/components/ui/BaseButton.vue';
 
 const store = useMainStore();
 const builder = useBuilderStore();

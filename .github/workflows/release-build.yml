@@ -1,0 +1,54 @@
+name: Release build
+
+# Builds the sdist and the wheel from a clean checkout and checks them before
+# they are published: the sdist must carry the complete GUI source (gui_src/,
+# required by GPL v3 for the bundled GUIs) and no node_modules; the wheel must
+# carry both compiled GUIs. Releases are built here rather than on a dev
+# machine, where a local `npm install` in gui_src/ would silently drop the GUI
+# sources from the sdist (see scripts/check_dist.py).
+#
+# Runs on version tags and on demand, and as a check on pull requests that
+# touch packaging. Uses only first-party actions; the archives are attached to
+# the run as an artifact.
+
+on:
+  push:
+    tags: ['v*']
+  pull_request:
+    paths:
+      - 'MANIFEST.in'
+      - 'pyproject.toml'
+      - 'gui_src/**'
+      - 'src/focus/GUI/**'
+      - 'scripts/check_dist.py'
+      - '.github/workflows/release-build.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Build sdist and wheel
+        run: |
+          python -m pip install --upgrade pip build
+          python -m build
+
+      - name: Check archives
+        run: python scripts/check_dist.py dist
+
+      - name: Upload archives
+        uses: actions/upload-artifact@v4
+        with:
+          name: focus-dist
+          path: dist/

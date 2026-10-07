@@ -1,6 +1,6 @@
 <script setup lang="ts">
 /** One numbered section of a modality's settings (Preprocessing, Alignment, Registration). */
-import GlassCard from '../../ui/GlassCard.vue';
+import GlassCard from '@focus/ui/components/ui/GlassCard.vue';
 
 defineProps<{
   number: number;

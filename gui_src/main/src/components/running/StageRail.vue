@@ -1,7 +1,7 @@
 <script setup lang="ts">
 /** Left column: every planned stage with its status and duration; doubles as the stage color legend. */
 import { injectRunProgress } from '../../composables/useRunProgress';
-import GlassCard from '../ui/GlassCard.vue';
+import GlassCard from '@focus/ui/components/ui/GlassCard.vue';
 import StageRailItem from './StageRailItem.vue';
 
 const run = injectRunProgress();

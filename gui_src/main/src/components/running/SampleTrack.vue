@@ -8,8 +8,8 @@
 import { computed } from 'vue';
 import { injectRunProgress } from '../../composables/useRunProgress';
 import { pluralize } from '../../utils/format';
-import ProgressBar from '../ui/ProgressBar.vue';
-import AppIcon from '../ui/AppIcon.vue';
+import ProgressBar from '@focus/ui/components/ui/ProgressBar.vue';
+import AppIcon from '@focus/ui/components/ui/AppIcon.vue';
 
 const MAX_CHIPS = 40;
 

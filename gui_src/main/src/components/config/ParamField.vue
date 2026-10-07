@@ -8,9 +8,9 @@ import { computed, ref, watch } from 'vue';
 import type { ParamSpec } from '../../api/types';
 import { useMainStore } from '../../store/main';
 import { parseParamValue, type EmptyTextPolicy } from '../../utils/params';
-import ToggleSwitch from '../ui/ToggleSwitch.vue';
-import SelectField from '../ui/SelectField.vue';
-import TextField from '../ui/TextField.vue';
+import ToggleSwitch from '@focus/ui/components/ui/ToggleSwitch.vue';
+import SelectField from '@focus/ui/components/ui/SelectField.vue';
+import TextField from '@focus/ui/components/ui/TextField.vue';
 import FilePicker from '../browser/FilePicker.vue';
 
 const props = defineProps<{

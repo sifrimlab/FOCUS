@@ -1,6 +1,6 @@
 <script setup lang="ts">
 /** Success header of the Complete view (DESIGN.md 8.5): drawn check, title, summary. */
-import GlassCard from '../ui/GlassCard.vue';
+import GlassCard from '@focus/ui/components/ui/GlassCard.vue';
 </script>
 
 <template>

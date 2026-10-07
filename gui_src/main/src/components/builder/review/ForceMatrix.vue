@@ -7,8 +7,8 @@
 import { computed } from 'vue';
 import { useMainStore, type ForceStage } from '../../../store/main';
 import { forceRows, type ForceCell } from '../../../utils/forceFlags';
-import ToggleSwitch from '../../ui/ToggleSwitch.vue';
-import AppIcon from '../../ui/AppIcon.vue';
+import ToggleSwitch from '@focus/ui/components/ui/ToggleSwitch.vue';
+import AppIcon from '@focus/ui/components/ui/AppIcon.vue';
 
 const store = useMainStore();
 

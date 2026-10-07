@@ -1,0 +1,29 @@
+/* Grid templates of the alignment workspace (DESIGN.md 8.17). */
+
+/* Floating HUD: identity top-left, tools on the left edge, layers bottom-left,
+   transform controls bottom-center, confirm bottom-right. The top-right corner
+   is left to the shared chrome cluster. Below 1280px the transform bar takes
+   its own row so it never overlaps the layer dock. Empty areas let the
+   pointer through to the canvas. */
+@utility hud-grid {
+  display: grid;
+  gap: var(--space-3);
+  grid-template-columns: auto 1fr auto;
+  grid-template-rows: auto 1fr auto;
+  grid-template-areas:
+    "badge badge     ."
+    "rail  .         ."
+    "dock  transform confirm";
+  pointer-events: none;
+
+  & > * { pointer-events: auto; }
+
+  @media (max-width: 1280px) {
+    grid-template-rows: auto 1fr auto auto;
+    grid-template-areas:
+      "badge     badge     ."
+      "rail      .         ."
+      "transform transform transform"
+      "dock      .         confirm";
+  }
+}

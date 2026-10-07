@@ -1,7 +1,7 @@
 <script setup lang="ts">
 /** Step 3 of Setup (optional): load the existing focus_config.json or start fresh. */
 import PromptCard from './PromptCard.vue';
-import BaseButton from '../ui/BaseButton.vue';
+import BaseButton from '@focus/ui/components/ui/BaseButton.vue';
 
 const emit = defineEmits<{ load: []; fresh: []; back: [] }>();
 </script>

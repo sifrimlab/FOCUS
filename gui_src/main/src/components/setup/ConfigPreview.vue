@@ -4,9 +4,9 @@ import { computed } from 'vue';
 import { useMainStore } from '../../store/main';
 import type { ConfigSummary } from '../../utils/configFile';
 import { pluralize } from '../../utils/format';
-import InsetWell from '../ui/InsetWell.vue';
-import IconButton from '../ui/IconButton.vue';
-import AppIcon from '../ui/AppIcon.vue';
+import InsetWell from '@focus/ui/components/ui/InsetWell.vue';
+import IconButton from '@focus/ui/components/ui/IconButton.vue';
+import AppIcon from '@focus/ui/components/ui/AppIcon.vue';
 
 const props = defineProps<{
   fileName: string;

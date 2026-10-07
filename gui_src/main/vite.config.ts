@@ -1,21 +1,6 @@
-import { defineConfig } from 'vite'
-import vue from '@vitejs/plugin-vue'
+import { focusViteConfig } from '../shared/vite.base';
 
-export default defineConfig({
-  plugins: [vue()],
-  base: "./",
-  build: {
-    outDir: "../../src/focus/GUI/main/",
-    assetsDir: "",
-    // outDir sits outside this project root, so Vite will not empty it on its
-    // own. Force it: only the current build's content-hashed assets remain.
-    emptyOutDir: true
-  },
-  server: {
-    // design-tokens.css lives one level up, shared by both GUIs.
-    fs: { allow: ['..'] },
-    proxy: {
-      '/api': 'http://localhost:5050'
-    }
-  }
-})
+export default focusViteConfig({
+  outDir: '../../src/focus/GUI/main/',
+  proxy: { '/api': 'http://localhost:5050' },
+});

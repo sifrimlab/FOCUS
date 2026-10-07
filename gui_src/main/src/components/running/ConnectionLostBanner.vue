@@ -3,8 +3,8 @@
  * The status polls are failing. Polling goes on, so the screen resumes by
  * itself if the server answers again (network glitch, run still going).
  */
-import Banner from '../ui/Banner.vue';
-import StatusPill from '../ui/StatusPill.vue';
+import Banner from '@focus/ui/components/ui/Banner.vue';
+import StatusPill from '@focus/ui/components/ui/StatusPill.vue';
 </script>
 
 <template>

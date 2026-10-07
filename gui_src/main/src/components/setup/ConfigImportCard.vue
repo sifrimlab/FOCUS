@@ -11,9 +11,9 @@ import type { BuilderEntry } from '../../store/builder';
 import { readConfigFile, summarizeConfig } from '../../utils/configFile';
 import PromptCard from './PromptCard.vue';
 import ConfigPreview from './ConfigPreview.vue';
-import DropZone from '../ui/DropZone.vue';
-import Banner from '../ui/Banner.vue';
-import BaseButton from '../ui/BaseButton.vue';
+import DropZone from '@focus/ui/components/ui/DropZone.vue';
+import Banner from '@focus/ui/components/ui/Banner.vue';
+import BaseButton from '@focus/ui/components/ui/BaseButton.vue';
 
 const emit = defineEmits<{ done: [entry: BuilderEntry]; back: [] }>();
 const store = useMainStore();

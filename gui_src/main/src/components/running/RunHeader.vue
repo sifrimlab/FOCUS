@@ -3,7 +3,7 @@
 import { computed } from 'vue';
 import { injectRunProgress } from '../../composables/useRunProgress';
 import { formatDuration } from '../../utils/duration';
-import StatusPill from '../ui/StatusPill.vue';
+import StatusPill from '@focus/ui/components/ui/StatusPill.vue';
 
 const run = injectRunProgress();
 

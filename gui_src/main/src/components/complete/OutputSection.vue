@@ -3,10 +3,10 @@
 import { computed } from 'vue';
 import type { OutputSection } from '../../api/types';
 import { basename } from '../../utils/format';
-import GlassCard from '../ui/GlassCard.vue';
-import CardHeader from '../ui/CardHeader.vue';
-import InsetWell from '../ui/InsetWell.vue';
-import Disclosure from '../ui/Disclosure.vue';
+import GlassCard from '@focus/ui/components/ui/GlassCard.vue';
+import CardHeader from '@focus/ui/components/ui/CardHeader.vue';
+import InsetWell from '@focus/ui/components/ui/InsetWell.vue';
+import Disclosure from '@focus/ui/components/ui/Disclosure.vue';
 
 const props = defineProps<{
   title: string;

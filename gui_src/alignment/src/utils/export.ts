@@ -96,7 +96,7 @@ export function computeExportPayload(
           const [sx, sy] = spot.spatial;
           if (refX >= sx - rx2 && refX <= sx + rx2 &&
               refY >= sy - ry2 && refY <= sy + ry2) {
-            coveringSpotId = (spot as any).id || refSpots.indexOf(spot);
+            coveringSpotId = (spot as any).id ?? refSpots.indexOf(spot);
             break;
           }
         }

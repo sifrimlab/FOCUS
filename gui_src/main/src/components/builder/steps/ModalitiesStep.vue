@@ -2,9 +2,9 @@
 /** Step 2: list the modalities (name and type), choose the reference, choose the pipeline scope. */
 import { useMainStore } from '../../../store/main';
 import StepFrame from '../StepFrame.vue';
-import GlassCard from '../../ui/GlassCard.vue';
-import CardHeader from '../../ui/CardHeader.vue';
-import EmptyState from '../../ui/EmptyState.vue';
+import GlassCard from '@focus/ui/components/ui/GlassCard.vue';
+import CardHeader from '@focus/ui/components/ui/CardHeader.vue';
+import EmptyState from '@focus/ui/components/ui/EmptyState.vue';
 import ModalityRow from '../modalities/ModalityRow.vue';
 import ModalityAddRow from '../modalities/ModalityAddRow.vue';
 import PipelineScope from '../PipelineScope.vue';

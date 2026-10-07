@@ -7,9 +7,9 @@
 import { computed } from 'vue';
 import type { ActivityEntry } from '../../api/types';
 import { injectRunProgress } from '../../composables/useRunProgress';
-import GlassCard from '../ui/GlassCard.vue';
-import CardHeader from '../ui/CardHeader.vue';
-import AppIcon from '../ui/AppIcon.vue';
+import GlassCard from '@focus/ui/components/ui/GlassCard.vue';
+import CardHeader from '@focus/ui/components/ui/CardHeader.vue';
+import AppIcon from '@focus/ui/components/ui/AppIcon.vue';
 import ActivityLine from './ActivityLine.vue';
 
 interface Group {

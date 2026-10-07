@@ -4,7 +4,7 @@ import { useMainStore } from '../store/main';
 import CompletionHero from '../components/complete/CompletionHero.vue';
 import OutputSummary from '../components/complete/OutputSummary.vue';
 import CleanupCard from '../components/complete/CleanupCard.vue';
-import BaseButton from '../components/ui/BaseButton.vue';
+import BaseButton from '@focus/ui/components/ui/BaseButton.vue';
 
 const store = useMainStore();
 </script>

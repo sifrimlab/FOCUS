@@ -5,6 +5,15 @@ import { mat3 } from 'gl-matrix';
 import { createIdentity } from '../utils/matrix';
 import { computeExportPayload } from '../utils/export';
 
+export type CommandType =
+  | 'zoom' | 'rotate' | 'flip' | 'reset' | 'resetDistort'
+  | 'setScale' | 'setRotation' | 'resetScale' | 'resetRotation';
+
+/** A transform request from the controls, executed by the target canvas. */
+export interface PendingCommand { type: CommandType; value?: any }
+
+export type ForegroundMode = 'all' | 'foreground' | 'background';
+
 export const useMainStore = defineStore('main', {
   state: () => ({
     sampleInfo: null as SampleStatus | null,
@@ -25,14 +34,14 @@ export const useMainStore = defineStore('main', {
     targetOpacity: 0.7,
     globalZoom: 1.0,
     viewOffset: [0, 0] as [number, number],
-    pendingCommand: null as { type: 'zoom' | 'rotate' | 'flip' | 'reset' | 'resetDistort' | 'setScale' | 'setRotation' | 'resetScale' | 'resetRotation', value?: any } | null,
+    pendingCommand: null as PendingCommand | null,
     referenceSpotBoost: 1.0,
     targetSpotBoost: 1.0,
     controlMode: 'aligner' as 'aligner' | 'camera',
     referenceSpotSize: [1, 1] as [number, number],
     targetSpotSize: [1, 1] as [number, number],
-    referenceForegroundMode: 'all' as 'all' | 'foreground' | 'background',
-    targetForegroundMode: 'all' as 'all' | 'foreground' | 'background',
+    referenceForegroundMode: 'all' as ForegroundMode,
+    targetForegroundMode: 'all' as ForegroundMode,
     loadingMessage: null as string | null,
   }),
   getters: {

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 /** Manual alignment prompt with the link to the alignment GUI. */
-import Banner from '../ui/Banner.vue';
-import BaseButton from '../ui/BaseButton.vue';
+import Banner from '@focus/ui/components/ui/Banner.vue';
+import BaseButton from '@focus/ui/components/ui/BaseButton.vue';
 
 const props = defineProps<{ port: number }>();
 

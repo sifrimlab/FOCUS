@@ -3,9 +3,9 @@
 import { useMainStore } from '../../store/main';
 import { pluralize } from '../../utils/format';
 import PromptCard from './PromptCard.vue';
-import InsetWell from '../ui/InsetWell.vue';
-import Banner from '../ui/Banner.vue';
-import BaseButton from '../ui/BaseButton.vue';
+import InsetWell from '@focus/ui/components/ui/InsetWell.vue';
+import Banner from '@focus/ui/components/ui/Banner.vue';
+import BaseButton from '@focus/ui/components/ui/BaseButton.vue';
 
 const emit = defineEmits<{ confirm: []; back: [] }>();
 const store = useMainStore();

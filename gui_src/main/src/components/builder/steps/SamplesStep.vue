@@ -5,13 +5,13 @@ import { useMainStore } from '../../../store/main';
 import { uniqueNameValidator, useInlineEntry } from '../../../composables/useInlineEntry';
 import { pluralize } from '../../../utils/format';
 import StepFrame from '../StepFrame.vue';
-import GlassCard from '../../ui/GlassCard.vue';
-import TextField from '../../ui/TextField.vue';
-import BaseButton from '../../ui/BaseButton.vue';
-import InlineEntryForm from '../../ui/InlineEntryForm.vue';
-import Banner from '../../ui/Banner.vue';
-import ToggleChip from '../../ui/ToggleChip.vue';
-import EmptyState from '../../ui/EmptyState.vue';
+import GlassCard from '@focus/ui/components/ui/GlassCard.vue';
+import TextField from '@focus/ui/components/ui/TextField.vue';
+import BaseButton from '@focus/ui/components/ui/BaseButton.vue';
+import InlineEntryForm from '@focus/ui/components/ui/InlineEntryForm.vue';
+import Banner from '@focus/ui/components/ui/Banner.vue';
+import ToggleChip from '@focus/ui/components/ui/ToggleChip.vue';
+import EmptyState from '@focus/ui/components/ui/EmptyState.vue';
 
 const store = useMainStore();
 

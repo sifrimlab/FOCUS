@@ -2,7 +2,7 @@
 /** Global confirm dialog driven by useDialog (DESIGN.md 8.9). Esc cancels, Enter confirms. */
 import { onMounted, onUnmounted } from 'vue';
 import { useDialog } from '../composables/useDialog';
-import BaseButton from './ui/BaseButton.vue';
+import BaseButton from '@focus/ui/components/ui/BaseButton.vue';
 
 const { state, handleConfirm, handleCancel } = useDialog();
 
@@ -18,12 +18,12 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown));
 
 <template>
   <Transition name="fade">
-    <div v-if="state.visible" class="scrim fixed inset-0 z-[200]" aria-hidden="true" />
+    <div v-if="state.visible" class="scrim fixed inset-0 z-dialog" aria-hidden="true" />
   </Transition>
   <Transition name="pop">
     <div
       v-if="state.visible"
-      class="pointer-events-none fixed inset-0 z-[201] flex items-center justify-center p-4"
+      class="pointer-events-none fixed inset-0 z-dialog-panel flex items-center justify-center p-4"
       role="dialog"
       aria-modal="true"
       aria-labelledby="confirm-dialog-message"

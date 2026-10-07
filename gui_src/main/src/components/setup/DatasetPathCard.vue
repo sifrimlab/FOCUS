@@ -8,8 +8,8 @@ import { useMainStore } from '../../store/main';
 import { api } from '../../api/client';
 import { useDirectoryBrowser } from '../../composables/useDirectoryBrowser';
 import PromptCard from './PromptCard.vue';
-import TextField from '../ui/TextField.vue';
-import BaseButton from '../ui/BaseButton.vue';
+import TextField from '@focus/ui/components/ui/TextField.vue';
+import BaseButton from '@focus/ui/components/ui/BaseButton.vue';
 import DirectoryList from '../browser/DirectoryList.vue';
 
 const LAST_PATH_KEY = 'focus_last_dataset_path';

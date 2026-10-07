@@ -1,7 +1,7 @@
 <script setup lang="ts">
 /** The run stopped (pipeline error or interrupted run) with a way back to the configuration. */
-import Banner from '../ui/Banner.vue';
-import BaseButton from '../ui/BaseButton.vue';
+import Banner from '@focus/ui/components/ui/Banner.vue';
+import BaseButton from '@focus/ui/components/ui/BaseButton.vue';
 
 withDefaults(defineProps<{ title?: string; error?: string | null }>(), { title: 'Pipeline error', error: null });
 const emit = defineEmits<{ back: [] }>();

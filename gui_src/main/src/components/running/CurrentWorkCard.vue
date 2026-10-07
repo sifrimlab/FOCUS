@@ -7,8 +7,8 @@ import { computed } from 'vue';
 import { useMainStore } from '../../store/main';
 import { injectRunProgress } from '../../composables/useRunProgress';
 import { formatDuration } from '../../utils/duration';
-import GlassCard from '../ui/GlassCard.vue';
-import TagLabel from '../ui/TagLabel.vue';
+import GlassCard from '@focus/ui/components/ui/GlassCard.vue';
+import TagLabel from '@focus/ui/components/ui/TagLabel.vue';
 import StepTrack from './StepTrack.vue';
 import SampleTrack from './SampleTrack.vue';
 

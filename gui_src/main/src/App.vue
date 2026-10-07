@@ -3,8 +3,8 @@
 import { onMounted, type Component } from 'vue';
 import { useMainStore } from './store/main';
 import { useAmbientState } from './composables/useAmbientState';
-import AmbientBackdrop from './components/shell/AmbientBackdrop.vue';
-import ChromeCluster from './components/shell/ChromeCluster.vue';
+import AmbientBackdrop from '@focus/ui/components/shell/AmbientBackdrop.vue';
+import ChromeCluster from '@focus/ui/components/shell/ChromeCluster.vue';
 import SplashScreen from './components/shell/SplashScreen.vue';
 import ConfirmDialog from './components/ConfirmDialog.vue';
 import SetupView from './views/SetupView.vue';

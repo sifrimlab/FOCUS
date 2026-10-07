@@ -8,7 +8,7 @@ import { computed, watch } from 'vue';
 import { useMainStore } from '../../../store/main';
 import { useBuilderStore } from '../../../store/builder';
 import StepFrame from '../StepFrame.vue';
-import Banner from '../../ui/Banner.vue';
+import Banner from '@focus/ui/components/ui/Banner.vue';
 import ModalitySwitcher from '../settings/ModalitySwitcher.vue';
 import PreprocessingSection from '../settings/PreprocessingSection.vue';
 import AlignmentSection from '../settings/AlignmentSection.vue';

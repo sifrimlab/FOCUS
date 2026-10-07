@@ -1,10 +1,7 @@
 /** Maps app and pipeline state to the ambient backdrop hue (DESIGN.md 5.1). */
 import { computed } from 'vue';
+import type { AmbientState } from '@focus/ui/types/ambient';
 import { useMainStore } from '../store/main';
-
-export type AmbientState =
-  | 'idle' | 'run' | 'wait' | 'done' | 'err'
-  | 'pre' | 'align' | 'annot' | 'reg' | 'comp';
 
 /** Each running stage has its own hue, cool to warm along the pipeline. */
 const STAGE_AMBIENT: Record<string, AmbientState> = {

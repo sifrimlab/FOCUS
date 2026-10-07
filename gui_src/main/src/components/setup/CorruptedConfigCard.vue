@@ -5,8 +5,8 @@
  * opens the import step.
  */
 import PromptCard from './PromptCard.vue';
-import Banner from '../ui/Banner.vue';
-import BaseButton from '../ui/BaseButton.vue';
+import Banner from '@focus/ui/components/ui/Banner.vue';
+import BaseButton from '@focus/ui/components/ui/BaseButton.vue';
 
 defineProps<{ errors: string[] }>();
 const emit = defineEmits<{ fresh: []; back: [] }>();

@@ -7,7 +7,7 @@ import { computed } from 'vue';
 import type { ParamSpecs, EmptyTextPolicy } from '../../utils/params';
 import { sortParamEntries } from '../../utils/params';
 import { humanizeKey } from '../../utils/format';
-import FormRow from '../ui/FormRow.vue';
+import FormRow from '@focus/ui/components/ui/FormRow.vue';
 import ParamField from './ParamField.vue';
 
 const props = defineProps<{

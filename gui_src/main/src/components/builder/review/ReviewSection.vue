@@ -1,8 +1,8 @@
 <script setup lang="ts">
 /** A titled Review section with an optional "Edit" link to the step that owns it. */
-import GlassCard from '../../ui/GlassCard.vue';
-import CardHeader from '../../ui/CardHeader.vue';
-import BaseButton from '../../ui/BaseButton.vue';
+import GlassCard from '@focus/ui/components/ui/GlassCard.vue';
+import CardHeader from '@focus/ui/components/ui/CardHeader.vue';
+import BaseButton from '@focus/ui/components/ui/BaseButton.vue';
 
 defineProps<{ title: string; editLabel?: string }>();
 const emit = defineEmits<{ edit: [] }>();

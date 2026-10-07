@@ -6,7 +6,7 @@
  */
 import { computed } from 'vue';
 import { injectRunProgress } from '../../composables/useRunProgress';
-import ProgressBar from '../ui/ProgressBar.vue';
+import ProgressBar from '@focus/ui/components/ui/ProgressBar.vue';
 
 const props = defineProps<{
   /** Show an indeterminate bar when the step reports no items (nothing else shows activity). */

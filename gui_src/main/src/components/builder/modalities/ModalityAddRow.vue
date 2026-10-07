@@ -3,9 +3,9 @@
 import { ref, watch } from 'vue';
 import { useMainStore } from '../../../store/main';
 import { uniqueNameValidator } from '../../../composables/useInlineEntry';
-import TextField from '../../ui/TextField.vue';
-import SelectField from '../../ui/SelectField.vue';
-import BaseButton from '../../ui/BaseButton.vue';
+import TextField from '@focus/ui/components/ui/TextField.vue';
+import SelectField from '@focus/ui/components/ui/SelectField.vue';
+import BaseButton from '@focus/ui/components/ui/BaseButton.vue';
 
 const store = useMainStore();
 

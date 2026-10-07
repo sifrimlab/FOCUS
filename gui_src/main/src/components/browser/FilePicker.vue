@@ -7,11 +7,11 @@ import { computed, ref } from 'vue';
 import { useMainStore } from '../../store/main';
 import { api } from '../../api/client';
 import { useDirectoryBrowser } from '../../composables/useDirectoryBrowser';
-import { useAnchoredPopover } from '../../composables/useAnchoredPopover';
+import { useAnchoredPopover } from '@focus/ui/composables/useAnchoredPopover';
 import { basename } from '../../utils/format';
-import FieldShell from '../ui/FieldShell.vue';
-import IconButton from '../ui/IconButton.vue';
-import BaseButton from '../ui/BaseButton.vue';
+import FieldShell from '@focus/ui/components/ui/FieldShell.vue';
+import IconButton from '@focus/ui/components/ui/IconButton.vue';
+import BaseButton from '@focus/ui/components/ui/BaseButton.vue';
 import DirectoryList from './DirectoryList.vue';
 
 const props = defineProps<{ value: unknown }>();
@@ -49,7 +49,7 @@ const pick = (name: string) => {
       <Transition name="popover">
         <div
           v-if="popover.isOpen.value"
-          class="material-popover rounded-card fixed z-50 w-80 origin-top-right p-2"
+          class="material-popover rounded-card fixed z-popover w-80 origin-top-right p-2"
           :style="popover.style.value"
         >
           <DirectoryList

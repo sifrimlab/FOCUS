@@ -1,10 +1,10 @@
 /* ============================================================
-   FOCUS design tokens, v1
+   FOCUS design tokens, v2
    Authoritative values for gui_src/DESIGN.md.
 
-   Used by gui_src/main (imported from src/styles/index.css and
-   mapped to Tailwind v4 utilities in src/styles/theme.css).
-   gui_src/alignment adopts it in a later pass.
+   Used by both GUIs (gui_src/main and gui_src/alignment) through the
+   shared package: imported by shared/styles/index.css and mapped to
+   Tailwind v4 utilities in shared/styles/theme.css.
 
    Light theme is the default (:root). Dark theme applies when
    <html> carries class="dark". The theme preference is stored in
@@ -16,7 +16,7 @@
 /* ---- Fonts --------------------------------------------------- */
 /* Self-hosted through the Fontsource packages @fontsource-variable/inter
    (opsz + wght axes) and @fontsource-variable/jetbrains-mono, imported
-   by each app's entry script. Vite bundles the woff2 files, so no font
+   by shared/bootstrap.ts. Vite bundles the woff2 files, so no font
    is fetched from the network at runtime. Both fonts are SIL OFL. */
 
 
@@ -108,6 +108,21 @@
   /* Text and icons placed on a stage accent fill (>= 4.5:1 on every accent). */
   --stage-on-accent:     #ffffff;
 
+  /* ---- Alignment canvas (DESIGN.md 8.17) -------------------- */
+  /* Neutral ground under the data: no hue, so tissue and stain colors
+     are judged against gray, never against an ambient tint. */
+  --canvas-ground: #e3e4e6;
+  /* Distort frame and handles: the accent stroke, a white fill, and a
+     dark halo that keeps both legible over bright and dark images. */
+  --canvas-handle:      var(--primary);
+  --canvas-handle-fill: #ffffff;
+  --canvas-handle-halo: rgb(15 17 21 / 0.45);
+  /* Layer identity marks (dots next to the layer name). They hint at each
+     layer's cluster palette (utils/colors.ts): moving layer cool, fixed
+     layer warm. Marks only, always paired with the layer label. */
+  --layer-target:    #0284c7;
+  --layer-reference: #d97706;
+
   /* ---- Focus ------------------------------------------------- */
   --focus-color: rgb(37 99 235 / 0.45);
   --focus-ring: 0 0 0 3px var(--focus-color);
@@ -189,6 +204,16 @@
 
   --card-pad: 20px;       /* card body padding */
   --card-gap: 16px;       /* vertical gap between stacked cards */
+  --hud-inset: 16px;      /* floating chrome offset from the viewport edges */
+
+  /* ---- Stacking (one scale for every layer above the page) --- */
+  --z-sticky:  10;        /* sticky action bar, canvas HUD */
+  --z-header:  20;        /* sticky builder header */
+  --z-chrome:  50;        /* top-right chrome cluster */
+  --z-popover: 60;        /* dropdowns and menus (above chrome) */
+  --z-splash:  100;
+  --z-toast:   150;
+  --z-dialog:  200;       /* scrim; the panel sits one above */
 
   /* ---- Motion ----------------------------------------------- */
   --dur-instant: 100ms;   /* press feedback */
@@ -256,6 +281,12 @@
   --data-2-fg:      #a5b4fc;
 
   --focus-color: rgb(96 165 250 / 0.50);
+
+  --canvas-ground: #111214;
+  --canvas-handle-fill: #ffffff;
+  --canvas-handle-halo: rgb(0 0 0 / 0.55);
+  --layer-target:    #38bdf8;
+  --layer-reference: #fbbf24;
 
   --stage-preprocessing: #60a5fa;
   --stage-alignment:     #818cf8;
@@ -353,6 +384,7 @@
   :root, .dark {
     --mat-content-fill: Canvas;  --mat-chrome-fill: Canvas;  --mat-overlay-fill: Canvas;
     --mat-inset-fill: Canvas;    --mat-inset-hover: Canvas;
+    --canvas-ground: Canvas;
     --mat-hairline: 0 0 0 1px CanvasText;
     --mat-highlight: 0 0 0 0 transparent;
     --ambient-opacity: 0;

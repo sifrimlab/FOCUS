@@ -8,8 +8,8 @@ import { computed } from 'vue';
 import type { ActivityEntry } from '../../api/types';
 import { STAGE_LABELS, type StageId } from '../../utils/runPlan';
 import { formatClock, formatDuration } from '../../utils/duration';
-import AppIcon from '../ui/AppIcon.vue';
-import TagLabel from '../ui/TagLabel.vue';
+import AppIcon from '@focus/ui/components/ui/AppIcon.vue';
+import TagLabel from '@focus/ui/components/ui/TagLabel.vue';
 
 const props = defineProps<{ entry: ActivityEntry; latest: boolean }>();
 

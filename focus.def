@@ -55,6 +55,10 @@ From: python:3.11-slim
     gui_src                  /opt/focus/gui_src
 
 %post
+    # %files copies gui_src verbatim, including a local npm install if one exists
+    # (the workspace hoists it to gui_src/node_modules). Only the sources ship.
+    rm -rf /opt/focus/gui_src/node_modules /opt/focus/gui_src/*/node_modules
+
     # System dependencies
     apt-get update && apt-get install -y --no-install-recommends \
         libgl1 \

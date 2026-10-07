@@ -1,0 +1,4 @@
+/* Style entry for the alignment GUI: the shared design system, then the
+   grid templates only this app uses. */
+@import "@focus/ui/styles/index.css";
+@import "./layouts.css";

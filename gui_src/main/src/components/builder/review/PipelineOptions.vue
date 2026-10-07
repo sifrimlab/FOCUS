@@ -4,10 +4,10 @@ import { computed } from 'vue';
 import { useMainStore } from '../../../store/main';
 import type { SpatialAnnotations } from '../../../api/types';
 import PipelineScope from '../PipelineScope.vue';
-import FormRow from '../../ui/FormRow.vue';
-import SelectField from '../../ui/SelectField.vue';
-import TextField from '../../ui/TextField.vue';
-import ToggleSwitch from '../../ui/ToggleSwitch.vue';
+import FormRow from '@focus/ui/components/ui/FormRow.vue';
+import SelectField from '@focus/ui/components/ui/SelectField.vue';
+import TextField from '@focus/ui/components/ui/TextField.vue';
+import ToggleSwitch from '@focus/ui/components/ui/ToggleSwitch.vue';
 
 const store = useMainStore();
 

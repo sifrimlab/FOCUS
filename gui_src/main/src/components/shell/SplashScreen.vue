@@ -4,7 +4,7 @@
  * designed (geometry, timing, curve). Hides itself after HOLD_MS.
  */
 import { onMounted, ref } from 'vue';
-import BrandWordmark from './BrandWordmark.vue';
+import BrandWordmark from '@focus/ui/components/shell/BrandWordmark.vue';
 
 // Last animation starts at 700ms and runs 400ms, so it completes at 1100ms.
 // Hold 1000ms, dismiss at 2100ms; the 500ms fade brings the total to ~2600ms.
@@ -16,7 +16,7 @@ onMounted(() => { window.setTimeout(() => { visible.value = false; }, HOLD_MS); 
 
 <template>
   <Transition name="splash-fade">
-    <div v-if="visible" class="splash fixed inset-0 z-[100] flex items-center justify-center">
+    <div v-if="visible" class="splash fixed inset-0 z-splash flex items-center justify-center">
       <div class="flex flex-col items-center gap-6">
         <!-- Same geometry as logo-mark.svg -->
         <svg width="64" height="64" viewBox="0 0 64 64" fill="none" class="mark overflow-visible" aria-hidden="true">

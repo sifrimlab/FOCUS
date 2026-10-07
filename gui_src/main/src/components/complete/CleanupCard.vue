@@ -4,9 +4,9 @@ import { computed, ref } from 'vue';
 import { useMainStore } from '../../store/main';
 import type { OutputFiles } from '../../api/types';
 import { pluralize } from '../../utils/format';
-import GlassCard from '../ui/GlassCard.vue';
-import BaseButton from '../ui/BaseButton.vue';
-import AppIcon from '../ui/AppIcon.vue';
+import GlassCard from '@focus/ui/components/ui/GlassCard.vue';
+import BaseButton from '@focus/ui/components/ui/BaseButton.vue';
+import AppIcon from '@focus/ui/components/ui/AppIcon.vue';
 
 const props = defineProps<{ files: OutputFiles }>();
 const store = useMainStore();

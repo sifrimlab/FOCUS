@@ -13,6 +13,13 @@
 graft gui_src
 
 # Build intermediates: never shippable, and node_modules would dwarf the rest.
+# gui_src/ is an npm workspace, so dependencies are hoisted to gui_src/node_modules.
+# That directory also holds symlinks back to the workspaces (shared, main,
+# alignment); setuptools follows them and visits each real directory once, so
+# with a local `npm install` this prune also drops the GUI sources. Build
+# releases from a clean checkout (the Release build workflow does, and
+# scripts/check_dist.py verifies the result).
+prune gui_src/node_modules
 prune gui_src/*/node_modules
 prune gui_src/*/dist
 prune gui_src/*/.vite

@@ -5,7 +5,7 @@
  */
 import { ref } from 'vue';
 import { useMainStore } from '../store/main';
-import BrandLockup from '../components/shell/BrandLockup.vue';
+import BrandLockup from '@focus/ui/components/shell/BrandLockup.vue';
 import DatasetPathCard from '../components/setup/DatasetPathCard.vue';
 import SamplesFoundCard from '../components/setup/SamplesFoundCard.vue';
 import ExistingConfigCard from '../components/setup/ExistingConfigCard.vue';

@@ -1,0 +1,73 @@
+/* Token -> Tailwind utility mapping (see gui_src/DESIGN.md).
+   The default Tailwind palette, radii, shadows and text sizes are cleared
+   so components can only reach semantic tokens: `text-fg2`,
+   `bg-primary-soft`, `rounded-card`. Colors live in design-tokens.css and
+   switch with the .dark class, so no `dark:` color variants are needed. */
+
+@variant dark (&:where(.dark, .dark *));
+
+@theme inline {
+  --color-*: initial;
+  --radius-*: initial;
+  --shadow-*: initial;
+  --text-*: initial;
+
+  /* Labels and separators */
+  --color-fg1: var(--fg1);
+  --color-fg2: var(--fg2);
+  --color-fg3: var(--fg3);
+  --color-fg4: var(--fg4);
+  --color-fg-inverse: var(--fg-inverse);
+  --color-separator: var(--separator);
+  --color-separator-strong: var(--separator-strong);
+
+  /* Brand */
+  --color-brand-ink: var(--brand-ink);
+  --color-brand-accent: var(--brand-accent);
+
+  /* Roles */
+  --color-primary: var(--primary);
+  --color-primary-soft: var(--primary-soft);
+  --color-primary-fg: var(--primary-fg);
+  --color-success: var(--success);
+  --color-success-soft: var(--success-soft);
+  --color-success-fg: var(--success-fg);
+  --color-warning: var(--warning);
+  --color-warning-soft: var(--warning-soft);
+  --color-warning-fg: var(--warning-fg);
+  --color-danger: var(--danger);
+  --color-danger-soft: var(--danger-soft);
+  --color-danger-fg: var(--danger-fg);
+  --color-data-2: var(--data-2);
+  --color-data-2-fg: var(--data-2-fg);
+  --color-stage: var(--stage-accent);
+  --color-layer-target: var(--layer-target);
+  --color-layer-reference: var(--layer-reference);
+
+  /* Surfaces */
+  --color-inset: var(--mat-inset-fill);
+  --color-inset-hover: var(--mat-inset-hover);
+  --color-canvas-ground: var(--canvas-ground);
+
+  /* Radii, named by role (DESIGN.md 6.1) */
+  --radius-tiny: var(--radius-xs);
+  --radius-row: var(--radius-sm);
+  --radius-control: var(--radius-md);
+  --radius-well: var(--radius-lg);
+  --radius-card: var(--radius-xl);
+  --radius-dialog: var(--radius-2xl);
+
+  /* Stacking, named by layer (design-tokens.css): `z-chrome`, `z-dialog` */
+  --z-index-sticky: var(--z-sticky);
+  --z-index-hud: var(--z-sticky);
+  --z-index-header: var(--z-header);
+  --z-index-chrome: var(--z-chrome);
+  --z-index-popover: var(--z-popover);
+  --z-index-splash: var(--z-splash);
+  --z-index-toast: var(--z-toast);
+  --z-index-dialog: var(--z-dialog);
+  --z-index-dialog-panel: calc(var(--z-dialog) + 1);
+
+  /* Floating chrome offset from the viewport edges */
+  --spacing-hud: var(--hud-inset);
+}

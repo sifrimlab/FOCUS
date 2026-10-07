@@ -4,9 +4,9 @@ import { computed } from 'vue';
 import { useMainStore } from '../../../store/main';
 import { FORCE_KEY, paramDefaults } from '../../../utils/params';
 import SettingsSection from './SettingsSection.vue';
-import FormRow from '../../ui/FormRow.vue';
-import SelectField from '../../ui/SelectField.vue';
-import Banner from '../../ui/Banner.vue';
+import FormRow from '@focus/ui/components/ui/FormRow.vue';
+import SelectField from '@focus/ui/components/ui/SelectField.vue';
+import Banner from '@focus/ui/components/ui/Banner.vue';
 import ParamSettingsForm from '../../config/ParamSettingsForm.vue';
 
 const props = defineProps<{ index: number }>();

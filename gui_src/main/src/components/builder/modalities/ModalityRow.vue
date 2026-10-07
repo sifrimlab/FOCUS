@@ -9,10 +9,10 @@ import { useBuilderStore } from '../../../store/builder';
 import { useDialog } from '../../../composables/useDialog';
 import { hasCustomSettings } from '../../../utils/params';
 import type { Modality } from '../../../api/types';
-import RadioDot from '../../ui/RadioDot.vue';
-import TextField from '../../ui/TextField.vue';
-import SelectField from '../../ui/SelectField.vue';
-import IconButton from '../../ui/IconButton.vue';
+import RadioDot from '@focus/ui/components/ui/RadioDot.vue';
+import TextField from '@focus/ui/components/ui/TextField.vue';
+import SelectField from '@focus/ui/components/ui/SelectField.vue';
+import IconButton from '@focus/ui/components/ui/IconButton.vue';
 
 const props = defineProps<{ index: number }>();
 

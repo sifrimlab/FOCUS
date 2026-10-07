@@ -6,8 +6,8 @@
  */
 import { computed } from 'vue';
 import { useMainStore } from '../../store/main';
-import FormRow from '../ui/FormRow.vue';
-import ToggleSwitch from '../ui/ToggleSwitch.vue';
+import FormRow from '@focus/ui/components/ui/FormRow.vue';
+import ToggleSwitch from '@focus/ui/components/ui/ToggleSwitch.vue';
 
 const store = useMainStore();
 

@@ -4,9 +4,9 @@
  * current path, and rows for entries. Folder rows emit `open`, file rows
  * emit `pick`. State comes from useDirectoryBrowser; this file only renders.
  */
-import AppIcon from '../ui/AppIcon.vue';
-import IconButton from '../ui/IconButton.vue';
-import InsetWell from '../ui/InsetWell.vue';
+import AppIcon from '@focus/ui/components/ui/AppIcon.vue';
+import IconButton from '@focus/ui/components/ui/IconButton.vue';
+import InsetWell from '@focus/ui/components/ui/InsetWell.vue';
 import type { DirectoryEntry } from '../../composables/useDirectoryBrowser';
 
 defineProps<{

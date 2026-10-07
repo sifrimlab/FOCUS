@@ -4,10 +4,10 @@
  * body slot, an actions row (primary first, full width), and an optional
  * Back link to the previous step (`back`), top left, placed the same way on every step.
  */
-import GlassCard from '../ui/GlassCard.vue';
-import AppIcon from '../ui/AppIcon.vue';
-import BaseButton from '../ui/BaseButton.vue';
-import type { IconName } from '../../icons/paths';
+import GlassCard from '@focus/ui/components/ui/GlassCard.vue';
+import AppIcon from '@focus/ui/components/ui/AppIcon.vue';
+import BaseButton from '@focus/ui/components/ui/BaseButton.vue';
+import type { IconName } from '@focus/ui/icons/paths';
 
 defineProps<{
   title: string;
