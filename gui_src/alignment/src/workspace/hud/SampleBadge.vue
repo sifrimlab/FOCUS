@@ -1,5 +1,5 @@
 <script setup lang="ts">
-/** Top-left identity pill: app, current sample, and progress through the dataset. */
+/** Top-center identity pill: app, current sample, and progress through the dataset. */
 import { computed } from 'vue';
 import ChromeSurface from '@focus/ui/components/ui/ChromeSurface.vue';
 import ProgressBar from '@focus/ui/components/ui/ProgressBar.vue';
@@ -21,9 +21,9 @@ const progress = computed(() => {
       <BrandMark :size="20" />
       <span class="type-headline text-fg1">Alignment</span>
       <Separator />
-      <span class="type-mono-small text-fg1 ellipsis min-w-0 max-w-64" :title="store.sampleInfo?.sample_id">{{ store.sampleInfo?.sample_id }}</span>
+      <span class="type-mono text-fg1 ellipsis min-w-0 max-w-64" :title="store.sampleInfo?.sample_id">{{ store.sampleInfo?.sample_id }}</span>
       <span class="w-16 shrink-0"><ProgressBar :value="progress" label="Samples aligned" :active="false" /></span>
-      <span class="type-footnote nums text-fg3">{{ store.sampleInfo?.sample_index }} of {{ store.sampleInfo?.total_samples_count }}</span>
+      <span class="type-footnote nums text-fg2">{{ store.sampleInfo?.sample_index }} of {{ store.sampleInfo?.total_samples_count }}</span>
     </div>
   </ChromeSurface>
 </template>

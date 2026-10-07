@@ -364,7 +364,7 @@ The previous mix of 4 px `rounded` and 8 px `rounded-lg` on equivalent elements 
 |---|---|---|
 | `--control-sm` | 24 | Icon buttons in card headers, chips, step dots |
 | `--control-md` | 30 | Default for inputs, selects, buttons, segmented controls |
-| `--control-lg` | 36 | Dialog buttons, Back / Reset in the action bar |
+| `--control-lg` | 36 | Dialog buttons, Back / Reset in the action bar, the alignment tool rail (`IconButton`, `SegmentedControl` and `OverflowMenu` with `size="lg"`) |
 | `--control-xl` | 44 | Hero CTAs: Setup Continue, Start processing, Open alignment, Start new project |
 
 Hit targets are at least 24 × 24 px, and icon buttons pad their hit area to this when the glyph is smaller.
@@ -581,6 +581,7 @@ Mapping:
 ### 8.11 Chrome cluster (top-right controls)
 
 - One chrome-material pill (`ChromeSurface`), 16 px from the top and right, holding the GitHub / Docs / Paper icon buttons, a 1 px × 16 px `Separator`, and the theme segmented control. Both GUIs show the same cluster.
+- `collapsible` (alignment GUI, where the canvas needs the corner): the pill holds one 30 px `ellipsis-horizontal` button. Pressing it swaps in the full cluster (`island` transition, from the right edge). The cluster stays open while presses land inside it, including theme changes, and folds back on a press outside it or Escape (`useDismiss`). The main GUI keeps it always open.
 - Icon buttons are 30 square with `--radius-full`.
 - Theme control: a three-segment control (System / Light / Dark) with icons (computer-desktop, sun, moon), each labeled with a tooltip and an accessible name. The track is inset; the thumb is white (light) or `#3a3d45` (dark) with `--elev-1`.
 
@@ -621,14 +622,19 @@ The canvas fills the window on `--canvas-ground`. Every control floats above it 
 
 | Area | Contents | Frequency |
 |---|---|---|
-| Top left | Sample badge: brand mark, "Alignment", sample ID (Mono small), compact progress, "3 of 12" | Glanced at |
-| Top right | Chrome cluster (8.11) | Rare |
-| Left edge, centered | Tool rail: vertical segmented mode (Aligner, Camera), flips, then a menu with Reset distortion and Reset transform | Mode and flips often, resets rarely |
+| Top center | Sample island: brand mark, "Alignment" (Headline), sample ID (Mono, `fg1`), compact progress, "3 of 12" (Footnote, `fg2`). It centers on the viewport: the top grid row spans all columns. | Glanced at |
+| Top right | Chrome cluster, collapsed to a three-dots button (8.11) | Rare |
+| Left edge, centered | Tool rail, 36 px controls: Undo and Redo, then the vertical segmented mode (Aligner, Camera), the flips, then a menu with Reset distortion and Reset transform | Undo, mode and flips often, resets rarely |
 | Bottom left | Layer dock: the moving layer panel above the fixed one | Often |
-| Bottom center | Transform bar: scale, rotation, then view zoom (8.18) | Often |
+| Bottom center | Transform island: scale, rotation, then view zoom, as values; one editor at a time (below) | Often |
 | Bottom right | Confirm alignment, hero primary button | Once per sample |
 
-- Below 1280 px (the single row needs about 1250) the transform bar takes its own row above the dock and the confirm button, so nothing overlaps. Below 720 px the workspace is replaced by a status screen.
+- **Hierarchy.** The canvas comes first and every control yields to it. Among the controls, from strongest to quietest: Confirm (the one action per sample, 44 px primary); the moving-layer tools (rail and transform values); the sample identity; the layer panels; links and theme (hidden behind three dots).
+- **HUD type floor is 12 px.** Labels are Footnote in `--fg2`, never Caption in `--fg3`, because they sit on chrome glass over arbitrary image content. Values are Mono 13 in `--fg1` with tabular figures. Units are Footnote suffixes in `--fg3`. Caption is left to `TagLabel`.
+- **Spacing.** Islands keep 16 px from the edges and 12 px from each other. Pill islands pad 4 px; panels pad 12 px. Groups inside an island are split by a `Separator`, never by extra padding. Inside a layer panel, a label sits 6 px above its control and sections are 16 px apart.
+- **Transform island.** At rest it shows three read-only chips (30 px; Footnote label, Mono value with its unit), with a separator before the view zoom. Readouts are rounded for display only (scale 3 decimals, rotation 1, zoom 2). Pressing a chip swaps the island (`island` transition) to that value's `NumberStepper`, with the field focused and its text selected. The editor stays open while presses land inside the island and returns to the chips on a press outside it or Escape (`useDismiss`).
+- **Undo and redo.** These cover the moving layer's transform only (what the export uses). View zoom, pan and display settings are not undoable. The history holds the sample's starting state plus the last 10 changes. A new change after an undo drops the redo branch, and a new sample starts a new history. One change is one gesture, committed when the pointer is up, no number field has focus, and the transform has been quiet for 300 ms. A drag, a held step button or a typed value is therefore one step. Each state also stores the Reset distortion target, so undo restores both exactly. Window resizes shift every stored state with the layers. Shortcuts: Cmd/Ctrl+Z undoes; Shift+Cmd/Ctrl+Z or Ctrl+Y redoes; both are ignored while a field has focus, so the field keeps its own text undo.
+- Below 960 px (the single row needs about 915) the transform island takes its own row above the dock and the confirm button, so nothing overlaps. Below 720 px the workspace is replaced by a status screen.
 - **Layer panel.** A chrome panel (`--radius-xl`). The header, a `Disclosure` summary, shows the identity dot (3.3.2), the modality name and its type as a `TagLabel`; it opens the details: cluster chips with their color (`ToggleChip` in an inset well, with All and None), the spots shown (All, Foreground, Background) or the microgrid note, and the spot size. The moving layer also keeps its opacity slider visible below. Panels start collapsed; their state survives sample changes.
 - **Distort frame.** The quad outline is drawn twice: a 3.5 px `--canvas-handle-halo` stroke, then a 1.5 px `--canvas-handle` stroke. Corner handles are 6 px circles and edge handles 8 px squares, filled `--canvas-handle-fill` with a `--canvas-handle` outline; the handle being dragged is filled `--canvas-handle` and drawn larger. Hit radii do not change with the look. The rotate cursor is an OS cursor, drawn in black and white.
 - Each sample starts at its fit: the moving layer centered on the fixed one (spot layers Y-flipped like the reference). Reset transform returns to that fit; a window resize moves both layers together.
@@ -636,8 +642,8 @@ The canvas fills the window on `--canvas-ground`. Every control floats above it 
 
 ### 8.18 Numeric stepper and range slider
 
-- `NumberStepper`: Caption label, a minus icon button, a Mono number field (`TextField`, 96 px), a plus icon button, then an optional reset icon button (`arrow-uturn-left`). The step buttons repeat while held (once on press, then every 100 ms, `useHoldRepeat`) and step once per Enter or Space. Units sit in the field as a Footnote suffix (°, ×). Every keystroke emits the parsed value, even when it equals the current one.
-- `RangeSlider`: Caption label, a 4 px track in `--mat-inset-fill` filled with `--primary` up to the thumb, a 16 px thumb styled like the segmented-control thumb, and a Footnote readout with tabular figures.
+- `NumberStepper`: Footnote label in `--fg2`, an optional reset icon button (`arrow-path`), a minus icon button, a Mono number field (`TextField`, 96 px), then a plus icon button. `focus()` focuses the field and selects its text. The step buttons repeat while held (once on press, then every 100 ms, `useHoldRepeat`) and step once per Enter or Space. Units sit in the field as a Footnote suffix (°, ×). Every keystroke emits the parsed value, even when it equals the current one.
+- `RangeSlider`: Footnote label in `--fg2`, a 4 px track in `--mat-inset-fill` filled with `--primary` up to the thumb, a 16 px thumb styled like the segmented-control thumb, and a Footnote readout with tabular figures.
 
 ### 8.19 Status screen
 
@@ -725,7 +731,7 @@ Shared package (`gui_src/shared`, imported as `@focus/ui/...`):
 | `icons/paths.ts` | Icon registry |
 | `components/ui/` | Domain-agnostic primitives (12.3) |
 | `components/shell/` | `AmbientBackdrop`, `ChromeCluster`, `ThemeSwitcher`, `BrandMark`, `BrandWordmark`, `BrandLockup` |
-| `composables/` | `useTheme`, `useAnchoredPopover`, `useHoldRepeat` |
+| `composables/` | `useTheme`, `useAnchoredPopover`, `useDismiss` (close on outside press or Escape), `useHoldRepeat` |
 | `types/ambient.ts` | `AmbientState` |
 | `bootstrap.ts` | `mountFocusApp`: fonts, theme before first paint, Pinia, mount |
 | `vite.base.ts` | Vite settings shared by both apps |
@@ -766,7 +772,7 @@ The alignment math (`utils/matrix.ts`, `utils/export.ts`, `canvas/layerFit.ts`, 
 |---|---|
 | `AppIcon` | Icon from the registry |
 | `BaseButton` | Text button: `variant`, `size`, `shape`, `icon`, `block` |
-| `IconButton` | Icon-only button or link with a required `label` |
+| `IconButton` | Icon-only button or link with a required `label`; `size` sm, md or lg |
 | `GlassCard` | Content-material card; `hero` for the focal card |
 | `ChromeSurface` | Floating chrome material; `shape` pill or panel |
 | `Separator` | Short hairline between control groups in chrome; vertical or horizontal |
@@ -775,7 +781,7 @@ The alignment math (`utils/matrix.ts`, `utils/export.ts`, `canvas/layerFit.ts`, 
 | `FieldShell` | Shared field box (fill, radius, focus ring, error) |
 | `TextField`, `SelectField` | Inputs built on `FieldShell` |
 | `ToggleSwitch` | `role="switch"`, `tone` primary or warning |
-| `SegmentedControl` | Sliding-thumb radio group; `orientation="vertical"` for tool rails |
+| `SegmentedControl` | Sliding-thumb radio group; `orientation="vertical"` for tool rails; `size="lg"` |
 | `NumberStepper` | Labelled number field with hold-to-repeat step buttons and optional reset (8.18) |
 | `RangeSlider` | Labelled slider with readout (8.18) |
 | `FormRow` | Label and control row |
@@ -784,7 +790,7 @@ The alignment math (`utils/matrix.ts`, `utils/export.ts`, `canvas/layerFit.ts`, 
 | `TagLabel` | Read-only pill naming a category next to a title (e.g. modality type) |
 | `RadioDot` | Single radio for picking one row (reference modality) |
 | `Stepper` | Horizontal step indicator for guided flows (12.4); `stretch` fills the container width |
-| `OverflowMenu` | Ellipsis button with a small teleported action menu; `placement` below (`bottom-end`) or beside (`right-end`) |
+| `OverflowMenu` | Ellipsis button with a small teleported action menu; `placement` below (`bottom-end`) or beside (`right-end`); `size` md or lg |
 | `StatusPill` | Chrome pill with a live dot |
 | `ProgressBar` | Determinate or shimmer progress; `tone="stage"` follows the stage accent |
 | `Disclosure` | Animated `<details>` section; `v-model:open`, `summary` slot |

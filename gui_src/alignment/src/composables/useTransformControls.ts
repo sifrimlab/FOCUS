@@ -78,5 +78,7 @@ export function useTransformControls() {
     flip: (axis: 'horizontal' | 'vertical') => sendCommand('flip', axis === 'horizontal'),
     resetDistortion: () => sendCommand('resetDistort'),
     resetTransform: () => sendCommand('reset'),
+    undo: () => sendCommand('undo'),
+    redo: () => sendCommand('redo'),
   };
 }

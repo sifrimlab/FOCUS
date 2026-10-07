@@ -2,7 +2,8 @@
 /**
  * Segmented control with a sliding thumb (DESIGN.md 8.11).
  * Segments have equal size; the thumb is translated by the selected index.
- * `orientation="vertical"` stacks the segments (tool rails).
+ * `orientation="vertical"` stacks the segments (tool rails); `size="lg"`
+ * gives them the large control height, matching large icon buttons.
  */
 import { computed } from 'vue';
 import AppIcon from './AppIcon.vue';
@@ -21,6 +22,7 @@ const props = defineProps<{
   label: string;
   iconOnly?: boolean;
   orientation?: 'horizontal' | 'vertical';
+  size?: 'md' | 'lg';
 }>();
 
 const index = computed(() => Math.max(0, props.segments.findIndex(s => s.value === model.value)));
@@ -31,7 +33,7 @@ const index = computed(() => Math.max(0, props.segments.findIndex(s => s.value =
     role="radiogroup"
     :aria-label="label"
     class="segmented"
-    :class="{ 'segmented--vertical': orientation === 'vertical' }"
+    :class="{ 'segmented--vertical': orientation === 'vertical', 'segmented--lg': size === 'lg' }"
     :aria-orientation="orientation"
     :style="{ '--count': segments.length, '--index': index }"
   >
@@ -88,6 +90,9 @@ const index = computed(() => Math.max(0, props.segments.findIndex(s => s.value =
   transition: color var(--dur-fast) var(--ease-out);
 }
 .segmented__item--icon { width: 26px; padding: 0; }
+/* Track padding (2px each side) + item = --control-lg. */
+.segmented--lg .segmented__item { height: calc(var(--control-lg) - 4px); }
+.segmented--lg .segmented__item--icon { width: calc(var(--control-lg) - 4px); }
 
 .segmented--vertical {
   grid-template-columns: 1fr;

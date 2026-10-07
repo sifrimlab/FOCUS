@@ -1,5 +1,5 @@
 /* Shared Vue <Transition> / <TransitionGroup> classes (DESIGN.md 7.2).
-   Names: view, fade, pop, popover, list, swap. Reduced motion is handled by
+   Names: view, fade, pop, popover, island, list, swap. Reduced motion is handled by
    token overrides (no scale/translate, shorter durations). */
 
 /* view: page change, out-in. Fade out fast, fade in with an 8px rise. */
@@ -22,6 +22,13 @@
 .popover-enter-active { transition: opacity var(--dur-fast) var(--ease-out), transform var(--dur-base) var(--ease-spring); }
 .popover-leave-active { transition: opacity 120ms var(--ease-out), transform 120ms var(--ease-out); }
 .popover-enter-from, .popover-leave-to { opacity: 0; transform: scale(0.96); }
+
+/* island: a floating island swapping its content in place (collapsed and
+   expanded states). Out-in; set transform-origin on the swapped element. */
+.island-enter-active { transition: opacity var(--dur-fast) var(--ease-out), transform var(--dur-base) var(--ease-spring); }
+.island-leave-active { transition: opacity 80ms var(--ease-out); }
+.island-enter-from { opacity: 0; transform: scale(0.96); }
+.island-leave-to   { opacity: 0; }
 
 /* list: items entering and leaving a TransitionGroup. */
 .list-enter-active, .list-leave-active { transition: opacity var(--dur-base) var(--ease-out), transform var(--dur-base) var(--ease-spring); }
@@ -47,6 +54,6 @@
 
 @media (prefers-reduced-motion: reduce) {
   .view-enter-from, .pop-enter-from, .pop-leave-to,
-  .popover-enter-from, .popover-leave-to,
+  .popover-enter-from, .popover-leave-to, .island-enter-from,
   .list-enter-from, .list-leave-to { transform: none; }
 }

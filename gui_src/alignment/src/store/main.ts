@@ -7,7 +7,8 @@ import { computeExportPayload } from '../utils/export';
 
 export type CommandType =
   | 'zoom' | 'rotate' | 'flip' | 'reset' | 'resetDistort'
-  | 'setScale' | 'setRotation' | 'resetScale' | 'resetRotation';
+  | 'setScale' | 'setRotation' | 'resetScale' | 'resetRotation'
+  | 'undo' | 'redo';
 
 /** A transform request from the controls, executed by the target canvas. */
 export interface PendingCommand { type: CommandType; value?: any }

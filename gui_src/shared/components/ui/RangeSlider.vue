@@ -20,7 +20,7 @@ const fill = computed(() => `${((Number(model.value) - props.min) / (props.max -
 
 <template>
   <label class="flex items-center gap-2">
-    <span class="type-caption text-fg3">{{ label }}</span>
+    <span class="type-footnote text-fg2">{{ label }}</span>
     <input
       v-model.number="model"
       type="range"

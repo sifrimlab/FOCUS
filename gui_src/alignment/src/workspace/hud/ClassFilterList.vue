@@ -15,7 +15,7 @@ const filter = useClassFilter(layer);
 <template>
   <section class="flex flex-col gap-1.5" aria-label="Clusters">
     <div class="flex items-center justify-between">
-      <span class="type-caption text-fg3">Clusters</span>
+      <span class="type-footnote text-fg2">Clusters</span>
       <div class="flex">
         <BaseButton variant="plain" @click="filter.showAll">All</BaseButton>
         <BaseButton variant="plain" @click="filter.showNone">None</BaseButton>

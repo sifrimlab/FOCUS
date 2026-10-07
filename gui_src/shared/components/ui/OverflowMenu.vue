@@ -3,8 +3,9 @@
  * Ellipsis button that opens a small action menu in a teleported popover
  * (DESIGN.md 8.10 popover motion). Closes on selection, Escape or outside click.
  */
-import { onBeforeUnmount, ref, watch } from 'vue';
+import { ref } from 'vue';
 import { useAnchoredPopover, type PopoverPlacement } from '../../composables/useAnchoredPopover';
+import { useDismiss } from '../../composables/useDismiss';
 import IconButton from './IconButton.vue';
 import AppIcon from './AppIcon.vue';
 import type { IconName } from '../../icons/paths';
@@ -20,7 +21,8 @@ const props = withDefaults(defineProps<{
   items: MenuItem[];
   label: string;
   placement?: PopoverPlacement;
-}>(), { placement: 'bottom-end' });
+  size?: 'md' | 'lg';
+}>(), { placement: 'bottom-end', size: 'md' });
 
 const anchor = ref<HTMLElement | null>(null);
 const panel = ref<HTMLElement | null>(null);
@@ -33,26 +35,12 @@ const select = (item: MenuItem) => {
   item.action();
 };
 
-const onPointerDown = (e: PointerEvent) => {
-  const t = e.target as Node;
-  if (!panel.value?.contains(t) && !anchor.value?.contains(t)) popover.close();
-};
-const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') popover.close(); };
-
-watch(popover.isOpen, open => {
-  const method = open ? 'addEventListener' : 'removeEventListener';
-  window[method]('pointerdown', onPointerDown as EventListener, true);
-  window[method]('keydown', onKey as EventListener);
-});
-onBeforeUnmount(() => {
-  window.removeEventListener('pointerdown', onPointerDown as EventListener, true);
-  window.removeEventListener('keydown', onKey as EventListener);
-});
+useDismiss([anchor, panel], popover.isOpen, popover.close);
 </script>
 
 <template>
   <div ref="anchor">
-    <IconButton icon="ellipsis-horizontal" :label="label" round :aria-expanded="popover.isOpen.value" @click="toggle" />
+    <IconButton icon="ellipsis-horizontal" :label="label" :size="size" round :aria-expanded="popover.isOpen.value" @click="toggle" />
     <Teleport to="body">
       <Transition name="popover">
         <div

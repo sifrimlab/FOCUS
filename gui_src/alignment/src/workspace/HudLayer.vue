@@ -6,17 +6,19 @@
  */
 import BaseButton from '@focus/ui/components/ui/BaseButton.vue';
 import { useMainStore } from '../store/main';
+import { useUndoShortcuts } from '../composables/useUndoShortcuts';
 import SampleBadge from './hud/SampleBadge.vue';
 import ToolRail from './hud/ToolRail.vue';
 import TransformBar from './hud/TransformBar.vue';
 import LayerDock from './hud/LayerDock.vue';
 
 const store = useMainStore();
+useUndoShortcuts();
 </script>
 
 <template>
   <div class="hud-grid fixed inset-0 z-hud p-hud">
-    <SampleBadge class="[grid-area:badge] self-start justify-self-start" />
+    <SampleBadge class="[grid-area:badge] self-start justify-self-center" />
     <ToolRail class="[grid-area:rail] self-center justify-self-start" />
     <LayerDock class="[grid-area:dock] self-end justify-self-start" />
     <TransformBar class="[grid-area:transform] self-end justify-self-center" />

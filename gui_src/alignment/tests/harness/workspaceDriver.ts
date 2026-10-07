@@ -1,5 +1,5 @@
 /** Driver for the canvas-first workspace (floating HUD). Queries by accessible name. */
-import { mount } from '@vue/test-utils';
+import { flushPromises, mount } from '@vue/test-utils';
 import { vi } from 'vitest';
 import type { Pinia } from 'pinia';
 import AlignmentWorkspace from '../../src/workspace/AlignmentWorkspace.vue';
@@ -27,14 +27,15 @@ export function workspaceDriver(pinia: Pinia): Driver {
     targetCanvas: () => [...document.querySelectorAll('canvas')].at(-1) as HTMLCanvasElement,
     async setMode(_w, mode) { click(q(`[role=radio][aria-label^="${mode === 'aligner' ? 'Aligner' : 'Camera'}"]`)); },
     async flip(_w, axis) { click(q(`button[aria-label="Flip ${axis === 'h' ? 'horizontally' : 'vertically'}"]`)); },
-    async type(_w, f, value) { typeInto(q(`[role=group][aria-label="${TITLE[f]}"] input`), value); },
+    async type(_w, f, value) { await openField(f); typeInto(q(`[role=group][aria-label="${TITLE[f]}"] input`), value); },
     async hold(_w, f, dir, ms) {
+      await openField(f);
       const btn = q(`button[aria-label="${dir === '-' ? 'Decrease' : 'Increase'} ${LABEL[f]}"]`);
       btn.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
       await vi.advanceTimersByTimeAsync(ms);
       btn.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
     },
-    async resetField(_w, f) { click(q(`button[aria-label="Reset ${LABEL[f]}"]`)); },
+    async resetField(_w, f) { await openField(f); click(q(`button[aria-label="Reset ${LABEL[f]}"]`)); },
     async resetDistortion() { await openResets(); click(byText(document, '[role=menuitem]', 'Reset distortion')); },
     async resetTransform() { await openResets(); click(byText(document, '[role=menuitem]', 'Reset transform')); },
     async setOpacity(_w, value) { typeInto(panel('target').querySelector('input[type=range]')!, value); },
@@ -50,6 +51,17 @@ export function workspaceDriver(pinia: Pinia): Driver {
     },
     async confirm() { click(byText(document, 'button', 'Confirm alignment')); },
   };
+}
+
+/** The transform island shows one editor at a time: close the open one, then open `f`'s. */
+async function openField(f: Field) {
+  if (document.querySelector(`[role=group][aria-label="${TITLE[f]}"]`)) return;
+  if (document.querySelector('[role=group][aria-label]:is([aria-label=Scale],[aria-label=Rotation],[aria-label=Zoom])')) {
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+    await flushPromises();
+  }
+  click(q(`button[data-field="${f}"]`));
+  await flushPromises();
 }
 
 async function openResets() {

@@ -6,5 +6,8 @@ export const useUiStore = defineStore('ui', {
   state: () => ({
     /** Which layer panels show their details (classes, foreground, spot size). */
     expanded: { target: false, reference: false } as Record<LayerRole, boolean>,
+    /** Mirrors the moving layer's undo history (canvas/useTransformHistory). */
+    canUndo: false,
+    canRedo: false,
   }),
 });

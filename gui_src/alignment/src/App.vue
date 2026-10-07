@@ -19,7 +19,7 @@ onMounted(() => {
 
 <template>
   <AmbientBackdrop :state="screen.ambient" />
-  <ChromeCluster />
+  <ChromeCluster collapsible />
 
   <!-- No transition around the workspace: its canvases must unmount the moment
        a sample starts loading, before the next sample's data arrives, or their

@@ -11,7 +11,7 @@ const AXES = [{ index: 0, label: 'Spot width' }, { index: 1, label: 'Spot height
 
 <template>
   <div class="flex items-center justify-between gap-2">
-    <span class="type-caption text-fg3">Spot size</span>
+    <span class="type-footnote text-fg2">Spot size</span>
     <div class="flex gap-1.5">
       <TextField
         v-for="axis in AXES"

@@ -34,12 +34,12 @@ const opacityPercent = computed(() => (store.targetOpacity * 100).toFixed(0));
         <span class="ellipsis" :title="layer.name">{{ layer.name }}</span>
         <TagLabel>{{ layer.meta?.modality_type }}</TagLabel>
       </template>
-      <div v-if="layer.isSpot" class="flex flex-col gap-3">
+      <div v-if="layer.isSpot" class="flex flex-col gap-4">
         <ClassFilterList :role="role" />
         <ForegroundFilter :role="role" />
         <SpotSizeFields :role="role" />
       </div>
-      <p v-else class="type-footnote nums text-fg3">
+      <p v-else class="type-footnote nums text-fg2">
         {{ layer.meta?.image_shape?.join(' × ') }} px
       </p>
     </Disclosure>

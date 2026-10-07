@@ -18,11 +18,11 @@ const SEGMENTS: Segment<ForegroundMode>[] = [
 </script>
 
 <template>
-  <p v-if="layer.meta?.foreground_only" class="type-footnote text-fg3">
+  <p v-if="layer.meta?.foreground_only" class="type-footnote text-fg2">
     Microgrid: only foreground spots are shown, at their exact positions. The alignment applies to all spots.
   </p>
   <div v-else class="flex flex-col gap-1.5">
-    <span class="type-caption text-fg3">Spots</span>
+    <span class="type-footnote text-fg2">Spots</span>
     <SegmentedControl v-model="layer.foregroundMode" :segments="SEGMENTS" label="Spots shown" />
   </div>
 </template>

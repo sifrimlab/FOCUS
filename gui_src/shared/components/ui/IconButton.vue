@@ -9,7 +9,7 @@ import type { IconName } from '../../icons/paths';
 withDefaults(defineProps<{
   icon: IconName;
   label: string;
-  size?: 'sm' | 'md';
+  size?: 'sm' | 'md' | 'lg';
   tone?: 'neutral' | 'primary' | 'danger';
   round?: boolean;
   href?: string;
@@ -51,6 +51,7 @@ withDefaults(defineProps<{
 
 .icon-btn--sm { width: var(--control-sm); height: var(--control-sm); }
 .icon-btn--md { width: var(--control-md); height: var(--control-md); }
+.icon-btn--lg { width: var(--control-lg); height: var(--control-lg); }
 .icon-btn--round { border-radius: var(--radius-full); }
 
 .icon-btn--primary { color: var(--primary-fg); }

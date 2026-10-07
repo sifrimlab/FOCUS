@@ -18,18 +18,22 @@ A Vue 3 desktop-only web application for aligning heterogeneous modalities (Imag
 
 | Area | Component | Contents |
 |---|---|---|
-| Top left | `SampleBadge` | Sample ID and progress through the dataset |
-| Top right | `ChromeCluster` (shared) | Project links, theme |
-| Left edge | `ToolRail` | Aligner / Camera mode, flips, resets (menu) |
+| Top center | `SampleBadge` | Sample ID and progress through the dataset |
+| Top right | `ChromeCluster` (shared, `collapsible`) | Three-dots button; opens to project links and theme |
+| Left edge | `ToolRail` | Undo and redo, Aligner / Camera mode, flips, resets (menu) |
 | Bottom left | `LayerDock`, `LayerPanel` | One collapsible panel per layer: clusters, spots shown, spot size; opacity for the target |
-| Bottom center | `TransformBar` | Scale, rotation, view zoom |
+| Bottom center | `TransformBar`, `TransformValue` | Scale, rotation and view zoom as values; pressing one opens its stepper |
 | Bottom right | Confirm button | Submits the alignment |
+
+## Undo
+
+Undo and redo cover the moving layer's transform. The history keeps the sample's starting state plus the last 10 changes (`canvas/transformHistory.ts`). `canvas/useTransformHistory.ts` commits one entry per gesture: a drag, a held step button or a typed value is one change. Undo restores stored bytes and never recomputes a transform, so the alignment math is untouched. Buttons sit at the top of the tool rail; Cmd/Ctrl+Z and Shift+Cmd/Ctrl+Z work outside text fields.
 
 ## Project structure
 
 - `src/api/`: API client and types.
-- `src/canvas/`: the two Pixi canvases and their modules (layer fit, geometry and hit testing, commands, pointer and drag arithmetic, spot drawing, overlay).
-- `src/composables/`: screen selection, layer view, cluster filter, transform controls.
+- `src/canvas/`: the two Pixi canvases and their modules (layer fit, geometry and hit testing, commands, pointer and drag arithmetic, spot drawing, overlay, undo history).
+- `src/composables/`: screen selection, layer view, cluster filter, transform controls, undo shortcuts.
 - `src/screens/`: full-screen states (loading, finished, error, offline, small screen) as data.
 - `src/store/`: `main.ts` (alignment state, unchanged) and `ui.ts` (panel state, never sent).
 - `src/styles/`: style entry and the HUD grid.
@@ -63,6 +67,7 @@ npm run build -w alignment   # design lint, type check, build into src/focus/GUI
 | `invariant.golden.spec.ts` | `__golden__/invariant/` | Recorded from the GUI before the alignment fixes below, covering every operation they did not touch. Must never change. |
 | `alignment.golden.spec.ts`, `app.golden.spec.ts` | `__golden__/*.jsonl` | The full sessions, re-recorded once after those fixes. |
 | `fixes.spec.ts` | none | Behavior of the fixes. |
+| `history.spec.ts` | none | Undo and redo (ring, one entry per gesture, exact restores, resize, shortcuts) and the collapsible islands. |
 
 The alignment fixes: each sample starts at its fit (centered on the reference) and is drawn without waiting for an interaction; Reset transform returns to that fit; a window resize moves both layers together, so an alignment in progress holds; the rotate drag maps the pivot like the rest of the canvas when the view is panned or zoomed; and the SPOT→IMAGE export keeps a spot whose id is 0.
 

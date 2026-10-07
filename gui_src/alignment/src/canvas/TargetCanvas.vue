@@ -4,6 +4,7 @@
  * renders the image or spots under the current transform, draws the distort
  * frame, executes panel commands and handles pointer input. On resize it
  * follows the reference's re-centering so an alignment in progress holds.
+ * It also owns the undo history, since the history includes `distort.before`.
  * Watchers keep the original order, which fixes the flush order of store
  * updates within a tick.
  */
@@ -20,6 +21,7 @@ import { useTargetPointer } from './useTargetPointer';
 import { useTargetContent } from './useTargetContent';
 import { drawDistortOverlay } from './distortOverlay';
 import { useCanvasPalette } from './canvasPalette';
+import { useTransformHistory } from './useTransformHistory';
 
 const container = ref<HTMLElement | null>(null);
 const store = useMainStore();
@@ -34,6 +36,7 @@ let initialFit: mat3 | null = null; // where "Reset transform" returns to
 let lastScreen: { width: number; height: number } | null = null;
 let overlay: Graphics | null = null;
 let wasProjective = false;
+const history = useTransformHistory(store, distort);
 
 const layer = usePixiLayer(container, {
   onInit(app) {
@@ -103,6 +106,7 @@ const placeAtFit = (app: Application) => {
   store.updateTargetTransform(fitM);
   initialFit = mat3.clone(fitM);
   distort.before = mat3.clone(fitM);
+  history.reset(fitM, fitM);
 };
 
 /**
@@ -118,6 +122,7 @@ const followResize = (screen: { width: number; height: number }) => {
       store.updateTargetTransform(shiftForResize(store.targetTransform, dW, dH));
       if (initialFit) initialFit = shiftForResize(initialFit, dW, dH);
       if (distort.before) distort.before = shiftForResize(distort.before, dW, dH);
+      history.map(m => shiftForResize(m, dW, dH));
     }
   }
   lastScreen = { width: screen.width, height: screen.height };
@@ -138,6 +143,12 @@ watch(() => store.targetData, () => {
 watch(() => store.pendingCommand, (cmd) => {
   const app = layer.app();
   if (!cmd || !app) return;
+  // History commands restore stored states; they never reach the transform math.
+  if (cmd.type === 'undo' || cmd.type === 'redo') {
+    history[cmd.type]();
+    store.pendingCommand = null;
+    return;
+  }
   const { width, height } = app.screen;
   const next = applyTargetCommand(cmd, {
     transform: store.targetTransform,
