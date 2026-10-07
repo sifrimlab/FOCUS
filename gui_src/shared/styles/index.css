@@ -1,0 +1,13 @@
+/* Shared style entry for both FOCUS GUIs. Order matters: tokens first (unlayered,
+   so they win over Tailwind's layered theme defaults), then Tailwind,
+   then the token-to-utility mapping and the shared partials. */
+@import "../../design-tokens.css";
+@import "tailwindcss";
+@import "./theme.css";
+@import "./base.css";
+@import "./typography.css";
+@import "./materials.css";
+@import "./transitions.css";
+
+/* Shared components live outside each app root; scan them explicitly. */
+@source "../components";
