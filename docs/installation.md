@@ -207,7 +207,7 @@ after a modality `name` in your config (case-sensitive).
 ```
 <dataset_path>/
 ├── sample_001/
-│   ├── microscopy/      # .tiff / .tif / .ome.tiff / .ome.tif / .qptiff / .czi
+│   ├── microscopy/      # .tiff / .tif / .ome.tiff / .ome.tif / .qptiff / .czi / .nd2
 │   ├── msi/             # pos/ (and optionally neg/), each with .imzML + .ibd
 │   ├── raman/           # .lif
 │   └── st/              # .h5ad

@@ -20,7 +20,7 @@ Each modality has its own processing pipeline:
 
 ### 1. Microscopy Image Preprocessing
 
-**Input Formats**: `.ome.tiff`, `.ome.tif`, `.qptiff`, `.tiff`, `.tif`, `.czi` (searched in this priority order)  
+**Input Formats**: `.ome.tiff`, `.ome.tif`, `.qptiff`, `.tiff`, `.tif`, `.czi`, `.nd2` (searched in this priority order)  
 **Output Format**: Multi-resolution OME-TIFF, stored in the source file's dtype (`uint8`/`uint16` pass through; float sources stay `float32`; other integer depths become `uint16`), zlib-compressed with a predictor matched to the storage dtype
 
 The pipeline has five labeled steps, reported as `1/5` … `5/5`. Steps 2 to 4 are switchable from the configuration; when one is off, its step line reports `not required`. A sample that raises does not stop the run: the exception is caught, `Error processing sample <sample_id>: <error>` is printed to the console, and the next sample is processed. A **missing input file** is the exception: it is raised while the sample objects are constructed, before processing begins, and aborts the modality.
@@ -32,6 +32,7 @@ The pipeline has five labeled steps, reported as `1/5` … `5/5`. Steps 2 to 4 a
    - For TIFF/OME-TIFF: read the first series at its base level; a pyramid already in the file is not reused
    - For qpTIFF: compare all series/pyramid levels by pixel count and load only the highest-resolution one
    - For CZI: reduce leading axes by taking index 0 until three remain; a message is printed when the outermost axis holds more than one entry
+   - For ND2: keep the middle plane of `Z` and index 0 of every other extra axis (positions, time); only that plane is read, RGB components become channels, and a warning lists the reduced axes
    - Move channel axis to last position using a shape heuristic
    - Convert to float32 in [0, 1]: a `float32` array already at or below 1 is left as is, an integer array is divided by its dtype maximum, any other float array by its own maximum
    - Clip to at most 3 channels

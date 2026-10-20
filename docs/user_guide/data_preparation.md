@@ -39,11 +39,12 @@ FOCUS expects a two-level directory hierarchy rooted at the `dataset_path` you s
 
 ### Microscopy Image (`microscopy_image`)
 
-Place exactly one image file per sample inside the modality directory. Supported extensions are `.tiff`, `.tif`, `.ome.tiff`, `.ome.tif`, `.qptiff`, and `.czi`. If multiple supported files are present, FOCUS selects the first match in extension-priority order (`.ome.tiff` > `.ome.tif` > `.qptiff` > `.tiff` > `.tif` > `.czi`). A modality directory with no supported file raises `FileNotFoundError` before processing starts.
+Place exactly one image file per sample inside the modality directory. Supported extensions are `.tiff`, `.tif`, `.ome.tiff`, `.ome.tif`, `.qptiff`, `.czi`, and `.nd2`. If multiple supported files are present, FOCUS selects the first match in extension-priority order (`.ome.tiff` > `.ome.tif` > `.qptiff` > `.tiff` > `.tif` > `.czi` > `.nd2`). A modality directory with no supported file raises `FileNotFoundError` before processing starts.
 
 - **TIFF/OME-TIFF**: any number of channels; any pixel type. The first series is read at its base level, so a pyramid already in the file is not reused. FOCUS builds its own.
 - **qpTIFF (Akoya/PerkinElmer)**: if the file contains multiple resolutions or auxiliary series (pyramid levels, thumbnail, macro, label), only the highest-resolution series/level is used.
 - **CZI (Zeiss)**: multi-scene and multi-dimensional CZI files are supported. FOCUS keeps index 0 of every leading axis until three axes remain, and prints a warning when the outermost axis holds more than one entry.
+- **ND2 (Nikon)**: multi-position, time-lapse and Z-stack ND2 files are supported. FOCUS keeps the middle Z plane and index 0 of every other extra axis, reads only that plane from disk, and reports a warning listing the reduced axes. An RGB ND2 file keeps its three components as channels.
 
 Only the first three channels are kept, whatever the source. Fewer channels are accepted: background removal and cropping promote a 1- or 2-channel image to 3 channels internally to compute the tissue mask, and detect whether its background is the bright or the dark class. For dark-background (fluorescence) acquisitions also set `background_color: "black"` in the modality's `processing_settings`, so the removed background is not filled brighter than the tissue.
 

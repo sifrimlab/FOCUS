@@ -34,6 +34,7 @@ dependencies = [
     "Pillow",
     "tifffile",
     "czifile",
+    "nd2",
     "ome-types",
     "imagecodecs",
     "readlif",

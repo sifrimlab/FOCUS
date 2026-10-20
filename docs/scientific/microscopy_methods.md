@@ -14,7 +14,7 @@ There are no intermediate caches, so this is the only reuse point.
 
 ## 1. Input normalization
 
-Supported inputs: `.ome.tiff`, `.ome.tif`, `.qptiff`, `.tiff`, `.tif`, `.czi`.
+Supported inputs: `.ome.tiff`, `.ome.tif`, `.qptiff`, `.tiff`, `.tif`, `.czi`, `.nd2`.
 
 `_find_image_file` walks that extension list in order and returns the first directory entry whose
 lower-cased name ends with the highest-priority extension present. The `MicroscopyImage`
@@ -33,6 +33,12 @@ Loading behavior:
 - CZI (`_load_czi`): `czifile.CziFile(file).asarray()`, then leading axes are dropped by taking index
   `0` until three axes remain; a `WARNING:` line is printed when the outermost axis has more than one
   entry.
+- ND2 (`_load_nd2`): the named axes come from `nd2.ND2File(file).sizes`, which omits singleton
+  axes. `Y`, `X` and the RGB component axis `S` are kept whole, and so is the channel axis `C` when
+  `S` is absent. `Z` is reduced to its middle plane (`size // 2`); every other axis (positions `P`,
+  time `T`, and `C` when `S` is present) to index `0`. The selection is applied to `f.to_dask()`
+  before `compute()`, so only the kept plane is read. `C` is then moved to the last axis. When any
+  axis is reduced, a warning line lists the reduced axes with their sizes and the indices used.
 
 `_normalize_image` then applies, in order:
 

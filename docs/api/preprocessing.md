@@ -101,7 +101,7 @@ class MicroscopyImage(BaseSample):
     ) -> None: ...
 ```
 
-On construction, `MicroscopyImage` scans `<source_path>/<sample_id>/<modality_name>/` for a supported image file and keeps the first match for the highest-priority extension present (`.ome.tiff`, `.ome.tif`, `.qptiff`, `.tiff`, `.tif`, `.czi`, matched case-insensitively). With no match it raises `FileNotFoundError` at construction time, before any sample is processed.
+On construction, `MicroscopyImage` scans `<source_path>/<sample_id>/<modality_name>/` for a supported image file and keeps the first match for the highest-priority extension present (`.ome.tiff`, `.ome.tif`, `.qptiff`, `.tiff`, `.tif`, `.czi`, `.nd2`, matched case-insensitively). With no match it raises `FileNotFoundError` at construction time, before any sample is processed.
 
 **`process_image()`**
 

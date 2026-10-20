@@ -2,7 +2,7 @@
 
 ## Overview
 
-Microscopy provides high-resolution, whole-sample spatial context. FOCUS reads one image file per sample (H&E brightfield, immunofluorescence, or any other TIFF/qpTIFF/CZI acquisition) and writes a multi-resolution OME-TIFF pyramid per sample.
+Microscopy provides high-resolution, whole-sample spatial context. FOCUS reads one image file per sample (H&E brightfield, immunofluorescence, or any other TIFF/qpTIFF/CZI/ND2 acquisition) and writes a multi-resolution OME-TIFF pyramid per sample.
 
 `MicroscopyImageDataset.process_dataset()` handles one sample at a time and runs five labeled steps per sample, reported on the console and in the GUI as `1/5` … `5/5`:
 
@@ -31,7 +31,8 @@ Steps `2/5`, `3/5` and `4/5` are individually switchable from the configuration 
 | `.ome.tiff` / `.ome.tif` | OME-TIFF, read with `tifffile`: the file's first series at its base level; any pyramid it already carries is not reused |
 | `.qptiff` | Akoya/PerkinElmer Vectra/PhenoImager qpTIFF. Every series and pyramid level is compared by pixel count and only the largest is loaded, so thumbnail, macro and label images are discarded regardless of their order in the file |
 | `.tiff` / `.tif` | Standard TIFF, read the same way as OME-TIFF |
-| `.czi` | Zeiss CZI, read with `czifile`. Leading axes are reduced by taking index `0` until three axes remain; when the outermost axis has more than one entry, `WARNING: CZI file has multiple scenes. Using only the first one.` is printed |
+| `.czi` | Zeiss CZI, read with `czifile`. Leading axes are reduced by taking index `0` until three axes remain; when the outermost axis has more than one entry, the warning line `The CZI file has multiple scenes: only the first one is used` is reported |
+| `.nd2` | Nikon NIS-Elements ND2, read with `nd2`. Every axis other than `Y`, `X`, channels `C` and RGB components `S` is reduced to one plane: the middle plane of `Z`, index `0` of any other axis (positions `P`, time `T`). Only that plane is read from disk. RGB components become the channels; a file with both `C` and `S` keeps its first channel. When an axis is reduced, the warning line `The ND2 file has extra axes (<axis>=<size>, ...): using <axis>=<index>, ...` is reported |
 
 FOCUS looks for the extensions in the order listed and loads the first file that matches the highest-priority extension present, so an `.ome.tiff` wins over a `.czi` in the same directory. Extension matching is case-insensitive. If no supported file is found, the sample constructor raises `FileNotFoundError`.
 
@@ -60,6 +61,9 @@ dataset_root/
 ├── sample_C/
 │   └── he_image/
 │       └── section_C.qptiff
+├── sample_D/
+│   └── he_image/
+│       └── section_D.nd2
 ```
 
 The modality name (e.g. `he_image`) must match the name declared in the FOCUS configuration file.

@@ -3,6 +3,7 @@ import numpy as np
 import cv2
 import tifffile
 import czifile
+import nd2
 import skimage.morphology as morphology
 from scipy.ndimage import binary_fill_holes
 from ome_types.model import OME, Image, Pixels, Channel, TiffData, Plane
@@ -15,7 +16,7 @@ from focus.preprocessing.base import BaseSample, BaseDataset
 from focus.preprocessing._registry import ModalityHandler, register_modality
 
 # Supported input file extensions, ordered by priority
-_SUPPORTED_EXTENSIONS = (".ome.tiff", ".ome.tif", ".qptiff", ".tiff", ".tif", ".czi")
+_SUPPORTED_EXTENSIONS = (".ome.tiff", ".ome.tif", ".qptiff", ".tiff", ".tif", ".czi", ".nd2")
 
 
 class MicroscopyImage(BaseSample):
@@ -23,7 +24,7 @@ class MicroscopyImage(BaseSample):
 	Process a microscopy image to uniform the format, enhance colors,
 	and prepare it for alignment/registration.
 
-	Input: TIFF (.tiff, .tif, .ome.tiff, .ome.tif), qpTIFF (.qptiff), or CZI (.czi)
+	Input: TIFF (.tiff, .tif, .ome.tiff, .ome.tif), qpTIFF (.qptiff), CZI (.czi), or ND2 (.nd2)
 	Output: multi-resolution OME-TIFF, stored in the source file's dtype
 	(uint8/uint16 passthrough, float sources stay float32), zlib-compressed with predictor.
 	"""
@@ -75,6 +76,8 @@ class MicroscopyImage(BaseSample):
 		lower = file.lower()
 		if lower.endswith(".czi"):
 			return self._load_czi(file)
+		elif lower.endswith(".nd2"):
+			return self._load_nd2(file)
 		elif lower.endswith(".qptiff"):
 			return self._load_qptiff(file)
 		else:
@@ -109,6 +112,44 @@ class MicroscopyImage(BaseSample):
 			while image.ndim > 3:
 				image = image[0]
 
+		image = self._normalize_image(image)
+		return image, input_dtype
+
+	def _load_nd2(self, file: str) -> tuple[np.ndarray, np.dtype]:
+		"""
+		Read a Nikon ND2 file and return as float32 [0,1] with channels last (H, W, C),
+		plus the original on-disk dtype.
+
+		ND2 axes are named (T, P, Z, C, Y, X, S for RGB components), and nd2 omits
+		singleton axes. Every axis other than Y, X, C and S is reduced to one plane:
+		the middle plane of Z (the one most likely in focus), index 0 of any other
+		(positions, time). When both C and S are present, the first channel is kept.
+		Only the kept plane is read from disk.
+		"""
+		with nd2.ND2File(file) as f:
+			sizes = dict(f.sizes)
+			is_rgb = "S" in sizes
+			index, kept_axes, reduced = [], [], []
+			for axis, size in sizes.items():
+				if axis in ("Y", "X", "S") or (axis == "C" and not is_rgb):
+					index.append(slice(None))
+					kept_axes.append(axis)
+				else:
+					i = size // 2 if axis == "Z" else 0
+					index.append(i)
+					reduced.append((axis, size, i))
+			image = np.asarray(f.to_dask()[tuple(index)].compute())
+
+		if reduced:
+			found = ", ".join(f"{axis}={size}" for axis, size, _ in reduced)
+			used = ", ".join(f"{axis}={i}" for axis, _, i in reduced)
+			get_reporter().warning(f"The ND2 file has extra axes ({found}): using {used}")
+
+		# Channels last (RGB components are already the last axis)
+		if "C" in kept_axes:
+			image = np.moveaxis(image, kept_axes.index("C"), -1)
+
+		input_dtype = image.dtype
 		image = self._normalize_image(image)
 		return image, input_dtype
 
