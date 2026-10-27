@@ -156,9 +156,9 @@ The MSI pipeline operates at the **dataset level**: all samples are processed to
    - `"none"`: keep raw interpolated intensities
 
 10. **Per-Sample Cluster Labels** (used only to colour spots during alignment)
-    - Samples above 100,000 spots are coarsened first: a uniform spatial grid of at most 100,000 bins is laid over the spots, all spots in a bin are **summed** into one pseudo-spot, and the pseudo-spots are re-normalized so bin occupancy washes out. Smaller samples skip binning
-    - PCA (up to 50 components) → neighbor graph → Leiden (`resolution=0.5`, `flavor="igraph"`, `n_iterations=2`, `directed=False`) on that matrix; each bin's label then propagates back to every spot it contains
-    - Labels stored in `obs["cluster"]`. The binned matrix, PCA embedding and neighbor graph are all discarded (only `obs["cluster"]` is kept) to minimize file size
+    - Samples above 250,000 spots are coarsened first: spots are grouped into k x k blocks of the acquisition raster (Voronoi supercells when no raster is recovered), all spots in a block are **summed** into one pseudo-spot, and the pseudo-spots are re-normalized so block occupancy washes out. Smaller samples are clustered spot by spot
+    - PCA (up to 50 components) → neighbor graph → Leiden (`resolution=0.5`, `flavor="igraph"`, `n_iterations=2`, `directed=False`) on that matrix; each block's label then propagates back to every spot it contains
+    - Labels stored in `obs["cluster"]`. The summed matrix, PCA embedding and neighbor graph are all discarded (only `obs["cluster"]` is kept) to minimize file size
 
 11. **Save Per-Sample AnnData and Merge**
     - Each sample is saved separately (gzip compression)
@@ -324,11 +324,11 @@ Supports any spot-based or cell-based spatial transcriptomics technology (Visium
    - Prefixed with `<sample_id>_`, unless every name already carries that prefix
 
 7. **Per-Sample Cluster Labels**
-   - Stored in `.obs["cluster"]`; used to colour spots in the alignment GUI
-   - Computed on `.X` at this point: post-filter, post-removal, still raw counts
-   - Samples above 100,000 spots are first coarsened onto a uniform spatial grid of at most 100,000 cells, summing the spots in each cell into one pseudo-spot
-   - The run matrix is normalized to 10,000 counts and log1p-transformed on a throwaway copy, then PCA (`min(50, n_rows-1, n_genes-1)` components) → neighbor graph (`min(15, n_rows-1)` neighbours) → Leiden (`resolution=0.5`, `flavor="igraph"`, `n_iterations=2`, `directed=False`); each cell's label propagates back to its spots
-   - Only `.obs["cluster"]` is persisted. Fewer than 2 run rows, fewer than 2 usable PCs, or a single resulting cluster all give the label `'0'`. `random_state=0`
+   - Spots are clustered one by one when the sample has at most `clustering_max_units` spots (default 250,000) and its median spot holds at least `clustering_min_counts` UMIs. Otherwise spots are grouped into k x k blocks of the acquisition lattice, or Voronoi supercells without a lattice, and every spot takes its unit's label
+   - Defaults of 50 UMIs and 20 detected genes per unit determine clustering eligibility only. Spots of ineligible units remain in `.X` with label `unassigned`
+   - On an analytical copy: normalize to 10,000 counts → log1p → HVG selection (target 2,000) → sparse PCA (up to 50 PCs) → neighbors (up to 15) → Leiden (resolution 0.5). All controls and the seed are configurable
+   - Persist labels, eligibility, categorical colors, selected-feature and algorithm provenance, and count-depth diagnostics. Original expression and native coordinates remain intact
+   - Input/settings/method/software fingerprints invalidate stale per-sample and merged ST caches
 
 8. **Raw Count Layer**
    - `.layers["raw"]` receives a copy of `.X` **only when** `total_counts_normalize` or `log1p_transform` is enabled. With both off, `.X` already holds raw counts and no layer is written
@@ -340,7 +340,7 @@ Supports any spot-based or cell-based spatial transcriptomics technology (Visium
 
 **Dataset-Level (Merged) Processing**:
 
-After per-sample preprocessing, all samples are merged. The merged file is reused as-is when it exists, `force_recomputing` is false, and its `.obs["sample_id"]` set equals the active sample set.
+After per-sample preprocessing, all samples are merged. The merged file is reused as-is when `force_recomputing` is false, no sample was rebuilt in this run, and its stored fingerprint matches the per-sample fingerprints (which fix the active sample set) and the gene-filter and normalization settings.
 
 1. Read each per-sample `.uns["spot_size"]` with a backed read, without materializing `.X`
 2. Concatenate **on disk** (`anndata.concat_on_disk`) with **outer join**: genes absent from a sample are filled with 0 counts. `.uns` is dropped by the concat
@@ -423,10 +423,14 @@ FOCUS uses a consistent naming pattern for all preprocessed outputs.
 
 ## Caching
 
-Each modality checks whether its output file already exists at the start of processing. If the file is found and `force_recomputing` is not set, the step is skipped and the cached path is returned. There is no hash- or timestamp-based validation: deleting the output file or setting `force_recomputing: true` is the only way to trigger reprocessing.
+Each modality checks whether its output file already exists at the start of processing. If the file is found and `force_recomputing` is not set, the step is skipped and the cached path is returned.
+
+Spatial transcriptomics validates its cache by content. Per-sample and merged ST files store `.uns['focus_preprocessing_fingerprint']`, a SHA-256 over the input file content, the effective preprocessing and clustering settings, the method version and the numerical software versions (merged files: the per-sample fingerprints and the merged settings). A file whose fingerprint differs from the current one is rebuilt, and files written before fingerprints existed are rebuilt once. When a rebuild changes the merged ST fingerprint, every alignment pair involving that modality is re-aligned (the alignment GUI opens again) and its registration is recomputed.
+
+For the other modalities there is no hash- or timestamp-based validation: deleting the output file or setting `force_recomputing: true` is the only way to trigger reprocessing.
 
 !!! warning "Changing a processing setting does not invalidate the cache"
-    The cache key is the existence of the output file (plus, for the merged MSI/ST files, the set of active sample IDs), **not** the processing settings. Editing a setting and re-running therefore returns the previously computed output unchanged, with no warning. After changing any processing setting, set `force_recomputing: true` for that modality (or delete its outputs) so the new value takes effect.
+    This applies to every modality except ST. The cache key is the existence of the output file (plus, for the merged MSI file, the set of active sample IDs), **not** the processing settings. Editing a setting and re-running therefore returns the previously computed output unchanged, with no warning. After changing any processing setting, set `force_recomputing: true` for that modality (or delete its outputs) so the new value takes effect.
 
 The Raman pipeline has intermediate caches (`basic_corrected_tiles.npy`, `segmented_tiles.npy`, `raman_corrected_tiles.npy`) that are checked independently at each step, allowing partial resume within a single sample. LIF loading is not cached and runs again on every attempt, since the tile coordinates, pixel size and spectra-slice boundaries feed the later steps. The three files are deleted once the sample's final OME-TIFF exists, so they are only ever found after an interrupted or failed run, which is when they are used. Like the output-level cache, they record no parameter values.
 

@@ -214,6 +214,11 @@ Additional settings for the chosen registration method. May be an empty object w
 
     | Parameter | Type | Description |
     |-----------|------|-------------|
+    | `clustering_min_counts` / `clustering_min_genes` | int | Clustering-only eligibility, defaults 50 UMIs / 20 genes. Excluded observations remain as `unassigned`. |
+    | `clustering_n_top_genes` | int | HVG target on an analytical copy, default 2000. |
+    | `clustering_n_pcs` / `clustering_n_neighbors` | int | PCA/neighbor limits, defaults 50 / 15. |
+    | `clustering_resolution` / `clustering_random_state` | float / int | Leiden resolution and random seed, defaults 0.5 / 0. |
+    | `clustering_max_units` | int | Maximum number of clustered units, default 250000. Larger or sparse samples are clustered on lattice blocks or Voronoi supercells. |
     | `min_count_per_spot` | int or null | Minimum total UMI count to retain a spot. |
     | `max_count_per_spot` | int or null | Maximum total UMI count (outlier removal). |
     | `min_genes_per_spot` | int or null | Minimum number of detected genes per spot. |

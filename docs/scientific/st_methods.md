@@ -87,37 +87,73 @@ Cluster labels (`.obs['cluster']`) are consumed only by the alignment GUI for sp
 colouring. They are computed on `.X` at this point in the sequence: post-filter,
 post-removal, and still raw counts, since §3.7 has not yet run.
 
-The routine is the shared `compute_cluster_labels` helper, also used by
-[MSI §6b](msi_methods.md#6b-per-sample-clustering); the coarsening grid and its 100,000-row cap are
-shared with the alignment GUI's display binning
-([Alignment §4b](alignment_methods.md#4b-display-coarsening-for-large-spot-sets)). The two modalities
-differ only in how the run matrix is normalized: ST holds raw counts, so it is total-count normalized
-and `log1p`-transformed (step 2 below), whereas MSI is already per-spot normalized and is
-re-normalized only when binning summed it.
+ST uses `spot_cluster_labels`. It chooses the analytical units (§3.6.1), sums the raw counts
+of each unit, clusters the units with steps 1 to 4, and gives every spot the label and
+eligibility of its unit. Small samples with sufficient counts per spot are clustered spot by
+spot. Coordinates only define the units; they never enter the expression model.
 
-Let \(N\) be the spot count, \(G\) the gene count and \(C = 100{,}000\) the row cap.
+1. **Clustering eligibility.** By default a unit needs at least 50 UMIs and 20 detected
+   genes. These configurable alignment-only thresholds are not universal biological QC
+   cutoffs. Spots of ineligible units remain in the exported matrix with the label
+   `unassigned` and a neutral display color. Zero-count units are always unassigned.
+2. **Analytical representation.** On an independent sparse copy of eligible raw counts,
+   remove unexpressed genes, normalize to 10,000 counts, apply `log1p`, and select up to
+   2,000 highly variable genes with Scanpy's Seurat dispersion method. This feature selection
+   never subsets the output expression matrix. Dataset-level gene filters run later and do
+   not redefine these per-sample alignment labels.
+3. **Partition.** Sparse centered PCA (up to 50 PCs), a neighbor graph (up to 15 neighbors),
+   and Leiden (`resolution=0.5`, `flavor='igraph'`, `n_iterations=2`, `directed=False`) run on
+   the eligible units. PCA, neighbor construction and Leiden receive the explicit
+   seed, default 0. Scanpy uses approximate neighbor construction for large inputs.
+4. **Insufficient information.** Fewer than three eligible units or fewer than two
+   usable PCs yields unassigned labels, with the reason recorded in provenance.
 
-1. **Coarsening.** If \(N > C\), a uniform spatial grid of at most \(C\) cells is laid over
-   `.obsm['spatial']` and all spots in a cell are summed into one pseudo-spot, giving a run
-   matrix of \(N_r \le C\) rows. Otherwise \(N_r = N\) and every spot is used directly.
-2. **Internal normalization.** The run matrix is total-count normalized to \(10^4\) and
-   `log1p`-transformed on a throwaway copy.
-3. **Partition.** With
+`.obs['clustering_eligible']` records eligibility; `.uns['focus_clustering']` records the
+method version, parameters, software version, selected genes, cluster sizes, PCA variance
+and PC/count-depth correlations. Intermediate expression, embeddings and graphs are discarded.
+Labels are expression-based; spatial smoothness is not an optimization target and does not
+prove biological validity. Count-depth correlation is descriptive and is not automatically
+regressed out.
 
-   \[
-   n_{pcs} = \min(50,\, N_r-1,\, G-1),
-   \qquad
-   n_{neighbors} = \min(15,\, N_r-1),
-   \]
+#### 3.6.1 Clustering units
 
-   PCA \(\to\) kNN \(\to\) Leiden (`resolution=0.5`, `flavor='igraph'`, `n_iterations=2`,
-   `directed=False`) runs on that matrix. Each cell's label propagates back to every spot
-   that contributed to it.
-4. **Fallback.** If \(N_r < 2\), \(n_{pcs} < 2\), or the partition resolves to a single
-   cluster, every spot receives the label `'0'`.
+`plan_spatial_units` keeps the spots as units unless one of two criteria applies:
 
-Only the label array is persisted; the coarsened matrix, PCA embedding and neighbour graph
-are discarded. PCA and Leiden run with `random_state=0`.
+- **Cap.** The sample has more than `clustering_max_units` spots (default 250,000).
+- **Signal.** The sample has more than 1,000 spots and the median spot holds fewer than
+  `clustering_min_counts` UMIs (default 50).
+
+Otherwise spots are grouped into coarser units. A grid whose cell size is not an integer
+multiple of the acquisition step, or whose cells are not aligned to the acquisition lattice,
+gives cells with periodically varying spot counts, which appear as a grid pattern in the
+labels. Units are therefore built from the lattice itself:
+
+- **Acquisition lattice.** `array_row` and `array_col` are used when they are integral,
+  unique per spot, and fit the coordinates linearly with a maximum residual of 2% of the
+  lattice step. The unit of a spot is the block (`array_row // k`, `array_col // k`), with
+  indices counted from the smallest observed value. A hexagonal lattice (standard Visium,
+  where `array_row + array_col` has a single parity) has its column index halved first.
+  Every interior block holds exactly k² sites, so block occupancy has no periodic component,
+  and the blocks depend only on the lattice indices, not on the rotation or translation of
+  the coordinates. Without the index columns, an axis-aligned raster of pitch `spot_size` is
+  recovered from the coordinates when at least 99% of spots lie within 0.1 pitch of a raster
+  node and the nodes are unique.
+- **Block size.** k is the smallest integer for which the number of occupied blocks is at
+  most the cap and the median block total reaches `clustering_min_counts`. The signal
+  criterion stops growing k before fewer than 1,000 blocks would remain; the provenance then
+  records `signal_limited` and a warning is reported.
+- **Voronoi supercells.** Layouts without a lattice (segmented cells, beads) are grouped into
+  m tiles. m spots drawn with the seeded random generator are the initial seeds, every spot
+  is assigned to its nearest seed, and five Lloyd iterations move each seed to the centroid
+  of its tile. Seeds follow spot density, and tiles hold similar spot counts with no periodic
+  structure. m is the cap, reduced to n / s under the signal criterion, where
+  s = ⌈`clustering_min_counts` / median spot count⌉, and never below 1,000.
+
+Units exist only in memory. `.uns['focus_clustering']['units']` records the method
+(`native`, `lattice` or `voronoi`), the number of units, the criterion that set their size
+(`cap`, `signal` or both) and, for a lattice, `k`, the block size in coordinate units and
+the index source. Per-spot cluster sizes and eligible-spot counts are recorded next to the
+per-unit values.
 
 ### 3.7 Optional normalization and transform
 
@@ -145,8 +181,8 @@ Per-sample output sets:
 - `.layers['raw']` only under the condition in §3.7
 
 `.X` and every layer are coerced to sparse CSR and the file is written gzip-compressed.
-If the output file already exists and `force_recomputing=false`, the whole of §3 is
-skipped and the cached path is returned.
+If `force_recomputing=false` and the output file's `.uns['focus_preprocessing_fingerprint']`
+matches the current fingerprint (§6), the whole of §3 is skipped and the cached path is returned.
 
 ---
 
@@ -156,9 +192,9 @@ skipped and the cached path is returned.
 
 ### 4.1 Merge construction
 
-If the merged file already exists, `force_recomputing=false`, and the set of
-`.obs['sample_id']` values it contains equals the active sample set, that file is returned
-and §4 is skipped.
+If `force_recomputing=false`, no sample was rebuilt in this run, and the merged file's
+fingerprint matches the per-sample fingerprints (which fix the active sample set) and the
+merged gene-filter and normalization settings, that file is returned and §4 is skipped.
 
 Otherwise each per-sample `.uns['spot_size']` is read with a backed read (so no `.X` is
 materialized), and the per-sample files are concatenated **on disk**, streaming one file at
@@ -274,4 +310,14 @@ Config-extracted defaults for ST preprocessing (`_extract_st_settings`):
 - `log1p_transform`: `false`
 - `force_recomputing`: `false`
 
-All filtering and normalization steps are opt-in; no step is forced on by default.
+Output spot/gene filtering and output normalization remain opt-in. Clustering has its own eligibility and normalization, which do not remove data from the output.
+
+Clustering defaults: `clustering_min_counts=50`, `clustering_min_genes=20`,
+`clustering_n_top_genes=2000`, `clustering_n_pcs=50`, `clustering_n_neighbors=15`,
+`clustering_resolution=0.5`, `clustering_random_state=0`, `clustering_max_units=250000`.
+All are configuration settings.
+
+Per-sample cache keys include the input SHA-256, effective preprocessing/clustering settings,
+method version and numerical software versions. Merged keys include all sample keys and the
+merged gene-filter settings. Legacy files without a key are recomputed. Changed ST inputs
+invalidate dependent alignment and registration caches through the orchestrator.

@@ -82,6 +82,7 @@ const render = () => {
   if (!app || !app.renderer) return;
   updateViewTransform();
   content.updateContentTransform();
+  content.cull();
   app.render();
 };
 

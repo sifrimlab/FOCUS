@@ -8,27 +8,12 @@ from focus.constants import ModalityType, IMAGE_MODALITY_TYPES, SPOT_MODALITY_TY
 from focus.utils import write_h5ad_compat, concat_on_disk_compat, read_merged_sample_ids, hw_from_axes
 
 from focus.GUI.direct_mapping_alignment import DirectMappingAlignmentGUI
-from focus.preprocessing._utils import _spatial_bin_assignment, _SPATIAL_CAP
+from focus.alignment.spot_payload import pack_spots, acquisition_basis
+from focus.spot_colors import cluster_colors, label_order
+from focus.provenance import cached_fingerprint, fingerprint
 from focus.reporting import get_reporter
 
 logger = logging.getLogger("focus.alignment")
-
-# Spot datasets larger than this are coarsened onto a spatial grid before display (large raw
-# payloads crash the browser's XHR JSON parser). _SPATIAL_CAP is shared with preprocessing
-# clustering so both stages build the identical grid — a bin's spots therefore share one label.
-# In exact-spot mode (microgrid experiments) no coarsening happens: only foreground spots are sent,
-# at their true positions and in a single class (see DirectMappingAligner._prepare_exact_spot_data).
-
-# Perceptually distinct palette for Leiden cluster coloring (up to 26 clusters, then cycles)
-
-_CLUSTER_PALETTE = [
-	"#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd",
-	"#8c564b", "#e377c2", "#7f7f7f", "#bcbd22", "#17becf",
-	"#aec7e8", "#ffbb78", "#98df8a", "#ff9896", "#c5b0d5",
-	"#c49c94", "#f7b6d2", "#c7c7c7", "#dbdb8d", "#9edae5",
-	"#393b79", "#637939", "#8c6d31", "#843c39", "#7b4173",
-	"#5254a3",
-]
 
 _H5AD_COMPRESSION = "gzip"
 
@@ -49,8 +34,7 @@ _SPOT_MODALITIES = SPOT_MODALITY_TYPES
 
 def _generate_cluster_colors(labels: np.ndarray) -> dict[str, str]:
 	"""Generate a color map for cluster labels using a perceptually distinct palette."""
-	unique_labels = sorted(set(str(l) for l in labels))
-	return {label: _CLUSTER_PALETTE[i % len(_CLUSTER_PALETTE)] for i, label in enumerate(unique_labels)}
+	return cluster_colors(labels)
 
 
 def _image_to_rgb_uint8(image_data: np.ndarray, axes: str | None) -> np.ndarray:
@@ -305,7 +289,7 @@ class DirectMappingAligner:
 		if not os.path.exists(filename):
 			raise FileNotFoundError(f"File not found: {filename}")
 
-		adata = anndata.read_h5ad(filename)
+		adata = anndata.read_h5ad(filename, backed="r")
 
 		if 'spatial' not in adata.obsm:
 			raise ValueError(f"AnnData file missing .obsm['spatial']: {filename}")
@@ -338,7 +322,8 @@ class DirectMappingAligner:
 
 		# Generate color map for the cluster labels
 		color_map = _generate_cluster_colors(cluster_labels)
-
+		self._spot_basis = acquisition_basis(adata)
+		adata.file.close()
 		del adata
 		return coordinates, spot_size, foreground_mask, cluster_labels, color_map
 
@@ -365,128 +350,42 @@ class DirectMappingAligner:
 		return metadata, payload, None, scale_factors
 
 	def _prepare_spot_data(self, filename: str, modality_name: str):
-		"""Prepare spot modality data for the GUI.
-
-		Returns (metadata, display_payload, full_coordinates, scale_factors).
-
-		When the dataset is larger than ``_SPATIAL_CAP`` the display is *coarsened* rather than
-		subsampled: spots are aggregated onto the same uniform spatial grid the preprocessing
-		clustering used, and one dict per occupied bin (positioned at the grid-cell center) is sent
-		to the browser. This keeps the payload small while showing a gap-free coarse grid instead
-		of a thinned point cloud. The reported ``spot_size`` becomes the grid pitch so bins render
-		edge-to-edge. The aggregation is display-only — ``full_coordinates`` is the complete,
-		REAL (N, 2) coordinate array, kept on the backend so the user-defined transform is applied
-		to every original spot (not the bins) after confirmation. Nothing here is persisted.
-		"""
+		"""Native centers and footprints; compact transport never pools labels or geometry."""
 		if self._exact_spots:
 			return self._prepare_exact_spot_data(filename, modality_name)
-
-		coordinates, spot_size, foreground_mask, cluster_labels, color_map = self._load_anndata_spots(filename)
-
-		# Build stable integer mapping for cluster labels (consecutive ints starting at 0)
-		unique_labels = sorted(set(str(l) for l in cluster_labels))
-		label_to_int = {lbl: idx for idx, lbl in enumerate(unique_labels)}
-		label_ints = np.array([label_to_int[str(l)] for l in cluster_labels], dtype=np.intp)
-
-		n_obs = len(coordinates)
-		if n_obs > _SPATIAL_CAP:
-			bin_ids, n_bins, pitch, centers = _spatial_bin_assignment(coordinates, _SPATIAL_CAP)
-
-			# Per-bin majority cluster class (members share one label by construction — the
-			# preprocessing grid is identical — so majority is just a safety net) and majority
-			# foreground. All O(n_obs), vectorized: no per-bin scan over the full array.
-			n_classes = len(unique_labels)
-			class_counts = np.zeros((n_bins, n_classes), dtype=np.int64)
-			np.add.at(class_counts, (bin_ids, label_ints), 1)
-			bin_class = class_counts.argmax(axis=1)
-
-			counts = np.bincount(bin_ids, minlength=n_bins)
-			fg_counts = np.bincount(bin_ids, weights=foreground_mask.astype(np.float64), minlength=n_bins)
-			bin_fg = fg_counts >= (counts / 2.0)
-
-			display_payload = [
-				{
-					"id": b,   # bin index; only used by the dead 'spots' fallback (see below)
-					"spatial": centers[b].tolist(),
-					"class": int(bin_class[b]),
-					"foreground": bool(bin_fg[b]),
-					"color": color_map.get(unique_labels[bin_class[b]], _CLUSTER_PALETTE[0]),
-				}
-				for b in range(n_bins)
-			]
-			# Grid pitch as the display spot size so bins tile gap-free; fall back to the real
-			# spot size on any axis with zero extent. Display-only — uns['spot_size'] is untouched.
-			display_spot_size = np.where(pitch > 0, pitch, spot_size).astype(np.float32)
-		else:
-			display_payload = [
-				{
-					"id": i,
-					"spatial": coord.tolist(),
-					"class": int(label_ints[i]),
-					"foreground": bool(fg),
-					"color": color_map.get(str(label), _CLUSTER_PALETTE[0])
-				}
-				for i, (coord, label, fg) in enumerate(zip(coordinates, cluster_labels, foreground_mask))
-			]
-			display_spot_size = spot_size
-
-		metadata = {
-			"modality_type": "SPOT",
-			"modality_name": modality_name,
-			"spot_size": display_spot_size.tolist(),
-			"color_map": color_map
-		}
-		# Spot coordinates are already in physical space, no scaling needed
-		scale_factors = np.array([1.0, 1.0])
-		return metadata, display_payload, coordinates, scale_factors
+		coordinates, spot_size, foreground, labels, colors = self._load_anndata_spots(filename)
+		unique = label_order(labels)
+		indices = {label: i for i, label in enumerate(unique)}
+		classes = np.fromiter((indices[str(label)] for label in labels), dtype=np.uint32, count=len(labels))
+		metadata = {"modality_type": "SPOT", "modality_name": modality_name,
+			"spot_size": spot_size.tolist(), "color_map": colors,
+			"cluster_labels": unique,
+			"spot_encoding": "FSP1", "spot_count": len(coordinates)}
+		basis = getattr(self, '_spot_basis', None)
+		if basis is not None:
+			metadata['spot_basis'] = basis
+		valid = np.flatnonzero(np.isfinite(coordinates).all(axis=1))
+		if not len(valid):
+			raise ValueError(f"No finite display coordinates in {filename}")
+		# Reorder delivery for mesh culling, preserving every original center and row ID.
+		xy = coordinates[valid]
+		tiles = np.floor((xy - xy.min(axis=0)) / (np.maximum(spot_size, 1e-6) * 32)).astype(np.int64)
+		order = valid[np.lexsort((tiles[:, 1], tiles[:, 0]))]
+		metadata['spot_count'] = len(order)
+		return metadata, pack_spots(coordinates[order], classes[order], foreground[order], order), coordinates, np.array([1.0, 1.0])
 
 	def _prepare_exact_spot_data(self, filename: str, modality_name: str):
-		"""Prepare spot modality data for the GUI in exact-spot mode (microgrid experiments).
-
-		Returns (metadata, display_payload, full_coordinates, scale_factors), like
-		``_prepare_spot_data``.
-
-		Microgrid alignment matches the pattern of foreground spots between grids, so spots are
-		never coarsened: each displayed spot sits at its true position with the true spot size.
-		Cluster labels are ignored and every spot gets class 0, because colouring carries no
-		information here and the GUI still expects a class per spot. Only foreground spots are sent,
-		which keeps the payload tractable for whole-slide acquisitions. The metadata flag
-		``foreground_only`` tells the GUI to replace the foreground filter with a notice. When no
-		spot is foreground, all spots are sent instead so the canvas is never empty.
-
-		``id`` is the original obs index and ``full_coordinates`` is the complete (N, 2) array, so
-		the confirmed transform is applied to every spot exactly as in the coarsened path.
-		"""
-		coordinates, spot_size, foreground_mask, _, _ = self._load_anndata_spots(filename)
-		color = _CLUSTER_PALETTE[0]
-		color_map = {"0": color}
-
-		foreground_only = bool(foreground_mask.any())
-		if foreground_only:
-			indices = np.flatnonzero(foreground_mask)
-		else:
-			logger.warning(f"No foreground spots in {filename}; showing all {len(coordinates)} spots.")
-			indices = np.arange(len(coordinates))
-
-		display_payload = [
-			{
-				"id": int(i),
-				"spatial": coordinates[i].tolist(),
-				"class": 0,
-				"foreground": bool(foreground_mask[i]),
-				"color": color,
-			}
-			for i in indices
-		]
-
-		metadata = {
-			"modality_type": "SPOT",
-			"modality_name": modality_name,
-			"spot_size": spot_size.tolist(),
-			"color_map": color_map,
-			"foreground_only": foreground_only,
-		}
-		return metadata, display_payload, coordinates, np.array([1.0, 1.0])
+		"""Microgrid: foreground spots only, at native positions, in a single class."""
+		coordinates, spot_size, foreground, _, _ = self._load_anndata_spots(filename)
+		foreground_only = bool(foreground.any())
+		indices = np.flatnonzero(foreground) if foreground_only else np.arange(len(coordinates))
+		colors = cluster_colors(['0'])
+		metadata = {"modality_type": "SPOT", "modality_name": modality_name,
+			"spot_size": spot_size.tolist(), "foreground_only": foreground_only,
+			"cluster_labels": ['0'], "color_map": colors,
+			"spot_encoding": "FSP1", "spot_count": len(indices)}
+		payload = pack_spots(coordinates[indices], np.zeros(len(indices), dtype=np.uint32), foreground[indices], indices)
+		return metadata, payload, coordinates, np.array([1.0, 1.0])
 
 	def _prepare_modality_data(self, filename: str, modality_name: str, modality_type: str):
 		"""Dispatch to the appropriate loader based on modality type.
@@ -501,6 +400,50 @@ class DirectMappingAligner:
 		else:
 			raise ValueError(f"Unsupported modality type: {modality_type}")
 
+	def _input_key(self, sample_id):
+		def signature(path):
+			key = cached_fingerprint(path)
+			if key is not None:
+				return key
+			stat = os.stat(path)
+			return [os.path.abspath(path), stat.st_size, stat.st_mtime_ns]
+		return fingerprint({"version": 1, "fixed": signature(self._reference_modality[sample_id]),
+			"moving": signature(self._target_modality[sample_id])})
+
+	def _cache_matches(self, sample_id):
+		path = self._aligned_output_path(sample_id)
+		if not os.path.exists(path):
+			return False
+		if self._target_modality_type in _IMAGE_MODALITIES:
+			return True
+		with h5py.File(path, 'r') as f:
+			if f"obsm/{self._reference_modality_name}_spatial" not in f:
+				return False
+			if ModalityType.ST not in (self._target_modality_type, self._reference_modality_type):
+				return True
+			key = f"uns/focus_alignment_inputs/{self._reference_modality_name}"
+			if key not in f:
+				return False
+			value = f[key][()]
+			value = value.decode() if isinstance(value, bytes) else str(value)
+		return value == self._input_key(sample_id)
+
+	def _fresh_aligned_adata(self, sample_id):
+		# Always refresh counts/labels/metadata from preprocessing. Preserve other pair
+		# coordinates only when observation identity and native geometry still agree.
+		adata = anndata.read_h5ad(self._target_modality[sample_id])
+		path = self._aligned_output_path(sample_id)
+		if os.path.exists(path):
+			old = anndata.read_h5ad(path, backed='r')
+			if (old.obs_names.equals(adata.obs_names) and 'spatial' in old.obsm
+					and np.array_equal(old.obsm['spatial'], adata.obsm['spatial'])):
+				for key, values in old.obsm.items():
+					if key.endswith('_spatial'):
+						adata.obsm[key] = values.copy()
+				adata.uns['focus_alignment_inputs'] = dict(old.uns.get('focus_alignment_inputs', {}))
+			old.file.close()
+		return adata
+
 	# --- Alignment Thread ---
 
 	def _align_dataset_thread(self, **kwargs) -> None:
@@ -510,19 +453,9 @@ class DirectMappingAligner:
 			is_target_image = self._target_modality_type in _IMAGE_MODALITIES
 			samples = self._reporter.tqdm(self._common_samples, *_STEP_ALIGN, unit="sample")
 			for sample_index, sample_id in enumerate(samples):
-				# Check cache (use h5py to avoid loading full AnnData)
-				if not force_recomputing:
-					aligned_target_file = self._aligned_output_path(sample_id)
-					if os.path.exists(aligned_target_file):
-						if is_target_image:
-							self._reporter.cached()
-							continue
-						obsm_key = f'{self._reference_modality_name}_spatial'
-						with h5py.File(aligned_target_file, 'r') as f:
-							obsm = f.get('obsm')
-							if obsm is not None and obsm_key in obsm:
-								self._reporter.cached()
-								continue
+				if not force_recomputing and self._cache_matches(sample_id):
+					self._reporter.cached()
+					continue
 
 				# Prepare data for both modalities
 				ref_metadata, ref_payload, _, ref_scale_factors = self._prepare_modality_data(
@@ -537,7 +470,7 @@ class DirectMappingAligner:
 				)
 
 				# Launch GUI for this sample (blocks until user confirms).
-				# Only the (subsampled) display payload is sent to the browser.
+				# Only the display payload is sent to the browser; full coordinates stay here.
 				alignment_result = self._gui_interface.align_sample(
 					sample_id=sample_id,
 					sample_index=sample_index + 1,
@@ -580,16 +513,14 @@ class DirectMappingAligner:
 		----------
 		alignment_result : dict
 			Payload POSTed by the frontend on /confirm.
-		target_payload : list[dict] | Image.Image
-			The display payload that was sent to the browser (may be a subsampled subset).
+		target_payload : bytes | list[dict] | Image.Image
+			The display payload that was sent to the browser (FSP1 bytes for spot modalities).
 		full_coordinates : np.ndarray | None
 			Full (N, 2) float32 coordinate array for SPOT modalities.  When present and the
-			frontend supplies a ``transform_matrix`` key, the 3×3 affine matrix is applied
-			directly to every spot so that the result covers the entire dataset rather than
-			only the displayed subset.
+			frontend supplies a ``transform_matrix`` key, the 3×3 matrix is applied directly to
+			every spot, so the result never depends on which spots the browser drew.
 		"""
-		# Preferred path: frontend sends the 3×3 affine matrix (added when display is
-		# subsampled so that all spots, not just the displayed ones, are transformed).
+		# Preferred path: frontend sends the 3×3 matrix, applied to every original spot.
 		if "transform_matrix" in alignment_result and full_coordinates is not None:
 			# The frontend serialises a gl-matrix mat3, which is COLUMN-MAJOR, so it must be
 			# reshaped column-first (order="F"). A plain row-major reshape(3, 3) would build the
@@ -608,8 +539,7 @@ class DirectMappingAligner:
 			return transformed.astype(np.float32)
 
 		if "spots" in alignment_result:
-			# Fallback only: SPOT→SPOT / IMAGE→SPOT always send a transform_matrix (handled above),
-			# so this id-indexed path never runs for coarsened displays where "id" is a bin index.
+			# Fallback only: SPOT→SPOT / IMAGE→SPOT always send a transform_matrix (handled above).
 			spots = alignment_result["spots"]
 			# Use the full coordinate count when available so the output array is always
 			# sized to match the AnnData obs dimension, not the (possibly smaller) display subset.
@@ -691,14 +621,10 @@ class DirectMappingAligner:
 			os.makedirs(alignment_folder, exist_ok=True)
 			aligned_file = self._aligned_output_path(sample_id)
 
-			# Load existing aligned file to preserve previously added obsm keys;
-			# fall back to the preprocessed target file on the first pass.
-			if os.path.exists(aligned_file):
-				adata = anndata.read_h5ad(aligned_file)
-			else:
-				adata = anndata.read_h5ad(self._target_modality[sample_id])
+			adata = self._fresh_aligned_adata(sample_id)
 
 			adata.obsm[f'{self._reference_modality_name}_spatial'] = aligned_coords.astype(np.float32)
+			adata.uns.setdefault('focus_alignment_inputs', {})[self._reference_modality_name] = self._input_key(sample_id)
 			write_h5ad_compat(adata, aligned_file, compression=_H5AD_COMPRESSION)
 			del adata
 
@@ -744,6 +670,7 @@ class DirectMappingAligner:
 			Maps sample IDs (and "merged") to aligned file paths.
 		"""
 		aligned_samples: dict[str, str] = {}
+		changed = False
 		obsm_key = f'{self._reference_modality_name}_spatial'
 
 		per_sample = [(sid, f) for sid, f in self._target_modality.items() if sid != "merged"]
@@ -753,26 +680,15 @@ class DirectMappingAligner:
 			os.makedirs(alignment_folder, exist_ok=True)
 			aligned_file = self._aligned_output_path(sample_id)
 
-			# Check if this specific obsm key already exists (may have been set by a previous pass)
-			needs_write = force_recomputing
-			if not needs_write:
-				if os.path.exists(aligned_file):
-					tmp = anndata.read_h5ad(aligned_file)
-					needs_write = obsm_key not in tmp.obsm
-					del tmp
-				else:
-					needs_write = True
-
+			needs_write = force_recomputing or not self._cache_matches(sample_id)
 			if not needs_write:
 				self._reporter.cached()
 			else:
-				# Load existing aligned file to preserve other obsm keys; fall back to preprocessed.
-				if os.path.exists(aligned_file) and not force_recomputing:
-					adata = anndata.read_h5ad(aligned_file)
-				else:
-					adata = anndata.read_h5ad(processed_target_file)
+				adata = self._fresh_aligned_adata(sample_id)
 				adata.obsm[obsm_key] = adata.obsm['spatial'].copy()
+				adata.uns.setdefault('focus_alignment_inputs', {})[self._reference_modality_name] = self._input_key(sample_id)
 				write_h5ad_compat(adata, aligned_file, compression=_H5AD_COMPRESSION)
+				changed = True
 				del adata
 
 		# Build merged dataset
@@ -786,7 +702,7 @@ class DirectMappingAligner:
 		merged_file = MODALITY_ALIGNMENT_MERGED(self._path, self._target_modality_name, "h5ad")
 		aligned_samples["merged"] = merged_file
 
-		rebuild = not os.path.exists(merged_file) or force_recomputing
+		rebuild = not os.path.exists(merged_file) or force_recomputing or changed
 		self._reporter.step(*_STEP_MERGE, cached=not rebuild)
 		if rebuild:
 			alignment_folder = os.path.join(self._path, "merged", "alignment")
@@ -802,18 +718,7 @@ class DirectMappingAligner:
 		"""Return True if at least one sample still needs to be aligned."""
 		if force_recomputing:
 			return len(self._common_samples) > 0
-		is_target_image = self._target_modality_type in _IMAGE_MODALITIES
-		obsm_key = f'{self._reference_modality_name}_spatial'
-		for sample_id in self._common_samples:
-			aligned_target_file = self._aligned_output_path(sample_id)
-			if not os.path.exists(aligned_target_file):
-				return True
-			if not is_target_image:
-				with h5py.File(aligned_target_file, 'r') as f:
-					obsm = f.get('obsm')
-					if obsm is None or obsm_key not in obsm:
-						return True
-		return False
+		return any(not self._cache_matches(sample_id) for sample_id in self._common_samples)
 
 	def needs_merged_build(self) -> bool:
 		"""Return True if per-sample files exist but the merged file is absent."""

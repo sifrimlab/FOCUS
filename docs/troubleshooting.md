@@ -348,6 +348,8 @@ dataset_path/
 - `"force_recomputing": true` in the **reference** modality's `processing_settings`;
 - `"force_recomputing": true` in that **non-reference** modality's `processing_settings`.
 
+A pair involving an ST modality is also re-aligned when ST preprocessing was rebuilt with a different result: a changed ST setting or input file, or the first run on ST outputs written before preprocessing fingerprints existed.
+
 Forcing preprocessing to re-run also invalidates the alignments that depend on it, and the same condition forces that modality's registration.
 
 **Fix:** Set all three to `false` (the default) to reuse cached alignment results. To redo preprocessing only, run it with `force_recomputing: true` once, then set it back before the next run.

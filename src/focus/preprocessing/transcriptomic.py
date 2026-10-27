@@ -1,5 +1,6 @@
 import os
 import gc
+from importlib.metadata import version
 import anndata as ad
 import numpy as np
 import pandas as pd
@@ -8,8 +9,12 @@ import scipy.sparse as sp
 
 from focus.constants import MODALITY_PREPROCESSING, MODALITY_PREPROCESSING_MERGED, STPreprocessingParams
 from focus.utils import write_h5ad_compat, read_merged_sample_ids, concat_on_disk_compat
-from focus.preprocessing._utils import compute_cluster_labels, get_reporter
+from focus.preprocessing._utils import get_reporter
+from focus.preprocessing.st_clustering import spot_cluster_labels
+from focus.preprocessing.st_settings import METHOD_VERSION, clustering_settings
+from focus.provenance import fingerprint, file_digest, cached_fingerprint
 from focus.preprocessing.base import BaseSample, BaseDataset
+from focus.spot_colors import cluster_colors, label_order
 from focus.preprocessing._registry import ModalityHandler, register_modality
 
 
@@ -43,7 +48,6 @@ class SpatialTranscriptomic(BaseSample):
     spatial coordinates in .obsm["spatial"].
     '''
 
-    _LEIDEN_RESOLUTION = 0.5
     _NORMALIZE_TARGET_SUM = 1e4
     _DEFAULT_SPOT_SIZE = np.array([1.0, 1.0], dtype=np.float32)
     _H5AD_COMPRESSION = "gzip"
@@ -57,10 +61,16 @@ class SpatialTranscriptomic(BaseSample):
         super().__init__(source_path, sample_id, modality_name)
         self.input_path = os.path.join(source_path, sample_id, modality_name)
 
+    def _input_file(self):
+        files = sorted(os.path.join(self.input_path, f) for f in os.listdir(self.input_path) if f.endswith('.h5ad'))
+        if not files:
+            raise FileNotFoundError(f"No .h5ad file found in {self.input_path}")
+        return files[0]
+
     def load_data(self) -> ad.AnnData:
         '''
         Load spatial transcriptomic data from the source path.
-        The first .h5ad file found in the sample directory is loaded.
+        The first .h5ad file in sorted filename order in the sample directory is loaded.
         Validates that .obsm["spatial"] exists and normalizes .uns["spot_size"].
 
         Returns
@@ -69,14 +79,7 @@ class SpatialTranscriptomic(BaseSample):
             The loaded and validated AnnData object.
         '''
 
-        adata = None
-        for file in os.listdir(self.input_path):
-            if file.endswith('.h5ad'):
-                adata = sc.read_h5ad(os.path.join(self.input_path, file))
-                break
-
-        if adata is None:
-            raise FileNotFoundError(f"No .h5ad file found in {self.input_path}")
+        adata = sc.read_h5ad(self._input_file())
 
         # Validate spatial coordinates
         if "spatial" not in adata.obsm:
@@ -86,8 +89,15 @@ class SpatialTranscriptomic(BaseSample):
             )
         adata.obsm["spatial"] = np.asarray(adata.obsm["spatial"], dtype=np.float32)
 
+        coords = adata.obsm["spatial"]
+        if coords.shape != (adata.n_obs, 2) or not np.isfinite(coords).all():
+            raise ValueError("ST spatial coordinates must be finite with shape (n_obs, 2)")
+
         # Normalize spot_size to a float32 array of shape (2,)
         adata.uns["spot_size"] = self._normalize_spot_size(adata.uns.get("spot_size", None))
+
+        if not np.isfinite(adata.uns["spot_size"]).all() or np.any(adata.uns["spot_size"] <= 0):
+            raise ValueError("spot_size must contain positive finite dimensions")
 
         # Ensure .X is sparse CSR for memory efficiency (preserve dtype; convert CSC/COO too)
         if not sp.issparse(adata.X):
@@ -130,6 +140,14 @@ class SpatialTranscriptomic(BaseSample):
         remove_mitochondrial_genes: bool = False,
         total_counts_normalize: bool = False,
         log1p_transform: bool = False,
+        clustering_min_counts: int = 50,
+        clustering_min_genes: int = 20,
+        clustering_n_top_genes: int = 2000,
+        clustering_n_pcs: int = 50,
+        clustering_n_neighbors: int = 15,
+        clustering_resolution: float = 0.5,
+        clustering_random_state: int = 0,
+        clustering_max_units: int = 250_000,
         force_recomputing: bool = False,
         step_reporter=None
         ) -> str:
@@ -142,10 +160,9 @@ class SpatialTranscriptomic(BaseSample):
         3. Filter spots by count/gene thresholds (opt-in)
         4. Compute QC metrics (scanpy.pp.calculate_qc_metrics) on the retained spots
         5. Optionally remove mitochondrial genes (opt-in, uses the .var["mt"] QC flag)
-        6. Cluster labels (spatial-bin aggregation + Leiden) on an internal normalized
-           representation → .obs["cluster"] (the aggregated matrix and clustering intermediates
-           such as PCA / neighbour graph are not persisted; large samples are coarsened onto a
-           spatial grid — spots in a bin summed into one pseudo-spot — to stay fast)
+        6. Alignment labels on a clustering-only normalized/HVG copy, on native spots or (large or
+           sparse samples) lattice blocks / Voronoi supercells; eligibility and provenance are
+           persisted, analytical intermediates and units discarded
         7. Store filtered raw counts in .layers["raw"] (only when normalization is applied;
            otherwise .X already holds the raw counts, so the layer is omitted to avoid a duplicate)
         8. Normalize .X (total counts + log1p, both opt-in)
@@ -197,7 +214,25 @@ class SpatialTranscriptomic(BaseSample):
         reporter = step_reporter or get_reporter()
         output_file = MODALITY_PREPROCESSING(self.source_path, self.sample_id, self.modality_name, "h5ad")
 
-        if not force_recomputing and os.path.exists(output_file):
+        cluster_params = clustering_settings({
+            "clustering_min_counts": clustering_min_counts,
+            "clustering_min_genes": clustering_min_genes,
+            "clustering_n_top_genes": clustering_n_top_genes,
+            "clustering_n_pcs": clustering_n_pcs,
+            "clustering_n_neighbors": clustering_n_neighbors,
+            "clustering_resolution": clustering_resolution,
+            "clustering_random_state": clustering_random_state,
+            "clustering_max_units": clustering_max_units,
+        })
+        cache_key = fingerprint({"method": METHOD_VERSION, "input_sha256": file_digest(self._input_file()),
+            "sample_id": self.sample_id, "modality": self.modality_name,
+            "settings": {"min_count_per_spot": min_count_per_spot, "max_count_per_spot": max_count_per_spot,
+                "min_genes_per_spot": min_genes_per_spot, "max_genes_per_spot": max_genes_per_spot,
+                "remove_mitochondrial_genes": remove_mitochondrial_genes,
+                "total_counts_normalize": total_counts_normalize, "log1p_transform": log1p_transform,
+                **cluster_params}, "software": {name: version(name) for name in ("scanpy", "numpy", "scipy", "scikit-learn", "igraph")}})
+        self.preprocessing_changed = force_recomputing or cached_fingerprint(output_file) != cache_key
+        if not self.preprocessing_changed:
             reporter.cached()
             return output_file
 
@@ -254,18 +289,14 @@ class SpatialTranscriptomic(BaseSample):
         if adata.obs.index.name in adata.obs.columns:
             adata.obs.index.name = None
 
-        # 6. Per-sample cluster labels for alignment colouring (spatial-bin aggregation + Leiden).
-        # Computed on an internal normalized representation so labels are meaningful regardless
-        # of the output normalization flags; the aggregated/normalized matrix and PCA / neighbour
-        # intermediates are throwaway and never persisted. Runs before normalization so it reads
-        # raw counts straight from .X. Large samples are coarsened onto a spatial grid (spots in a
-        # bin summed into one pseudo-spot) to stay fast and signal-rich (see compute_cluster_labels).
-        cluster_labels = compute_cluster_labels(
-            adata.X,
-            leiden_resolution=self._LEIDEN_RESOLUTION,
-            normalize_target_sum=self._NORMALIZE_TARGET_SUM,
-            coordinates=adata.obsm.get('spatial'),
-        )
+        # Independent analytical copy: original observations and genes are retained in .X.
+        # Large or sparse samples are clustered on lattice blocks / supercells (in memory only).
+        cluster_labels, eligible, provenance = spot_cluster_labels(
+            adata.X, adata.var_names, adata.obsm['spatial'], adata.obs, adata.uns['spot_size'],
+            cluster_params, reporter)
+        adata.obs['clustering_eligible'] = eligible
+        adata.uns['focus_clustering'] = provenance
+        adata.uns['focus_preprocessing_fingerprint'] = cache_key
 
         # 7. Store filtered, post-feature-selection raw counts (FOCUS convention) ONLY when
         # normalization will modify .X. With no normalization (the default), .X already holds
@@ -282,7 +313,10 @@ class SpatialTranscriptomic(BaseSample):
 
         # 9. Set metadata
         adata.obs['sample_id'] = pd.Categorical([self.sample_id] * adata.n_obs)
-        adata.obs['cluster'] = pd.Categorical(cluster_labels)
+        categories = label_order(cluster_labels)
+        adata.obs['cluster'] = pd.Categorical(cluster_labels, categories=categories)
+        colors = cluster_colors(categories)
+        adata.uns['cluster_colors'] = [colors[label] for label in categories]
         adata.obsm["spatial"] = np.asarray(adata.obsm["spatial"], dtype=np.float32)
 
         # Guarantee sparse CSR storage, then save with gzip compression
@@ -314,6 +348,14 @@ class SpatialTranscriptomicDataset(BaseDataset):
         remove_mitochondrial_genes: bool = False,
         total_counts_normalize: bool = False,
         log1p_transform: bool = False,
+        clustering_min_counts: int = 50,
+        clustering_min_genes: int = 20,
+        clustering_n_top_genes: int = 2000,
+        clustering_n_pcs: int = 50,
+        clustering_n_neighbors: int = 15,
+        clustering_resolution: float = 0.5,
+        clustering_random_state: int = 0,
+        clustering_max_units: int = 250_000,
         force_recomputing: bool = False,
         step_reporter=None
     ) -> dict[str, str]:
@@ -378,6 +420,16 @@ class SpatialTranscriptomicDataset(BaseDataset):
         if min_count_spots_ratio_per_gene is not None and min_count_spots_ratio_per_gene <= 0:
             raise ValueError("min_count_spots_ratio_per_gene must be greater than 0.")
 
+        cluster_params = clustering_settings({
+            "clustering_min_counts": clustering_min_counts,
+            "clustering_min_genes": clustering_min_genes,
+            "clustering_n_top_genes": clustering_n_top_genes,
+            "clustering_n_pcs": clustering_n_pcs,
+            "clustering_n_neighbors": clustering_n_neighbors,
+            "clustering_resolution": clustering_resolution,
+            "clustering_random_state": clustering_random_state,
+            "clustering_max_units": clustering_max_units,
+        })
         reporter = step_reporter or get_reporter()
 
         # ---- Step 1: Preprocess each sample (cache-aware) ----
@@ -392,6 +444,7 @@ class SpatialTranscriptomicDataset(BaseDataset):
                 remove_mitochondrial_genes=remove_mitochondrial_genes,
                 total_counts_normalize=total_counts_normalize,
                 log1p_transform=log1p_transform,
+                **cluster_params,
                 force_recomputing=force_recomputing,
                 step_reporter=reporter
             )
@@ -400,25 +453,29 @@ class SpatialTranscriptomicDataset(BaseDataset):
         reporter.step(2, 2, "Building combined dataset")
 
         merged_file = MODALITY_PREPROCESSING_MERGED(self.dataset_source_path, self.samples[0].modality_name, "h5ad")
+        os.makedirs(os.path.dirname(merged_file), exist_ok=True)
 
-        # Cache check before loading per-sample files into memory
-        # Also validate that the merged file contains exactly the active samples.
-        if not force_recomputing and os.path.exists(merged_file):
-            active_ids = {s.sample_id for s in self.samples}
-            merged_ids = read_merged_sample_ids(merged_file)
-            if merged_ids == active_ids:
-                reporter.cached()
-                processed_samples["merged"] = merged_file
-                return processed_samples
+        sample_keys = {sid: cached_fingerprint(file) for sid, file in processed_samples.items()}
+        merged_key = fingerprint({"method": METHOD_VERSION, "samples": sample_keys,
+            "min_spots_per_gene": min_spots_per_gene,
+            "min_count_spots_ratio_per_gene": min_count_spots_ratio_per_gene,
+            "total_counts_normalize": total_counts_normalize, "log1p_transform": log1p_transform})
+        samples_changed = any(getattr(sample, 'preprocessing_changed', True) for sample in self.samples)
+        if not force_recomputing and not samples_changed and cached_fingerprint(merged_file) == merged_key:
+            reporter.cached()
+            processed_samples["merged"] = merged_file
+            return processed_samples
 
         # ---- Collect per-sample spot sizes via backed reads (no .X materialized) ----
         spot_sizes: dict[str, np.ndarray] = {}
+        clustering_provenance = {}
         for sample in self.samples:
             a = sc.read_h5ad(processed_samples[sample.sample_id], backed='r')
             spot_sizes[sample.sample_id] = np.asarray(
                 a.uns.get("spot_size", SpatialTranscriptomic._DEFAULT_SPOT_SIZE.copy()),
                 dtype=np.float32,
             )
+            clustering_provenance[sample.sample_id] = dict(a.uns.get("focus_clustering", {}))
             if a.file is not None:
                 a.file.close()
 
@@ -446,6 +503,7 @@ class SpatialTranscriptomicDataset(BaseDataset):
         # NOTE: a stale per-sample cache from a run with different normalization flags could
         # make this inconsistent — pair any flag change with force_recomputing=True.
         combined.X = combined.layers.pop('raw', combined.X)
+        combined.uns.pop("log1p", None)
 
         # Ensure .X is sparse CSR for efficient row-based filter operations (preserve dtype).
         _ensure_sparse_csr(combined)
@@ -485,9 +543,14 @@ class SpatialTranscriptomicDataset(BaseDataset):
 
         # ---- Set output metadata ----
         combined.obs['sample_id'] = pd.Categorical(combined.obs['sample_id'])
-        combined.obs['cluster'] = pd.Categorical(combined.obs['cluster'])
+        categories = label_order(combined.obs['cluster'].astype(str).to_numpy())
+        combined.obs['cluster'] = pd.Categorical(combined.obs['cluster'], categories=categories)
+        colors = cluster_colors(categories)
+        combined.uns['cluster_colors'] = [colors[label] for label in categories]
         combined.obsm["spatial"] = np.asarray(combined.obsm["spatial"], dtype=np.float32)
         combined.uns["spot_size"] = {sid: ss.tolist() for sid, ss in spot_sizes.items()}
+        combined.uns["focus_clustering"] = clustering_provenance
+        combined.uns["focus_preprocessing_fingerprint"] = merged_key
 
         # Guarantee sparse CSR storage, then save with gzip compression
         reporter.detail("Saving combined dataset")
@@ -569,6 +632,7 @@ def _create_st_dataset(path, samples, settings):
 
 def _extract_st_settings(settings):
     return {
+        **clustering_settings(settings),
         'min_count_per_spot': settings.get(STPreprocessingParams.MIN_COUNT_PER_SPOT, None),
         'max_count_per_spot': settings.get(STPreprocessingParams.MAX_COUNT_PER_SPOT, None),
         'min_genes_per_spot': settings.get(STPreprocessingParams.MIN_GENES_PER_SPOT, None),

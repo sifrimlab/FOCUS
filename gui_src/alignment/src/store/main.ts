@@ -4,6 +4,8 @@ import type { SampleStatus, Metadata, SpotModalityPayload } from '../api/types';
 import { mat3 } from 'gl-matrix';
 import { createIdentity } from '../utils/matrix';
 import { computeExportPayload } from '../utils/export';
+import { markRaw } from 'vue';
+import { decodeSpots } from '../api/packedSpots';
 
 export type CommandType =
   | 'zoom' | 'rotate' | 'flip' | 'reset' | 'resetDistort'
@@ -101,11 +103,11 @@ export const useMainStore = defineStore('main', {
 
         // Fetch payloads
         const [refData, tgtData] = await Promise.all([
-          api.getPayload('reference', refMeta.modality_type === 'IMAGE' ? 'blob' : 'json'),
-          api.getPayload('target', tgtMeta.modality_type === 'IMAGE' ? 'blob' : 'json'),
+          api.getPayload('reference', refMeta.modality_type === 'IMAGE' ? 'blob' : refMeta.spot_encoding ? 'arraybuffer' : 'json'),
+          api.getPayload('target', tgtMeta.modality_type === 'IMAGE' ? 'blob' : tgtMeta.spot_encoding ? 'arraybuffer' : 'json'),
         ]);
-        this.referenceData = refData;
-        this.targetData = tgtData;
+        this.referenceData = refMeta.spot_encoding ? markRaw(decodeSpots(refData)) : refData;
+        this.targetData = tgtMeta.spot_encoding ? markRaw(decodeSpots(tgtData)) : tgtData;
 
         // Reset transform
         this.targetTransform = createIdentity();
@@ -123,6 +125,7 @@ export const useMainStore = defineStore('main', {
         
         const extractClasses = (data: any, meta: Metadata) => {
             if (meta.modality_type === 'SPOT') {
+                if (meta.cluster_labels) return meta.cluster_labels.map((_, i) => i);
                 const spots = data as SpotModalityPayload;
                 if (!Array.isArray(spots)) {
                     console.error('fetchNextSample: SPOT payload is not an array', typeof spots, spots);
@@ -135,12 +138,12 @@ export const useMainStore = defineStore('main', {
         };
 
         if (refMeta.modality_type === 'SPOT') {
-             const refClasses = extractClasses(refData, refMeta);
+             const refClasses = extractClasses(this.referenceData, refMeta);
              this.referenceSpotClasses = refClasses;
              this.referenceClassFilter = [...refClasses];
         }
         if (tgtMeta.modality_type === 'SPOT') {
-             const tgtClasses = extractClasses(tgtData, tgtMeta);
+             const tgtClasses = extractClasses(this.targetData, tgtMeta);
              this.targetSpotClasses = tgtClasses;
              this.targetClassFilter = [...tgtClasses];
         }
@@ -183,7 +186,9 @@ export const useMainStore = defineStore('main', {
                 this.referenceMeta,
                 this.targetMeta,
                 this.referenceData,
-                this.targetData,
+                // Native binary spots are transformed in full on the backend. Export the
+                // same matrix without constructing a massive redundant JSON spot list.
+                this.targetMeta.spot_encoding && this.targetMeta.modality_type === 'SPOT' ? [] : this.targetData,
                 this.targetTransform,
                 this.referenceTransform
             );

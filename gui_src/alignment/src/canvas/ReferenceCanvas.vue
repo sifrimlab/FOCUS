@@ -13,9 +13,12 @@ import { applyViewTransform } from './viewTransform';
 import { referenceImagePlacement, referenceSpotFitMatrix } from './layerFit';
 import { drawReferenceSpots } from './spotLayer';
 import { applyReferenceContentTransform } from './contentTransform';
+import { NativeSpotLayer } from './nativeSpotLayer';
+import { classColor } from '../utils/colors';
 
 const container = ref<HTMLElement | null>(null);
 const store = useMainStore();
+let nativeSpots: NativeSpotLayer | null = null;
 
 const fitSpots = (width: number, height: number) =>
   referenceSpotFitMatrix(width, height, store.referenceMeta, store.referenceData, store.referenceSpotSize);
@@ -51,6 +54,7 @@ const updateViewTransform = () => {
   if (!v || !app || !app.renderer) return;
   const { width, height } = app.screen;
   applyViewTransform(v, { width, height, zoom: store.globalZoom, offset: store.viewOffset });
+  nativeSpots?.cull(app.screen);
 };
 
 const render = async () => {
@@ -75,7 +79,9 @@ const updateContent = async () => {
   const content = layer.content();
   if (!app || !content) return;
 
-  content.removeChildren();
+  const children = content.removeChildren();
+  children.forEach(child => child.destroy({ children: true }));
+  nativeSpots = null;
   // Reset the container transform; IMAGE positions its sprite directly,
   // SPOT drives it through store.referenceTransform.
   content.position.set(0, 0);
@@ -111,18 +117,27 @@ const updateContent = async () => {
     const spots = store.referenceData as SpotModalityPayload;
     if (!spots || spots.length === 0) return;
 
-    const graphics = new Graphics();
-    content.addChild(graphics);
-
     store.setReferenceSpotBoost(1.0);
-    drawReferenceSpots(graphics, spots, {
+    const style = {
       spotSize: store.referenceSpotSize,
       boost: store.commonSpotBoost,
       classFilter: store.referenceClassFilter,
       foregroundMode: store.referenceForegroundMode,
-    });
+      basis: store.referenceMeta.spot_basis,
+      colorOf: (cls: number) => classColor(store.referenceMeta, cls, false),
+    };
+    if (store.referenceMeta.spot_encoding) {
+      nativeSpots = new NativeSpotLayer(spots, store.referenceMeta, false);
+      content.addChild(nativeSpots);
+      nativeSpots.update(style);
+    } else {
+      const graphics = new Graphics();
+      content.addChild(graphics);
+      drawReferenceSpots(graphics, spots, style);
+    }
 
     applyReferenceContentTransform(content, store.referenceTransform);
+    nativeSpots?.cull(app.screen);
     if (app && app.renderer) app.render();
   }
 };

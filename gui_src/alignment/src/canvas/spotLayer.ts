@@ -11,6 +11,8 @@ import { projectiveTransformPoint } from '../utils/matrix';
 import { getReferenceColor, getTargetColor } from '../utils/colors';
 
 export interface SpotStyle {
+  basis?: [[number, number], [number, number]];
+  colorOf?: (cls: number) => string;
   spotSize: [number, number];
   boost: number;
   classFilter: number[];
@@ -30,7 +32,7 @@ export function drawTargetSpots(g: Graphics, data: SpotModalityPayload, style: S
     if (!style.classFilter.includes(spot.class)) continue;
     if (style.foregroundMode === 'foreground' && !spot.foreground) continue;
     if (style.foregroundMode === 'background' && spot.foreground) continue;
-    const color = getTargetColor(spot.class);
+    const color = style.colorOf?.(spot.class) ?? getTargetColor(spot.class);
     const lx = spot.spatial[0]; const ly = spot.spatial[1];
     if (projective) {
       const c0 = projectiveTransformPoint(m, lx - drawRx/2, ly - drawRy/2);
@@ -58,7 +60,7 @@ export function drawReferenceSpots(g: Graphics, spots: SpotModalityPayload, styl
     if (style.foregroundMode === 'background') isForegroundVisible = !spot.foreground;
     if (!isClassVisible || !isForegroundVisible) return;
 
-    const color = getReferenceColor(spot.class);
+    const color = style.colorOf?.(spot.class) ?? getReferenceColor(spot.class);
     g.rect(spot.spatial[0] - drawRx / 2, spot.spatial[1] - drawRy / 2, drawRx, drawRy);
     g.fill(color);
   });

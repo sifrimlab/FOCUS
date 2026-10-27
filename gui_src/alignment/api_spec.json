@@ -2,7 +2,7 @@
   "info": {
     "title": "Direct Mapping GUI API",
     "description": "API specification for the backend service supporting the Direct Mapping GUI application. The backend is responsible for serving dataset samples (images or spot data) and receiving alignment results.",
-    "version": "1.0.0"
+    "version": "2.0.0"
   },
   "server": {
     "url": "http://localhost:8000",
@@ -98,6 +98,20 @@
                   "scaling_factor": {
                     "type": "number",
                     "description": "Optional scaling factor applied to the data"
+                  },
+                  "spot_encoding": {
+                    "type": "string",
+                    "enum": ["FSP1"]
+                  },
+                  "spot_count": { "type": "integer" },
+                  "cluster_labels": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "Internal class index to saved cluster label"
+                  },
+                  "spot_basis": {
+                    "type": "array",
+                    "description": "Optional validated pair of unit acquisition axes"
                   }
                 },
                 "required": ["modality_type", "modality_name"]
@@ -130,8 +144,12 @@
             "image/*": {
               "description": "Binary image data (if modality_type is IMAGE)"
             },
+            "application/octet-stream": {
+              "description": "FSP1: LE header magic/count/version/reserved (16 bytes), then xy float32[2N], class uint32[N], original ID uint32[N], foreground uint8[N]. 17 bytes per native spot; no pooling.",
+              "schema": { "type": "string", "format": "binary" }
+            },
             "application/json": {
-              "description": "JSON array of spots (if modality_type is SPOT)",
+              "description": "Legacy JSON spot array when spot_encoding is absent",
               "schema": {
                 "type": "array",
                 "items": {
@@ -161,7 +179,7 @@
       "path": "/confirm",
       "method": "POST",
       "summary": "Submit Alignment Result",
-      "description": "Submits the result of the manual alignment. The payload structure varies based on the Reference-Target modality pair.",
+      "description": "Submits the result of the manual alignment. The payload structure varies based on the Reference-Target modality pair. Native spot payloads return transform_matrix (column-major 3x3) and may omit the redundant spots list. The backend transforms every original observation.",
       "requestBody": {
         "required": true,
         "content": {

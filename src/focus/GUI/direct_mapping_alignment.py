@@ -2,7 +2,7 @@ import os, time, math, threading
 from PIL import Image
 from io import BytesIO
 
-from flask import Flask, request, jsonify, send_file, send_from_directory
+from flask import Flask, request, jsonify, send_file, send_from_directory, Response
 from flask.json.provider import DefaultJSONProvider
 from werkzeug.serving import make_server
 
@@ -181,6 +181,8 @@ class DirectMappingAlignmentGUI:
                 else:
                      return jsonify({"message": "Invalid payload type for IMAGE"}), 500
             elif modality_type == 'SPOT':
+                if isinstance(payload, bytes):
+                    return Response(payload, mimetype='application/octet-stream')
                 return jsonify(payload)
             else:
                 return jsonify({"message": f"Unknown modality type: {modality_type}"}), 500

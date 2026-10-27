@@ -360,6 +360,14 @@ Example:
 
 | Field | Type | Default |
 |---|---|---|
+| `clustering_min_counts` | int | `50` |
+| `clustering_min_genes` | int | `20` |
+| `clustering_n_top_genes` | int | `2000` |
+| `clustering_n_pcs` | int | `50` |
+| `clustering_n_neighbors` | int | `15` |
+| `clustering_resolution` | float | `0.5` |
+| `clustering_random_state` | int | `0` |
+| `clustering_max_units` | int | `250000` |
 | `min_count_per_spot` | int or null | `null` |
 | `max_count_per_spot` | int or null | `null` |
 | `min_genes_per_spot` | int or null | `null` |
@@ -371,6 +379,7 @@ Example:
 | `log1p_transform` | bool | `false` |
 | `force_recomputing` | bool | `false` |
 
+- `clustering_*`: configure alignment clustering, independently of output filtering/normalization. `clustering_max_units` caps the number of clustered units; larger samples, and samples whose median spot is below `clustering_min_counts`, are clustered on lattice blocks or Voronoi supercells. Observations below the clustering-only 50-UMI/20-gene defaults are retained as `unassigned`. See [ST clustering settings](../modalities/transcriptomics.md#clustering-settings).
 - `remove_mitochondrial_genes`: when `true`, drops mitochondrial genes (flagged by a case-insensitive `MT-`/`MT.` name prefix) from the feature set. Applied per sample, before merging, and after QC metrics are computed, so `pct_counts_mt` still describes the matrix before removal.
 - `min_spots_per_gene`: minimum fraction of a sample's spots that must express a gene for that sample to count as passing. Must satisfy `0 < value < 1`.
 - `min_count_spots_ratio_per_gene`: minimum ratio of a gene's total counts to the number of spots expressing it, per sample. Must be `> 0`. Samples where the gene is unexpressed count as neither pass nor fail.

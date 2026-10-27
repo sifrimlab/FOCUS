@@ -198,7 +198,7 @@ Each main pipeline stage has an accent, cool to warm along the run, so the stage
 | `--layer-reference` | `#d97706` | `#fbbf24` | Identity dot of the fixed layer (warm, like its cluster palette) |
 
 - The layer marks are dots only and always sit next to the layer name.
-- The cluster palettes (`alignment/src/utils/colors.ts`) are data colors, outside this system.
+- The cluster palettes (`alignment/src/utils/colors.ts`) are data colors, outside this system. The fixed layer uses the warm palette and the moving layer the cool one, so two unrelated partitions never share a color. Past 16 classes a palette continues inside its hue band instead of cycling. Unassigned observations are neutral gray in both layers. Canvas marks and filter chips read the same function (`classColor`), and the chips show the saved cluster labels.
 - Pixi draws with the token values: `canvas/canvasPalette.ts` resolves them through a probe element and re-reads them when the theme changes.
 
 ### 3.4 Contrast

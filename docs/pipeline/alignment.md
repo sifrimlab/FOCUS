@@ -100,7 +100,8 @@ The window is split into a display viewport (80% of the width) and a control pan
 - The reference layer moves; the target layer is fixed and defines the coordinate space
 - For image modalities, the lowest pyramid level of the OME-TIFF is displayed
 - For spot modalities, spots are coloured by their `obs['cluster']` label
-- Above 100,000 spots the display is coarsened: spots are aggregated onto a uniform grid of at most 100,000 bins and one marker per occupied bin is drawn at the bin centre, sized to the grid pitch. This affects the display only. The confirmed transform is applied to every original spot
+- Native spot centers and sizes are retained at every observation count. Compact binary payloads, bounded GPU meshes and viewport culling replace display pooling. Validated acquisition metadata preserves HD square orientation. The confirmed transform still applies to every original observation
+- Cluster filters show the saved labels and use the canvas colors. The fixed layer uses a warm palette and the moving layer a cool palette, extended without cycling; unassigned observations are neutral gray
 
 **Control panel**, top to bottom:
 
@@ -210,13 +211,16 @@ Before launching the GUI, FOCUS checks each sample of the pair for an existing a
 - **spot reference**: the aligned `.h5ad` exists **and** already contains `obsm['{target_name}_spatial']`;
 - **image reference**: the aligned `.ome.tiff` exists.
 
+When either modality of the pair is ST, the aligned `.h5ad` must also record in `.uns['focus_alignment_inputs']` the preprocessing fingerprints of both inputs, and they must equal the current ones.
+
 If every sample of the pair passes, the GUI is skipped. When the per-sample files are present but the merged file is missing, FOCUS rebuilds the merged file without opening the GUI.
 
 A pair is re-aligned when **any** of these is `true`:
 
 - `alignment_force_recomputing` on that non-reference modality;
 - `processing_settings.force_recomputing` on the **reference** modality;
-- `processing_settings.force_recomputing` on that **non-reference** modality.
+- `processing_settings.force_recomputing` on that **non-reference** modality;
+- the reference or non-reference modality is ST and its merged preprocessing fingerprint changed in this run (see [Caching](preprocessing.md#caching)).
 
 The same condition also forces that modality's registration, so re-running preprocessing with `force_recomputing: true` re-opens the alignment GUI and recomputes registration for the affected pairs.
 

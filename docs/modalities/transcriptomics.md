@@ -64,9 +64,9 @@ dataset_root/
 
 ### Per-sample steps
 
-Run by `SpatialTranscriptomic.preprocess_data()`. If the sample's output file already exists and `force_recomputing` is `False`, the cached path is returned and none of the steps below run.
+Run by `SpatialTranscriptomic.preprocess_data()`. A cached file is reused only when its input-content, effective settings, method and software fingerprint matches; legacy outputs are rebuilt. `force_recomputing=True` always rebuilds.
 
-1. **Load and validate**: the first `.h5ad` file found in the sample directory is loaded (`os.listdir` order; a directory holding more than one `.h5ad` gives no guarantee about which is used). A missing `.obsm['spatial']` raises `ValueError`; present coordinates are cast to `float32`. The spot size is read from `.uns['spot_size']` and normalised to a `(2,)` `float32` array: a scalar or 1-element array is broadcast to `[v, v]`, a 2-element array is kept, anything longer raises `ValueError`, and a missing value becomes `[1.0, 1.0]`. `.X` is converted to sparse CSR if it is not already, preserving dtype.
+1. **Load and validate**: the first `.h5ad` file in sorted filename order is loaded (provide one file per sample to avoid ambiguity). A missing `.obsm['spatial']` raises `ValueError`; present coordinates are cast to `float32`. The spot size is read from `.uns['spot_size']` and normalised to a `(2,)` `float32` array: a scalar or 1-element array is broadcast to `[v, v]`, a 2-element array is kept, anything longer raises `ValueError`, and a missing value becomes `[1.0, 1.0]`. `.X` is converted to sparse CSR if it is not already, preserving dtype.
 
 2. **Mitochondrial flag**: `.var['mt']` is set by a case-insensitive `MT-`/`MT.` name prefix. Detection is name-based, so datasets keyed by Ensembl IDs are not flagged.
 
@@ -78,7 +78,7 @@ Run by `SpatialTranscriptomic.preprocess_data()`. If the sample's output file al
 
 6. **Observation names**: prefixed with `<sample_id>_`, unless every name already carries that prefix.
 
-7. **Cluster labels**: written to `.obs['cluster']` and used to colour spots in the alignment GUI. Computed by `compute_cluster_labels` on `.X` as it stands at this point (post-filter, post-removal, still raw counts). Samples above 100,000 spots are first coarsened: a uniform spatial grid of at most 100,000 cells is laid over `.obsm['spatial']`, and all spots in a cell are summed into one pseudo-spot. The run matrix is then normalised to 10 000 counts and `log1p`-transformed on a throwaway copy, followed by PCA (`n_comps = min(50, n_rows-1, n_genes-1)`) → kNN graph (`n_neighbors = min(15, n_rows-1)`) → Leiden (`resolution=0.5`, `flavor="igraph"`, `n_iterations=2`, `directed=False`). Each cell's label propagates back to every spot it contains. Fewer than 2 run rows, fewer than 2 usable PCs, or a single resulting cluster all yield the single label `'0'`. Only `.obs['cluster']` is persisted; the coarsened matrix, PCA embedding and neighbour graph are discarded. PCA and Leiden run with `random_state=0`.
+7. **Cluster labels**: computed on clustering units. Samples with at most `clustering_max_units` spots (default 250,000) whose median spot holds at least `clustering_min_counts` UMIs are clustered spot by spot. Larger or sparser samples are grouped into k x k blocks of the acquisition lattice (`array_row`/`array_col`), or into Voronoi supercells when there is no lattice; every spot takes its unit's label. A clustering-only copy is normalized to 10,000 counts, log-transformed and restricted to highly variable genes before PCA → neighbors → Leiden. Default eligibility is 50 UMIs and 20 detected genes per unit; spots of ineligible units remain in the output as `unassigned`, with `.obs['clustering_eligible']=False`. These are configurable display-analysis thresholds, not universal tissue QC cutoffs. Zero-count observations never form clusters. See [the scientific methods](../scientific/st_methods.md#36-per-sample-clustering) for the exact procedure and provenance.
 
 8. **Raw counts layer**: `.layers['raw']` is written with a copy of `.X` **only when** `total_counts_normalize` or `log1p_transform` is enabled. With both off, `.X` already holds the raw counts and no layer is created.
 
@@ -88,7 +88,7 @@ Run by `SpatialTranscriptomic.preprocess_data()`. If the sample's output file al
 
 ### Dataset-level steps
 
-Run by `SpatialTranscriptomicDataset.process_dataset()` after every sample has been through the steps above. If the merged file exists, `force_recomputing` is `False`, **and** its `.obs['sample_id']` set equals the active sample set, the cached merged file is returned instead.
+Run by `SpatialTranscriptomicDataset.process_dataset()` after every sample has been through the steps above. If `force_recomputing` is `False`, no sample was rebuilt in this run, **and** the merged file's `.uns['focus_preprocessing_fingerprint']` matches the per-sample fingerprints (which fix the active sample set) and the gene-filter and normalization settings, the cached merged file is returned instead.
 
 1. **Collect spot sizes**: read from each per-sample file with a backed read, so `.X` is never materialised.
 
@@ -135,6 +135,28 @@ For the ratio criterion, samples in which a gene is not expressed at all are nei
 |------|------|---------|-------------|
 | `total_counts_normalize` | `bool` | `False` | Normalise each spot to 10 000 total counts |
 | `log1p_transform` | `bool` | `False` | Apply log(x + 1) transform after normalisation |
+
+### Clustering settings
+
+These settings affect alignment labels only; they do not delete observations or genes from `.X`.
+
+| Name | Default | Meaning |
+|------|---------|---------|
+| `clustering_min_counts` | 50 | Minimum UMIs for clustering eligibility |
+| `clustering_min_genes` | 20 | Minimum detected genes for clustering eligibility |
+| `clustering_n_top_genes` | 2000 | Maximum HVG target; limited by available features |
+| `clustering_n_pcs` | 50 | Maximum PCA dimensions |
+| `clustering_n_neighbors` | 15 | Neighbor count, limited by eligible observations |
+| `clustering_resolution` | 0.5 | Positive Leiden resolution |
+| `clustering_random_state` | 0 | Nonnegative seed for PCA, neighbors, Leiden and Voronoi seeds |
+| `clustering_max_units` | 250000 | Maximum number of units clustered (at least 1,000); larger samples are coarsened |
+
+`clustering_min_counts` also sets the signal criterion of the unit planner: a sample whose
+median spot holds fewer UMIs is clustered on lattice blocks or supercells large enough to reach
+it. Lowering the threshold therefore keeps sparse samples at a finer resolution, with more
+`unassigned` spots. A setting of 1 permits positive low-count units; zero counts remain unassigned. Inspect depth dependence,
+marker enrichment and parameter sensitivity rather than choosing parameters for visual smoothness.
+HVG selection follows Scanpy's dispersion implementation and can include ties at the target cutoff.
 
 ### Other
 
@@ -214,7 +236,11 @@ Path: `<sample_id>/preprocessing/<modality_name>/<modality_name>_<sample_id>_pro
 | `.var['mt']` | Boolean mitochondrial flag (all `False` when `remove_mitochondrial_genes` was enabled) |
 | `.obsm['spatial']` | Spot coordinates in µm, `float32 (N_spots, 2)` |
 | `.obs['sample_id']` | Sample identifier (categorical) |
-| `.obs['cluster']` | Per-sample cluster labels (categorical strings) |
+| `.obs['cluster']` | Per-spot labels (each spot carries its clustering unit's label), including `unassigned` |
+| `.obs['clustering_eligible']` | Eligibility for the clustering analysis |
+| `.uns['focus_clustering']` | Parameters, version, clustering units (`units`), selected features, cluster sizes and PCA/count-depth diagnostics |
+| `.uns['cluster_colors']` | Colors in categorical cluster order |
+| `.uns['focus_preprocessing_fingerprint']` | Input/settings/method/software cache fingerprint |
 | `.obs` QC | `total_counts`, `n_genes_by_counts`, `total_counts_mt`, `pct_counts_mt`, plus `log1p_total_counts`, `log1p_n_genes_by_counts`, `log1p_total_counts_mt` |
 | `.var` QC | `n_cells_by_counts`, `mean_counts`, `total_counts`, `pct_dropout_by_counts`, plus `log1p_mean_counts`, `log1p_total_counts` |
 | `.uns['spot_size']` | `float32` array `[x_µm, y_µm]` |

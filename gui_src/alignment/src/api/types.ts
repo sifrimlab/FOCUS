@@ -13,11 +13,16 @@ export interface Metadata {
   image_shape?: [number, number];
   scaling_factor?: number;
   color_map?: Record<string, string>;
+  cluster_labels?: string[];
+  spot_encoding?: 'FSP1';
+  spot_count?: number;
+  spot_basis?: [[number, number], [number, number]];
   // Exact-spot mode (microgrid experiments): only foreground spots are sent
   foreground_only?: boolean;
 }
 
 export interface Spot {
+  id?: number;
   spatial: [number, number];
   class: number;
   foreground: boolean;

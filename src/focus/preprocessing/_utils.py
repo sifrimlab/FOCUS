@@ -8,12 +8,15 @@ import scipy.sparse as sp
 from focus.constants import FocusOutputDirectories
 from focus.reporting import StepReporter, get_reporter  # noqa: F401  (re-exported for pipeline modules)
 
-# Samples above this spot count are coarsened onto a spatially-uniform grid of at most this
-# many bins: all spots in a bin are SUMMED into one pseudo-spot, Leiden runs on the bins, and
-# each bin's label propagates back to its spots. Below it, the full sample is used directly.
-# The SAME cap is reused by the alignment GUI so both stages build the identical grid (and thus
-# agree on which spots share a bin / a label). Import it there rather than redefining it.
-_SPATIAL_CAP = 100_000
+# Spot clustering runs on at most this many units. Larger samples (and ST samples whose spots hold
+# too little signal) are clustered on coarser units built by plan_spatial_units: k x k blocks of the
+# acquisition lattice when one is detected, Voronoi supercells otherwise.
+_SPATIAL_CAP = 250_000
+# The signal criterion never coarsens a sample below this many units.
+_MIN_UNITS = 1_000
+# Lloyd iterations for Voronoi supercells: on uniform points, tile-occupancy CV falls from 0.55
+# (no iteration) to 0.35 at 5, close to the Poisson floor; more iterations change little.
+_LLOYD_ITERATIONS = 5
 
 
 def validate_path_readable(path: str) -> None:
@@ -105,94 +108,230 @@ def create_output_directories(path: str, sample_ids: list[str], modality_name: s
 	)
 
 
-def _native_axis_cells(values: np.ndarray, ext_axis: float) -> int:
-	"""Largest number of uniform cells along one axis whose width is still >= the data's native
-	sample spacing, so no interior cell can fall *between* samples and render as an empty gap.
+def _fit_lattice(grid: np.ndarray, coords: np.ndarray, max_rows: int = 10_000) -> np.ndarray | None:
+	"""Fit ``coords ~ grid @ axes + origin`` on an even subsample of at most ``max_rows`` rows.
 
-	For a regular raster of ``k`` equally-spaced lines spanning the extent this is ``k - 1`` (cell
-	width == line spacing). Coordinates are quantized to ~1e-6 of the extent first so float jitter
-	from coordinate transforms does not inflate the spacing estimate. Returns ``1`` for a
-	degenerate (single-line / zero-extent) axis.
+	Returns the (2, 2) step vectors (row ``i`` = displacement for one step of ``grid[:, i]``) when
+	the fit has full rank and every residual is within 2% of the shorter step, else ``None``.
+	Shared by :func:`lattice_indices` and the alignment display basis
+	(``focus.alignment.spot_payload.acquisition_basis``).
 	"""
-	if ext_axis <= 0:
-		return 1
-	levels = np.unique(np.round((values - values.min()) / ext_axis * 1e6))
-	if levels.size < 2:
-		return 1
-	step = float(np.median(np.diff(levels)))   # native spacing in the 0..1e6 quantized space
-	if step <= 0:
-		return 1
-	return max(1, int(np.floor(1e6 / step)))
+	n = len(grid)
+	if n < 4:
+		return None
+	rows = np.linspace(0, n - 1, min(max_rows, n), dtype=int)
+	g = np.asarray(grid, dtype=np.float64)[rows]
+	c = np.asarray(coords, dtype=np.float64)[rows]
+	if not (np.isfinite(g).all() and np.isfinite(c).all()):
+		return None
+	design = np.column_stack([g, np.ones(len(g))])
+	fit, _, rank, _ = np.linalg.lstsq(design, c, rcond=None)
+	axes = fit[:2]
+	lengths = np.linalg.norm(axes, axis=1)
+	if rank != 3 or np.any(lengths <= 0):
+		return None
+	if np.max(np.linalg.norm(design @ fit - c, axis=1)) > 0.02 * lengths.min():
+		return None
+	return axes
 
 
-def _spatial_bin_assignment(coords: np.ndarray, n_target: int) -> tuple[np.ndarray, int, np.ndarray, np.ndarray]:
-	"""Assign each point to one of ``<= n_target`` occupied cells of a uniform spatial grid.
+def _unique_rows(idx: np.ndarray) -> bool:
+	span = idx.max(axis=0) + 1
+	return np.unique(idx[:, 0] * span[1] + idx[:, 1]).size == len(idx)
 
-	The grid spans the bounding box of ``coords`` with cell counts along each axis chosen
-	proportional to the box aspect ratio and sized so ``nx * ny <= n_target`` (the cap is a
-	hard ceiling). Each point is mapped to the cell that *contains* it — which, for a regular
-	grid, is exactly the cell whose center is nearest, so this realises the "closest bin" rule
-	in O(n) without any nearest-neighbour search. Empty cells are dropped and the occupied ones
-	are renumbered ``0 .. n_bins-1``.
 
-	Fully deterministic: the result is a pure function of ``coords`` and ``n_target`` (no RNG),
-	so the identical grid is reproduced wherever this is recomputed (preprocessing clustering and
-	the alignment GUI both call it with the same cap).
+def lattice_indices(coords: np.ndarray, obs=None, spot_size=None) -> tuple[np.ndarray, np.ndarray, str] | None:
+	"""Integer acquisition-lattice indices of every spot, or ``None`` when no regular lattice is found.
+
+	Tried in order:
+
+	- ``obs['array_row']`` / ``obs['array_col']`` (Visium-style), accepted when the values are
+	  integral, the pairs are unique and a linear fit to ``coords`` holds (:func:`_fit_lattice`). A
+	  hexagonal lattice (``row + col`` has one parity for every spot, as in standard Visium) has its
+	  column index halved, so every row contributes the same number of spots to a block.
+	- an axis-aligned raster of pitch ``spot_size`` (MSI): ``round((coords - min) / spot_size)``,
+	  accepted when at least 99% of spots lie within 0.1 pitch of a raster node and nodes are unique.
 
 	Returns
 	-------
-	bin_ids : np.ndarray
-		(n_obs,) intp; the compacted occupied-bin index in ``[0, n_bins)`` for each point.
-	n_bins : int
-		Number of occupied bins (``<= n_target``).
-	pitch : np.ndarray
-		(2,) float64 cell size ``(ext_x / nx, ext_y / ny)`` — the "computed" spot size used to
-		render bins gap-free. ``0`` on an axis with zero extent (caller supplies a fallback).
-	centers : np.ndarray
-		(n_bins, 2) float64 center of each occupied grid cell (``mins + (ix + 0.5) * pitch``).
-		Bins drawn as ``pitch``-sized squares at these centers tile gap-free; the data centroid
-		would not — it is pulled toward where the points sit in the cell, beating into a regular
-		grid of gaps.
+	tuple[np.ndarray, np.ndarray, str] | None
+		``(idx, step, source)``: (n, 2) int64 indices starting at 0, the (2,) physical length of one
+		index step along each column of ``idx`` (coordinate units), and ``'array_row/array_col'`` or
+		``'raster'``.
 	"""
 	coords = np.asarray(coords, dtype=np.float64)
-	mins = coords.min(axis=0)
-	raw_ext = coords.max(axis=0) - mins
-	ext = np.maximum(raw_ext, 1e-9)
-	# Size the grid so nx * ny <= n_target (floor, not ceil, to guarantee the cap is never exceeded).
-	# Clamp nx to [1, n_target]: an extreme aspect ratio (e.g. a near-1D / zero-extent axis) would
-	# otherwise drive nx past n_target while ny floors to 1, breaking the cap.
-	nx = min(max(1, int(np.floor(np.sqrt(n_target * ext[0] / ext[1])))), n_target)
-	ny = max(1, int(n_target // nx))
-	# Never lay the grid finer than the data's native sampling: a uniform cell narrower than the
-	# spot spacing can fall *between* samples and stay empty, so the occupied cells render as a
-	# regular grid of gaps. Cap each axis at the number of cells whose width is >= that spacing
-	# (for a regular raster of k lines, k-1). Only ever coarsens (still <= n_target), keeping the
-	# tiling gap-free.
-	nx = max(1, min(nx, _native_axis_cells(coords[:, 0], raw_ext[0])))
-	ny = max(1, min(ny, _native_axis_cells(coords[:, 1], raw_ext[1])))
-	pitch = raw_ext / np.array([nx, ny], dtype=np.float64)
-	ix = np.clip(((coords[:, 0] - mins[0]) / ext[0] * nx).astype(int), 0, nx - 1)
-	iy = np.clip(((coords[:, 1] - mins[1]) / ext[1] * ny).astype(int), 0, ny - 1)
-	flat = ix * ny + iy
+	if obs is not None and {'array_row', 'array_col'}.issubset(obs.columns):
+		grid = obs[['array_row', 'array_col']].to_numpy(dtype=np.float64)
+		if np.isfinite(grid).all() and np.array_equal(grid, np.round(grid)):
+			idx = grid.astype(np.int64)
+			idx -= idx.min(axis=0)
+			axes = _fit_lattice(idx[:, ::-1], coords)
+			if axes is not None and _unique_rows(idx):
+				step = np.linalg.norm(axes, axis=1)[::-1].copy()
+				parity = (idx[:, 0] + idx[:, 1]) % 2
+				if parity.min() == parity.max():
+					idx[:, 1] //= 2
+					step[1] *= 2
+				return idx, step, 'array_row/array_col'
+	if spot_size is not None and np.isfinite(coords).all():
+		pitch = np.broadcast_to(np.asarray(spot_size, dtype=np.float64).ravel(), (2,)).copy()
+		if np.all(pitch > 0):
+			rel = (coords - coords.min(axis=0)) / pitch
+			nodes = np.rint(rel)
+			idx = nodes.astype(np.int64)
+			if np.all(np.abs(rel - nodes) <= 0.1, axis=1).mean() >= 0.99 and _unique_rows(idx):
+				return idx, pitch, 'raster'
+	return None
 
-	# Compact to occupied cells; return_inverse already yields a 0..n_bins-1 labelling.
-	uniq_flat, bin_ids = np.unique(flat, return_inverse=True)
-	bin_ids = bin_ids.astype(np.intp)
-	n_bins = int(uniq_flat.size)
 
-	# Place each occupied bin at its grid-CELL CENTER (not the data centroid): decode the flat
-	# index with the same encoding flat = ix*ny + iy, then center = mins + (idx + 0.5) * pitch.
-	# Equal-pitch squares drawn at these centers tile edge-to-edge (adjacent cells differ by one
-	# index, so their centers differ by exactly one pitch); the centroid, pulled toward wherever
-	# points sit in the cell, does not tile and beats into a regular grid of gaps. On a zero-extent
-	# axis pitch == 0 so center == mins (the shared coordinate); the caller substitutes the real
-	# spot_size for the rendered square size there.
-	cell_ix = uniq_flat // ny
-	cell_iy = uniq_flat % ny
-	centers = np.empty((n_bins, 2), dtype=np.float64)
-	centers[:, 0] = mins[0] + (cell_ix + 0.5) * pitch[0]
-	centers[:, 1] = mins[1] + (cell_iy + 0.5) * pitch[1]
-	return bin_ids, n_bins, pitch, centers
+def _lattice_units(idx: np.ndarray, k: int) -> np.ndarray:
+	"""Flat id of the k x k lattice block holding each spot (blocks anchored at index 0)."""
+	q = idx // k
+	return q[:, 0] * (int(q[:, 1].max()) + 1) + q[:, 1]
+
+
+def _unit_sizes_and_sums(flat: np.ndarray, weights: np.ndarray | None = None) -> tuple[np.ndarray, np.ndarray | None]:
+	"""Spot count and summed ``weights`` of every occupied unit id in ``flat``."""
+	if flat.max() < 4 * len(flat) + 1_000_000:
+		sizes = np.bincount(flat)
+		keep = sizes > 0
+		sums = None if weights is None else np.bincount(flat, weights=weights)[keep]
+		return sizes[keep], sums
+	_, inverse = np.unique(flat, return_inverse=True)
+	return np.bincount(inverse), None if weights is None else np.bincount(inverse, weights=weights)
+
+
+def _voronoi_units(coords: np.ndarray, m: int, seed: int, iterations: int = _LLOYD_ITERATIONS) -> tuple[np.ndarray, int]:
+	"""Assign spots to ``m`` Voronoi tiles: seeded spot sample as seeds, then Lloyd iterations.
+
+	Seeds follow spot density, and each Lloyd iteration moves a seed to the centroid of its tile,
+	so tiles hold similar spot counts. Nothing about the tiling is periodic.
+	"""
+	from scipy.spatial import cKDTree
+
+	rng = np.random.default_rng(seed)
+	seeds = coords[np.sort(rng.choice(len(coords), size=m, replace=False))]
+	for iteration in range(iterations + 1):
+		_, nearest = cKDTree(seeds).query(coords, workers=-1)
+		if iteration == iterations:
+			break
+		size = np.bincount(nearest, minlength=m)
+		filled = size > 0
+		for axis in (0, 1):
+			seeds[filled, axis] = np.bincount(nearest, weights=coords[:, axis], minlength=m)[filled] / size[filled]
+	uniq, bin_ids = np.unique(nearest, return_inverse=True)
+	return bin_ids.astype(np.intp), int(uniq.size)
+
+
+def plan_spatial_units(
+	coords: np.ndarray,
+	*,
+	cap: int = _SPATIAL_CAP,
+	obs=None,
+	spot_size=None,
+	counts: np.ndarray | None = None,
+	min_median_counts: float | None = None,
+	seed: int = 0,
+) -> tuple[np.ndarray | None, int, dict]:
+	"""Choose the units spot clustering runs on, bounding its cost without a periodic imprint.
+
+	Spots are clustered as they are unless the sample has more than ``cap`` spots or (when
+	``counts`` and ``min_median_counts`` are given, ST) the median spot holds fewer than
+	``min_median_counts``. Otherwise spots are grouped into units; the caller sums each unit's
+	expression (:func:`_bin_sum_matrix`) and every spot inherits its unit's label.
+
+	- **lattice** (:func:`lattice_indices` finds one): the unit of a spot is ``(row // k, col // k)``,
+	  a k x k block of lattice sites anchored at the lattice origin. Every interior block holds
+	  exactly k^2 sites, so unit occupancy cannot vary periodically, and the blocks depend only on
+	  the lattice indices, not on how the coordinates are rotated or translated. ``k`` is the
+	  smallest integer with at most ``cap`` occupied blocks whose median block count reaches
+	  ``min_median_counts``; the signal criterion stops before fewer than ``_MIN_UNITS`` blocks remain.
+	- **voronoi** (no lattice: segmented cells, beads, irregular layouts): ``m`` tiles from
+	  :func:`_voronoi_units`, ``m = min(cap, n / s)`` where ``s`` spots per tile is the estimate that
+	  reaches the median-count target (never fewer than ``_MIN_UNITS`` tiles).
+
+	Fully deterministic for a given ``seed``. Units are an in-memory intermediate and are never
+	persisted; only the returned provenance is.
+
+	Returns
+	-------
+	bin_ids : np.ndarray | None
+		(n,) intp unit of each spot, or ``None`` when spots are clustered as they are.
+	n_units : int
+		Number of units (``n`` when ``bin_ids`` is ``None``).
+	info : dict
+		Provenance: ``method`` (``'native'``, ``'lattice'`` or ``'voronoi'``), ``n_units``,
+		``driver`` (``'cap'``, ``'signal'`` or ``'cap+signal'``), ``signal_limited`` and, for a
+		lattice, ``k``, ``unit_size`` (coordinate units) and ``lattice_source``.
+	"""
+	coords = np.asarray(coords, dtype=np.float64)
+	n = len(coords)
+	signal = counts is not None and min_median_counts is not None and n > _MIN_UNITS
+	counts = None if counts is None else np.asarray(counts, dtype=np.float64)
+	need_cap = n > cap
+	need_signal = signal and float(np.median(counts)) < min_median_counts
+	if not (need_cap or need_signal):
+		return None, n, {'method': 'native', 'n_units': n}
+
+	limited = False
+	lattice = lattice_indices(coords, obs, spot_size)
+	if lattice is not None:
+		idx, step, source = lattice
+		k, driver = 1, []
+		if need_cap:
+			k = max(1, int(np.sqrt(n / cap)))
+			while len(_unit_sizes_and_sums(_lattice_units(idx, k))[0]) > cap:
+				k += 1
+			driver.append('cap')
+		if signal:
+			k_cap = k
+			while True:
+				_, sums = _unit_sizes_and_sums(_lattice_units(idx, k), counts)
+				if np.median(sums) >= min_median_counts:
+					break
+				if len(_unit_sizes_and_sums(_lattice_units(idx, k + 1))[0]) < _MIN_UNITS:
+					limited = True
+					break
+				k += 1
+			if k > k_cap:
+				driver.append('signal')
+		if k == 1:
+			return None, n, {'method': 'native', 'n_units': n, 'signal_limited': limited}
+		uniq, bin_ids = np.unique(_lattice_units(idx, k), return_inverse=True)
+		n_units = int(uniq.size)
+		info = {'method': 'lattice', 'lattice_source': source, 'k': k,
+			'unit_size': (k * step).tolist(), 'n_units': n_units}
+	else:
+		m, driver = n, []
+		if need_cap:
+			m = cap
+			driver.append('cap')
+		if need_signal:
+			median = float(np.median(counts))
+			per_tile = int(np.ceil(min_median_counts / median)) if median > 0 else n
+			m_signal = n // per_tile
+			if m_signal < _MIN_UNITS:
+				m_signal, limited = _MIN_UNITS, True
+			if m_signal < m:
+				m = m_signal
+				driver.append('signal')
+		if m >= n:
+			return None, n, {'method': 'native', 'n_units': n, 'signal_limited': limited}
+		bin_ids, n_units = _voronoi_units(coords, m, seed)
+		info = {'method': 'voronoi', 'n_units': n_units, 'lloyd_iterations': _LLOYD_ITERATIONS, 'seed': seed}
+	info.update(driver='+'.join(driver), signal_limited=limited)
+	return bin_ids.astype(np.intp), n_units, info
+
+
+def describe_units(n_spots: int, info: dict) -> str:
+	"""One reporter line for a clustering unit plan."""
+	if info['method'] == 'native':
+		return f"Clustering: {n_spots} spots at native resolution"
+	if info['method'] == 'lattice':
+		size = ' x '.join(f"{v:g}" for v in np.round(info['unit_size'], 2))
+		return (f"Clustering: {n_spots} spots -> {info['n_units']} lattice blocks "
+			f"(k={info['k']}, {size}; {info['driver']})")
+	return f"Clustering: {n_spots} spots -> {info['n_units']} Voronoi supercells ({info['driver']})"
 
 
 def _bin_sum_matrix(X, bin_ids: np.ndarray, n_bins: int):
@@ -216,6 +355,7 @@ def compute_cluster_labels(
 	leiden_resolution: float,
 	normalize_target_sum: float | None,
 	coordinates: np.ndarray | None = None,
+	spot_size=None,
 	cap: int = _SPATIAL_CAP,
 	n_pcs_cap: int = 50,
 	random_state: int = 0,
@@ -225,19 +365,18 @@ def compute_cluster_labels(
 	The labels are consumed only by the alignment GUI for categorical colouring (no
 	downstream algorithm uses them numerically), so the goal is a fast, "Leiden-like"
 	partition rather than an exact Leiden over every spot — which does not scale to
-	millions of points. The bottleneck for ultra-high-resolution / sub-cellular modalities
-	is the opposite of scale: each individual spot carries too little signal for PCA /
-	Leiden to find structure. So instead of subsampling, large samples are *coarsened*:
+	millions of points. Large samples are *coarsened* instead of subsampled, which also
+	aggregates the weak per-spot signal of ultra-high-resolution modalities:
 
-	1. When ``n_obs > cap`` (and ``coordinates`` are given), lay a uniform spatial grid of
-	   at most ``cap`` bins (:func:`_spatial_bin_assignment`) and SUM every spot that falls
-	   in a bin into one pseudo-spot (:func:`_bin_sum_matrix`). This aggregates weak signal
-	   so each pseudo-spot is coarser but informative, and caps the row count at ``cap``.
-	   Smaller samples skip binning and run on every spot.
+	1. When ``n_obs > cap`` (and ``coordinates`` are given), :func:`plan_spatial_units` groups
+	   the spots into at most ``cap`` units: k x k blocks of the acquisition raster (recovered
+	   from ``coordinates`` and ``spot_size``) or Voronoi supercells when no raster is found.
+	   Every spot of a unit is SUMMED into one pseudo-spot (:func:`_bin_sum_matrix`). Smaller
+	   samples skip this and run on every spot.
 	2. Normalize the run matrix (see ``normalize_target_sum``) and run the standard
-	   ``pca -> neighbors -> leiden`` on it — bounded by ``cap`` rows, so fast.
-	3. Propagate each bin's Leiden label back to every spot that contributed to the bin
-	   (identity when no binning happened). No MiniBatchKMeans / no per-spot projection.
+	   ``pca -> neighbors -> leiden`` on it, bounded by ``cap`` rows.
+	3. Propagate each unit's Leiden label back to every spot of the unit (identity when no
+	   coarsening happened). No per-spot projection.
 
 	``X`` is never mutated and the summed / normalized matrix lives only on a throwaway
 	``AnnData`` that is discarded — none of these internal intermediates are persisted; the
@@ -257,11 +396,13 @@ def compute_cluster_labels(
 		is total-count normalized (target = median) so per-bin occupancy washes out — summed
 		bins are no longer per-spot normalized — otherwise the matrix is used as-is.
 	coordinates : np.ndarray | None
-		(n_obs, 2) spatial coordinates enabling spatial binning. When ``None``, no binning is
+		(n_obs, 2) spatial coordinates enabling coarsening. When ``None``, no coarsening is
 		done and Leiden runs on every spot regardless of ``cap``.
+	spot_size : array-like | None
+		Raster pitch, used to recover the acquisition raster from ``coordinates``.
 	cap : int
-		Maximum number of rows Leiden runs on (= maximum number of spatial bins). Samples at
-		or below this are clustered directly, without binning.
+		Maximum number of rows Leiden runs on (= maximum number of units). Samples at or
+		below this are clustered directly.
 	n_pcs_cap : int
 		Upper bound on the number of principal components.
 	random_state : int
@@ -278,13 +419,15 @@ def compute_cluster_labels(
 
 	n_obs, n_vars = X.shape
 
-	# 1. Build the matrix Leiden runs on: coarse summed bins for large samples, else all spots.
-	if n_obs > cap and coordinates is not None:
-		bin_ids, n_bins, _, _ = _spatial_bin_assignment(coordinates, cap)
-		X_run = _bin_sum_matrix(X, bin_ids, n_bins)   # (n_bins, n_vars); sparse-preserving, throwaway
+	# 1. Build the matrix Leiden runs on: summed units for large samples, else all spots.
+	bin_ids = None
+	if coordinates is not None:
+		bin_ids, n_bins, units = plan_spatial_units(coordinates, cap=cap, spot_size=spot_size, seed=random_state)
+		get_reporter().detail(describe_units(n_obs, units))
+	if bin_ids is not None:
+		X_run = _bin_sum_matrix(X, bin_ids, n_bins)   # (n_units, n_vars); sparse-preserving, throwaway
 		binned = True
 	else:
-		bin_ids, n_bins = None, n_obs
 		X_run = X.copy()                              # copy: normalize_total/log1p mutate in place
 		binned = False
 
@@ -315,6 +458,6 @@ def compute_cluster_labels(
 	if np.unique(run_labels).shape[0] == 1:
 		return np.array(['0'] * n_obs, dtype=object)
 
-	# 3. Propagate: each spot inherits its bin's label (identity when no binning happened).
+	# 3. Propagate: each spot inherits its unit's label (identity when no coarsening happened).
 	labels = run_labels if bin_ids is None else run_labels[bin_ids]
 	return labels.astype(str).astype(object)

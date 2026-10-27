@@ -194,6 +194,14 @@ class RamanPreprocessingParams(_AbstractEnum):
 	MIN_OBJECT_SIZE = "min_object_size"
 
 class STPreprocessingParams(_AbstractEnum):
+	CLUSTERING_MIN_COUNTS = "clustering_min_counts"
+	CLUSTERING_MIN_GENES = "clustering_min_genes"
+	CLUSTERING_N_TOP_GENES = "clustering_n_top_genes"
+	CLUSTERING_N_PCS = "clustering_n_pcs"
+	CLUSTERING_N_NEIGHBORS = "clustering_n_neighbors"
+	CLUSTERING_RESOLUTION = "clustering_resolution"
+	CLUSTERING_RANDOM_STATE = "clustering_random_state"
+	CLUSTERING_MAX_UNITS = "clustering_max_units"
 	MIN_COUNT_PER_SPOT = "min_count_per_spot"
 	MAX_COUNT_PER_SPOT = "max_count_per_spot"
 	MIN_GENES_PER_SPOT = "min_genes_per_spot"

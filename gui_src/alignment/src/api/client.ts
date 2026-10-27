@@ -20,7 +20,7 @@ export const api = {
     return response.data;
   },
 
-  async getPayload(type: 'reference' | 'target', responseType: 'blob' | 'json' = 'json'): Promise<any> {
+  async getPayload(type: 'reference' | 'target', responseType: 'blob' | 'json' | 'arraybuffer' = 'json'): Promise<any> {
     const response = await apiClient.get(`/${type}/payload`, { responseType });
     return response.data;
   },

@@ -117,21 +117,38 @@ lift that to the target's full resolution.
 
 ---
 
-## 4b. Display coarsening for large spot sets
+## 4b. Native spot display and compact transport
 
-A spot layer with more than `_SPATIAL_CAP` (100,000) observations is aggregated for display:
-`_spatial_bin_assignment` assigns each spot to one of at most 100,000 uniform bins, and one
-marker per occupied bin is sent to the browser at the bin's cell centre. It is the same routine and
-cap the preprocessing clustering uses
-([MSI §6b](msi_methods.md#6b-per-sample-clustering), [ST §3.6](st_methods.md#36-per-sample-clustering)),
-so both stages build the identical grid. The reported spot size
-becomes the grid pitch, so bins tile without gaps; axes with zero extent fall back to the real
-`uns['spot_size']`. Each bin takes the majority cluster label and majority foreground flag of its
-members.
+Every spot is displayed at its original center and footprint. There is no observation-count
+threshold for display pooling and no majority-vote label grid. Valid acquisition row/column
+metadata can establish the native square axes; FOCUS only uses these when an affine lattice
+fit has small residuals, approximately orthogonal axes, and spacing consistent with spot size.
+Other layouts retain generic rectangular footprints.
 
-The aggregation is display-only. The full \(N_R\times2\) coordinate array stays on the backend and the
-confirmed matrix is applied to all of it, so the persisted mapping covers every original spot. No
-binned value is written to any output.
+The `FSP1` binary payload is little-endian: a 16-byte header (magic, observation count,
+version 1, reserved) followed by coordinate float32 pairs, uint32 class indices, uint32
+original row IDs, and uint8 foreground flags. Thus a native observation costs 17 payload
+bytes. Delivery may be spatially reordered for culling, without changing centers or row IDs.
+The browser keeps typed-array storage behind an array-compatible view and draws bounded
+GPU meshes. Off-screen meshes are culled; no observation is removed from analytical outputs.
+
+Metadata maps each internal class index to the original saved cluster label, which the filter
+chips display. Canvas marks and filter chips take their color from one function of layer and
+class index. The fixed layer uses a warm palette and the moving layer a cool palette, so the two
+unrelated partitions never share a color. Past the 16 fixed colors of a palette, colors continue
+in the same hue band with golden-ratio hue steps and alternating lightness, without cycling.
+Unassigned observations are neutral gray in both layers. Large categorical sets can still be
+perceptually difficult to distinguish.
+
+The full coordinate array stays on the backend. The existing exported matrix is applied to
+all original coordinates, independently of class/foreground filtering or rendering detail.
+Binary spot exports omit the redundant per-spot JSON list. The alignment matrix calculations
+are unchanged and covered by golden tests.
+
+For ST pairs, cache validity also checks the preprocessing input fingerprint. Aligned files
+refresh counts, labels and metadata from preprocessing instead of reloading stale analytical
+data. Other pair coordinates are preserved only when observation identity and native centers
+still agree.
 
 ---
 

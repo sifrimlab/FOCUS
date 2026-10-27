@@ -4,7 +4,7 @@
  */
 import { computed, reactive } from 'vue';
 import { useMainStore, type ForegroundMode } from '../store/main';
-import { getReferenceColor, getTargetColor } from '../utils/colors';
+import { classColor } from '../utils/colors';
 
 export type LayerRole = 'target' | 'reference';
 
@@ -29,7 +29,8 @@ export function useLayer(role: LayerRole) {
     }),
     /** The store's own array: fields assign into it in place. */
     spotSize: computed(() => (isTarget ? store.targetSpotSize : store.referenceSpotSize)),
-    colorOf: isTarget ? getTargetColor : getReferenceColor,
+    colorOf: (cls: number) => classColor(meta.value, cls, isTarget),
+    labelOf: (cls: number) => meta.value?.cluster_labels?.[cls] ?? String(cls),
   });
 }
 

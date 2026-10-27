@@ -43,7 +43,25 @@ export class Sprite extends Container {
   constructor(public texture: any) { super(); }
 }
 
+export class MeshGeometry {
+  positions: Float32Array;
+  indices: Uint32Array;
+  batchMode = 'auto';
+  constructor(options: { positions: Float32Array; indices: Uint32Array }) { this.positions = options.positions; this.indices = options.indices; }
+  getBuffer() { return { update() {} }; }
+  destroy() {}
+}
+
+export class Mesh extends Container {
+  geometry: MeshGeometry;
+  renderable = true;
+  tint: unknown;
+  constructor(options: { geometry: MeshGeometry }) { super(); this.geometry = options.geometry; }
+  getBounds() { return { minX: 0, minY: 0, maxX: 100, maxY: 100 }; }
+}
+
 export const Texture = {
+  WHITE: {},
   from(img: { width: number; height: number }) {
     return { width: img.width, height: img.height };
   },

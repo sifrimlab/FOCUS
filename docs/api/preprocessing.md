@@ -517,13 +517,21 @@ def preprocess_data(
     remove_mitochondrial_genes: bool = False,
     total_counts_normalize: bool = False,
     log1p_transform: bool = False,
+    clustering_min_counts: int = 50,
+    clustering_min_genes: int = 20,
+    clustering_n_top_genes: int = 2000,
+    clustering_n_pcs: int = 50,
+    clustering_n_neighbors: int = 15,
+    clustering_resolution: float = 0.5,
+    clustering_random_state: int = 0,
+    clustering_max_units: int = 250_000,
     force_recomputing: bool = False,
     step_reporter=None,
 ) -> str:
     ...
 ```
 
-Returns the output path immediately if that file exists and `force_recomputing` is `False`.
+Reuses a cached file only when its content/settings/method/software fingerprint matches and `force_recomputing` is false. Legacy outputs are rebuilt.
 
 Pipeline: load → flag mito genes in `.var["mt"]` → spot filtering → QC metrics → optional mito-gene removal → prefix `.obs_names` with `<sample_id>_` → cluster labels → store `.layers["raw"]` (only if normalizing) → optional normalize/log1p → save as gzip-compressed `.h5ad`.
 
@@ -534,7 +542,11 @@ Output AnnData structure:
 - `.obs_names`: spot names prefixed `<sample_id>_`
 - `.var["mt"]`: boolean mitochondrial flag
 - `.obs["sample_id"]`: categorical sample identifier
-- `.obs["cluster"]`: categorical per-sample cluster labels (the coarsened matrix, PCA embedding and neighbour graph are not persisted)
+- `.obs["cluster"]`: categorical per-spot labels (each spot carries its clustering unit's label), including `unassigned`
+- `.obs['clustering_eligible']`: clustering-only eligibility, with no observation deletion
+- `.uns['focus_clustering']`: method/settings/software, clustering units (`units`), selected genes, cluster sizes and PCA/count-depth diagnostics
+- `.uns['cluster_colors']`: colors in categorical cluster order
+- `.uns['focus_preprocessing_fingerprint']`: cache key
 - `.obs` QC: `total_counts`, `n_genes_by_counts`, `total_counts_mt`, `pct_counts_mt` and their `log1p_` variants
 - `.var` QC: `n_cells_by_counts`, `mean_counts`, `total_counts`, `pct_dropout_by_counts` and their `log1p_` variants
 - `.obsm["spatial"]`: float32 spatial coordinates
@@ -553,7 +565,7 @@ Cluster labels are computed on `.X` before normalization, so they always read ra
 | `log1p_transform` | `bool` | `False` | Apply log1p transformation after normalization. |
 | `force_recomputing` | `bool` | `False` | Re-run even if output already exists. |
 
-All filtering/normalization steps are opt-in; the method-signature defaults match the
+Output filtering/normalization steps are opt-in; the method-signature defaults match the
 config extractor defaults, so direct calls and config-driven runs behave identically.
 
 ---
@@ -575,6 +587,14 @@ class SpatialTranscriptomicDataset(BaseDataset):
         remove_mitochondrial_genes: bool = False,
         total_counts_normalize: bool = False,
         log1p_transform: bool = False,
+        clustering_min_counts: int = 50,
+        clustering_min_genes: int = 20,
+        clustering_n_top_genes: int = 2000,
+        clustering_n_pcs: int = 50,
+        clustering_n_neighbors: int = 15,
+        clustering_resolution: float = 0.5,
+        clustering_random_state: int = 0,
+        clustering_max_units: int = 250_000,
         force_recomputing: bool = False,
         step_reporter=None,
     ) -> dict[str, str]:
@@ -584,7 +604,7 @@ class SpatialTranscriptomicDataset(BaseDataset):
 Dataset-level pipeline:
 
 1. Preprocess each sample individually via `preprocess_data()` (the two gene-level thresholds are **not** forwarded; they are dataset-level only)
-2. Return the cached merged file if it exists, `force_recomputing` is `False`, and its `.obs["sample_id"]` set equals the active sample set
+2. Return the cached merged file when `force_recomputing` is `False`, no sample was rebuilt in this run, and its `.uns["focus_preprocessing_fingerprint"]` matches the fingerprint of the per-sample fingerprints (which fix the active sample set) and the gene-filter and normalization settings
 3. Read each per-sample `.uns["spot_size"]` with a backed read (`.X` never materialized)
 4. Concatenate on disk (`anndata.concat_on_disk`, `axis=0`, `join="outer"`, `fill_value=0`); `.uns` is dropped by the concat
 5. Recover raw counts: `.X = .layers.pop("raw", .X)`, so the layer is used when the per-sample files were normalized and `.X` otherwise
@@ -642,3 +662,7 @@ results = dataset.process_dataset(
 #   "merged":     ".../merged/preprocessing/st_merged_processed.h5ad",
 # }
 ```
+
+The eight `clustering_*` controls are accepted by both per-sample and dataset methods. They
+follow the [ST clustering settings](../modalities/transcriptomics.md#clustering-settings).
+HVG selection uses an analytical copy and never filters exported expression features.

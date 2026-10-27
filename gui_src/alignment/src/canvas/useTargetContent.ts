@@ -10,9 +10,12 @@ import type { usePixiLayer } from './usePixiLayer';
 import { drawTargetSpots } from './spotLayer';
 import { applyTargetContentTransform } from './contentTransform';
 import { isProjective } from './targetGeometry';
+import { NativeSpotLayer } from './nativeSpotLayer';
+import { classColor } from '../utils/colors';
 
 export function useTargetContent(layer: ReturnType<typeof usePixiLayer>, store: ReturnType<typeof useMainStore>) {
   let spotGraphics: Graphics | null = null; // reused across frames to avoid GPU alloc/free per draw
+  let nativeSpots: NativeSpotLayer | null = null;
 
   // Properly destroy Pixi display objects so WebGL buffers are freed immediately.
   // removeChildren() alone only detaches them; GPU buffers would pile up until GC.
@@ -23,16 +26,21 @@ export function useTargetContent(layer: ReturnType<typeof usePixiLayer>, store: 
     content.removeChildren();
     children.forEach(c => c.destroy({ children: true }));
     spotGraphics = null;
+    nativeSpots = null;
   };
 
   const drawSpots = (projective: boolean) => {
-    if (!spotGraphics || !store.targetData || !store.targetMeta || store.targetMeta.modality_type === 'IMAGE') return;
-    drawTargetSpots(spotGraphics, store.targetData as SpotModalityPayload, {
+    if ((!spotGraphics && !nativeSpots) || !store.targetData || !store.targetMeta || store.targetMeta.modality_type === 'IMAGE') return;
+    const style = {
       spotSize: store.targetSpotSize,
       boost: store.commonSpotBoost,
       classFilter: store.targetClassFilter,
       foregroundMode: store.targetForegroundMode,
-    }, store.targetTransform, projective);
+      basis: store.targetMeta.spot_basis,
+      colorOf: (cls: number) => classColor(store.targetMeta, cls, true),
+    };
+    if (nativeSpots) nativeSpots.update(style, projective ? store.targetTransform : undefined);
+    else drawTargetSpots(spotGraphics!, store.targetData as SpotModalityPayload, style, store.targetTransform, projective);
   };
 
   const updateContentTransform = () => {
@@ -65,11 +73,16 @@ export function useTargetContent(layer: ReturnType<typeof usePixiLayer>, store: 
       await loadImage(content);
     } else {
       // Create the persistent Graphics once per data load; later calls only redraw.
-      if (!spotGraphics) {
+      if (!spotGraphics && !nativeSpots) {
         destroyChildren();
         store.setTargetSpotBoost(1.0);
-        spotGraphics = new Graphics();
-        content.addChild(spotGraphics);
+        if (store.targetMeta.spot_encoding) {
+          nativeSpots = new NativeSpotLayer(store.targetData as SpotModalityPayload, store.targetMeta, true);
+          content.addChild(nativeSpots);
+        } else {
+          spotGraphics = new Graphics();
+          content.addChild(spotGraphics);
+        }
       }
       drawSpots(isProjective(store.targetTransform));
     }
@@ -81,7 +94,8 @@ export function useTargetContent(layer: ReturnType<typeof usePixiLayer>, store: 
     drawSpots,
     updateContent,
     updateContentTransform,
-    hasSpots: () => spotGraphics !== null,
-    release: () => { spotGraphics = null; },
+    hasSpots: () => spotGraphics !== null || nativeSpots !== null,
+    cull: () => { const app = layer.app(); if (app) nativeSpots?.cull(app.screen); },
+    release: () => { spotGraphics = null; nativeSpots = null; },
   };
 }

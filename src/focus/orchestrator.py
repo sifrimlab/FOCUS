@@ -10,12 +10,13 @@ from focus.constants import (
 	AlignmentStrategy, AnnotationsParameters, AnnotationFileType,
 	MODALITY_ANNOTATION, MODALITY_ANNOTATION_MERGED, DISPLAY_NAMES,
 	IMAGE_MODALITY_TYPES, SPOT_MODALITY_TYPES,
-	MsiPreprocessingParams, MsiSampleType,
+	MsiPreprocessingParams, MsiSampleType, MODALITY_PREPROCESSING_MERGED,
 )
 from focus.utils import write_h5ad_compat, concat_on_disk_compat, write_h5mu_compat, release_memory
 from focus.preprocessing import preprocess_modality
 from focus.reporting import StepReporter, use_reporter, get_reporter
 from focus.alignment.alignment import DirectMappingAligner
+from focus.provenance import cached_fingerprint
 # NOTE: the registration engines are imported lazily inside _run_registration() rather
 # than here, because focus.registration.microscopy_image imports torch / timm /
 # huggingface_hub at module load. Keeping these out of the module top lets callers that
@@ -73,11 +74,14 @@ def _run_stages(config: dict, reporter: StepReporter) -> dict:
 
 	# --- Stage 1: Preprocessing (always runs, caching is internal) ---
 	modality_files: dict[str, dict[str, str]] = {}
+	changed_preprocessing: set[str] = set()
 	with reporter.stage("preprocessing", 1, n_stages):
 		total_modalities = len(modalities)
 		for mod_idx, modality in enumerate(modalities, 1):
 			mod_name = modality[ModalityParameters.NAME]
 			mod_type = modality[ModalityParameters.TYPE]
+			merged_path = MODALITY_PREPROCESSING_MERGED(dataset_path, mod_name, "h5ad")
+			before = cached_fingerprint(merged_path) if mod_type == ModalityType.ST else None
 			with reporter.modality(mod_name, mod_idx, total_modalities):
 				modality_files[mod_name] = preprocess_modality(
 					path=dataset_path,
@@ -87,6 +91,9 @@ def _run_stages(config: dict, reporter: StepReporter) -> dict:
 					step_reporter=reporter,
 					ignore_samples=config.get(ConfigParameters.IGNORE_SAMPLES, []),
 				)
+
+			if mod_type == ModalityType.ST and before != cached_fingerprint(merged_path):
+				changed_preprocessing.add(mod_name)
 
 	# Collect preprocessing outputs — per_modality groups per-sample files by modality name
 	pre_merged: list[str] = []
@@ -106,7 +113,7 @@ def _run_stages(config: dict, reporter: StepReporter) -> dict:
 
 	# Compute effective force_recomputing flags, cascading upstream changes downstream:
 	# preprocessing force → alignment force → registration force
-	alignment_force, registration_force = _compute_effective_force_flags(config)
+	alignment_force, registration_force = _compute_effective_force_flags(config, changed_preprocessing)
 
 	# --- Stage 2: Alignment ---
 	aligned_files: dict[str, dict[str, str]] = {}
@@ -208,7 +215,7 @@ def _is_microgrid_experiment(config: dict) -> bool:
 	return False
 
 
-def _compute_effective_force_flags(config: dict) -> tuple[dict[str, bool], dict[str, bool]]:
+def _compute_effective_force_flags(config: dict, changed_preprocessing: set[str] | None = None) -> tuple[dict[str, bool], dict[str, bool]]:
 	"""
 	Derive effective force_recomputing flags for alignment and registration by cascading
 	upstream flags downstream through the pipeline dependency chain.
@@ -225,6 +232,7 @@ def _compute_effective_force_flags(config: dict) -> tuple[dict[str, bool], dict[
 	registration_force : dict[str, bool]
 		Effective registration force per non-reference modality name.
 	"""
+	changed_preprocessing = changed_preprocessing or set()
 	ref_mod = _get_reference_modality(config)
 	ref_name = config[ConfigParameters.REFERENCE_MODALITY]
 	ref_preproc_force: bool = ref_mod[ModalityParameters.PROCESSING_SETTINGS].get("force_recomputing", False)
@@ -241,8 +249,8 @@ def _compute_effective_force_flags(config: dict) -> tuple[dict[str, bool], dict[
 
 		effective_align = (
 			modality.get(ModalityParameters.ALIGNMENT_FORCE_RECOMPUTING, False)
-			or ref_preproc_force
-			or tgt_preproc_force
+			or ref_preproc_force or ref_name in changed_preprocessing
+			or tgt_preproc_force or mod_name in changed_preprocessing
 		)
 		alignment_force[mod_name] = effective_align
 
@@ -279,7 +287,7 @@ def _run_alignment(config: dict, modality_files: dict, reporter: StepReporter,
 
 	exact_spots = _is_microgrid_experiment(config)
 	if exact_spots:
-		reporter.detail("Microgrid MSI modality found: alignment shows exact foreground spots with no coarsening or clustering")
+		reporter.detail("Microgrid MSI modality found: alignment shows only foreground spots, without cluster colors")
 
 	targets = [m for m in modalities if m[ModalityParameters.NAME] != ref_name]
 	for pair_idx, modality in enumerate(targets, 1):

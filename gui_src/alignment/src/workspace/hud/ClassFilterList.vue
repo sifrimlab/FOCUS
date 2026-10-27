@@ -30,7 +30,7 @@ const filter = useClassFilter(layer);
         @update:model-value="filter.toggle(cls)"
       >
         <span class="swatch" :style="{ background: layer.colorOf(cls) }" aria-hidden="true" />
-        {{ cls }}
+        {{ layer.labelOf(cls) }}
       </ToggleChip>
     </InsetWell>
   </section>

@@ -309,6 +309,12 @@ def parse_config(config: dict, require_raw_inputs: bool = True) -> dict:
 							f"subdirectories: {MsiIonMode.list()}."
 						)
 
+	# Validate clustering controls before a run starts (also used by the GUI).
+	from focus.preprocessing.st_settings import clustering_settings
+	for modality in config[ConfigParameters.MODALITIES]:
+		if modality[ModalityParameters.TYPE] == ModalityType.ST:
+			clustering_settings(modality[ModalityParameters.PROCESSING_SETTINGS])
+
 	# --- Step 9: Registration type compatibility ---
 	for modality in config[ConfigParameters.MODALITIES]:
 		reg_type = modality[ModalityParameters.REGISTRATION_TYPE]
