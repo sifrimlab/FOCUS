@@ -15,7 +15,7 @@ from focus.constants import (
 	RegistrationType, REGISTRATION_COMPATIBILITY,
 	AlignmentStrategy, ALIGNMENT_STRATEGY_COMPATIBILITY,
 	IMAGE_MODALITY_TYPES, SPOT_MODALITY_TYPES,
-	MsiPreprocessingParams, MsiIonMode,
+	MsiPreprocessingParams, MsiIonMode, STPreprocessingParams, SpotResolution,
 	AnnotationsParameters, AnnotationFileType,
 )
 from focus.preprocessing._utils import validate_path_readable, discover_sample_ids, find_imzml_pair
@@ -309,11 +309,16 @@ def parse_config(config: dict, require_raw_inputs: bool = True) -> dict:
 							f"subdirectories: {MsiIonMode.list()}."
 						)
 
-	# Validate clustering controls before a run starts (also used by the GUI).
-	from focus.preprocessing.st_settings import clustering_settings
+	# Validate the clustering resolution preset of every spot modality (also used by the GUI).
 	for modality in config[ConfigParameters.MODALITIES]:
-		if modality[ModalityParameters.TYPE] == ModalityType.ST:
-			clustering_settings(modality[ModalityParameters.PROCESSING_SETTINGS])
+		if modality[ModalityParameters.TYPE] in SPOT_MODALITY_TYPES:
+			settings = modality.get(ModalityParameters.PROCESSING_SETTINGS) or {}
+			resolution = settings.get(STPreprocessingParams.RESOLUTION, SpotResolution.STANDARD)
+			if resolution not in SpotResolution.list():
+				raise ValueError(
+					f"Modality '{modality[ModalityParameters.NAME]}': resolution must be one of "
+					f"{SpotResolution.list()}, got {resolution!r}."
+				)
 
 	# --- Step 9: Registration type compatibility ---
 	for modality in config[ConfigParameters.MODALITIES]:

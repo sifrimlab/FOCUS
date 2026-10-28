@@ -345,17 +345,21 @@ downstream algorithm uses them numerically. The routine therefore computes a fas
 partition instead of an exact Leiden over every spot.
 
 `compute_cluster_labels` groups spots with the unit planner shared with ST
-([ST §3.6.1](st_methods.md#361-clustering-units)), using the cap criterion only. ST clusters
-the units with its own steps ([ST §3.6](st_methods.md#36-per-sample-clustering)). The
-alignment GUI renders native spots in both cases
+([ST §3.6.1](st_methods.md#361-clustering-units)), using the cap criterion only, and builds
+the same neighbourhood embedding ([ST §3.6.2](st_methods.md#362-neighbourhood-embedding)).
+The modality setting `resolution` sets the neighbourhood: 1 ring for `standard`
+(multicellular pixels, such as MALDI-MSI at tens of micrometres) and 2 rings for
+`sub_cellular` (weak high-resolution pixels). ST clusters the units with its own steps
+([ST §3.6](st_methods.md#36-per-sample-clustering)). The alignment GUI renders native spots
+in both cases
 ([Alignment §4b](alignment_methods.md#4b-native-spot-display-and-compact-transport)).
 
 For a sample with \(n\) spots and cap \(C = 250{,}000\):
 
 - **\(n > C\)**: the spots are coarsened, which also aggregates the weak signal of an individual
   ultra-high-resolution MSI spot into a signal where PCA/Leiden can resolve structure. MSI
-  coordinates are rotation-corrected raster centres, so the acquisition raster is recovered from
-  `.obsm['spatial']` and `spot_size`, and spots are grouped into k x k raster blocks with the
+  coordinates are rotation-corrected raster centres, so the acquisition raster is inferred from
+  `.obsm['spatial']` alone, and spots are grouped into k x k raster blocks with the
   smallest k that gives at most \(C\) occupied blocks. Interior blocks hold exactly k² spots, so
   block occupancy has no periodic component. When the coordinates do not sit on raster nodes,
   Voronoi supercells are used instead. All spots of a unit are **summed** into one pseudo-spot.
@@ -363,13 +367,14 @@ For a sample with \(n\) spots and cap \(C = 250{,}000\):
   the median (no `log1p`, matching the uncoarsened path).
 - **\(n \le C\)**: no coarsening; Leiden runs on every spot, matrix used as-is.
 
-Then \(\text{PCA} \to \text{kNN} \to \text{Leiden}\) on that matrix, with
+Then PCA, the neighbourhood embedding (each unit's PCs joined to the mean PCs of its
+neighbourhood, weights 0.2 and 0.8), kNN and Leiden on that matrix, with
 \(n_\text{pcs} = \min(50,\, n_\text{run}-1,\, n_\text{vars}-1)\),
 `n_neighbors = min(15, n_run - 1)`, and Leiden at `resolution=0.5`, `flavor="igraph"`,
 `n_iterations=2`, `directed=False`. Each unit's label then propagates back to every spot of the
 unit.
 
-The summed matrix, PCA embedding and neighbour graph live on a throwaway `AnnData` and are never
+The summed matrix, PCA and neighbourhood embeddings and neighbour graph live on a throwaway `AnnData` and are never
 persisted; only the per-spot label array is. Samples with fewer than 2 run-rows or fewer than 2
 usable PCs, and samples resolving to a single cluster, receive the single label `'0'`. PCA and Leiden
 run with `random_state=0`.

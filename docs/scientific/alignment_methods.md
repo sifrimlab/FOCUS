@@ -120,9 +120,9 @@ lift that to the target's full resolution.
 ## 4b. Native spot display and compact transport
 
 Every spot is displayed at its original center and footprint. There is no observation-count
-threshold for display pooling and no majority-vote label grid. Valid acquisition row/column
-metadata can establish the native square axes; FOCUS only uses these when an affine lattice
-fit has small residuals, approximately orthogonal axes, and spacing consistent with spot size.
+threshold for display pooling and no majority-vote label grid. The acquisition lattice inferred
+from `.obsm['spatial']` ([ST §3.6.1](st_methods.md#361-clustering-units)) sets the axes of the
+square footprints when its axes are approximately orthogonal and its steps match `spot_size`.
 Other layouts retain generic rectangular footprints.
 
 The `FSP1` binary payload is little-endian: a 16-byte header (magic, observation count,

@@ -156,8 +156,8 @@ The MSI pipeline operates at the **dataset level**: all samples are processed to
    - `"none"`: keep raw interpolated intensities
 
 10. **Per-Sample Cluster Labels** (used only to colour spots during alignment)
-    - Samples above 250,000 spots are coarsened first: spots are grouped into k x k blocks of the acquisition raster (Voronoi supercells when no raster is recovered), all spots in a block are **summed** into one pseudo-spot, and the pseudo-spots are re-normalized so block occupancy washes out. Smaller samples are clustered spot by spot
-    - PCA (up to 50 components) → neighbor graph → Leiden (`resolution=0.5`, `flavor="igraph"`, `n_iterations=2`, `directed=False`) on that matrix; each block's label then propagates back to every spot it contains
+    - Samples above 250,000 spots are coarsened first: spots are grouped into k x k blocks of the acquisition raster, inferred from the coordinates (Voronoi supercells when no raster is found), all spots in a block are **summed** into one pseudo-spot, and the pseudo-spots are re-normalized so block occupancy washes out. Smaller samples are clustered spot by spot
+    - PCA (up to 50 components) → each unit's PCs joined to the mean PCs of its spatial neighbourhood (1 ring for `resolution="standard"`, 2 rings for `"sub_cellular"`) → neighbor graph → Leiden (`resolution=0.5`, `flavor="igraph"`, `n_iterations=2`, `directed=False`) on that matrix; each block's label then propagates back to every spot it contains
     - Labels stored in `obs["cluster"]`. The summed matrix, PCA embedding and neighbor graph are all discarded (only `obs["cluster"]` is kept) to minimize file size
 
 11. **Save Per-Sample AnnData and Merge**
@@ -176,6 +176,7 @@ The MSI pipeline operates at the **dataset level**: all samples are processed to
 | `min_intensity_threshold` | `10000.0` | Minimum intensity for a peak to be used in recalibration offset estimation |
 | `detect_background` | `false` | Run background detection to classify tissue vs background spots. Requires `lipid_annotation_db`; without it the step is skipped |
 | `sample_type` | `"tissue"` | Sample type for background detection: `"tissue"` (GMM + BIC, morphological cleanup) or `"microgrid"` (local-outlier detection of sparse cells) |
+| `resolution` | `"standard"` | Clustering preset for the alignment colours: `"standard"` (multicellular pixels) or `"sub_cellular"` (weak high-resolution pixels, wider spatial neighbourhood) |
 | `lipid_annotation_db` | `null` | Path to lipid annotation database (CSV or JSON with `db_name`, `ionized_mass`, `ion_mode` columns) |
 | `force_recomputing` | `false` | Reprocess even if output already exists |
 
@@ -324,9 +325,10 @@ Supports any spot-based or cell-based spatial transcriptomics technology (Visium
    - Prefixed with `<sample_id>_`, unless every name already carries that prefix
 
 7. **Per-Sample Cluster Labels**
-   - Spots are clustered one by one when the sample has at most `clustering_max_units` spots (default 250,000) and its median spot holds at least `clustering_min_counts` UMIs. Otherwise spots are grouped into k x k blocks of the acquisition lattice, or Voronoi supercells without a lattice, and every spot takes its unit's label
-   - Defaults of 50 UMIs and 20 detected genes per unit determine clustering eligibility only. Spots of ineligible units remain in `.X` with label `unassigned`
-   - On an analytical copy: normalize to 10,000 counts → log1p → HVG selection (target 2,000) → sparse PCA (up to 50 PCs) → neighbors (up to 15) → Leiden (resolution 0.5). All controls and the seed are configurable
+   - `resolution` selects the preset: `"standard"` (default, multicellular spots) or `"sub_cellular"` (weak high-resolution spots)
+   - Spots are clustered one by one when the sample has at most 250,000 spots and, for `"sub_cellular"`, its median spot holds at least 1,000 UMIs. Otherwise spots are grouped into k x k blocks of the acquisition lattice inferred from `.obsm['spatial']`, or Voronoi supercells without a lattice, and every spot takes its unit's label
+   - 50 UMIs and 20 detected genes per unit determine clustering eligibility only. Spots of ineligible units remain in `.X` with label `unassigned`
+   - On an analytical copy: normalize to 10,000 counts → log1p → HVG selection (target 2,000) → sparse PCA (up to 50 PCs) → each unit's PCs joined to the mean PCs of its neighbourhood (1 ring for `"standard"`, 2 rings for `"sub_cellular"`) → neighbors (up to 15) → Leiden (resolution 0.5)
    - Persist labels, eligibility, categorical colors, selected-feature and algorithm provenance, and count-depth diagnostics. Original expression and native coordinates remain intact
    - Input/settings/method/software fingerprints invalidate stale per-sample and merged ST caches
 

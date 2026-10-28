@@ -7,11 +7,10 @@ import pandas as pd
 import scanpy as sc
 import scipy.sparse as sp
 
-from focus.constants import MODALITY_PREPROCESSING, MODALITY_PREPROCESSING_MERGED, STPreprocessingParams
+from focus.constants import MODALITY_PREPROCESSING, MODALITY_PREPROCESSING_MERGED, STPreprocessingParams, SpotResolution
 from focus.utils import write_h5ad_compat, read_merged_sample_ids, concat_on_disk_compat
-from focus.preprocessing._utils import get_reporter
-from focus.preprocessing.st_clustering import spot_cluster_labels
-from focus.preprocessing.st_settings import METHOD_VERSION, clustering_settings
+from focus.preprocessing._utils import clustering_preset, get_reporter
+from focus.preprocessing.st_clustering import METHOD_VERSION, spot_cluster_labels
 from focus.provenance import fingerprint, file_digest, cached_fingerprint
 from focus.preprocessing.base import BaseSample, BaseDataset
 from focus.spot_colors import cluster_colors, label_order
@@ -140,14 +139,7 @@ class SpatialTranscriptomic(BaseSample):
         remove_mitochondrial_genes: bool = False,
         total_counts_normalize: bool = False,
         log1p_transform: bool = False,
-        clustering_min_counts: int = 50,
-        clustering_min_genes: int = 20,
-        clustering_n_top_genes: int = 2000,
-        clustering_n_pcs: int = 50,
-        clustering_n_neighbors: int = 15,
-        clustering_resolution: float = 0.5,
-        clustering_random_state: int = 0,
-        clustering_max_units: int = 250_000,
+        resolution: str = SpotResolution.STANDARD,
         force_recomputing: bool = False,
         step_reporter=None
         ) -> str:
@@ -198,6 +190,9 @@ class SpatialTranscriptomic(BaseSample):
             Whether to normalize total counts per spot.
         log1p_transform : bool
             Whether to apply log1p transformation.
+        resolution : str
+            SpotResolution preset for the alignment clustering: 'standard' (multicellular spots)
+            or 'sub_cellular' (weak high-resolution spots: coarser units, wider smoothing).
         force_recomputing : bool
             Whether to force recomputing even if output exists.
         step_reporter : StepReporter | None
@@ -214,23 +209,14 @@ class SpatialTranscriptomic(BaseSample):
         reporter = step_reporter or get_reporter()
         output_file = MODALITY_PREPROCESSING(self.source_path, self.sample_id, self.modality_name, "h5ad")
 
-        cluster_params = clustering_settings({
-            "clustering_min_counts": clustering_min_counts,
-            "clustering_min_genes": clustering_min_genes,
-            "clustering_n_top_genes": clustering_n_top_genes,
-            "clustering_n_pcs": clustering_n_pcs,
-            "clustering_n_neighbors": clustering_n_neighbors,
-            "clustering_resolution": clustering_resolution,
-            "clustering_random_state": clustering_random_state,
-            "clustering_max_units": clustering_max_units,
-        })
+        clustering_preset(resolution)  # validate before any work
         cache_key = fingerprint({"method": METHOD_VERSION, "input_sha256": file_digest(self._input_file()),
             "sample_id": self.sample_id, "modality": self.modality_name,
             "settings": {"min_count_per_spot": min_count_per_spot, "max_count_per_spot": max_count_per_spot,
                 "min_genes_per_spot": min_genes_per_spot, "max_genes_per_spot": max_genes_per_spot,
                 "remove_mitochondrial_genes": remove_mitochondrial_genes,
                 "total_counts_normalize": total_counts_normalize, "log1p_transform": log1p_transform,
-                **cluster_params}, "software": {name: version(name) for name in ("scanpy", "numpy", "scipy", "scikit-learn", "igraph")}})
+                "resolution": resolution}, "software": {name: version(name) for name in ("scanpy", "numpy", "scipy", "scikit-learn", "igraph")}})
         self.preprocessing_changed = force_recomputing or cached_fingerprint(output_file) != cache_key
         if not self.preprocessing_changed:
             reporter.cached()
@@ -292,8 +278,7 @@ class SpatialTranscriptomic(BaseSample):
         # Independent analytical copy: original observations and genes are retained in .X.
         # Large or sparse samples are clustered on lattice blocks / supercells (in memory only).
         cluster_labels, eligible, provenance = spot_cluster_labels(
-            adata.X, adata.var_names, adata.obsm['spatial'], adata.obs, adata.uns['spot_size'],
-            cluster_params, reporter)
+            adata.X, adata.var_names, adata.obsm['spatial'], resolution, reporter)
         adata.obs['clustering_eligible'] = eligible
         adata.uns['focus_clustering'] = provenance
         adata.uns['focus_preprocessing_fingerprint'] = cache_key
@@ -348,14 +333,7 @@ class SpatialTranscriptomicDataset(BaseDataset):
         remove_mitochondrial_genes: bool = False,
         total_counts_normalize: bool = False,
         log1p_transform: bool = False,
-        clustering_min_counts: int = 50,
-        clustering_min_genes: int = 20,
-        clustering_n_top_genes: int = 2000,
-        clustering_n_pcs: int = 50,
-        clustering_n_neighbors: int = 15,
-        clustering_resolution: float = 0.5,
-        clustering_random_state: int = 0,
-        clustering_max_units: int = 250_000,
+        resolution: str = SpotResolution.STANDARD,
         force_recomputing: bool = False,
         step_reporter=None
     ) -> dict[str, str]:
@@ -397,6 +375,9 @@ class SpatialTranscriptomicDataset(BaseDataset):
             Whether to normalize total counts per spot.
         log1p_transform : bool
             Whether to apply log1p transformation.
+        resolution : str
+            SpotResolution preset for the alignment clustering: 'standard' (multicellular spots)
+            or 'sub_cellular' (weak high-resolution spots: coarser units, wider smoothing).
         force_recomputing : bool
             Whether to force recomputing even if output exists.
 
@@ -420,16 +401,7 @@ class SpatialTranscriptomicDataset(BaseDataset):
         if min_count_spots_ratio_per_gene is not None and min_count_spots_ratio_per_gene <= 0:
             raise ValueError("min_count_spots_ratio_per_gene must be greater than 0.")
 
-        cluster_params = clustering_settings({
-            "clustering_min_counts": clustering_min_counts,
-            "clustering_min_genes": clustering_min_genes,
-            "clustering_n_top_genes": clustering_n_top_genes,
-            "clustering_n_pcs": clustering_n_pcs,
-            "clustering_n_neighbors": clustering_n_neighbors,
-            "clustering_resolution": clustering_resolution,
-            "clustering_random_state": clustering_random_state,
-            "clustering_max_units": clustering_max_units,
-        })
+        clustering_preset(resolution)  # validate before any work
         reporter = step_reporter or get_reporter()
 
         # ---- Step 1: Preprocess each sample (cache-aware) ----
@@ -444,7 +416,7 @@ class SpatialTranscriptomicDataset(BaseDataset):
                 remove_mitochondrial_genes=remove_mitochondrial_genes,
                 total_counts_normalize=total_counts_normalize,
                 log1p_transform=log1p_transform,
-                **cluster_params,
+                resolution=resolution,
                 force_recomputing=force_recomputing,
                 step_reporter=reporter
             )
@@ -632,7 +604,7 @@ def _create_st_dataset(path, samples, settings):
 
 def _extract_st_settings(settings):
     return {
-        **clustering_settings(settings),
+        'resolution': settings.get(STPreprocessingParams.RESOLUTION, SpotResolution.STANDARD),
         'min_count_per_spot': settings.get(STPreprocessingParams.MIN_COUNT_PER_SPOT, None),
         'max_count_per_spot': settings.get(STPreprocessingParams.MAX_COUNT_PER_SPOT, None),
         'min_genes_per_spot': settings.get(STPreprocessingParams.MIN_GENES_PER_SPOT, None),

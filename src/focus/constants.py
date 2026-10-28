@@ -182,6 +182,7 @@ class MsiPreprocessingParams(_AbstractEnum):
 	MIN_INTENSITY_THRESHOLD = "min_intensity_threshold"
 	DETECT_BACKGROUND = "detect_background"
 	SAMPLE_TYPE = "sample_type"
+	RESOLUTION = "resolution"
 	FORCE_RECOMPUTING = "force_recomputing"
 
 class RamanPreprocessingParams(_AbstractEnum):
@@ -194,14 +195,7 @@ class RamanPreprocessingParams(_AbstractEnum):
 	MIN_OBJECT_SIZE = "min_object_size"
 
 class STPreprocessingParams(_AbstractEnum):
-	CLUSTERING_MIN_COUNTS = "clustering_min_counts"
-	CLUSTERING_MIN_GENES = "clustering_min_genes"
-	CLUSTERING_N_TOP_GENES = "clustering_n_top_genes"
-	CLUSTERING_N_PCS = "clustering_n_pcs"
-	CLUSTERING_N_NEIGHBORS = "clustering_n_neighbors"
-	CLUSTERING_RESOLUTION = "clustering_resolution"
-	CLUSTERING_RANDOM_STATE = "clustering_random_state"
-	CLUSTERING_MAX_UNITS = "clustering_max_units"
+	RESOLUTION = "resolution"
 	MIN_COUNT_PER_SPOT = "min_count_per_spot"
 	MAX_COUNT_PER_SPOT = "max_count_per_spot"
 	MIN_GENES_PER_SPOT = "min_genes_per_spot"
@@ -261,6 +255,11 @@ class MsiSampleType(_AbstractEnum):
 	TISSUE   = "tissue"
 	MICROGRID = "microgrid"
 
+class SpotResolution(_AbstractEnum):
+	"""Spot modality resolution class; selects the clustering preset (CLUSTERING_PRESETS)."""
+	STANDARD = "standard"          # multicellular spots: Visium, MALDI-MSI
+	SUB_CELLULAR = "sub_cellular"  # weak sub-cellular spots: Visium HD, Xenium-derived, high-res MSI
+
 class MsiIntensityNormalization(_AbstractEnum):
 	TIC = "tic"
 	LOG = "log"
@@ -302,6 +301,9 @@ DISPLAY_NAMES: dict[str, str] = {
 	# MSI sample type
 	MsiSampleType.TISSUE:    "Tissue",
 	MsiSampleType.MICROGRID: "Microgrid",
+	# Spot resolution
+	SpotResolution.STANDARD:     "Standard",
+	SpotResolution.SUB_CELLULAR: "Sub-cellular",
 	# Annotation file types
 	AnnotationFileType.GEOJSON: "GeoJSON",
 }

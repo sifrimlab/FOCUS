@@ -78,7 +78,7 @@ Run by `SpatialTranscriptomic.preprocess_data()`. A cached file is reused only w
 
 6. **Observation names**: prefixed with `<sample_id>_`, unless every name already carries that prefix.
 
-7. **Cluster labels**: computed on clustering units. Samples with at most `clustering_max_units` spots (default 250,000) whose median spot holds at least `clustering_min_counts` UMIs are clustered spot by spot. Larger or sparser samples are grouped into k x k blocks of the acquisition lattice (`array_row`/`array_col`), or into Voronoi supercells when there is no lattice; every spot takes its unit's label. A clustering-only copy is normalized to 10,000 counts, log-transformed and restricted to highly variable genes before PCA → neighbors → Leiden. Default eligibility is 50 UMIs and 20 detected genes per unit; spots of ineligible units remain in the output as `unassigned`, with `.obs['clustering_eligible']=False`. These are configurable display-analysis thresholds, not universal tissue QC cutoffs. Zero-count observations never form clusters. See [the scientific methods](../scientific/st_methods.md#36-per-sample-clustering) for the exact procedure and provenance.
+7. **Cluster labels**: computed on clustering units chosen by the `resolution` preset (see [Clustering settings](#clustering-settings)). Spots are clustered one by one, or grouped into k x k blocks of the acquisition lattice inferred from `.obsm['spatial']` (Voronoi supercells when the spots form no lattice) when the sample exceeds 250,000 spots or, for `"sub_cellular"`, its median spot holds fewer than 1,000 UMIs; every spot takes its unit's label. A clustering-only copy is normalized to 10,000 counts, log-transformed and restricted to highly variable genes before PCA; each unit's PCs are joined to the mean PCs of its spatial neighbourhood before neighbors → Leiden. Eligibility is 50 UMIs and 20 detected genes per unit; spots of ineligible units remain in the output as `unassigned`, with `.obs['clustering_eligible']=False`. These are display-analysis thresholds, not tissue QC cutoffs. Zero-count units never form clusters. See [the scientific methods](../scientific/st_methods.md#36-per-sample-clustering) for the exact procedure and provenance.
 
 8. **Raw counts layer**: `.layers['raw']` is written with a copy of `.X` **only when** `total_counts_normalize` or `log1p_transform` is enabled. With both off, `.X` already holds the raw counts and no layer is created.
 
@@ -138,24 +138,14 @@ For the ratio criterion, samples in which a gene is not expressed at all are nei
 
 ### Clustering settings
 
-These settings affect alignment labels only; they do not delete observations or genes from `.X`.
+One setting, `resolution`, selects the clustering preset for the alignment labels. It does not delete observations or genes from `.X`.
 
-| Name | Default | Meaning |
-|------|---------|---------|
-| `clustering_min_counts` | 50 | Minimum UMIs for clustering eligibility |
-| `clustering_min_genes` | 20 | Minimum detected genes for clustering eligibility |
-| `clustering_n_top_genes` | 2000 | Maximum HVG target; limited by available features |
-| `clustering_n_pcs` | 50 | Maximum PCA dimensions |
-| `clustering_n_neighbors` | 15 | Neighbor count, limited by eligible observations |
-| `clustering_resolution` | 0.5 | Positive Leiden resolution |
-| `clustering_random_state` | 0 | Nonnegative seed for PCA, neighbors, Leiden and Voronoi seeds |
-| `clustering_max_units` | 250000 | Maximum number of units clustered (at least 1,000); larger samples are coarsened |
+| Value | Intended data | Units | Spatial neighbourhood |
+|------|---------|---------|---------|
+| `"standard"` (default) | Multicellular spots (Visium) | Native spots up to 250,000 spots; lattice blocks or Voronoi supercells above | 1 ring |
+| `"sub_cellular"` | Weak high-resolution spots (Visium HD, Xenium-derived bins) | Lattice blocks or Voronoi supercells grown until the median unit holds 1,000 UMIs (and at most 250,000 units) | 2 rings |
 
-`clustering_min_counts` also sets the signal criterion of the unit planner: a sample whose
-median spot holds fewer UMIs is clustered on lattice blocks or supercells large enough to reach
-it. Lowering the threshold therefore keeps sparse samples at a finer resolution, with more
-`unassigned` spots. A setting of 1 permits positive low-count units; zero counts remain unassigned. Inspect depth dependence,
-marker enrichment and parameter sensitivity rather than choosing parameters for visual smoothness.
+All other values are fixed: eligibility of 50 UMIs and 20 detected genes per unit, 2,000 HVGs, 50 PCs, 15 neighbours, Leiden resolution 0.5, seed 0. The units and their neighbourhoods are derived from `.obsm['spatial']` alone; `array_row` / `array_col` are not required. See [the scientific methods](../scientific/st_methods.md#36-per-sample-clustering) for the procedure and its calibration.
 HVG selection follows Scanpy's dispersion implementation and can include ties at the target cutoff.
 
 ### Other

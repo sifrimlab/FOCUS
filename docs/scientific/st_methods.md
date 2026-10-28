@@ -88,72 +88,120 @@ colouring. They are computed on `.X` at this point in the sequence: post-filter,
 post-removal, and still raw counts, since §3.7 has not yet run.
 
 ST uses `spot_cluster_labels`. It chooses the analytical units (§3.6.1), sums the raw counts
-of each unit, clusters the units with steps 1 to 4, and gives every spot the label and
-eligibility of its unit. Small samples with sufficient counts per spot are clustered spot by
-spot. Coordinates only define the units; they never enter the expression model.
+of each unit, clusters the units with steps 1 to 5, and gives every spot the label and
+eligibility of its unit. Only `.obsm['spatial']` defines the units and their neighbourhoods;
+no other metadata (such as `array_row` / `array_col`) is read.
 
-1. **Clustering eligibility.** By default a unit needs at least 50 UMIs and 20 detected
-   genes. These configurable alignment-only thresholds are not universal biological QC
-   cutoffs. Spots of ineligible units remain in the exported matrix with the label
-   `unassigned` and a neutral display color. Zero-count units are always unassigned.
+The modality setting `resolution` selects one of two presets. Everything else is shared.
+
+| Preset | Intended data | Neighbourhood | Unit growth for signal |
+|---|---|---|---|
+| `standard` | Multicellular spots (Visium) | 1 ring | None; native spots below the cap |
+| `sub_cellular` | Weak sub-cellular spots (Visium HD, Xenium-derived bins) | 2 rings | Until the median unit holds 1,000 UMIs |
+
+Shared values: at most 250,000 units, eligibility of 50 UMIs and 20 detected genes per unit,
+2,000 HVGs, 50 PCs, 15 neighbours, Leiden resolution 0.5, seed 0.
+
+1. **Clustering eligibility.** A unit needs at least 50 UMIs and 20 detected genes. These
+   alignment-only thresholds are not universal biological QC cutoffs. Spots of ineligible
+   units remain in the exported matrix with the label `unassigned` and a neutral display
+   color. Zero-count units are always unassigned.
 2. **Analytical representation.** On an independent sparse copy of eligible raw counts,
-   remove unexpressed genes, normalize to 10,000 counts, apply `log1p`, and select up to
-   2,000 highly variable genes with Scanpy's Seurat dispersion method. This feature selection
-   never subsets the output expression matrix. Dataset-level gene filters run later and do
-   not redefine these per-sample alignment labels.
-3. **Partition.** Sparse centered PCA (up to 50 PCs), a neighbor graph (up to 15 neighbors),
-   and Leiden (`resolution=0.5`, `flavor='igraph'`, `n_iterations=2`, `directed=False`) run on
-   the eligible units. PCA, neighbor construction and Leiden receive the explicit
-   seed, default 0. Scanpy uses approximate neighbor construction for large inputs.
-4. **Insufficient information.** Fewer than three eligible units or fewer than two
-   usable PCs yields unassigned labels, with the reason recorded in provenance.
+   remove unexpressed genes, normalize to 10,000 counts, apply `log1p`, select up to 2,000
+   highly variable genes with Scanpy's Seurat dispersion method, and compute sparse centered
+   PCA (up to 50 PCs). This feature selection never subsets the output expression matrix.
+   Dataset-level gene filters run later and do not redefine these per-sample alignment labels.
+3. **Spatial embedding.** Each eligible unit is represented by its own PCs joined to the mean
+   PCs of its neighbourhood (§3.6.2).
+4. **Partition.** A neighbor graph (up to 15 neighbors) on the spatial embedding and Leiden
+   (`resolution=0.5`, `flavor='igraph'`, `n_iterations=2`, `directed=False`) run on the
+   eligible units. PCA, neighbor construction and Leiden receive seed 0. Scanpy uses
+   approximate neighbor construction for large inputs.
+5. **Insufficient information.** Fewer than three eligible units or fewer than two usable PCs
+   yields unassigned labels, with the reason recorded in provenance.
 
 `.obs['clustering_eligible']` records eligibility; `.uns['focus_clustering']` records the
-method version, parameters, software version, selected genes, cluster sizes, PCA variance
-and PC/count-depth correlations. Intermediate expression, embeddings and graphs are discarded.
-Labels are expression-based; spatial smoothness is not an optimization target and does not
-prove biological validity. Count-depth correlation is descriptive and is not automatically
-regressed out.
+preset, method version, parameters, software versions, units, selected genes, cluster sizes,
+PCA variance, PC/count-depth correlations and `label_coherence`: the agreement of each unit's
+label with its 1-ring neighbours, corrected for chance (0 for labels placed at random, 1 when
+all neighbours agree). Intermediate expression, embeddings and graphs are discarded.
+Count-depth correlation is descriptive and is not automatically regressed out.
 
 #### 3.6.1 Clustering units
 
 `plan_spatial_units` keeps the spots as units unless one of two criteria applies:
 
-- **Cap.** The sample has more than `clustering_max_units` spots (default 250,000).
-- **Signal.** The sample has more than 1,000 spots and the median spot holds fewer than
-  `clustering_min_counts` UMIs (default 50).
+- **Cap.** The sample has more than 250,000 spots.
+- **Signal** (`sub_cellular` only). The sample has more than 1,000 spots and the median spot
+  holds fewer than 1,000 UMIs.
 
 Otherwise spots are grouped into coarser units. A grid whose cell size is not an integer
 multiple of the acquisition step, or whose cells are not aligned to the acquisition lattice,
 gives cells with periodically varying spot counts, which appear as a grid pattern in the
-labels. Units are therefore built from the lattice itself:
+labels. Units are therefore built from the acquisition lattice, inferred from the coordinates:
 
-- **Acquisition lattice.** `array_row` and `array_col` are used when they are integral,
-  unique per spot, and fit the coordinates linearly with a maximum residual of 2% of the
-  lattice step. The unit of a spot is the block (`array_row // k`, `array_col // k`), with
-  indices counted from the smallest observed value. A hexagonal lattice (standard Visium,
-  where `array_row + array_col` has a single parity) has its column index halved first.
-  Every interior block holds exactly k² sites, so block occupancy has no periodic component,
-  and the blocks depend only on the lattice indices, not on the rotation or translation of
-  the coordinates. Without the index columns, an axis-aligned raster of pitch `spot_size` is
-  recovered from the coordinates when at least 99% of spots lie within 0.1 pitch of a raster
-  node and the nodes are unique.
-- **Block size.** k is the smallest integer for which the number of occupied blocks is at
-  most the cap and the median block total reaches `clustering_min_counts`. The signal
-  criterion stops growing k before fewer than 1,000 blocks would remain; the provenance then
-  records `signal_limited` and a warning is reported.
+- **Lattice inference** (`infer_lattice`). On a seeded sample of at most 20,000 spots, the 8
+  nearest displacements of each spot give two basis vectors: the dominant direction among
+  nearest-shell displacements, and the shortest displacement cluster more than 25 degrees
+  away from it. Spots within 20 steps of the most central spot are rounded to lattice indices
+  and the basis and origin are refitted by least squares; the radius triples until it covers
+  every spot, so a small basis error cannot accumulate over thousands of steps. The lattice is
+  accepted when the 99th percentile residual is at most 0.1 step, the maximum residual is at
+  most 0.45 step, and every spot has its own lattice site. This covers square lattices at any
+  rotation (Visium HD), hexagonal lattices (standard Visium, in a 60 degree basis) and
+  rectangular rasters. The lattice step comes from the coordinates; `spot_size` is the spot
+  footprint and can differ from it (55 µm spots at a 100 µm pitch on standard Visium).
+- **Blocks.** The unit of a spot is the block (i // k, j // k) of its lattice indices (i, j),
+  counted from the smallest index. Every interior block holds exactly k² sites (a
+  parallelogram on hexagonal lattices), so block occupancy has no periodic component, and
+  the blocks follow the lattice, not the image axes. k is the smallest integer for which the
+  number of occupied blocks is at most the cap and, under the signal criterion, the median
+  block total reaches 1,000 UMIs. The signal criterion stops growing k before fewer than
+  1,000 blocks would remain; the provenance then records `signal_limited` and a warning is
+  reported.
 - **Voronoi supercells.** Layouts without a lattice (segmented cells, beads) are grouped into
   m tiles. m spots drawn with the seeded random generator are the initial seeds, every spot
   is assigned to its nearest seed, and five Lloyd iterations move each seed to the centroid
   of its tile. Seeds follow spot density, and tiles hold similar spot counts with no periodic
   structure. m is the cap, reduced to n / s under the signal criterion, where
-  s = ⌈`clustering_min_counts` / median spot count⌉, and never below 1,000.
+  s = ⌈1,000 / median spot count⌉, and never below 1,000.
 
 Units exist only in memory. `.uns['focus_clustering']['units']` records the method
-(`native`, `lattice` or `voronoi`), the number of units, the criterion that set their size
-(`cap`, `signal` or both) and, for a lattice, `k`, the block size in coordinate units and
-the index source. Per-spot cluster sizes and eligible-spot counts are recorded next to the
-per-unit values.
+(`native`, `lattice` or `voronoi`), the layout (`lattice` or `irregular`), the lattice step,
+the number of units, the criterion that set their size (`cap`, `signal` or both) and, for
+blocks, `k` and the block size in coordinate units. Per-spot cluster sizes and eligible-spot
+counts are recorded next to the per-unit values.
+
+#### 3.6.2 Neighbourhood embedding
+
+Expression of a single sub-cellular unit is dominated by sampling noise, so labels computed
+from each unit alone scatter at the scale of single units. Each unit's clustering embedding
+is therefore `[sqrt(1 - w) * own PCs, sqrt(w) * neighbourhood mean PCs]` with w = 0.8, the
+weighting BANKSY uses for domain segmentation. The neighbourhood mean averages the unit with
+its eligible neighbours:
+
+- **Lattice layouts:** the units whose grid offset has a physical length of at most
+  (r + 0.5) times the longest grid step, for r rings: 8 units on square grids and 6 on
+  hexagonal grids for r = 1. The neighbourhood is isotropic in physical space.
+- **Irregular layouts:** the 3r(r + 1) nearest unit centroids (6 for r = 1).
+
+The unit's own PCs are kept because a neighbourhood mean alone makes adjacent units nearly
+identical; the neighbor graph then reproduces the spatial grid, and Leiden divides
+homogeneous tissue into compact patches. On a synthetic two-domain lattice with weak
+per-spot signal, the 2-ring mean alone gave 15 to 17 patches, while the weighted embedding
+recovered the two domains (adjusted Rand index 0.99). Expression itself is never smoothed.
+
+The presets were calibrated on a Visium HD sample with 16 µm bins (median 539 UMIs per bin)
+and on data derived from it. Neighbour coherence was:
+
+| Data | Setting | Coherence |
+|---|---|---|
+| 16 µm bins, unchanged | Labels from each bin alone | 0.47 |
+| 16 µm bins, unchanged | `sub_cellular` (2 x 2 blocks, 2 rings) | 0.81 |
+| Counts thinned 64 times, emulating 2 µm bins | Signal target of 50 UMIs | 0.06 |
+| Counts thinned 64 times, emulating 2 µm bins | Signal target of 1,000 UMIs | 0.71 |
+| 3 x 3 sums at 96 µm pitch, emulating standard Visium | No neighbourhood | 0.37 |
+| 3 x 3 sums at 96 µm pitch, emulating standard Visium | `standard` (1 ring) | 0.67 |
 
 ### 3.7 Optional normalization and transform
 
@@ -312,12 +360,10 @@ Config-extracted defaults for ST preprocessing (`_extract_st_settings`):
 
 Output spot/gene filtering and output normalization remain opt-in. Clustering has its own eligibility and normalization, which do not remove data from the output.
 
-Clustering defaults: `clustering_min_counts=50`, `clustering_min_genes=20`,
-`clustering_n_top_genes=2000`, `clustering_n_pcs=50`, `clustering_n_neighbors=15`,
-`clustering_resolution=0.5`, `clustering_random_state=0`, `clustering_max_units=250000`.
-All are configuration settings.
+`resolution` defaults to `standard`. The clustering values of each preset are fixed (§3.6);
+they are not configuration settings.
 
-Per-sample cache keys include the input SHA-256, effective preprocessing/clustering settings,
+Per-sample cache keys include the input SHA-256, effective preprocessing settings (including `resolution`),
 method version and numerical software versions. Merged keys include all sample keys and the
 merged gene-filter settings. Legacy files without a key are recomputed. Changed ST inputs
 invalidate dependent alignment and registration caches through the orchestrator.

@@ -2,8 +2,8 @@
 """Reproducible ST diagnostic; outputs stay outside the input dataset.
 
 PYTHONPATH=src python scripts/benchmark_st.py MEL.h5ad --output /tmp/focus-st-benchmark
-Runs the production entry point (spot_cluster_labels), so the unit plan (native, lattice
-blocks or Voronoi supercells) follows --clustering-max-units and --clustering-min-counts.
+Runs the production entry point (spot_cluster_labels) with the --resolution preset
+(standard or sub_cellular), so units, smoothing and labels match preprocessing.
 """
 import argparse
 import json
@@ -17,15 +17,14 @@ import psutil
 import scipy.sparse as sp
 
 from focus.preprocessing.st_clustering import spot_cluster_labels
-from focus.preprocessing.st_settings import DEFAULTS
+from focus.constants import SpotResolution
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('input', type=Path)
     parser.add_argument('--output', type=Path, required=True)
-    for name, value in DEFAULTS.items():
-        parser.add_argument('--' + name.replace('_', '-'), type=type(value), default=value)
+    parser.add_argument('--resolution', choices=SpotResolution.list(), default=SpotResolution.STANDARD)
     args = parser.parse_args()
     args.output.mkdir(parents=True, exist_ok=True)
     a = ad.read_h5ad(args.input)
@@ -49,9 +48,8 @@ def main():
         result.setdefault(name, {}).update(seconds=time.perf_counter()-start, peak_process_rss_mb=peak[0]/1e6)
         return value
 
-    settings = {key: getattr(args, key) for key in DEFAULTS}
     L, eligible, info = measured('clustering', lambda: spot_cluster_labels(
-        X, a.var_names, coords, a.obs, a.uns.get('spot_size'), settings))
+        X, a.var_names, coords, args.resolution))
     labels['clustering'] = L
     result['clustering'].update(info)
     result['clustering']['median_counts_by_cluster'] = {label: float(np.median(counts[L == label])) for label in np.unique(L)}
@@ -87,7 +85,7 @@ def main():
         ax.set_title(name + ' clusters (colors local to each run)')
     for ax in axes: ax.set_aspect('equal'); ax.invert_yaxis(); ax.set_xlabel('x'); ax.set_ylabel('y')
     fig.savefig(args.output/'comparison.png', dpi=180)
-    print(json.dumps({key: result['clustering'][key] for key in ['units', 'n_spots', 'n_eligible_spots', 'n_selected_genes', 'n_clusters', 'seconds', 'peak_process_rss_mb']}, indent=2))
+    print(json.dumps({key: result['clustering'].get(key) for key in ['resolution', 'units', 'n_spots', 'n_eligible_spots', 'n_selected_genes', 'n_clusters', 'label_coherence', 'seconds', 'peak_process_rss_mb']}, indent=2, default=str))
     print('PC1-UMI rho:', info.get('pc_log_counts_spearman', [None])[0])
     print(args.output/'metrics.json')
 

@@ -2,7 +2,7 @@
 import struct
 import numpy as np
 
-from focus.preprocessing._utils import _fit_lattice
+from focus.preprocessing._utils import infer_lattice
 
 
 def pack_spots(coords, classes, foreground, ids=None):
@@ -17,16 +17,17 @@ def pack_spots(coords, classes, foreground, ids=None):
 
 
 def acquisition_basis(adata):
-    """Infer square axes only when row/col metadata genuinely describes a regular lattice.
+    """Unit axes of the acquisition lattice when the spots form a square-footprint lattice.
 
-    Arbitrary cell layouts keep generic axis-aligned footprints. This is display metadata,
-    not an alignment transform and never changes stored coordinates.
+    The lattice is inferred from ``.obsm['spatial']`` alone (no array index columns needed) and
+    accepted for oriented squares only when its axes are orthogonal and its steps match
+    ``.uns['spot_size']``. Other layouts keep generic axis-aligned footprints. This is display
+    metadata, not an alignment transform, and never changes stored coordinates.
     """
-    if not {"array_row", "array_col"}.issubset(adata.obs):
+    lattice = infer_lattice(np.asarray(adata.obsm["spatial"], dtype=float))
+    if lattice is None:
         return None
-    axes = _fit_lattice(adata.obs[["array_col", "array_row"]].to_numpy(dtype=float), adata.obsm["spatial"])
-    if axes is None:
-        return None
+    axes = lattice[1]
     lengths = np.linalg.norm(axes, axis=1)
     unit = axes / lengths[:, None]
     size = np.broadcast_to(np.asarray(adata.uns.get("spot_size", 1)).flatten(), (2,))

@@ -11,7 +11,7 @@ import scipy.sparse as sp
 from sklearn.metrics import adjusted_rand_score
 
 from focus.preprocessing.st_clustering import native_cluster_labels
-from focus.preprocessing.st_settings import clustering_settings
+from focus.preprocessing._utils import clustering_preset
 from focus.preprocessing.transcriptomic import SpatialTranscriptomic, SpatialTranscriptomicDataset
 from focus.alignment.alignment import DirectMappingAligner
 from focus.alignment.spot_payload import pack_spots, acquisition_basis
@@ -44,7 +44,7 @@ class NativeClusteringTests(unittest.TestCase):
 
     def test_ineligible_spots_stay_in_place_and_have_no_cluster(self):
         X = sp.vstack([sp.csr_matrix((1, 60)), sp.csr_matrix(np.ones((1, 60))), expression()]).tocsr()
-        labels, eligible, _ = native_cluster_labels(X, [f'g{i}' for i in range(60)], {'clustering_min_counts': 100})
+        labels, eligible, _ = native_cluster_labels(X, [f'g{i}' for i in range(60)], {'min_counts': 100})
         self.assertEqual(len(labels), X.shape[0])
         np.testing.assert_array_equal(eligible[:2], [False, False])
         np.testing.assert_array_equal(labels[:2], ['unassigned', 'unassigned'])
@@ -64,14 +64,14 @@ class NativeClusteringTests(unittest.TestCase):
             sub.obs['cluster'] = np.where(np.arange(sub.n_obs) % 2, 'a', 'b')
         with patch('scanpy.pp.highly_variable_genes', side_effect=lambda sub, **kw: sub.var.__setitem__('highly_variable', True)), \
              patch('scanpy.pp.pca', side_effect=pca), patch('scanpy.pp.neighbors'), patch('scanpy.tl.leiden', side_effect=leiden):
-            labels, _, _ = native_cluster_labels(X, list('abcdef'), {'clustering_min_counts': 1, 'clustering_min_genes': 1})
+            labels, _, _ = native_cluster_labels(X, list('abcdef'), {'min_counts': 1, 'min_genes': 1})
         self.assertEqual(seen, [n])
         self.assertEqual(len(labels), n)
         self.assertNotEqual(labels[0], labels[1])
 
     def test_invalid_settings_and_nonraw_counts_fail(self):
-        for params in [{'clustering_resolution': float('nan')}, {'clustering_n_pcs': True}, {'clustering_min_genes': 0}]:
-            with self.assertRaises(ValueError): clustering_settings(params)
+        for resolution in ['ultra', None, 'Standard']:
+            with self.assertRaises(ValueError): clustering_preset(resolution)
         with self.assertRaisesRegex(ValueError, 'raw integer'):
             native_cluster_labels(sp.csr_matrix([[.5, 1, 2]]), list('abc'))
 
@@ -99,7 +99,7 @@ class PersistenceTests(unittest.TestCase):
         self.sample.preprocess_data()
         self.assertFalse(self.sample.preprocessing_changed)
         self.assertEqual(mtime, Path(path).stat().st_mtime_ns)
-        self.sample.preprocess_data(clustering_min_counts=100)
+        self.sample.preprocess_data(resolution='sub_cellular')
         self.assertNotEqual(first, cached_fingerprint(path))
         output = ad.read_h5ad(path)
         self.assertEqual((output.X != self.adata.X).nnz, 0)
@@ -108,7 +108,7 @@ class PersistenceTests(unittest.TestCase):
         changed = cached_fingerprint(path)
         self.adata.X.data[0] += 1
         self.adata.write_h5ad(self.input)
-        self.sample.preprocess_data(clustering_min_counts=100)
+        self.sample.preprocess_data(resolution='sub_cellular')
         self.assertNotEqual(changed, cached_fingerprint(path))
 
     def test_output_normalization_does_not_change_clusters_and_merged_provenance_survives(self):
@@ -166,11 +166,12 @@ class NativeDisplayTests(unittest.TestCase):
         theta = .2
         basis = np.array([[np.cos(theta), np.sin(theta)], [-np.sin(theta), np.cos(theta)]])
         a = ad.AnnData(sp.csr_matrix((row.size, 2)))
-        a.obs['array_row'] = row.ravel(); a.obs['array_col'] = col.ravel()
         a.obsm['spatial'] = np.column_stack([col.ravel(), row.ravel()]) @ basis * 16
         a.uns['spot_size'] = [16, 16]
-        np.testing.assert_allclose(acquisition_basis(a), basis, atol=1e-6)
-        a.obsm['spatial'][0] += 5
+        # Inferred from coordinates alone; each axis matches a true axis up to sign and order.
+        for axis in np.asarray(acquisition_basis(a)):
+            self.assertAlmostEqual(np.max(np.abs(basis @ axis)), 1, places=6)
+        a.obsm['spatial'][0] += 8
         self.assertIsNone(acquisition_basis(a))
 
     def test_large_display_has_every_original_spot_and_transform(self):

@@ -217,3 +217,7 @@ graphify-out/
 # Claude Code
 CLAUDE.md
 .claude/
+
+# Test data
+*.h5ad
+*.h5mu

@@ -2,7 +2,7 @@ import numpy as np
 import scipy.sparse as sp
 import mmap
 import os, tqdm, psutil
-from focus.preprocessing._utils import get_reporter, compute_cluster_labels, find_imzml_pair
+from focus.preprocessing._utils import get_reporter, compute_cluster_labels, clustering_preset, find_imzml_pair
 from collections import defaultdict
 from sklearn.linear_model import LinearRegression
 from sklearn.mixture import GaussianMixture
@@ -19,7 +19,7 @@ from scipy.ndimage import binary_fill_holes, binary_opening, median_filter, labe
 from scipy.stats import norm as normal_distribution
 
 import focus.utils as utils
-from focus.constants import ImzMLFileParser, MsiIntensityNormalization, MsiSampleType, MsiMetadata, MsiIonMode, MsiPreprocessingParams
+from focus.constants import ImzMLFileParser, MsiIntensityNormalization, MsiSampleType, MsiMetadata, MsiIonMode, MsiPreprocessingParams, SpotResolution
 from focus.constants import MODALITY_PREPROCESSING, MODALITY_PREPROCESSING_MERGED
 from focus.preprocessing.base import BaseSample, BaseDataset
 from focus.preprocessing._registry import ModalityHandler, register_modality
@@ -2153,6 +2153,7 @@ class MsiDataset(BaseDataset):
 						min_intensity_threshold: float = 10000.0,
 						detect_background: bool = False,
 						sample_type: str = MsiSampleType.TISSUE,
+						resolution: str = SpotResolution.STANDARD,
 						force_recomputing: bool = False,
 						step_reporter=None
 						) -> dict[str, str]:
@@ -2183,6 +2184,9 @@ class MsiDataset(BaseDataset):
 			Background detection strategy. "tissue" fits a GMM + BIC model on spectral complexity features and applies
 			morphological cleanup. "microgrid" detects sparse cells as local outliers against a background ion model
 			(see MsiSample._detect_microgrid_spots).
+		resolution : str
+			SpotResolution preset for the alignment clustering: 'standard' (multicellular pixels)
+			or 'sub_cellular' (weak high-resolution pixels: wider neighbourhood smoothing).
 		force_recomputing : bool
 			If True, forces recomputation of the reference M/Z vectors and interpolation even if they were already computed.
 			If False, the computation is skipped if the merged dataset already exists.
@@ -2603,7 +2607,7 @@ class MsiDataset(BaseDataset):
 					leiden_resolution=self._LEIDEN_RESOLUTION,
 					normalize_target_sum=None,
 					coordinates=adata.obsm.get('spatial'),
-					spot_size=spot_size,
+					smoothing_rings=clustering_preset(resolution)['smoothing_rings'],
 				))
 
 				output_file = MODALITY_PREPROCESSING(self.dataset_source_path, sample.sample_id, sample.modality_name, 'h5ad')
@@ -2693,6 +2697,7 @@ def _extract_msi_settings(settings):
 		'min_intensity_threshold': settings.get(MsiPreprocessingParams.MIN_INTENSITY_THRESHOLD, 1e4),
 		'detect_background': settings.get(MsiPreprocessingParams.DETECT_BACKGROUND, False),
 		'sample_type': settings.get(MsiPreprocessingParams.SAMPLE_TYPE, MsiSampleType.TISSUE),
+		'resolution': settings.get(MsiPreprocessingParams.RESOLUTION, SpotResolution.STANDARD),
 		'force_recomputing': settings.get(MsiPreprocessingParams.FORCE_RECOMPUTING, False),
 	}
 

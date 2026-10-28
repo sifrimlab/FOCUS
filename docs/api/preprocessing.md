@@ -517,14 +517,7 @@ def preprocess_data(
     remove_mitochondrial_genes: bool = False,
     total_counts_normalize: bool = False,
     log1p_transform: bool = False,
-    clustering_min_counts: int = 50,
-    clustering_min_genes: int = 20,
-    clustering_n_top_genes: int = 2000,
-    clustering_n_pcs: int = 50,
-    clustering_n_neighbors: int = 15,
-    clustering_resolution: float = 0.5,
-    clustering_random_state: int = 0,
-    clustering_max_units: int = 250_000,
+    resolution: str = "standard",
     force_recomputing: bool = False,
     step_reporter=None,
 ) -> str:
@@ -587,14 +580,7 @@ class SpatialTranscriptomicDataset(BaseDataset):
         remove_mitochondrial_genes: bool = False,
         total_counts_normalize: bool = False,
         log1p_transform: bool = False,
-        clustering_min_counts: int = 50,
-        clustering_min_genes: int = 20,
-        clustering_n_top_genes: int = 2000,
-        clustering_n_pcs: int = 50,
-        clustering_n_neighbors: int = 15,
-        clustering_resolution: float = 0.5,
-        clustering_random_state: int = 0,
-        clustering_max_units: int = 250_000,
+        resolution: str = "standard",
         force_recomputing: bool = False,
         step_reporter=None,
     ) -> dict[str, str]:
@@ -663,6 +649,7 @@ results = dataset.process_dataset(
 # }
 ```
 
-The eight `clustering_*` controls are accepted by both per-sample and dataset methods. They
-follow the [ST clustering settings](../modalities/transcriptomics.md#clustering-settings).
-HVG selection uses an analytical copy and never filters exported expression features.
+`resolution` (`"standard"` or `"sub_cellular"`) is accepted by both per-sample and dataset
+methods and selects the clustering preset described in the
+[ST clustering settings](../modalities/transcriptomics.md#clustering-settings). HVG selection
+uses an analytical copy and never filters exported expression features.

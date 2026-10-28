@@ -100,7 +100,7 @@ The window is split into a display viewport (80% of the width) and a control pan
 - The reference layer moves; the target layer is fixed and defines the coordinate space
 - For image modalities, the lowest pyramid level of the OME-TIFF is displayed
 - For spot modalities, spots are coloured by their `obs['cluster']` label
-- Native spot centers and sizes are retained at every observation count. Compact binary payloads, bounded GPU meshes and viewport culling replace display pooling. Validated acquisition metadata preserves HD square orientation. The confirmed transform still applies to every original observation
+- Native spot centers and sizes are retained at every observation count. Compact binary payloads, bounded GPU meshes and viewport culling replace display pooling. The acquisition lattice inferred from the coordinates preserves HD square orientation. The confirmed transform still applies to every original observation
 - Cluster filters show the saved labels and use the canvas colors. The fixed layer uses a warm palette and the moving layer a cool palette, extended without cycling; unassigned observations are neutral gray
 
 **Control panel**, top to bottom:
