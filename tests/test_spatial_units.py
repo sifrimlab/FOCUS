@@ -237,5 +237,21 @@ class PresetTests(unittest.TestCase):
             self.assertEqual(len(set(labels[units.bin_ids == unit])), 1)
         self.assertGreater(adjusted_rand_score(ij[:, 0] < 50, labels), 0.9)
 
+    def test_msi_clustering_keeps_the_top_features_like_st(self):
+        import scanpy as sc
+        from unittest.mock import patch
+        from focus.preprocessing._utils import N_TOP_FEATURES
+        xy, ij = lattice(30, 30, [20, 0], [0, 20], origin=(10, 10))
+        rng = np.random.default_rng(7)
+        X = rng.uniform(0, 1, (len(xy), N_TOP_FEATURES + 500))
+        X[ij[:, 0] < 15, :20] += 3
+        X -= X.mean(axis=1, keepdims=True)   # negative values, as after CLR
+        seen = []
+        real_pca = sc.pp.pca
+        with patch('scanpy.pp.pca', side_effect=lambda sub, **kw: (seen.append(sub.n_vars), real_pca(sub, **kw))[1]):
+            labels = compute_cluster_labels(X, leiden_resolution=0.5, normalize_target_sum=None, coordinates=xy)
+        self.assertLessEqual(seen[0], N_TOP_FEATURES + 1)
+        self.assertGreater(adjusted_rand_score(ij[:, 0] < 15, labels), 0.9)
+
 
 if __name__ == '__main__': unittest.main()

@@ -9,7 +9,7 @@ from scipy.stats import spearmanr
 
 from focus.constants import SpotResolution
 from focus.preprocessing._utils import (
-    _SPATIAL_CAP, _bin_sum_matrix, clustering_preset, describe_units, label_coherence,
+    N_TOP_FEATURES, _SPATIAL_CAP, _bin_sum_matrix, clustering_preset, describe_units, label_coherence,
     plan_spatial_units, smoothing_operator, spatial_embedding,
 )
 
@@ -19,7 +19,7 @@ METHOD_VERSION = "st-units-3"
 PARAMETERS = {
     "min_counts": 50,
     "min_genes": 20,
-    "n_top_genes": 2000,
+    "n_top_genes": N_TOP_FEATURES,
     "n_pcs": 50,
     "n_neighbors": 15,
     "leiden_resolution": 0.5,

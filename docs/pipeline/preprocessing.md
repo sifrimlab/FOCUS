@@ -162,7 +162,7 @@ The MSI pipeline operates at the **dataset level**: all samples are processed to
 
 10. **Per-Sample Cluster Labels** (used only to colour spots during alignment)
     - Samples above 250,000 spots are coarsened first: spots are grouped into k x k blocks of the acquisition raster, inferred from the coordinates (Voronoi supercells when no raster is found), all spots in a block are **summed** into one pseudo-spot, and the pseudo-spots are re-normalized so block occupancy washes out. Smaller samples are clustered spot by spot
-    - PCA (up to 50 components) → each unit's PCs joined to the mean PCs of its spatial neighbourhood (1 ring for `resolution="standard"`, 2 rings for `"sub_cellular"`) → neighbor graph → Leiden (`resolution=0.5`, `flavor="igraph"`, `n_iterations=2`, `directed=False`) on that matrix; each block's label then propagates back to every spot it contains
+    - Feature selection (the 2,000 most variable features, as in ST; samples with fewer keep all) → PCA (up to 50 components) → each unit's PCs joined to the mean PCs of its spatial neighbourhood (1 ring for `resolution="standard"`, 2 rings for `"sub_cellular"`) → neighbor graph → Leiden (`resolution=0.5`, `flavor="igraph"`, `n_iterations=2`, `directed=False`) on that matrix; each block's label then propagates back to every spot it contains
     - Labels stored in `obs["cluster"]`. The summed matrix, PCA embedding and neighbor graph are all discarded (only `obs["cluster"]` is kept) to minimize file size
 
 11. **Save Per-Sample AnnData and Merge**

@@ -656,5 +656,6 @@ results = dataset.process_dataset(
 
 `resolution` (`"standard"` or `"sub_cellular"`) is accepted by both per-sample and dataset
 methods and selects the clustering preset described in the
-[ST clustering settings](../modalities/transcriptomics.md#clustering-settings). HVG selection
-uses an analytical copy and never filters exported expression features.
+[ST clustering settings](../modalities/transcriptomics.md#clustering-settings). Both modalities
+cluster on at most 2,000 highly variable features (`N_TOP_FEATURES`); the selection uses an
+analytical copy and never filters exported expression features.

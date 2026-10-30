@@ -490,9 +490,14 @@ For a sample with \(n\) spots and cap \(C = 250{,}000\):
   the median (no `log1p`, matching the uncoarsened path).
 - **\(n \le C\)**: no coarsening; Leiden runs on every spot, matrix used as-is.
 
-Then PCA, the neighbourhood embedding (each unit's PCs joined to the mean PCs of its
-neighbourhood, weights 0.2 and 0.8), kNN and Leiden on that matrix, with
-\(n_\text{pcs} = \min(50,\, n_\text{run}-1,\, n_\text{vars}-1)\),
+Then feature selection, PCA, the neighbourhood embedding (each unit's PCs joined to the mean PCs of its
+neighbourhood, weights 0.2 and 0.8), kNN and Leiden on that matrix. As in ST, at most 2,000 features
+enter the PCA. They are the most variable ones by mean-binned normalized dispersion (Scanpy's
+`highly_variable_genes`, `flavor="cell_ranger"`)[^zheng2017]. This is the ST selection step with a flavor that
+does not assume log counts, because MSI intensities may be normalized by any of the
+[intensity normalization](#6-intensity-normalization) methods, including CLR, which is negative. Samples with
+2,000 features or fewer keep them all. Then
+\(n_\text{pcs} = \min(50,\, n_\text{run}-1,\, n_\text{selected}-1)\),
 `n_neighbors = min(15, n_run - 1)`, and Leiden at `resolution=0.5`, `flavor="igraph"`,
 `n_iterations=2`, `directed=False`. Each unit's label then propagates back to every spot of the
 unit.
@@ -577,3 +582,4 @@ the stored references and backbone, and only the remaining samples are processed
 [^fonville2012]: Fonville JM, Carter C, Cloarec O, et al. Robust data processing and normalization strategy for MALDI mass spectrometric imaging. *Anal Chem* 84:1310-1319 (2012). [doi:10.1021/ac201767g](https://doi.org/10.1021/ac201767g)
 [^barry2019]: Barry JA, Ait-Belkacem R, Hardesty WM, et al. Multicenter validation study of quantitative imaging mass spectrometry. *Anal Chem* 91:6266-6274 (2019). [doi:10.1021/acs.analchem.9b01016](https://doi.org/10.1021/acs.analchem.9b01016)
 [^aitchison1982]: Aitchison J. The statistical analysis of compositional data. *J R Stat Soc B* 44:139-160 (1982). [doi:10.1111/j.2517-6161.1982.tb01195.x](https://doi.org/10.1111/j.2517-6161.1982.tb01195.x)
+[^zheng2017]: Zheng GXY, Terry JM, Belgrader P, et al. Massively parallel digital transcriptional profiling of single cells. *Nat Commun* 8:14049 (2017). [doi:10.1038/ncomms14049](https://doi.org/10.1038/ncomms14049). Dispersion normalization within mean bins as implemented in Scanpy (Wolf FA, Angerer P, Theis FJ. *Genome Biol* 19:15, 2018).

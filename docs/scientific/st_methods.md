@@ -100,7 +100,8 @@ The modality setting `resolution` selects one of two presets. Everything else is
 | `sub_cellular` | Weak sub-cellular spots (Visium HD, Xenium-derived bins) | 2 rings | Until the median unit holds 1,000 UMIs |
 
 Shared values: at most 250,000 units, eligibility of 50 UMIs and 20 detected genes per unit,
-2,000 HVGs, 50 PCs, 15 neighbours, Leiden resolution 0.5, seed 0.
+2,000 HVGs, 50 PCs, 15 neighbours, Leiden resolution 0.5, seed 0. MSI uses the same feature
+budget ([MSI §6b](msi_methods.md#6b-per-sample-clustering)).
 
 1. **Clustering eligibility.** A unit needs at least 50 UMIs and 20 detected genes. These
    alignment-only thresholds are not universal biological QC cutoffs. Spots of ineligible

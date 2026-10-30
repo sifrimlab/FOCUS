@@ -13,6 +13,8 @@ from focus.reporting import StepReporter, get_reporter  # noqa: F401  (re-export
 # too little signal) are clustered on coarser units built by plan_spatial_units: k x k blocks of the
 # acquisition lattice when one is detected, Voronoi supercells otherwise.
 _SPATIAL_CAP = 250_000
+# Features entering the clustering PCA, for ST (highly variable genes) and MSI (highly variable features).
+N_TOP_FEATURES = 2000
 # The signal criterion never coarsens a sample below this many units.
 _MIN_UNITS = 1_000
 # Lloyd iterations for Voronoi supercells: on uniform points, tile-occupancy CV falls from 0.55
@@ -495,7 +497,8 @@ def compute_cluster_labels(
 	   the spots into at most ``cap`` units: k x k blocks of the acquisition raster (inferred
 	   from ``coordinates``) or Voronoi supercells when no raster is found. Every spot of a unit
 	   is SUMMED into one pseudo-spot (:func:`_bin_sum_matrix`). Smaller samples run on every spot.
-	2. Normalize the run matrix (see ``normalize_target_sum``), run PCA, append each unit's
+	2. Normalize the run matrix (see ``normalize_target_sum``), keep the ``N_TOP_FEATURES`` most
+	   variable features (as ST does), run PCA, append each unit's
 	   ``smoothing_rings`` neighbourhood mean to its PCs (:func:`spatial_embedding`), then
 	   ``neighbors -> leiden``, bounded by ``cap`` rows.
 	3. Propagate each unit's Leiden label back to every spot of the unit (identity when no
@@ -556,8 +559,7 @@ def compute_cluster_labels(
 		binned = False
 
 	n_run = X_run.shape[0]
-	n_pcs = min(n_pcs_cap, n_run - 1, n_vars - 1)
-	if n_run < 2 or n_pcs < 2:
+	if n_run < 2 or n_vars < 3:
 		return np.array(['0'] * n_obs, dtype=object)
 
 	# 2. Normalize the run matrix, then pca -> neighbors -> leiden on the bounded matrix.
@@ -571,6 +573,14 @@ def compute_cluster_labels(
 		# pseudo-spot (target = median) so cluster structure reflects composition, not how many
 		# spots happened to fall in a bin. No log1p (matches MSI's unbinned no-log path).
 		sc.pp.normalize_total(sub, inplace=True)
+	# Same feature budget as ST. The 'cell_ranger' flavor ranks mean-binned normalized dispersion
+	# without assuming log counts, so it holds for every MSI intensity normalization (CLR is negative).
+	if sub.n_vars > N_TOP_FEATURES:
+		sc.pp.highly_variable_genes(sub, flavor='cell_ranger', n_top_genes=N_TOP_FEATURES)
+		sub = sub[:, sub.var['highly_variable'].to_numpy()].copy()
+	n_pcs = min(n_pcs_cap, n_run - 1, sub.n_vars - 1)
+	if n_pcs < 2:
+		return np.array(['0'] * n_obs, dtype=object)
 	sc.pp.pca(sub, n_comps=n_pcs)                     # random_state=0 by default
 	sub.obsm['X_spatial'] = (spatial_embedding(sub.obsm['X_pca'], smoothing_operator(units, smoothing_rings))
 		if units is not None and smoothing_rings > 0 else sub.obsm['X_pca'])
