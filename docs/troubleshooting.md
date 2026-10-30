@@ -350,6 +350,8 @@ dataset_path/
 
 A pair involving an ST modality is also re-aligned when ST preprocessing was rebuilt with a different result: a changed ST setting or input file, or the first run on ST outputs written before preprocessing fingerprints existed.
 
+A pair whose non-reference modality is a microscopy image is re-aligned when the preprocessed image's pixels differ from the image the alignment was made on (a changed preprocessing setting or source file). The log then reports that the image changed since it was aligned. An image regenerated with identical pixels keeps its alignment.
+
 Forcing preprocessing to re-run also invalidates the alignments that depend on it, and the same condition forces that modality's registration.
 
 **Fix:** Set all three to `false` (the default) to reuse cached alignment results. To redo preprocessing only, run it with `force_recomputing: true` once, then set it back before the next run.
@@ -360,13 +362,9 @@ Forcing preprocessing to re-run also invalidates the alignments that depend on i
 
 ### `RuntimeError: CUDA out of memory`
 
-**Cause:** The GPU does not have enough VRAM to run the Prov-GigaPath model on the number of patches required by the image.
+**Cause:** The GPU does not have enough VRAM to run the Prov-GigaPath model on one encoder window. Windows are 224 × 224 pixels, the model's input size, and grow up to 1024 × 1024 pixels for reference spots whose footprint is wider than 96 pixels (48 µm at the encoded 0.5 µm per pixel).
 
-**What not to change:** `patch_size` defaults to 224 and is exposed in `registration_settings`, but
-leave it at 224. Prov-GigaPath expects a 224 × 224 input, so reducing it to save memory degrades the
-embeddings; it is not a supported memory knob. There is also no batch-size knob to lower: on GPU
-FOCUS already sizes each batch to the free VRAM and halves it automatically on an out-of-memory
-error, so a genuine out-of-memory here means the card is too small for even the minimum batch.
+There is no window-size or batch-size knob to lower: the window size is fixed by the model and the footprint, and on GPU FOCUS already sizes each batch to the free VRAM and halves it automatically on an out-of-memory error, down to one window. A genuine out-of-memory here means the card is too small for a single window.
 
 **What you can try:**
 
@@ -438,7 +436,7 @@ The model is cached in `~/.cache/huggingface/hub/`. On subsequent runs on nodes 
 1. Confirm the reference modality is `msi` or `st`.
 2. Confirm `"perform_registration": true`.
 3. Check `focus.log` for observation count mismatch warnings.
-4. If the merged file is missing, check whether the per-sample registration files exist. A missing merged file usually indicates an earlier crash. Delete the partial outputs and rerun with `"force_recomputing": true`.
+4. If the merged file is missing, check whether the per-sample registration files exist. A missing merged file usually indicates an earlier crash. Rerun: registration outputs are written atomically and reused only when their fingerprint matches, so the rerun recomputes what is missing.
 
 ---
 

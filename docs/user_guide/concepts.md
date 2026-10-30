@@ -27,7 +27,7 @@ A **spot** is a discrete spatial measurement location. The concept applies to om
 - a feature vector (ion intensities, Raman spectrum, or gene expression counts) stored in `.X`
 - a physical footprint described by `spot_size` (width × height in $\mu\text{m}$)
 
-In the pipeline, spots from non-reference modalities are interpolated onto the reference spot grid during the [Registration stage](../pipeline/registration.md).
+In the pipeline, the features of non-reference modalities are combined inside the footprint of each reference spot during the [Registration stage](../pipeline/registration.md).
 
 ---
 
@@ -60,10 +60,10 @@ The reference modality is typically chosen as the modality with the lowest spati
 
 FOCUS implements four registration strategies:
 
-- **Feature extraction** (`microscopy_image`): a square patch centered at each reference spot is extracted from the OME-TIFF and encoded by a pretrained vision model (Prov-GigaPath) into a dense embedding vector. That model is pretrained on H&E-stained brightfield tiles, so this mode is only meaningful for H&E histology; other image types are encoded without an error or a warning, but the embeddings do not describe the tissue, so use `none` for them.
-- **Spot interpolation** (`msi`, `st`): reference spot coordinates are expressed in the target modality's coordinate space; the feature vector at each reference location is a Gaussian-weighted average of the target spots that fall within the reference spot's footprint.
+- **Feature extraction** (`microscopy_image`): each reference spot receives one dense embedding vector of the image area inside its footprint, computed by a pretrained vision model (Prov-GigaPath) at the stored pyramid level closest to the model's 0.5 µm per pixel. That model is pretrained on H&E-stained brightfield tiles, so this mode is only meaningful for H&E histology; other image types are encoded without an error or a warning, but the embeddings do not describe the tissue, so use `none` for them.
+- **Spot interpolation** (`msi`, `st`): the feature vector at each reference location is a Gaussian-weighted average of the target spots whose centres fall within the reference spot's footprint (target positions are mapped into the reference's frame through the alignment transform).
 - **Spot aggregation** (`msi`, `st`): the same footprint as spot interpolation, but the target spots inside it are **summed** with equal weight (no kernel, no normalization) instead of averaged. Summing accumulates signal instead of diluting it. This mode is intended for subcellular-resolution data (e.g. Visium HD).
-- **Raman pixel interpolation** (`raman`): the same Gaussian footprint interpolation applied to the pixels of the hyperspectral OME-TIFF, each pixel acting as a spot at its pixel coordinate.
+- **Raman pixel interpolation** (`raman`): the same Gaussian footprint interpolation applied to the pixels of the hyperspectral OME-TIFF, each pixel acting as a spot at its centre.
 
 See the [Registration](../pipeline/registration.md) page for algorithm details.
 
@@ -123,16 +123,15 @@ Ion mode is **not** a configuration setting. It is detected per sample from whet
 
 ## spot_size
 
-**`spot_size`** is the physical footprint of a single spot or pixel, expressed as $[\text{width}, \text{height}]$ in micrometers ($\mu\text{m}$). It is the canonical keyword for spot/pixel dimensions throughout FOCUS:
+**`spot_size`** is the physical footprint of a single spot, expressed as $[\text{width}, \text{height}]$ in the units of the modality's `.obsm['spatial']`, micrometers ($\mu\text{m}$) for MSI and ST. It is the canonical keyword for spot dimensions throughout FOCUS:
 
 - Stored in `.uns['spot_size']` of every omics AnnData file as a 2-element `[x, y]` value (a `float32` array of shape `(2,)` for ST, a plain list of two floats for MSI). In **merged** files it becomes a `dict` keyed by `sample_id` instead, since samples can differ
-- Used during spot/pixel registration (`spot_interpolation`, `spot_aggregation`, `raman_pixel_interpolation`) to set the footprint within which target spots/pixels are combined for each reference spot. A larger `spot_size` includes more neighbors. For `spot_interpolation` and `raman_pixel_interpolation` it also sets the radius of the Gaussian kernel used in the weighted average; `spot_aggregation` uses the footprint only, to select which spots are summed (no kernel)
+- Used by every registration mode, from the **reference** modality, to set the footprint within which target spots, pixels or image tokens are combined for each reference spot. The footprint is evaluated in the reference's own frame, so the target's units do not matter. A larger `spot_size` includes more neighbors. For `spot_interpolation` and `raman_pixel_interpolation` it also sets the width of the Gaussian kernel used in the weighted average; `spot_aggregation` uses the footprint only, to select which spots are summed (no kernel); `feature_extraction` uses it to select the image tokens read for each spot
 - Carried forward to the final MuData `.uns['spot_size']`, where it reflects the reference modality's spot dimensions
 
 **Automatic vs. manual specification:**
 - **MSI**: Read automatically from instrument metadata (the `pixel size x`/`pixel size y` scan settings in the `.imzML` file), as an integer number of µm; defaults to `[1.0, 1.0]` when absent or below 1 µm. In dual ion mode the positive mode's raster size is used (both modes are expected to share it)
-- **Raman**: Read automatically from instrument metadata (`.lif` file headers)
-- **Spatial Transcriptomics (ST)**: Read from the input AnnData's `.uns['spot_size']` field; if absent, defaults to `[1.0, 1.0]` µm
-- **Microscopy (microscopy_image)**: **Not used**. Microscopy is an image modality and does not have discrete spots with a size parameter
+- **Spatial Transcriptomics (ST)**: Read from the input AnnData's `.uns['spot_size']` field; if absent, defaults to `[1.0, 1.0]`
+- **Raman and microscopy (image modalities)**: **Not used**. Image modalities have pixels, not spots; their pixels are mapped through the alignment, and the footprint always comes from the spot-based reference
 
-If instrument metadata is missing for MSI or Raman, the default value `[1.0, 1.0]` µm is applied.
+If instrument metadata is missing for MSI, the default value `[1.0, 1.0]` µm is applied.

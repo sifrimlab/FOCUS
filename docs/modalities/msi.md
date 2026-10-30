@@ -207,7 +207,7 @@ If the database is omitted or set to `None`, FOCUS will process the data without
 !!! warning "Spot-based registration only"
     MSI is a spot-based modality, so it supports `spot_interpolation` and `spot_aggregation`. `feature_extraction` is **not** compatible.
 
-`spot_interpolation` performs Gaussian-weighted interpolation: for each anchor spot (from the reference modality), all MSI spots that fall within the anchor's spatial footprint are averaged, weighting each by `exp(−d²/2σ²)` of its distance `d` to the anchor centre, so nearer spots count for more. The result is a new feature vector at each anchor position.
+`spot_interpolation` performs Gaussian-weighted interpolation: for each anchor spot (from the reference modality), all MSI spots whose centres lie within the anchor's footprint are averaged, weighting each by `exp(−d²/2σ²)` of its distance `d` to the anchor centre, with `σ = √(sx·sy)/2` from the anchor's `spot_size`. Footprint and distance are evaluated in the anchor's own frame, through the alignment transform. The result is a new feature vector at each anchor position.
 
 ```yaml
 registration_type: spot_interpolation
@@ -245,7 +245,7 @@ Path: `<sample_id>/preprocessing/<modality_name>/<modality_name>_<sample_id>_pro
 | `.obs['recalibration_matches_<mode>']` | Number of references matched in the spot's spectrum at pixel level (`int16`) |
 | `.uns['recalibration_reference']` | Reference m/z per ion mode used for recalibration |
 | `.uns['focus_preprocessing_fingerprint']` | Fingerprint of inputs, settings and method version; a change rebuilds the dataset and re-runs alignment and registration of the modality |
-| `.uns['spot_size']` | Raster pixel size `[x_µm, y_µm]`. **Automatically read from `.imzML` metadata.** If metadata is unavailable, defaults to `[1.0, 1.0]` µm. In dual ion mode the size is taken from the positive mode (both modes are expected to share the same raster size). In the merged file this becomes a dict keyed by `sample_id`. |
+| `.uns['spot_size']` | Raster pixel size `[x_µm, y_µm]`. **Automatically read from `.imzML` metadata.** If metadata is unavailable, defaults to `[1.0, 1.0]` µm. In dual ion mode the size is taken from the positive mode (both modes are expected to share the same raster size). In the merged file this becomes a dict keyed by `sample_id`. When MSI is the reference modality, it is the registration footprint of every MSI spot. |
 
 ### Merged dataset
 

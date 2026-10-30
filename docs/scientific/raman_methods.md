@@ -307,4 +307,5 @@ wavenumber axis is not recoverable from the file. No merged file is produced for
 
 The stitched OME-TIFF is the input to the [alignment stage](alignment_methods.md) and to
 [`raman_pixel_interpolation` registration](registration_methods.md#5-raman-pixel-interpolation-raman_pixel_interpolation),
-both of which work in its pixel coordinates.
+both of which work in its pixel coordinates. Registration maps the reference footprints into those
+coordinates through the alignment transform.

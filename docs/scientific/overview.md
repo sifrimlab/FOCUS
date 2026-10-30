@@ -15,7 +15,7 @@ Given modalities \(\{M_k\}\), FOCUS constructs a shared set of observations inde
 2. **User-guided spatial correspondence**
    - Alignment is interactive (`manual`) or declared as pre-existing (`pre_aligned`) when coordinate systems are already matched.
 3. **Registration matched to modality type**
-   - Image modalities use learned patch embeddings (`feature_extraction`).
+   - Microscopy images use learned embeddings restricted to each reference spot's footprint (`feature_extraction`).
    - Spot-based modalities use Gaussian-weighted interpolation (`spot_interpolation`) or equal-weight summation (`spot_aggregation`).
 4. **Explicit checkpointing by stage**
    - Intermediate outputs are persisted per sample and merged, enabling restart and auditability.
@@ -42,7 +42,7 @@ Raw modality files are transformed into standardized intermediate representation
 - Image modalities ([`microscopy_image`](microscopy_methods.md), [`raman`](raman_methods.md)) → OME-TIFF
 - Spot modalities ([`msi`](msi_methods.md), [`st`](st_methods.md)) → AnnData
 
-This stage also computes modality-specific metadata used later (for example `spot_size` for spot interpolation).
+This stage also computes modality-specific metadata used later (for example `spot_size`, the registration footprint of reference spots, and the pixel size of microscopy images).
 
 ### Stage 2: Alignment
 
@@ -55,12 +55,12 @@ aligned AnnData under the pair-specific key `obsm['{target_name}_spatial']`, a m
 
 ### Stage 3: Registration
 
-For each target modality \(T\), FOCUS computes a feature vector at each aligned reference location.
+For each target modality \(T\), FOCUS computes a feature vector for the footprint of each reference spot. The footprint is the reference's `spot_size`, in the reference's own frame, shaped by its lattice (an ellipse on a hexagonal lattice, a rectangle otherwise); target elements are mapped into that frame through the alignment transform and belong to a footprint when their centre lies inside it.
 
-- `feature_extraction` (`microscopy_image`): deep patch embeddings (Prov-GigaPath); valid only for H&E-stained brightfield RGB images, which is the model's pretraining domain.
+- `feature_extraction` (`microscopy_image`): one Prov-GigaPath embedding per reference spot, read by a class-token query restricted to the image tokens inside its footprint, at the stored pyramid level closest to 0.5 µm per pixel; valid only for H&E-stained brightfield RGB images, which is the model's pretraining domain.
 - `spot_interpolation` (`msi`, `st`): Gaussian-weighted average over the target spots in each anchor footprint.
 - `spot_aggregation` (`msi`, `st`): equal-weight sum over the target spots in each anchor footprint (no normalization); accumulates signal for subcellular-resolution data.
-- `raman_pixel_interpolation` (`raman`): the same Gaussian interpolation over hyperspectral OME-TIFF pixels, each pixel acting as a spot at its pixel coordinate.
+- `raman_pixel_interpolation` (`raman`): the same Gaussian interpolation over hyperspectral OME-TIFF pixels, each pixel acting as a spot at its centre.
 
 Generic interpolation form:
 
@@ -70,8 +70,8 @@ Generic interpolation form:
 w_{ij}=\exp\!\left(-\frac{\|r_i-t_j\|^2}{2\sigma^2}\right)
 \]
 
-with neighborhood \(\mathcal{N}_i\) and \(\sigma\) defined by the implementation in
-[Registration Methods](registration_methods.md).
+with footprint \(\mathcal{N}_i\), distances in the reference frame and \(\sigma=\sqrt{s_x s_y}/2\), as
+defined in [Registration Methods](registration_methods.md).
 
 ### Stage 4: Compilation
 

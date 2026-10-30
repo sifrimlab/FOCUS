@@ -55,12 +55,16 @@ The pipeline has five labeled steps, reported as `1/5` … `5/5`. Steps 2 to 4 a
    - Compute the bounding box of the step-3 tissue mask, in proxy coordinates, and scale it back to full resolution
    - Add `crop_margin` pixels on all sides (default: 250 px), clamped to image boundaries
    - An entirely background mask raises `ValueError`
+   - The crop origin in the source image is recorded in the output as the crop offset (`0,0` when cropping is off); `pre_aligned` coordinates, which are source-image pixels, are shifted by it during alignment
 
 5. **Pyramid Construction and Saving**
    - Build resolution levels by successive 2× downsampling (area interpolation) from the final image size. The number of levels is **computed automatically** so the smallest level fits within a 3,000 × 3,000 pixel cap (for GUI rendering); it is not configurable.
    - Quantize each level from float32 to the storage dtype (`uint8`/`uint16` pass through; float sources stay `float32`; other integer depths become `uint16`)
    - Write as multi-image BigTIFF OME-TIFF with zlib compression and a predictor matched to the storage dtype (2 for integer, 3 for float). Each level is one top-level IFD group, and the OME-XML for all levels sits in the first IFD's description
    - RGB images: interleaved `YXC` layout; single/multi-channel: separate `minisblack` planes per channel
+   - Record the pixel size of every level (`PhysicalSizeX/Y`, µm) when the source file holds one (OME, Aperio, ImageJ, TIFF resolution tags, qpTIFF, CZI, calibrated ND2). `feature_extraction` uses it to encode the pyramid level closest to 0.5 µm per pixel
+   - Record a FOCUS provenance annotation in the OME-XML: the preprocessing fingerprint, the level-0 pixel digest and the crop offset (see [Data Schemas](../api/data_types.md#1-preprocessing-outputs))
+   - Write to a temporary file and rename it into place
 
 **Parameters**:
 
@@ -75,7 +79,7 @@ The pipeline has five labeled steps, reported as `1/5` … `5/5`. Steps 2 to 4 a
 | `min_object_coverage` | `0.01` | Minimum tissue contour area, as a fraction of the detection-proxy area |
 | `crop_to_tissue` | `true` | Crop image to tissue bounding box |
 | `crop_margin` | `250` | Pixel margin added around the tissue bounding box |
-| `force_recomputing` | `false` | Reprocess even if output already exists |
+| `force_recomputing` | `false` | Reprocess even if the output matches the current fingerprint |
 
 The number of pyramid resolution levels is not a parameter: it is computed automatically from the image size. The Gaussian blur kernel size and the speck-removal size used during tissue detection are also not parameters. Detection always runs on a downsampled proxy capped at 9 megapixels, so these are fixed internal constants expressed in proxy pixels rather than in the source image's native resolution.
 
@@ -436,10 +440,12 @@ Each modality checks whether its output file already exists at the start of proc
 
 Spatial transcriptomics validates its cache by content. Per-sample and merged ST files store `.uns['focus_preprocessing_fingerprint']`, a SHA-256 over the input file content, the effective preprocessing and clustering settings, the method version and the numerical software versions (merged files: the per-sample fingerprints and the merged settings). A file whose fingerprint differs from the current one is rebuilt, and files written before fingerprints existed are rebuilt once. When a rebuild changes the merged ST fingerprint, every alignment pair involving that modality is re-aligned (the alignment GUI opens again) and its registration is recomputed.
 
-For the other modalities there is no hash- or timestamp-based validation: deleting the output file or setting `force_recomputing: true` is the only way to trigger reprocessing.
+MSI files also carry `.uns['focus_preprocessing_fingerprint']` (see [MSI](../modalities/msi.md)).
 
-!!! warning "Changing a processing setting does not invalidate the cache"
-    This applies to every modality except ST. The cache key is the existence of the output file (plus, for the merged MSI file, the set of active sample IDs), **not** the processing settings. Editing a setting and re-running therefore returns the previously computed output unchanged, with no warning. After changing any processing setting, set `force_recomputing: true` for that modality (or delete its outputs) so the new value takes effect.
+Microscopy images validate their cache by content as well. The preprocessed OME-TIFF stores, in a FOCUS annotation of its OME-XML, a SHA-256 fingerprint of the method version, the source file (its size and the SHA-256 of its first and last 8 MiB), the sample, every processing setting, the internal constants and the software versions. An output whose fingerprint differs, or that has none, is regenerated. A regenerated image whose level-0 pixels are identical to the replaced file keeps the alignments made on it; an image whose pixels changed is aligned again (see [Alignment](alignment.md#caching-and-re-running)). A microscopy rebuild does not enter the orchestrator's preprocessing cascade; registration outputs depend on the image's pixel digest through the [registration fingerprint](registration.md#caching).
+
+!!! warning "Raman: changing a processing setting does not invalidate the cache"
+    For Raman the cache key is the existence of the output file, **not** the processing settings. Editing a setting and re-running therefore returns the previously computed output unchanged, with no warning. After changing any Raman processing setting, set `force_recomputing: true` for that modality (or delete its outputs) so the new value takes effect.
 
 The Raman pipeline has intermediate caches (`basic_corrected_tiles.npy`, `segmented_tiles.npy`, `raman_corrected_tiles.npy`) that are checked independently at each step, allowing partial resume within a single sample. LIF loading is not cached and runs again on every attempt, since the tile coordinates, pixel size and spectra-slice boundaries feed the later steps. The three files are deleted once the sample's final OME-TIFF exists, so they are only ever found after an interrupted or failed run, which is when they are used. Like the output-level cache, they record no parameter values.
 
@@ -472,7 +478,7 @@ The entire stack is built on natively compiled, memory-efficient libraries (NumP
 
 ### GPU
 
-FOCUS does not use GPU acceleration in the preprocessing stage. GPU resources are reserved for the registration stage (PyTorch/CUDA-based deformable registration). All preprocessing computations run on CPU.
+FOCUS does not use GPU acceleration in the preprocessing stage. The GPU is used only by `feature_extraction` registration (Prov-GigaPath inference with PyTorch/CUDA). All preprocessing computations run on CPU.
 
 ---
 

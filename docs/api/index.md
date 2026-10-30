@@ -29,7 +29,12 @@ from focus.preprocessing import (
 from focus.alignment import DirectMappingAligner
 
 # Registration
-from focus.registration import FeatureExtractorRegistration, SpotInterpolationRegistration
+from focus.registration import (
+    FeatureExtractorRegistration,
+    SpotInterpolationRegistration,
+    SpotAggregationRegistration,
+    RamanPixelInterpolationRegistration,
+)
 
 # Annotations
 from focus.annotations import transfer_annotations

@@ -1,12 +1,16 @@
 import os
+import json
+import xml.etree.ElementTree as ET
 import numpy as np
 import cv2
 import tifffile
 import czifile
 import nd2
+import scipy
+import skimage
 import skimage.morphology as morphology
 from scipy.ndimage import binary_fill_holes
-from ome_types.model import OME, Image, Pixels, Channel, TiffData, Plane
+from ome_types.model import OME, Image, Pixels, Channel, TiffData, Plane, MapAnnotation, StructuredAnnotations
 
 import focus.utils as utils
 from focus.preprocessing._utils import get_reporter
@@ -14,9 +18,93 @@ from focus.constants import SegmentationBackgroundColor, MicroscopyImageProcessi
 from focus.constants import MODALITY_PREPROCESSING
 from focus.preprocessing.base import BaseSample, BaseDataset
 from focus.preprocessing._registry import ModalityHandler, register_modality
+from focus.provenance import (
+	FOCUS_OME_NAMESPACE, PREPROCESSING_FINGERPRINT_KEY, PIXEL_DIGEST_KEY, CROP_OFFSET_KEY,
+	SUPERSEDED_SIGNATURE_KEY, cached_fingerprint, file_signature, fingerprint, planes_digest,
+	read_ome_annotations, stat_signature,
+)
 
 # Supported input file extensions, ordered by priority
 _SUPPORTED_EXTENSIONS = (".ome.tiff", ".ome.tif", ".qptiff", ".tiff", ".tif", ".czi", ".nd2")
+
+# Bump whenever the same input and settings produce a different output image.
+METHOD_VERSION = "microscopy-1"
+
+# Plausible microscope pixel sizes; anything outside is a placeholder (e.g. a 72/300 dpi default).
+_PIXEL_SIZE_RANGE_UM = (0.01, 100.0)
+_UNIT_TO_UM = {
+	"m": 1e6, "cm": 1e4, "mm": 1e3, "micron": 1.0, "microns": 1.0, "micrometer": 1.0,
+	"µm": 1.0, "\u03bcm": 1.0, "um": 1.0, "nm": 1e-3,
+}
+# TIFF ResolutionUnit tag values (tifffile RESUNIT) -> µm per unit
+_RESUNIT_TO_UM = {2: 25400.0, 3: 1e4, 4: 1e3, 5: 1.0}
+
+
+def _valid_pixel_size(size) -> np.ndarray | None:
+	"""``[x, y]`` µm per pixel as float64, or None when missing or implausible."""
+	try:
+		size = np.asarray(size, dtype=np.float64).ravel()
+	except (TypeError, ValueError):
+		return None
+	lo, hi = _PIXEL_SIZE_RANGE_UM
+	if size.size != 2 or not np.all(np.isfinite(size)) or np.any(size < lo) or np.any(size > hi):
+		return None
+	return size
+
+
+def _tiff_page_pixel_size(tif: tifffile.TiffFile, page) -> tuple[np.ndarray | None, str]:
+	"""Pixel size of one TIFF page: Aperio description, ImageJ unit, or resolution tags."""
+	description = page.description or ""
+	if page.is_svs or description.startswith("Aperio"):
+		from tifffile.tifffile import svs_description_metadata
+		mpp = svs_description_metadata(description).get("MPP")
+		if mpp is not None:
+			return _valid_pixel_size([mpp, mpp]), "aperio"
+
+	x_tag, y_tag = page.tags.get("XResolution"), page.tags.get("YResolution")
+	if x_tag is None or y_tag is None:
+		return None, "none"
+	x_res, y_res = (v[0] / v[1] if isinstance(v, tuple) else float(v) for v in (x_tag.value, y_tag.value))
+	if x_res <= 0 or y_res <= 0:
+		return None, "none"
+
+	if page.is_imagej:
+		unit = str((tif.imagej_metadata or {}).get("unit", "")).strip().lower()
+		if unit in _UNIT_TO_UM:
+			return _valid_pixel_size([_UNIT_TO_UM[unit] / x_res, _UNIT_TO_UM[unit] / y_res]), "imagej"
+
+	unit_tag = page.tags.get("ResolutionUnit")
+	um_per_unit = _RESUNIT_TO_UM.get(int(unit_tag.value) if unit_tag is not None else 2)
+	if um_per_unit is None:
+		return None, "none"
+	return _valid_pixel_size([um_per_unit / x_res, um_per_unit / y_res]), "tiff_resolution"
+
+
+def _czi_pixel_size(metadata_xml: str) -> np.ndarray | None:
+	"""``Scaling/Items/Distance[@Id='X'|'Y']/Value`` (metres) of a CZI metadata XML, in µm."""
+	try:
+		root = ET.fromstring(metadata_xml)
+	except ET.ParseError:
+		return None
+	values = {}
+	for distance in root.iter("Distance"):
+		axis = distance.get("Id")
+		value = distance.find("Value")
+		if axis in ("X", "Y") and value is not None and value.text:
+			values[axis] = float(value.text) * 1e6
+	if "X" not in values or "Y" not in values:
+		return None
+	return _valid_pixel_size([values["X"], values["Y"]])
+
+
+def _nd2_pixel_size(f) -> np.ndarray | None:
+	"""``voxel_size()`` of an open ND2 file, only when its X/Y axes are calibrated."""
+	channels = getattr(getattr(f, "metadata", None), "channels", None) or []
+	calibrated = getattr(getattr(channels[0], "volume", None), "axesCalibrated", None) if channels else None
+	if not calibrated or not all(calibrated[:2]):
+		return None
+	voxel = f.voxel_size()
+	return _valid_pixel_size([voxel.x, voxel.y])
 
 
 class MicroscopyImage(BaseSample):
@@ -164,17 +252,57 @@ class MicroscopyImage(BaseSample):
 		series/level with the most pixels rather than trusting series order.
 		"""
 		with tifffile.TiffFile(file) as f:
-			levels = [level for series in f.series for level in series.levels]
-			sizes = [utils.hw_from_axes(level.shape, getattr(level, "axes", "")) for level in levels]
-			best_index = max(range(len(levels)), key=lambda i: sizes[i][0] * sizes[i][1])
-			if len(levels) > 1:
-				h, w = sizes[best_index]
-				get_reporter().detail(f"qpTIFF file with {len(levels)} candidate resolutions: using the highest ({h}x{w})")
-			image = levels[best_index].asarray()
+			level, n_levels = self._qptiff_best_level(f)
+			if n_levels > 1:
+				h, w = utils.hw_from_axes(level.shape, getattr(level, "axes", ""))
+				get_reporter().detail(f"qpTIFF file with {n_levels} candidate resolutions: using the highest ({h}x{w})")
+			image = level.asarray()
 
 		input_dtype = image.dtype
 		image = self._normalize_image(image)
 		return image, input_dtype
+
+	@staticmethod
+	def _qptiff_best_level(f: tifffile.TiffFile):
+		"""The series/level with the most pixels of an open qpTIFF, and the number of candidates."""
+		levels = [level for series in f.series for level in series.levels]
+		sizes = [utils.hw_from_axes(level.shape, getattr(level, "axes", "")) for level in levels]
+		best_index = max(range(len(levels)), key=lambda i: sizes[i][0] * sizes[i][1])
+		return levels[best_index], len(levels)
+
+	def _source_pixel_size_um(self, file: str) -> tuple[np.ndarray | None, str]:
+		"""
+		Pixel size ``[x, y]`` in µm of the image that ``_load_image`` returns, and where it was read.
+
+		Read from the source metadata: OME ``PhysicalSize``, the Aperio ``MPP``, the ImageJ unit
+		with the resolution tags, the TIFF resolution tags (inch or centimetre units), the CZI
+		``Scaling`` distances or the calibrated ND2 voxel size. Values outside 0.01-100 µm are
+		treated as placeholders. Never raises: an unreadable value is ``(None, "none")``.
+		"""
+		lower = file.lower()
+		try:
+			if lower.endswith(".czi"):
+				with czifile.CziFile(file) as czi:
+					size = _czi_pixel_size(czi.metadata(raw=True))
+				return (size, "czi") if size is not None else (None, "none")
+			if lower.endswith(".nd2"):
+				with nd2.ND2File(file) as f:
+					size = _nd2_pixel_size(f)
+				return (size, "nd2") if size is not None else (None, "none")
+			if lower.endswith((".ome.tiff", ".ome.tif")):
+				size = _valid_pixel_size(utils.read_ome_physical_size_um(file))
+				if size is not None:
+					return size, "ome"
+			with tifffile.TiffFile(file) as f:
+				if lower.endswith(".qptiff"):
+					level, _ = self._qptiff_best_level(f)
+					page = getattr(level, "keyframe", None) or level
+				else:
+					page = f.pages[0]
+				size, source = _tiff_page_pixel_size(f, page)
+			return (size, source) if size is not None else (None, "none")
+		except Exception:
+			return None, "none"
 
 	@staticmethod
 	def _normalize_image(image: np.ndarray) -> np.ndarray:
@@ -247,7 +375,48 @@ class MicroscopyImage(BaseSample):
 		max_val = np.iinfo(dtype).max
 		return np.clip(np.round(img_float01 * max_val), 0, max_val).astype(dtype)
 
-	def _save_image_pyramid(self, img: np.ndarray, output_file: str, input_dtype: np.dtype) -> str:
+	@staticmethod
+	def _read_level0_planes(path: str) -> list[np.ndarray]:
+		"""
+		Level-0 planes of a FOCUS OME-TIFF in IFD order: one (H, W, 3) array for RGB, one (H, W)
+		array per channel otherwise.
+
+		Read as the leading IFDs that share the first page's size (every coarser level is smaller),
+		which does not depend on how a reader groups the IFDs into series.
+		"""
+		planes = []
+		with tifffile.TiffFile(path) as tif:
+			size = tif.pages[0].shape[:2]
+			for page in tif.pages:
+				if page.shape[:2] != size:
+					break
+				planes.append(page.asarray())
+		return planes
+
+	def _previous_output(self, output_file: str) -> tuple[str, list | None] | None:
+		"""
+		``(pixel digest, superseded signature)`` of an existing output, or None when there is none.
+
+		An output written before FOCUS stored provenance carries no digest: its level-0 pixels are
+		digested here, and the file itself (its stat signature) is what a pixel-identical
+		regeneration supersedes. An annotated output passes its own superseded signature on.
+		"""
+		if not os.path.exists(output_file):
+			return None
+		annotations = read_ome_annotations(output_file) or {}
+		if PIXEL_DIGEST_KEY in annotations:
+			superseded = annotations.get(SUPERSEDED_SIGNATURE_KEY)
+			return annotations[PIXEL_DIGEST_KEY], (json.loads(superseded) if superseded else None)
+		try:
+			return planes_digest(self._read_level0_planes(output_file)), stat_signature(output_file)
+		except Exception:
+			return None
+
+	def _save_image_pyramid(self, img: np.ndarray, output_file: str, input_dtype: np.dtype,
+		pixel_size_um: np.ndarray | None = None,
+		annotations: dict | None = None,
+		previous: tuple[str, list | None] | None = None,
+	) -> str:
 		"""
 		Saves an RGB/multi-channel image as a multi-resolution OME-TIFF containing
 		multiple independent images, one for each resolution level.
@@ -261,6 +430,10 @@ class MicroscopyImage(BaseSample):
 		to the resolved storage dtype (matching the source file's bit depth) only at
 		write time, with the TIFF predictor matched to that dtype.
 
+		The OME-XML records the pixel size of every level (when known) and a FOCUS
+		MapAnnotation holding ``annotations`` plus the digest of the level-0 planes as
+		written. The file is written to a temporary sibling and renamed into place.
+
 		Parameters
 		----------
 		img : np.ndarray
@@ -269,6 +442,14 @@ class MicroscopyImage(BaseSample):
 			The path to the output OME-TIFF file.
 		input_dtype : np.dtype
 			The dtype of the original source image, used to pick the output storage dtype.
+		pixel_size_um : np.ndarray, optional
+			Level-0 ``[x, y]`` pixel size in µm; coarser levels scale it by the measured size ratio.
+		annotations : dict, optional
+			FOCUS provenance key/values for the MapAnnotation.
+		previous : tuple, optional
+			``(pixel digest, superseded signature)`` of the output being replaced. When the new
+			level-0 pixels are identical, the superseded signature is recorded so alignments made
+			on the replaced file stay valid.
 		"""
 		assert img.dtype == np.float32, "Expecting float32 array"
 
@@ -295,11 +476,35 @@ class MicroscopyImage(BaseSample):
 				resized = resized[..., np.newaxis]
 			pyramid_data.append(resized)
 
+		# Level-0 planes exactly as written (IFD order), digested for downstream caches.
+		if is_rgb:
+			planes0 = [self._quantize_to_dtype(pyramid_data[0], storage_dtype)]
+		else:
+			planes0 = [self._quantize_to_dtype(pyramid_data[0][:, :, c], storage_dtype) for c in range(C)]
+		digest = planes_digest(planes0)
+		annotations = dict(annotations or {})
+		annotations[PIXEL_DIGEST_KEY] = digest
+		if previous is not None:
+			reporter = getattr(self, '_step_reporter', None) or get_reporter()
+			previous_digest, superseded = previous
+			if previous_digest == digest:
+				if superseded:
+					annotations[SUPERSEDED_SIGNATURE_KEY] = json.dumps(superseded)
+				reporter.detail("Pixels identical to the previous output")
+			else:
+				reporter.warning("The regenerated image differs from the previous one: alignments made on it must be redone")
+
 		# 2. Build OME-XML
 		ome = OME()
 		ifd_counter = 0
 		for i, level_img in enumerate(pyramid_data):
 			H, W, CC = level_img.shape
+			physical = {}
+			if pixel_size_um is not None:
+				physical = dict(
+					physical_size_x=float(pixel_size_um[0]) * W_base / W, physical_size_x_unit="µm",
+					physical_size_y=float(pixel_size_um[1]) * H_base / H, physical_size_y_unit="µm",
+				)
 
 			if is_rgb:
 				# RGB interleaved
@@ -310,7 +515,8 @@ class MicroscopyImage(BaseSample):
 						size_x=W, size_y=H, size_z=1, size_c=1, size_t=1, interleaved=True,
 						channels=[Channel(id=f"Channel:{i}:0", name="RGB", samples_per_pixel=3)],
 						planes=[Plane(the_c=0, the_z=0, the_t=0)],
-						tiff_data_blocks=[TiffData(ifd=ifd_counter, plane_count=1)]
+						tiff_data_blocks=[TiffData(ifd=ifd_counter, plane_count=1)],
+						**physical,
 					)
 				)
 				ifd_counter += 1
@@ -323,42 +529,56 @@ class MicroscopyImage(BaseSample):
 						size_x=W, size_y=H, size_z=1, size_c=CC, size_t=1,
 						channels=[Channel(id=f"Channel:{i}:{c}", name=f"Channel_{c}") for c in range(CC)],
 						planes=[Plane(the_c=c, the_z=0, the_t=0) for c in range(CC)],
-						tiff_data_blocks=[TiffData(ifd=ifd_counter + c, plane_count=1) for c in range(CC)]
+						tiff_data_blocks=[TiffData(ifd=ifd_counter + c, plane_count=1) for c in range(CC)],
+						**physical,
 					)
 				)
 				ifd_counter += CC
 			ome.images.append(image_block)
 
-		xml_metadata = ome.to_xml()
+		ome.structured_annotations = StructuredAnnotations(map_annotations=[MapAnnotation(
+			id="Annotation:0", namespace=FOCUS_OME_NAMESPACE,
+			value={"ms": [{"k": k, "value": str(v)} for k, v in annotations.items()]},
+		)])
+		# TIFF strings must be 7-bit ASCII: non-ASCII characters (the "µ" of µm) become XML
+		# character references, which every XML parser reads back unchanged.
+		xml_metadata = ome.to_xml().encode("ascii", "xmlcharrefreplace").decode("ascii")
 
-		# 3. Write TIFF
-		with tifffile.TiffWriter(output_file, bigtiff=True) as tif:
-			for c, level_img in enumerate(pyramid_data):
-				if is_rgb:
-					description = xml_metadata if c == 0 else None
-					data = self._quantize_to_dtype(level_img, storage_dtype)
-					tif.write(
-						data,
-						description=description,
-						photometric='rgb',
-						metadata={'axes': 'YXC'},
-						compression="zlib",
-						predictor=predictor
-					)
-				else:
-					# Write each channel slice separately as minisblack
-					for ch_idx in range(C):
-						ch_img = level_img[:, :, ch_idx]
-						data = self._quantize_to_dtype(ch_img, storage_dtype)
-						description = xml_metadata if c == 0 and ch_idx == 0 else None
+		# 3. Write TIFF to a temporary sibling, then rename into place: a crash mid-write never
+		# leaves a truncated file behind.
+		head, tail = os.path.split(output_file)
+		tmp_file = os.path.join(head, f".{os.getpid()}.tmp.{tail}")
+		try:
+			with tifffile.TiffWriter(tmp_file, bigtiff=True) as tif:
+				for c, level_img in enumerate(pyramid_data):
+					if is_rgb:
+						description = xml_metadata if c == 0 else None
+						data = planes0[0] if c == 0 else self._quantize_to_dtype(level_img, storage_dtype)
 						tif.write(
 							data,
 							description=description,
-							photometric='minisblack',
-							metadata={'axes': 'YX'},
+							photometric='rgb',
+							metadata={'axes': 'YXC'},
 							compression="zlib",
 							predictor=predictor
 						)
+					else:
+						# Write each channel slice separately as minisblack
+						for ch_idx in range(C):
+							data = planes0[ch_idx] if c == 0 else self._quantize_to_dtype(level_img[:, :, ch_idx], storage_dtype)
+							description = xml_metadata if c == 0 and ch_idx == 0 else None
+							tif.write(
+								data,
+								description=description,
+								photometric='minisblack',
+								metadata={'axes': 'YX'},
+								compression="zlib",
+								predictor=predictor
+							)
+			os.replace(tmp_file, output_file)
+		finally:
+			if os.path.exists(tmp_file):
+				os.remove(tmp_file)
 
 		return output_file
 
@@ -584,8 +804,9 @@ class MicroscopyImage(BaseSample):
 
 		Returns
 		-------
-		np.ndarray
-			Cropped image.
+		tuple of (image, offset)
+			image : the cropped image.
+			offset : ``(x, y)`` pixel position of the crop's origin in the input image.
 		"""
 		rows = np.any(mask, axis=1)
 		cols = np.any(mask, axis=0)
@@ -603,7 +824,7 @@ class MicroscopyImage(BaseSample):
 		xmin = max(0, xmin - margin)
 		xmax = min(image.shape[1] - 1, xmax + margin)
 
-		return image[ymin:ymax + 1, xmin:xmax + 1, :]
+		return image[ymin:ymax + 1, xmin:xmax + 1, :], (int(xmin), int(ymin))
 
 	def preview_image(self) -> np.ndarray:
 		"""Load and return a preview of the microscopy image as float32 (H, W, C)."""
@@ -638,7 +859,7 @@ class MicroscopyImage(BaseSample):
 		min_object_coverage : float
 			Minimum tissue area fraction to keep during background removal (0-1).
 		force_recomputing : bool
-			Whether to force recomputation even if the output exists.
+			Whether to force recomputation even if the output's fingerprint matches.
 		clip_percentile : int
 			Percentile for intensity clipping before thresholding.
 		crop_margin : int
@@ -658,9 +879,21 @@ class MicroscopyImage(BaseSample):
 
 		reporter = getattr(self, '_step_reporter', None) or get_reporter()
 
-		if not force_recomputing and os.path.exists(output_ome_tiff):
+		key = self._fingerprint({
+			"color_enhancement": bool(color_enhancement),
+			"remove_background": bool(remove_background),
+			"crop_to_tissue": bool(crop_to_tissue),
+			"background_color": str(background_color),
+			"min_object_coverage": float(min_object_coverage),
+			"clip_percentile": float(clip_percentile),
+			"crop_margin": float(crop_margin),
+			"gamma": float(gamma),
+			"contrast_saturation": float(contrast_saturation),
+		})
+		if not force_recomputing and cached_fingerprint(output_ome_tiff) == key:
 			reporter.cached()
 			return output_ome_tiff
+		previous = self._previous_output(output_ome_tiff)
 
 		# 1. Load. Skipped optional steps (2-4) are not announced.
 		reporter.step(1, 5, "Loading image")
@@ -693,14 +926,51 @@ class MicroscopyImage(BaseSample):
 			if crop_to_tissue:
 				reporter.step(4, 5, "Cropping to tissue")
 				reporter.detail(f"margin={crop_margin}px")
-				image = self._crop_image(image, mask, scale, margin=crop_margin)
+				image, crop_offset = self._crop_image(image, mask, scale, margin=crop_margin)
+		if not crop_to_tissue:
+			crop_offset = (0, 0)
 
 		# 5. Save
 		n_levels = self._compute_pyramid_levels(*image.shape[:2])
 		reporter.step(5, 5, "Saving OME-TIFF")
 		reporter.detail(f"{n_levels} pyramid levels, cap={self._MAX_PYRAMID_PIXELS} px")
-		self._save_image_pyramid(image, output_ome_tiff, input_dtype)
+		pixel_size, size_source = self._source_pixel_size_um(self.filename)
+		if pixel_size is None:
+			reporter.detail("The source file has no pixel size")
+		else:
+			reporter.detail(f"Pixel size {pixel_size[0]:.4g} x {pixel_size[1]:.4g} µm ({size_source})")
+		self._save_image_pyramid(
+			image, output_ome_tiff, input_dtype,
+			pixel_size_um=pixel_size,
+			annotations={
+				PREPROCESSING_FINGERPRINT_KEY: key,
+				CROP_OFFSET_KEY: f"{crop_offset[0]},{crop_offset[1]}",
+				"focus_method": METHOD_VERSION,
+				"focus_pixel_size_source": size_source,
+			},
+			previous=previous,
+		)
 		return output_ome_tiff
+
+	def _fingerprint(self, settings: dict) -> str:
+		"""Preprocessing fingerprint: method, source file identity, sample, settings, constants and software."""
+		return fingerprint({
+			"method": METHOD_VERSION,
+			"input": file_signature(self.filename),
+			"sample_id": self.sample_id,
+			"modality": self.modality_name,
+			"settings": settings,
+			"constants": {
+				"max_pyramid_pixels": self._MAX_PYRAMID_PIXELS,
+				"detection_max_pixels": self._DETECTION_MAX_PIXELS,
+				"detection_blur_kernel_size": self._DETECTION_BLUR_KERNEL_SIZE,
+				"detection_max_object_size": self._DETECTION_MAX_OBJECT_SIZE,
+			},
+			"software": {
+				"numpy": np.__version__, "opencv": cv2.__version__, "scikit-image": skimage.__version__,
+				"scipy": scipy.__version__, "tifffile": tifffile.__version__,
+			},
+		})
 
 
 class MicroscopyImageDataset(BaseDataset):

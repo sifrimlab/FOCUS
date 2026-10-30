@@ -57,8 +57,13 @@ Interactive browser-based direct mapping (`DirectMappingAligner` + `DirectMappin
 
 ### `pre_aligned`
 
-No GUI. The pipeline copies the reference's native `obsm['spatial']` unchanged into the pair-specific
-aligned key `obsm['{target_name}_spatial']`.
+No GUI. The pipeline copies the reference's native `obsm['spatial']` into the pair-specific
+aligned key `obsm['{target_name}_spatial']`. For a microscopy target the coordinates are taken to be
+in the source image's pixel frame, and the crop offset recorded by
+[preprocessing](microscopy_methods.md#4-tissue-cropping-crop_to_tissue) is subtracted, so they land
+on the preprocessed image's pixels. A microscopy image without a recorded offset (preprocessed before
+the offset was stored and not regenerated, which happens only when preprocessing is skipped, e.g. by
+`scripts/align_only.py`) is used with offset 0 and a warning.
 
 This is valid only when those coordinates are already expressed in the target frame.
 
@@ -218,6 +223,17 @@ per sample:
 - spot outputs: the aligned `.h5ad` exists **and** contains `obsm['{target_name}_spatial']` (read with
   `h5py`, without loading the AnnData);
 - image outputs: the aligned `.ome.tiff` exists.
+
+FOCUS design choice: a spot output also records, in `uns['focus_alignment_inputs'][target_name]`, the
+SHA-256 fingerprint of the identities of both inputs. A preprocessed microscopy image is identified by
+its level-0 pixel digest, an MSI or ST AnnData by its preprocessing fingerprint, any other file by its
+path, size and modification time; a `pre_aligned` image pair also includes the crop offset. The record
+is compared with the current inputs for pairs involving ST, for `pre_aligned` pairs, and for pairs whose
+target is a digested microscopy image against a fingerprinted reference; a mismatch re-runs the pair.
+A manual alignment whose record was made on a file that preprocessing later replaced with a
+pixel-identical image (the replaced file's signature is kept in the image as
+`focus_superseded_signature`, see [microscopy preprocessing](microscopy_methods.md#5-ome-tiff-pyramid-output))
+is accepted, and its record is re-written for the current image.
 
 `_compute_force_flags` in `orchestrator.py` re-runs a pair when any of the following is true:
 `alignment_force_recomputing` on the non-reference modality, `processing_settings.force_recomputing`

@@ -56,7 +56,7 @@ Raw Data  ──►  Preprocessing  ──►  Alignment  ──►  Registratio
 
 1. **Preprocessing**: modality-specific quality control, normalisation, background removal, and storage in a standardised format.
 2. **Alignment**: an interactive web GUI lets you visually overlay the reference modality onto each target modality (translate, rotate, scale, flip, and corner-distort) to record their spatial correspondence. Each sample is handled individually.
-3. **Registration**: maps the feature content of each modality onto the reference coordinate space. Four modes are available: deep-learning patch embeddings (`feature_extraction`), Gaussian-weighted spot interpolation (`spot_interpolation`), equal-weight spot summation (`spot_aggregation`), and the same Gaussian interpolation applied to hyperspectral pixels (`raman_pixel_interpolation`).
+3. **Registration**: maps the feature content of each modality onto the reference spots, combining the target data inside each reference spot's footprint. Four modes are available: one deep-learning embedding of the image inside each footprint (`feature_extraction`), Gaussian-weighted spot interpolation (`spot_interpolation`), equal-weight spot summation (`spot_aggregation`), and the same Gaussian interpolation applied to hyperspectral pixels (`raman_pixel_interpolation`).
 4. **Compilation**: all aligned and registered modalities are merged into a single MuData (`.h5mu`) file.
 
 **Spatial annotation transfer** is an optional stage that runs after alignment. It assigns region labels from GeoJSON polygons to the reference observations and runs independently of registration and compilation.

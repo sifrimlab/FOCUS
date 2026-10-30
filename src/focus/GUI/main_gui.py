@@ -579,7 +579,6 @@ def _build_schema() -> dict:
 		"registration_params": {
 			RegistrationType.FEATURE_EXTRACTION: {
 				"force_recomputing": {"type": "bool", "default": False},
-				"patch_size": {"type": "int", "default": 224},
 				"background_color": {
 					"type": "enum",
 					"options": SegmentationBackgroundColor.list(),

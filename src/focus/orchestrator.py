@@ -435,12 +435,19 @@ def _run_registration(config: dict, modality_files: dict, aligned_files: dict, s
 	"""
 	Register each non-reference modality that has a registration_type != 'none'.
 
+	Every engine evaluates the anchor spot footprints in the anchor frame, mapping the target
+	through the inverse of the alignment transform, and reuses a per-sample output only when
+	its stored fingerprint matches the current inputs.
+
 	For FeatureExtraction (image modalities):
-		Extracts patch embeddings from the image at anchor spot locations.
+		One Prov-GigaPath CLS embedding per anchor spot, restricted to the image tokens inside
+		its footprint.
 	For SpotInterpolation (spot modalities):
-		Gaussian-weighted interpolation of target features onto anchor spot grid.
+		Gaussian-weighted average of the target spots inside each anchor footprint.
+	For SpotAggregation (spot modalities):
+		Sum of the target spots inside each anchor footprint.
 	For RamanPixelInterpolation (raman modality):
-		Gaussian-weighted interpolation of Raman OME-TIFF pixels onto anchor spot grid.
+		Gaussian-weighted average of the Raman OME-TIFF pixels inside each anchor footprint.
 
 	Returns
 	-------
@@ -494,16 +501,18 @@ def _register_modality(reg_type, mod_name, ref_name, dataset_path, config, reg_s
 			hf_token=config[ConfigParameters.HUGGINGFACE_TOKEN]
 		)
 		# aligned_files[mod_name] contains the aligned reference AnnData, which holds
-		# obsm['{mod_name}_spatial'] — the reference spots in the image's coordinate space.
-		# FeatureExtractorRegistration reads that key to locate where to extract patches.
+		# obsm['spatial'] (the reference frame) and obsm['{mod_name}_spatial'] (the same spots
+		# in the image's pixel frame); the footprints are mapped between the two.
+		if "patch_size" in reg_settings:
+			step_reporter.warning("patch_size is ignored: the encoder window is fixed by the model")
 		registered_files[mod_name] = engine.register_dataset(
 			image_files=modality_files[mod_name],
 			anchor_files=aligned_files[mod_name],
 			image_name=mod_name,
 			anchor_name=ref_name,
+			anchor_type=_get_reference_modality(config)[ModalityParameters.TYPE],
 			force_recomputing=(force_overrides or {}).get(mod_name, reg_settings.get("force_recomputing", False)),
 			background_color=reg_settings.get("background_color", None),
-			patch_size=reg_settings.get("patch_size", 224),
 			step_reporter=step_reporter,
 		)
 
@@ -565,11 +574,12 @@ def _compute_valid_spot_mask(
 	Returns a bool mask (n_obs,) — True where a spot has non-zero coverage in
 	every non-anchor modality. Returns None when no filtering is needed.
 
-	Zero-vector rows arise from two sources:
-	- SpotInterpolationRegistration: no target spots fall within the anchor
-	  spot's spatial footprint (spot lies outside the target tissue section).
-	- FeatureExtractorRegistration: the patch extracted at the anchor spot
-	  location is pure background (>= 99% background pixels).
+	Zero-vector rows arise when an anchor spot's footprint holds no target data:
+	- SpotInterpolation / SpotAggregation / RamanPixelInterpolation: no target spot or
+	  pixel centre lies inside the footprint (the spot is outside the target tissue).
+	- FeatureExtraction: every image token of the footprint is background
+	  (>= 99% background pixels), or the footprint lies outside the image.
+	- Any engine: the spot cannot be placed in the target frame.
 	"""
 	mask = np.ones(n_obs, dtype=bool)
 	any_empty = False
@@ -678,7 +688,7 @@ def _compile_mudata(
 
 		# Verify row alignment against the anchor by comparing per-row sample_id.
 		# Matching counts alone is not enough: the per-sample concat order in
-		# registration._merge_samples can diverge from preprocessing's order, and
+		# registration.merge_registered_samples can diverge from preprocessing's order, and
 		# silently mis-pairing spots produces a MuData that mudata cannot read back.
 		if 'sample_id' not in reg_adata.obs.columns:
 			reporter.warning(

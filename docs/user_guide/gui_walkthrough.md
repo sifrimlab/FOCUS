@@ -101,16 +101,17 @@ For other references, alignment is always manual and the section has no settings
     - The reference modality is spot-based (`st` or `msi`). This is the constraint FOCUS enforces
     - The reference spots' coordinates are **already expressed in the target modality's coordinate frame** (most commonly an image's pixel coordinates, e.g. `microscopy_image`)
     
-    **Example:** Your reference is a spatial transcriptomics (ST) dataset with spot coordinates that are already in the pixel frame of an H&E microscopy image (not in micrometers). In this case, you can select `alignment_strategy: "pre_aligned"` for the H&E target, and FOCUS will skip the manual alignment step, using the existing coordinates directly for registration.
+    **Example:** Your reference is a spatial transcriptomics (ST) dataset with spot coordinates that are already in the pixel frame of an H&E microscopy image (not in micrometers). In this case, you can select `alignment_strategy: "pre_aligned"` for the H&E target, and FOCUS will skip the manual alignment step, using the existing coordinates for registration. The coordinates refer to the source image file; FOCUS shifts them by the tissue crop applied during preprocessing.
     
     **If your spot coordinates are in micrometers or physical units**, you must use **Manual** alignment to establish the correspondence with the target modality's coordinate system.
 
 **3. Registration** (non-reference modalities only). Select the registration method and fill in its settings:
 
 - **None**: Align only; exclude from the final MuData.
-- **Spot interpolation**: Gaussian-weighted spot interpolation (CPU). For `msi` and `st`.
+- **Spot interpolation**: Gaussian-weighted average of the target spots in each reference spot's footprint (CPU). For `msi` and `st`.
+- **Spot aggregation**: equal-weight sum of the target spots in each reference spot's footprint, without normalization (CPU). For `msi` and `st`, intended for subcellular-resolution data such as Visium HD.
 - **Raman pixel interpolation**: the same Gaussian footprint interpolation applied to the hyperspectral OME-TIFF pixels (CPU). For `raman`.
-- **Feature extraction**: Prov-GigaPath patch embeddings (GPU required). Only available for `microscopy_image`, and only appropriate when that image is an H&E-stained brightfield RGB section, which is what the model was pretrained on. For fluorescence, IHC or other stains, pick **None** instead: the GUI offers Feature extraction for every microscopy modality and nothing downstream checks the stain.
+- **Feature extraction**: one Prov-GigaPath embedding per reference spot, restricted to the image inside its footprint (GPU recommended; CPU fallback). Only available for `microscopy_image`, and only appropriate when that image is an H&E-stained brightfield RGB section, which is what the model was pretrained on. For fluorescence, IHC or other stains, pick **None** instead: the GUI offers Feature extraction for every microscopy modality and nothing downstream checks the stain.
 
 The reference modality shows only the Preprocessing section.
 

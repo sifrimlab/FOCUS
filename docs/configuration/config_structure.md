@@ -98,7 +98,7 @@ This page documents the **canonical structure** and the set of config fields tha
 | Value | Meaning | Compatible modality type(s) |
 |---|---|---|
 | `none` | Skip registration for this modality | all |
-| `feature_extraction` | Patch embedding registration (Prov-GigaPath) | `microscopy_image` |
+| `feature_extraction` | One Prov-GigaPath embedding per reference spot, restricted to the image inside its footprint | `microscopy_image` |
 | `spot_interpolation` | Gaussian-weighted average of the target spots in each anchor footprint | `msi`, `st` |
 | `spot_aggregation` | Equal-weight **sum** of the target spots in each anchor footprint (no normalization); for subcellular-resolution data (e.g. Visium HD) | `msi`, `st` |
 | `raman_pixel_interpolation` | Gaussian-weighted pixel interpolation over the hyperspectral OME-TIFF | `raman` |
@@ -179,7 +179,6 @@ This page documents the **canonical structure** and the set of config fields tha
 
 ```json
 {
-  "patch_size": 224,
   "background_color": "white",
   "force_recomputing": false
 }
@@ -194,6 +193,14 @@ This page documents the **canonical structure** and the set of config fields tha
 ```
 
 ### `spot_aggregation`
+
+```json
+{
+  "force_recomputing": false
+}
+```
+
+### `raman_pixel_interpolation`
 
 ```json
 {
@@ -294,7 +301,6 @@ This page documents the **canonical structure** and the set of config fields tha
         "force_recomputing": false
       },
       "registration_settings": {
-        "patch_size": 224,
         "background_color": "white",
         "force_recomputing": false
       }
@@ -309,7 +315,7 @@ This page documents the **canonical structure** and the set of config fields tha
 
 - `reference_modality` must match one modality `name` exactly.
 - Every sample directory must include every configured modality directory.
-- `feature_extraction` requires `microscopy_image`, CUDA-capable GPU, and `huggingface_token`.
+- `feature_extraction` requires `microscopy_image` and `huggingface_token`; a CUDA-capable GPU is strongly recommended (CPU fallback).
 - `spot_interpolation` and `spot_aggregation` are both used for `msi` and `st` (averaging vs. summing the spots in each footprint); `raman` uses `raman_pixel_interpolation`.
 - `pre_aligned` is only valid for non-reference modalities when coordinates are already co-registered.
 - Compilation to `.h5mu` occurs only when the reference is spot-based (`msi`/`st`) and `perform_registration` is enabled.

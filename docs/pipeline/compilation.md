@@ -54,9 +54,10 @@ For a spot-based reference, compilation proceeds as follows:
     - its `sample_id` sequence matches the anchor's **element-wise**.
 
     The element-wise `sample_id` check is a safety guard: matching row counts alone is not enough, because the per-sample concatenation order during registration can diverge from the anchor's. Mis-paired rows would otherwise produce a MuData that cannot be read back.
-4. **Drop uncovered spots.** A reference spot is removed from **all** modalities if its feature vector is **all-zero in any target modality**. This is why the final MuData can have fewer observations than the reference spot grid. All-zero rows come from two sources:
-    - **spot interpolation**: no target spot fell within the reference spot's spatial footprint (the spot lies outside the target tissue section);
-    - **feature extraction**: the image patch at the spot was at least 99% background pixels.
+4. **Drop uncovered spots.** A reference spot is removed from **all** modalities if its feature vector is **all-zero in any target modality**. This is why the final MuData can have fewer observations than the reference spot grid. All-zero rows come from these sources:
+    - **spot interpolation, spot aggregation, Raman pixel interpolation**: no target spot or pixel centre fell within the reference spot's footprint (the spot lies outside the target tissue section or image);
+    - **feature extraction**: every image token inside the footprint was at least 99% background pixels, or the footprint lies outside the image;
+    - **any mode**: the reference spot could not be placed in the target frame (non-finite aligned coordinates).
 
     If this leaves zero spots, compilation is skipped.
 5. **Synchronize observation names** across modalities to the (possibly filtered) anchor's `obs_names`, so row _i_ is the same reference spot everywhere.

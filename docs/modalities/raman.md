@@ -220,7 +220,7 @@ One OME-TIFF per sample:
 | Pyramid | Successive 2× levels, enough of them that the smallest level holds at most 9,000,000 pixels (3000 × 3000) |
 | OME metadata | Creator string and `PhysicalSizeX`/`PhysicalSizeY` in µm |
 
-The OME-XML written by ASHLAR carries no channel names and no wavenumber values, so the spectral axis cannot be recovered from the output file. No FOCUS stage reads the physical pixel size back either: alignment and registration work in Raman **pixel** coordinates.
+The OME-XML written by ASHLAR carries no channel names and no wavenumber values, so the spectral axis cannot be recovered from the output file. Alignment and registration work in Raman **pixel** coordinates; registration converts the anchor footprint into them through the alignment transform, so the physical pixel size is not read back.
 
 No merged file is produced for Raman; the returned mapping contains one entry per successfully processed sample.
 
@@ -234,7 +234,7 @@ No merged file is produced for Raman; the returned mapping contains one entry pe
 registration_type: raman_pixel_interpolation
 ```
 
-Each pixel of the stitched OME-TIFF is treated as a spot located at its pixel coordinate `(column, row)`, with the spectral channels as its feature vector. Each anchor spot receives the Gaussian-weighted average of the pixels inside its footprint. The anchor spots are the reference modality's spots, expressed in Raman pixel coordinates by the alignment stage. The footprint comes from the anchor's `uns['spot_size']`, interpreted in Raman pixels, and falls back to `[1.0, 1.0]` when the anchor carries none; it is not derived from the LIF pixel size.
+Each pixel of the stitched OME-TIFF is treated as a spot located at its centre `(column + 0.5, row + 0.5)`, with the spectral channels as its feature vector. Each anchor spot receives the Gaussian-weighted average of the pixels whose centres lie inside its footprint. The anchor spots are the reference modality's spots, expressed in Raman pixel coordinates by the alignment stage. The footprint comes from the anchor's `uns['spot_size']`, in the anchor's own units (µm for MSI and ST), and is mapped into the Raman image through the alignment transform, so it covers the same tissue area whatever the Raman pixel size; it falls back to `[1.0, 1.0]` when the anchor carries none. It is not derived from the LIF pixel size.
 
 Because the stitched file has no channel names, the registered features are named `Channel_0` … `Channel_<C-1>`. See [Registration](../pipeline/registration.md#raman_pixel_interpolation) for details.
 

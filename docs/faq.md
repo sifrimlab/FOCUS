@@ -12,7 +12,7 @@ Yes, but only the preprocessing stage runs. With a single modality there is noth
 
 ### What is the reference modality?
 
-The reference modality defines the common coordinate space that all other modalities are aligned into. Every non-reference modality goes through the alignment GUI, where the user physically drags the reference modality (the movable layer) to overlap it with the target modality (the fixed layer). This records the reference modality's spot or pixel coordinates in the target modality's coordinate space, enabling registration to pair observations 1-to-1. After registration, all spot-based outputs share the reference modality's physical coordinates.
+The reference modality defines the common coordinate space that all other modalities are aligned into. Every non-reference modality goes through the alignment GUI, where the user physically drags the reference modality (the movable layer) to overlap it with the target modality (the fixed layer). This records the reference modality's spot or pixel coordinates in the target modality's coordinate space, enabling registration to pair observations 1-to-1. After registration, every registered modality has one row per reference spot, and the final MuData carries the reference modality's own coordinates.
 
 Choose the modality with the **lowest spatial resolution** (largest spots) as your reference. The reference spot grid defines the atomic unit of information in the final dataset: every observation in the MuData corresponds to one reference spot. Non-reference modalities with higher spatial resolution can be aggregated down onto that grid during registration, but a modality cannot produce more spots than it originally measured, because upsampling would generate artificial observations. For example, if you have ST (55 µm spots) and MSI (100 µm spots), MSI should be the reference, and ST features are interpolated onto the MSI grid.
 
@@ -20,7 +20,7 @@ Choose the modality with the **lowest spatial resolution** (largest spots) as yo
 
 ### Do I need a GPU?
 
-A GPU is only useful for `feature_extraction` registration, which runs the Prov-GigaPath deep-learning model to extract patch embeddings from microscopy images. All other pipeline stages run on CPU: preprocessing, alignment, `spot_interpolation`, `spot_aggregation` and `raman_pixel_interpolation` registration, annotation transfer, and MuData compilation.
+A GPU is only useful for `feature_extraction` registration, which runs the Prov-GigaPath deep-learning model to compute one image embedding per reference spot from microscopy images. All other pipeline stages run on CPU: preprocessing, alignment, `spot_interpolation`, `spot_aggregation` and `raman_pixel_interpolation` registration, annotation transfer, and MuData compilation.
 
 `feature_extraction` uses the GPU when one is available and otherwise falls back to CPU. Prov-GigaPath on CPU is impractically slow for real images, so a CUDA GPU is **strongly recommended** whenever you use `feature_extraction`.
 
@@ -33,7 +33,7 @@ If you do not have a GPU, use `"registration_type": "spot_interpolation"` for `m
 | | Alignment | Registration |
 |---|---|---|
 | **What it does** | Records the reference modality's spot/pixel coordinates in each non-reference modality's coordinate space by letting the user physically drag the reference layer to overlap the fixed target layer | Transfers features (intensities, embeddings) from the non-reference modality onto the reference spot grid |
-| **How it works** | The confirmed overlay is returned as a 3×3 projective matrix and applied to every reference spot; the mapped coordinates are stored in `obsm`, with no landmark fitting | Gaussian-weighted interpolation (spot modalities) or patch embedding extraction (image modalities) |
+| **How it works** | The confirmed overlay is returned as a 3×3 projective matrix and applied to every reference spot; the mapped coordinates are stored in `obsm`, with no landmark fitting | Gaussian-weighted average or sum of the target spots or pixels inside each reference spot's footprint (spot and Raman modalities), or one footprint-restricted embedding per reference spot (microscopy) |
 | **User involvement** | Interactive: you drag and visually overlap the reference with the target in the browser GUI | Fully automated |
 | **Output** | Aligned AnnData with `obsm['{modality}_spatial']` keys | Registered AnnData with feature matrix aligned to the reference grid |
 | **Required for MuData?** | Yes | Yes (when the reference is spot-based) |
@@ -62,7 +62,7 @@ Yes: set `"perform_registration": false` or set `"registration_type": "none"` fo
 
 Only when the image is an **H&E-stained histological section imaged in brightfield RGB**. The encoder, Prov-GigaPath, is pretrained on tiles from H&E whole-slide images, so its 1536-dimensional embeddings are a description of H&E morphology.
 
-FOCUS applies no stain, imaging-mode or channel check. An immunofluorescence, IHC or otherwise-stained image is patched, normalized and encoded exactly the same way, and a complete embedding matrix is written with no error and no warning. The values are not a description of that tissue. Single-channel images are replicated to RGB before patching, so they complete rather than fail.
+FOCUS applies no stain, imaging-mode or channel check. An immunofluorescence, IHC or otherwise-stained image is normalized and encoded exactly the same way, and a complete embedding matrix is written with no error and no warning. The values are not a description of that tissue. Single-channel images are replicated to RGB before encoding, so they complete rather than fail.
 
 For every microscopy modality that is not H&E brightfield, set `"registration_type": "none"`. Preprocessing and alignment still run, the aligned OME-TIFF stays on disk under `alignment/`, and only the embedding step is skipped. A modality registered with `none` is not carried into the MuData, and MuData compilation needs at least two registered modalities.
 
@@ -72,11 +72,11 @@ For every microscopy modality that is not H&E brightfield, set `"registration_ty
 
 FOCUS caches the output of each stage as files on disk. On the next run:
 
-- **Preprocessing**: cached per sample. Set `"force_recomputing": true` inside a modality's `processing_settings` to redo only that modality.
+- **Preprocessing**: cached per sample. Set `"force_recomputing": true` inside a modality's `processing_settings` to redo only that modality. Microscopy, MSI and ST outputs store a fingerprint of their inputs and settings and are rebuilt automatically when it changes.
 - **Alignment**: cached per sample and per reference-target pair. Set `"alignment_force_recomputing": true` on a specific non-reference modality to redo only that pair's alignment.
-- **Registration**: cached per sample. Set `"force_recomputing": true` inside the modality's `registration_settings`.
+- **Registration**: cached per sample. Each output stores a fingerprint of the aligned reference coordinates, the reference `spot_size`, the target input and the settings, and is recomputed when any of them changes. Set `"force_recomputing": true` inside the modality's `registration_settings` to recompute it anyway.
 
-If a run crashed mid-stage, FOCUS may detect incomplete partial outputs. Delete the relevant sample's output directory (e.g. `sample_001/registration/`) and rerun to regenerate only that stage.
+Registration and microscopy preprocessing outputs are written to a temporary file and renamed into place, so a crash never leaves a partial file of theirs. If a run crashed mid-stage elsewhere, delete the relevant sample's output directory (e.g. `sample_001/alignment/`) and rerun to regenerate only that stage.
 
 ---
 
@@ -107,7 +107,7 @@ FOCUS writes all outputs back into `dataset_path`. Nothing is created outside of
 
 ### What is `spot_size`?
 
-`spot_size` is a 2-element array `[width_µm, height_µm]` stored in `adata.uns['spot_size']` that records the physical diameter of one measurement spot in micrometres. It is written during preprocessing for all spot-based modalities (MSI, ST) and propagated to the final MuData's `mdata.uns['spot_size']`. Downstream tools (e.g. squidpy) use it for neighbourhood graph construction and spatial statistics.
+`spot_size` is a 2-element array `[width_µm, height_µm]` stored in `adata.uns['spot_size']` that records the physical diameter of one measurement spot in micrometres (in the units of `obsm['spatial']`). It is written during preprocessing for all spot-based modalities (MSI, ST) and propagated to the final MuData's `mdata.uns['spot_size']`. The reference modality's `spot_size` is the footprint of every reference spot during registration. Downstream tools (e.g. squidpy) use it for neighbourhood graph construction and spatial statistics.
 
 ---
 

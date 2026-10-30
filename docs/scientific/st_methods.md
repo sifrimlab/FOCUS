@@ -366,5 +366,7 @@ they are not configuration settings.
 
 Per-sample cache keys include the input SHA-256, effective preprocessing settings (including `resolution`),
 method version and numerical software versions. Merged keys include all sample keys and the
-merged gene-filter settings. Legacy files without a key are recomputed. Changed ST inputs
-invalidate dependent alignment and registration caches through the orchestrator.
+merged gene-filter settings. Files without a key are recomputed. Changed ST inputs
+invalidate dependent alignment caches through the orchestrator, and registration caches through
+both the orchestrator and the registration fingerprint, which includes the target's preprocessing
+fingerprint.

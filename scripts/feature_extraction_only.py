@@ -9,11 +9,11 @@ stage always skips the reference modality. That means ``registration_type:
 patch centered on each *anchor* spot produced by the alignment stage) never actually runs
 for such a project: there is no alignment step and no anchor coordinates.
 
-This script uses the *free-form* mode of
-``MicroscopyImageFeatureExtractor.extract_features`` (``patch_centers=None``): the image is
-tiled into a non-overlapping grid of ``patch_size``x``patch_size`` patches, patches that are
->=99% background are dropped using the same background-detection code the anchor-based path
-uses, and the rest are encoded with Prov-GigaPath. No alignment or anchor modality is required.
+This script uses ``MicroscopyImageFeatureExtractor.extract_grid_features``: the image is
+tiled into a non-overlapping grid of 224x224 patches (the encoder's input size), patches that
+are >=99% background are dropped using the same background test the anchor-based path applies
+to encoder tokens, and the rest are encoded with Prov-GigaPath (the standard CLS embedding of
+each tile). No alignment or anchor modality is required.
 
 Like ``align_only.py``, it consumes only the per-sample preprocessed OME-TIFF that lives
 under ``{dataset_path}/{sample_id}/preprocessing/{modality}/`` and does not require raw
@@ -47,10 +47,10 @@ Levels are cached per file: only missing or stale ``.h5ad`` files are (re)comput
 (The filenames retain "processed_aligned_registered" even though no alignment ran. They are kept
 for drop-in compatibility with any tooling that expects registration output at these paths.
 A stamped ``uns['patch_mode'] = 'free_form'`` marker keeps this anchorless output from ever
-being silently confused with a genuine future anchor-based cache at the same path, in either
-direction: this script rejects a cache missing the marker, and the real pipeline's own
-obs-count check rejects a free-form file since its patch count won't match an anchor's spot
-count.)
+being silently confused with an anchor-based output at the same path, in either direction:
+this script rejects a cache missing the marker, and the real pipeline reuses a registration
+file only when it carries the pipeline's registration fingerprint, which free-form files never
+have.)
 
 Requires ``huggingface_token`` in the config (to download Prov-GigaPath) and, for reasonable
 runtime, a CUDA GPU (falls back to CPU otherwise).
@@ -61,8 +61,8 @@ Usage
     python scripts/feature_extraction_only.py -c /path/to/config.json --debug
 
 The config is the standard FOCUS JSON config. The declared ``modalities`` list must contain
-exactly one entry, of type ``microscopy_image``. Its ``registration_settings`` (``patch_size``,
-``background_color``, ``force_recomputing``) are read with the same defaults as the real
+exactly one entry, of type ``microscopy_image``. Its ``registration_settings``
+(``background_color``, ``force_recomputing``) are read with the same defaults as the real
 pipeline; ``registration_type`` itself is not checked, since this script always performs
 feature extraction regardless of that field's value.
 """
@@ -94,20 +94,17 @@ from focus.constants import (
 	MODALITY_REGISTRATION_MERGED,
 	MODALITY_FILE_EXTENSION,
 )
-from focus.utils import write_h5ad_compat, release_memory
+from focus.utils import write_h5ad_compat, release_memory, ome_tiff_pyramid_dims, load_ome_tiff_level
 from focus.preprocessing._utils import discover_sample_ids
-# Importing FeatureExtractorRegistration already pulls in timm/torch/huggingface_hub
-# transitively (via microscopy_image.py). Unlike align_only.py, there is no lazy-import
-# benefit to preserve here, since this script always needs the encoder.
-from focus.registration.registration import FeatureExtractorRegistration
+from focus.registration._cache import merge_registered_samples
+# Unlike align_only.py, there is no lazy-import benefit to preserve here, since this script
+# always needs the encoder (timm/torch/huggingface_hub).
 from focus.registration.microscopy_image import MicroscopyImageFeatureExtractor
 
 _H5AD_COMPRESSION = "gzip"
 _PATCH_MODE_FREE_FORM = "free_form"
-# Prov-GigaPath tile-encoder output width. Used to give a too-small coarse level an empty
-# (0, D) embedding matrix instead of (0, 0), so anndata.concat(merge='same') can't inner-join
-# away all feature columns when a resolution level mixes empty and non-empty samples.
-_GIGAPATH_EMBEDDING_DIM = 1536
+# Prov-GigaPath's input size: the grid tile side.
+_PATCH_SIZE = 224
 
 
 def _select_microscopy_modality(config: dict, logger: logging.Logger) -> dict | None:
@@ -157,13 +154,12 @@ def _collect_preprocessed_files(
 def _cached_registration_valid(cached_adata, patch_size: int, background_color: str) -> bool:
 	"""True when a cached free-form registration file can be safely reused.
 
-	registration_type alone is not enough to validate the cache: a genuine future
-	anchor-based feature_extraction run (e.g. after a second modality is added) would stamp
-	the same registration_type at this same path. The patch_mode marker disambiguates in
-	both directions: this script recomputes a cache missing the marker (rejecting a real
-	anchor-based cache), and the real pipeline's own registration_cache_valid recomputes a
-	free-form file at this path anyway, since its obs count (patch count) won't generally
-	match the anchor's spot count.
+	registration_type alone is not enough to validate the cache: an anchor-based
+	feature_extraction run (e.g. after a second modality is added) stamps the same
+	registration_type at this same path. The patch_mode marker disambiguates in both
+	directions: this script recomputes a cache missing the marker (rejecting an anchor-based
+	output), and the real pipeline recomputes a free-form file at this path, since it carries
+	no registration fingerprint.
 	"""
 	return (
 		cached_adata.uns.get("registration_type") == RegistrationType.FEATURE_EXTRACTION
@@ -273,7 +269,9 @@ def main() -> None:
 	modality_name = modality[ModalityParameters.NAME]
 
 	reg_settings = modality[ModalityParameters.REGISTRATION_SETTINGS]
-	patch_size = reg_settings.get("patch_size", 224)
+	if "patch_size" in reg_settings:
+		logger.warning("patch_size is ignored: the grid tile is the encoder's input size")
+	patch_size = _PATCH_SIZE
 	background_color = reg_settings.get("background_color") or SegmentationBackgroundColor.WHITE
 	force_recomputing = reg_settings.get("force_recomputing", False)
 	logger.info(
@@ -309,14 +307,11 @@ def main() -> None:
 	logger.info("Running standalone feature extraction (anchorless, free-form patch grid)")
 	logger.info("=" * 60)
 
-	# engine is reused only for _load_ome_tiff and _merge_samples: cheap __init__, no model
-	# loading. The pretrained MicroscopyImageFeatureExtractor is loaded lazily below, only if
-	# some sample actually needs (re)computation.
-	engine = FeatureExtractorRegistration(path=dataset_path, hf_token=hf_token)
+	# The pretrained MicroscopyImageFeatureExtractor is loaded lazily below, only if some
+	# sample actually needs (re)computation.
 	feature_extractor: MicroscopyImageFeatureExtractor | None = None
-	# level -> {sample_id: per-sample file}; level -> True until any sample recomputes that level.
+	# level -> {sample_id: per-sample file}
 	per_level_files: dict[int, dict[str, str]] = {}
-	per_level_all_cached: dict[int, bool] = {}
 
 	for sample_idx, sample_id in enumerate(sample_ids, 1):
 		logger.info(f"[{sample_idx}/{len(sample_ids)}] Extracting features for sample '{sample_id}'")
@@ -327,7 +322,7 @@ def main() -> None:
 		# never touches the OME-TIFF on a cache hit, exactly as before. Coarser levels need each
 		# level's dims to cap the request and to reconcile coordinates to the full-res frame.
 		if num_levels > 1:
-			pyramid_dims = engine._ome_tiff_pyramid_dims(image_path)
+			pyramid_dims = ome_tiff_pyramid_dims(image_path)
 			n_available = len(pyramid_dims)
 			n_use = min(num_levels, n_available)
 			if num_levels > n_available:
@@ -347,7 +342,6 @@ def main() -> None:
 			)
 			os.makedirs(os.path.dirname(target), exist_ok=True)
 			per_level_files.setdefault(level, {})
-			per_level_all_cached.setdefault(level, True)
 
 			if os.path.exists(target) and not force_recomputing:
 				cached = anndata.read_h5ad(target)
@@ -365,7 +359,6 @@ def main() -> None:
 				)
 
 			needed.append((level, target))
-			per_level_all_cached[level] = False
 
 		if not needed:
 			continue
@@ -376,10 +369,9 @@ def main() -> None:
 
 		for level, target in needed:
 			# Read exactly this pyramid level (level 0 is the full-res base, unchanged behavior).
-			image_data = engine._load_ome_tiff(image_path, level=level)
-			embeddings, center_coordinates = feature_extractor.extract_features(
+			image_data = load_ome_tiff_level(image_path, level=level)
+			embeddings, center_coordinates = feature_extractor.extract_grid_features(
 				image=image_data,
-				patch_centers=None,
 				background_color=background_color,
 				patch_size=patch_size,
 				step_reporter=None,
@@ -399,10 +391,6 @@ def main() -> None:
 				center_coordinates = center_coordinates.astype(np.float32, copy=True)
 				center_coordinates[:, 0] *= W0 / Wi
 				center_coordinates[:, 1] *= H0 / Hi
-				# A too-small level returns a (0, 0) embedding array; give it the model's real
-				# width so a merge that mixes empty and non-empty samples keeps all feature columns.
-				if embeddings.shape[1] == 0:
-					embeddings = np.zeros((0, _GIGAPATH_EMBEDDING_DIM), dtype=np.float32)
 
 			adata = anndata.AnnData(
 				X=embeddings,
@@ -428,12 +416,10 @@ def main() -> None:
 	if feature_extractor is not None:
 		del feature_extractor
 
-	# Merge across samples, once per resolution level. _merge_samples reuses a cached merged file
-	# only when all_per_sample_cached is True, which per level is set here only once every
-	# per-sample file at that level passed the free-form-aware _level_cache_valid check above, so
-	# merge-level reuse stays gated by the per-sample gate even though _merge_samples itself does
-	# not re-check patch_mode/patch_size/background_color/res_level. Level 0 uses the canonical
-	# merged path (merged_file=None); coarser levels write a sibling _res{level} merged file.
+	# Merge across samples, once per resolution level. The merged file is reused only while its
+	# fingerprint, built from the identity of every per-sample file it concatenates, still
+	# matches, so any per-sample file rewritten above forces the merge. Level 0 uses the
+	# canonical merged path (merged_file=None); coarser levels write a sibling _res{level} file.
 	for level in sorted(per_level_files):
 		if level == 0:
 			merged_file = None
@@ -446,15 +432,13 @@ def main() -> None:
 			# file (downsample_factor here is nominal 2**level; per-sample files carry the exact
 			# measured ratio).
 			extra_uns = {"res_level": level, "downsample_factor": float(2 ** level)}
-		per_level_files[level] = engine._merge_samples(
-			per_level_files[level], modality_name,
+		per_level_files[level] = merge_registered_samples(
+			dataset_path, per_level_files[level], modality_name, RegistrationType.FEATURE_EXTRACTION,
 			force_recomputing=force_recomputing,
-			all_per_sample_cached=per_level_all_cached[level],
 			merged_file=merged_file,
 			extra_uns=extra_uns,
 		)
 
-	del engine
 	release_memory(gpu=True)
 
 	logger.info("=" * 60)

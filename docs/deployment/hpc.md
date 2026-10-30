@@ -195,7 +195,7 @@ This allows FOCUS to run from start to finish in a batch job with no human inter
 |---|---|
 | **Raman preprocessing** | Parallelised across workers. Increase `max_workers` in the config (default: 8) to match available CPUs. |
 | **MSI preprocessing** | Peak RAM scales with a single sample. Typical tissue samples use 40-50 GB; large tissue sections may require up to 100 GB. Request memory accordingly when submitting batch jobs. |
-| **Feature extraction** | Requires an NVIDIA GPU. Ensure `--nv` (Singularity) or `--gpus all` (Docker/Podman) is set, and that `nvidia-smi` returns the expected device inside the container. |
+| **Feature extraction** | Uses an NVIDIA GPU when available (the CPU fallback is impractically slow). Ensure `--nv` (Singularity) or `--gpus all` (Docker/Podman) is set, and that `nvidia-smi` returns the expected device inside the container. |
 | **Compilation** | CPU-bound and I/O-bound. Fast NVMe storage for `dataset_path` significantly reduces runtime for large datasets. |
 
 ### Log files

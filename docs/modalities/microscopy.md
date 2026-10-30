@@ -155,10 +155,9 @@ Apart from `background_color`, none of these values are checked. They are passed
 
 ## Caching
 
-Microscopy preprocessing has no intermediate caches. Before doing any work, `process_image()` checks whether the output OME-TIFF exists: if it does and `force_recomputing` is `false`, it prints `Processed image already exists. Using cached results.` and returns that path.
+Microscopy preprocessing has no intermediate caches. Before doing any work, `process_image()` computes a fingerprint of the preprocessing method version, the source file (its size and the SHA-256 of its first and last 8 MiB), the sample, the modality, every processing setting, the internal detection and pyramid constants, and the versions of NumPy, OpenCV, scikit-image, SciPy and tifffile. When the existing output carries the same fingerprint and `force_recomputing` is `false`, the output is reused (the log reports a cached result). An output with another fingerprint, or without one, is regenerated, so changing `gamma`, `crop_margin` or any other setting takes effect on the next run.
 
-!!! warning "The cache key is the output file, not the settings"
-    Changing `gamma`, `crop_margin` or any other setting does not invalidate an existing output. Set `force_recomputing: true` (or delete the file) after changing a setting.
+A regenerated image whose level-0 pixels are identical to the file it replaces keeps the alignments made on that file valid; an image whose pixels changed must be re-aligned (see [Alignment](../pipeline/alignment.md)). Outputs are written to a temporary file and renamed into place.
 
 ---
 
@@ -178,6 +177,8 @@ One OME-TIFF per sample:
 | Container | BigTIFF |
 | Pyramid | One top-level IFD group per level, level `ℓ` scaled by `0.5^ℓ`; enough levels for the smallest to hold at most 9,000,000 pixels |
 | Metadata | OME-XML for all levels, in the first IFD's description; each level is an `Image` named `ResolutionLevel_<i>` |
+| Pixel size | `PhysicalSizeX/Y` in µm on every level when the source file records one (level-0 size scaled by the measured size ratio), read from OME `PhysicalSize`, the Aperio `MPP`, the ImageJ unit and resolution tags, TIFF resolution tags (inch or centimetre), the chosen qpTIFF level, the CZI `Scaling` distances or a calibrated ND2 voxel size; values outside 0.01 to 100 µm are ignored |
+| Provenance | A `MapAnnotation` (namespace `focus`) with the preprocessing fingerprint, the level-0 pixel digest, the crop offset `"x,y"` (origin of the output in the source image, in source pixels), the method version, the pixel-size source, and, after a pixel-identical regeneration, the signature of the replaced file. See [Data Schemas](../api/data_types.md#1-preprocessing-outputs) |
 | RGB images | Interleaved `photometric='rgb'`, one channel named `RGB` with 3 samples per pixel |
 | Single/multi-channel | One `minisblack` plane per channel, named `Channel_<c>` |
 
@@ -189,12 +190,12 @@ No merged file is produced for microscopy; the returned mapping contains one ent
 
 `microscopy_image` is compatible with two registration types: `feature_extraction`, and `none` (which aligns the modality but leaves it out of the final MuData). The spot-based types (`spot_interpolation`, `spot_aggregation`) and `raman_pixel_interpolation` are rejected during configuration validation.
 
-`feature_extraction` extracts a square patch around each anchor spot's position in image space and encodes it with [Prov-GigaPath](https://huggingface.co/prov-gigapath/prov-gigapath), a pathology foundation model downloaded from HuggingFace on first use, so `huggingface_token` must be set in the configuration. It runs on a GPU when one is available.
+`feature_extraction` gives each anchor spot one embedding of the image area inside its footprint, computed with [Prov-GigaPath](https://huggingface.co/prov-gigapath/prov-gigapath), a pathology foundation model downloaded from HuggingFace on first use, so `huggingface_token` must be set in the configuration. The image is encoded at the stored pyramid level closest to the model's 0.5 µm per pixel, using the pixel size recorded at preprocessing. It runs on a GPU when one is available and otherwise on the CPU.
 
 !!! warning "Use `feature_extraction` only on H&E-stained brightfield images"
     Prov-GigaPath is pretrained on brightfield tiles from H&E-stained whole-slide images, so its embeddings represent H&E morphology. Run it only when this modality is an **H&E-stained histological section imaged in brightfield RGB**.
 
-    Nothing in FOCUS checks the stain or the imaging mode. An immunofluorescence, IHC or other-stain image is patched and encoded the same way, and a complete embedding matrix is returned with no error. The values do not describe the tissue. A single-channel image is replicated to RGB first, so it runs to completion rather than failing.
+    Nothing in FOCUS checks the stain or the imaging mode. An immunofluorescence, IHC or other-stain image is encoded the same way, and a complete embedding matrix is returned with no error. The values do not describe the tissue. A single-channel image is replicated to RGB first, so it runs to completion rather than failing.
 
     For any such modality use `registration_type: none`. Preprocessing and alignment still run and the aligned OME-TIFF remains available; only the embedding step is skipped.
 
@@ -202,14 +203,12 @@ No merged file is produced for microscopy; the returned mapping contains one ent
 
 | Name | Type | Default | Description |
 |------|------|---------|-------------|
-| `patch_size` | `int` | `224` | Side length in pixels of the patch extracted around an anchor spot |
-| `background_color` | `str` | `"white"` | Colour used to recognise empty patches. A patch made only of it is not passed through the model and receives an all-zero embedding, keeping one output row per anchor spot |
-| `force_recomputing` | `bool` | `false` | Recompute even if a registration output exists |
+| `background_color` | `str` | `"white"` | Colour used to recognise empty image areas. An encoder token whose pixels match it in at least 99% of positions is never read; an anchor spot whose footprint holds only such tokens receives an all-zero embedding, keeping one output row per anchor spot |
+| `force_recomputing` | `bool` | `false` | Recompute even if the registration output matches its inputs |
 
 ```yaml
 registration_type: feature_extraction
 registration_settings:
-  patch_size: 224
   background_color: white
 ```
 
@@ -236,6 +235,5 @@ modalities:
       force_recomputing: false
     registration_type: feature_extraction
     registration_settings:
-      patch_size: 224
       background_color: white
 ```

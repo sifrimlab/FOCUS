@@ -225,7 +225,7 @@ adata_msi = ad.read_h5ad(
 
 FOCUS keeps every intermediate file it produces (preprocessed, aligned, registered), for two reasons:
 
-- **Resumable runs**: If a run is interrupted or fails partway through, you can restart with the same config and FOCUS will skip any stage whose output file already exists, as long as `force_recomputing` is `false` in the processing or registration settings.
+- **Resumable runs**: If a run is interrupted or fails partway through, you can restart with the same config and FOCUS will reuse every output that is still valid, as long as `force_recomputing` is `false` in the processing or registration settings. Microscopy, MSI and ST preprocessing outputs and all registration outputs are reused only when the fingerprint they store matches their current inputs and settings; the other outputs are reused when the file exists.
 - **Stage inspection**: You can examine the output of any individual stage (e.g., inspect an aligned AnnData before registration) without re-running the full pipeline.
 
 !!! warning "Disk space"
@@ -237,7 +237,7 @@ FOCUS keeps every intermediate file it produces (preprocessed, aligned, register
 
 After processing all individual samples, FOCUS concatenates the omics modalities into a single per-modality file in `merged/` (image modalities such as microscopy are merged only at the registration stage, not during preprocessing):
 
-- Spot/pixel coordinates are preserved in each sample's original reference space and tagged with a `sample_id` observation column.
+- Spot coordinates are preserved in each sample's own coordinate frame and tagged with a `sample_id` observation column. In a registered file, `obsm['spatial']` holds the reference spots in that target modality's frame.
 - The final `multimodal_dataset.h5mu` is built from the merged registered files.
 - If any modality has `registration_type: "none"`, it is excluded from the MuData but its preprocessed and aligned files are still written.
 

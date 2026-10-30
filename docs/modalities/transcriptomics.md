@@ -17,10 +17,10 @@ The input `.h5ad` file must satisfy the following:
 | `.X` | Yes | Gene expression matrix (sparse CSR recommended; raw integer counts preferred) |
 | `.obsm['spatial']` | Yes | Spot coordinates in µm, shape `(N_spots, 2)` |
 | `.var` | Yes | Gene metadata; gene names must be the index |
-| `.uns['spot_size']` | No | Spot diameter `[x, y]` in µm. **FOCUS reads this field automatically.** If missing, defaults to `[1.0, 1.0]` µm. |
+| `.uns['spot_size']` | No | Spot diameter `[x, y]`, in the same units as `.obsm['spatial']` (µm). **FOCUS reads this field automatically.** If missing, defaults to `[1.0, 1.0]`. |
 
 !!! tip "spot_size"
-    `spot_size` sets the spatial footprint used by `spot_interpolation` and `spot_aggregation` registration, so it should match your technology (see the table below).
+    When ST is the reference modality, `spot_size` sets the footprint of every reference spot in all registration modes (`spot_interpolation`, `spot_aggregation`, `raman_pixel_interpolation`, `feature_extraction`), so it should match your technology (see the table below). As a registration target, ST contributes its spot centres; the footprint is the reference's.
     FOCUS reads it during preprocessing and normalises it: a scalar or 1-element array is broadcast to `[v, v]`, a 2-element array is kept as-is, and more than 2 values raises `ValueError`.
     If your input file is missing `.uns['spot_size']`, FOCUS applies the default `[1.0, 1.0]` µm.
 
@@ -173,7 +173,7 @@ reference_modality: visium
 
 ### ST as a non-reference modality
 
-When another spot-based modality (MSI or another ST instance) is the reference, ST is registered onto it using `spot_interpolation`. FOCUS maps reference anchor positions into ST coordinate space and computes Gaussian-weighted averages of ST expression profiles within each anchor footprint.
+When another spot-based modality (MSI or another ST instance) is the reference, ST is registered onto it using `spot_interpolation` or `spot_aggregation`. FOCUS maps the ST spot centres into the reference's coordinate frame through the alignment transform and averages (or sums) the ST expression profiles whose centres lie within each anchor footprint.
 
 !!! note "Image-based reference"
     An image-based modality (`microscopy_image`, `raman`) may be set as the reference with ST as a target: preprocessing, alignment and registration all run. The final MuData compilation is skipped, because it requires the reference to be spot-based (`msi` or `st`). Make ST or MSI the reference if you need the compiled multimodal dataset.

@@ -74,6 +74,8 @@ The transform is recorded as a 3×3 matrix, not as a list of moved points. The G
 
 No GUI is launched. The pipeline copies `obsm['spatial']` from the **reference** AnnData into `obsm['{target_name}_spatial']` in the same reference AnnData, recording that the reference spots are already expressed in the target's coordinate frame. This is appropriate when the reference modality is spot-based and its spot coordinates are already in the target modality's coordinate system. One example is Visium ST spots whose coordinates are already in H&E microscopy image pixel coordinates.
 
+For a microscopy target, the reference coordinates are pixel coordinates of the **source** image file. Preprocessing crops the image to the tissue and records the crop offset in the preprocessed OME-TIFF, so the pipeline subtracts that offset: `obsm['{target_name}_spatial'] = obsm['spatial'] - offset`.
+
 **Use when:** the reference modality is spot-based (`msi` or `st`) and its `obsm['spatial']` coordinates are already expressed in one target modality's coordinate frame.
 
 **Limitation:** only one target modality can use `pre_aligned`, since the reference spots can be expressed in only one coordinate system at a time. If there are two or more targets, all but one must use `manual` alignment.
@@ -211,7 +213,13 @@ Before launching the GUI, FOCUS checks each sample of the pair for an existing a
 - **spot reference**: the aligned `.h5ad` exists **and** already contains `obsm['{target_name}_spatial']`;
 - **image reference**: the aligned `.ome.tiff` exists.
 
-When either modality of the pair is ST, the aligned `.h5ad` must also record in `.uns['focus_alignment_inputs']` the preprocessing fingerprints of both inputs, and they must equal the current ones.
+The aligned `.h5ad` records in `.uns['focus_alignment_inputs']` the identity of both inputs: the level-0 pixel digest of a preprocessed microscopy image, the preprocessing fingerprint of an MSI or ST AnnData, otherwise the file's path, size and modification time. This record must equal the current one when:
+
+- either modality of the pair is ST;
+- the target is a preprocessed microscopy image and the reference carries a preprocessing fingerprint;
+- the pair is `pre_aligned` (the record then also holds the image's crop offset; a stale pre-aligned pair is recomputed without the GUI).
+
+A manual alignment made on a microscopy image that preprocessing regenerated with identical pixels stays valid, and its record is updated. When the image's pixels changed, the log reports that the image changed since it was aligned, and the pair is aligned again.
 
 If every sample of the pair passes, the GUI is skipped. When the per-sample files are present but the merged file is missing, FOCUS rebuilds the merged file without opening the GUI.
 

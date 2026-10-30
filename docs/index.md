@@ -110,7 +110,7 @@ Raw Data → [1] Preprocessing → [2] Alignment → [3] Registration → [4] Co
 |-------|-------------|
 | [Preprocessing](pipeline/preprocessing.md) | Per-modality QC, normalization, format conversion |
 | [Alignment](pipeline/alignment.md) | Interactive visual alignment via web GUI |
-| [Registration](pipeline/registration.md) | Patch embeddings (images) or Gaussian interpolation (omics) onto reference coordinates |
+| [Registration](pipeline/registration.md) | Per-spot footprint embeddings (images), Gaussian interpolation or summation (omics) onto the reference spots |
 | [Compilation](pipeline/compilation.md) | All modalities merged into a single MuData file |
 
 ---

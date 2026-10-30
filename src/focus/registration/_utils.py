@@ -1,12 +1,9 @@
 """
-Pure-NumPy helpers for microscopy patch feature extraction.
+Pure-NumPy helpers for microscopy feature extraction.
 
-These functions are intentionally torch-free so the exact pixel/coordinate/
-background semantics can be unit-tested on CPU without a GPU. They are the
-single source of truth for *where* patches sit, *how* they are cut from the
-resident image, and *which* patches count as background — the parts that must
-stay bit-identical to the original in-memory implementation, because a silent
-misalignment would corrupt the downstream MuData join with no error.
+These functions are intentionally torch-free so the pixel, coordinate and background
+semantics can be unit-tested on CPU without a GPU: where windows and grid patches sit, how
+they are cut from the resident image, and which patches or encoder tokens count as background.
 """
 
 import numpy as np
@@ -36,15 +33,12 @@ def ensure_hwc3(img: np.ndarray) -> np.ndarray:
 def compute_patch_coordinates(
     img_shape: tuple,
     patch_size: int = 224,
-    patch_centers: np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """
-    Compute patch top-left and centre coordinates *without touching pixels*.
+    Top-left and centre coordinates of a non-overlapping patch grid, without touching pixels.
 
-    This is the cheap, vectorized replacement for the coordinate bookkeeping in
-    the old ``_extract_patches``. Only ``(M, 2)`` integer/float coordinate arrays
-    are produced (a few MB even at 1M patches); the pixel data is cut lazily,
-    batch by batch, during encoding.
+    Only ``(M, 2)`` coordinate arrays are produced (a few MB even at 1M patches); the pixel
+    data is cut lazily, batch by batch, during encoding.
 
     Parameters
     ----------
@@ -52,41 +46,16 @@ def compute_patch_coordinates(
         Shape of the (HWC) image, ``(H, W, C)`` or ``(H, W)``.
     patch_size : int
         Side length of each square patch.
-    patch_centers : np.ndarray, optional
-        ``(N, 2)`` array of requested ``(x, y)`` centres. If ``None``,
-        non-overlapping grid patches are generated across the image.
 
     Returns
     -------
     top_left : np.ndarray
-        ``(M, 2)`` int32 array of clamped ``(x0, y0)`` top-left pixel positions.
+        ``(M, 2)`` int32 array of ``(x0, y0)`` top-left pixel positions, row-major (x fastest).
     center : np.ndarray
-        ``(M, 2)`` float32 array of the actual ``(x, y)`` patch centres (after
-        any clamping to the image bounds).
+        ``(M, 2)`` float32 array of the patch centres ``(x0 + patch_size // 2, y0 + patch_size // 2)``.
     """
     h, w = int(img_shape[0]), int(img_shape[1])
     half = patch_size // 2
-
-    if patch_centers is not None:
-        centers = np.asarray(patch_centers, dtype=np.float32)
-        if centers.shape[0] == 0:
-            return (np.zeros((0, 2), dtype=np.int32), np.zeros((0, 2), dtype=np.float32))
-
-        # int() truncates toward zero; .astype(np.int32) does the same for the
-        # values seen here, so the result matches the original per-patch loop.
-        x0 = (centers[:, 0] - half).astype(np.int32)
-        y0 = (centers[:, 1] - half).astype(np.int32)
-
-        # Reproduce the original max(0, min(x0, w - patch_size)) nesting exactly
-        # (np.clip would differ when the image is smaller than a patch).
-        x0 = np.maximum(0, np.minimum(x0, w - patch_size))
-        y0 = np.maximum(0, np.minimum(y0, h - patch_size))
-
-        top_left = np.stack([x0, y0], axis=1).astype(np.int32)
-        center = (top_left + half).astype(np.float32)
-        return top_left, center
-
-    # Non-overlapping grid across the image foreground.
     n_y = h // patch_size
     n_x = w // patch_size
     if n_y == 0 or n_x == 0:
@@ -100,43 +69,46 @@ def compute_patch_coordinates(
     return top_left, center
 
 
+def cut_window_batch(
+    img: np.ndarray,
+    top_left_batch: np.ndarray,
+    height: int,
+    width: int,
+) -> np.ndarray:
+    """
+    Cut a batch of ``height x width`` windows from the resident image, zero-padding short borders.
+
+    Parameters
+    ----------
+    img : np.ndarray
+        HWC image (3 channels) the windows are cut from.
+    top_left_batch : np.ndarray
+        ``(B, 2)`` array of ``(x0, y0)`` top-left positions.
+    height, width : int
+        Window size in pixels.
+
+    Returns
+    -------
+    np.ndarray
+        ``(B, height, width, 3)`` float32 batch. Windows running off the image are zero-padded.
+    """
+    b = top_left_batch.shape[0]
+    out = np.zeros((b, height, width, 3), dtype=np.float32)
+    for i in range(b):
+        x0 = int(top_left_batch[i, 0])
+        y0 = int(top_left_batch[i, 1])
+        window = img[y0:y0 + height, x0:x0 + width, :]
+        out[i, :window.shape[0], :window.shape[1], :] = window
+    return out
+
+
 def cut_patch_batch(
     img: np.ndarray,
     top_left_batch: np.ndarray,
     patch_size: int = 224,
 ) -> np.ndarray:
-    """
-    Cut a batch of patches from the resident image, zero-padding short borders.
-
-    Equivalent to the per-patch slice + pad in the old ``_extract_patches``
-    (interior patches are full; patches running off the edge are zero-padded into
-    a ``patch_size`` buffer). ``top_left_batch`` is expected to be pre-clamped by
-    :func:`compute_patch_coordinates`, so padding only occurs when the image is
-    smaller than a patch.
-
-    Parameters
-    ----------
-    img : np.ndarray
-        HWC image (3 channels) the patches are cut from.
-    top_left_batch : np.ndarray
-        ``(B, 2)`` array of ``(x0, y0)`` top-left positions.
-    patch_size : int
-        Side length of each square patch.
-
-    Returns
-    -------
-    np.ndarray
-        ``(B, patch_size, patch_size, 3)`` float32 batch.
-    """
-    b = top_left_batch.shape[0]
-    out = np.zeros((b, patch_size, patch_size, 3), dtype=np.float32)
-    for i in range(b):
-        x0 = int(top_left_batch[i, 0])
-        y0 = int(top_left_batch[i, 1])
-        patch = img[y0:y0 + patch_size, x0:x0 + patch_size, :]
-        ph, pw = patch.shape[0], patch.shape[1]
-        out[i, :ph, :pw, :] = patch
-    return out
+    """Square ``patch_size`` windows (see :func:`cut_window_batch`)."""
+    return cut_window_batch(img, top_left_batch, patch_size, patch_size)
 
 
 def resolve_bg_color(background_color: SegmentationBackgroundColor) -> np.ndarray:
@@ -182,3 +154,35 @@ def background_mask(
     bg_counts = np.sum(bg, axis=(1, 2))                             # (B,)
     area = patches.shape[1] * patches.shape[2]
     return bg_counts >= frac * area
+
+
+def token_background_mask(
+    windows: np.ndarray,
+    patch: int,
+    bg_color: np.ndarray,
+) -> np.ndarray:
+    """
+    Flag the encoder tokens of each window that are (almost) entirely background.
+
+    A token is the ``patch x patch`` pixel square the encoder embeds as one input token;
+    tokens are numbered row-major (``row * n_cols + col``), the order in which a ViT
+    flattens its patch grid. The test is :func:`background_mask` applied to every token.
+
+    Parameters
+    ----------
+    windows : np.ndarray
+        ``(B, H, W, 3)`` raw windows, ``H`` and ``W`` multiples of ``patch``.
+    patch : int
+        Token side in pixels.
+    bg_color : np.ndarray
+        ``(3,)`` background color.
+
+    Returns
+    -------
+    np.ndarray
+        ``(B, (H // patch) * (W // patch))`` boolean array, True for background tokens.
+    """
+    b, h, w, c = windows.shape
+    ny, nx = h // patch, w // patch
+    tokens = windows.reshape(b, ny, patch, nx, patch, c).transpose(0, 1, 3, 2, 4, 5)
+    return background_mask(tokens.reshape(b * ny * nx, patch, patch, c), bg_color).reshape(b, ny * nx)

@@ -157,7 +157,7 @@ Place one AnnData file (`.h5ad`) per sample inside the modality directory. FOCUS
 
 | Slot | Description |
 |------|-------------|
-| `.uns['spot_size']` | Physical spot size in µm: scalar, list `[w, h]`, or 1-D array (normalised internally to a float32 `(2,)` array). **Optional but strongly recommended.** If absent, FOCUS falls back to `[1.0, 1.0]` µm, which makes the physical footprint used during registration meaningless. Provide the real spot size whenever possible. Used during the registration stage. |
+| `.uns['spot_size']` | Physical spot size, in the same units as `.obsm['spatial']` (µm): scalar, list `[w, h]`, or 1-D array (normalised internally to a float32 `(2,)` array). **Optional but strongly recommended.** If absent, FOCUS falls back to `[1.0, 1.0]`, which makes the footprint used during registration meaningless when ST is the reference modality. Provide the real spot size whenever possible. |
 
 If `.X` is a dense array, FOCUS will convert it to sparse CSR automatically during loading.
 

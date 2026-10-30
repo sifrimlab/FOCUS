@@ -1,4 +1,4 @@
-import os, h5py, tifffile, threading, anndata, logging
+import os, json, h5py, tifffile, threading, anndata, logging
 import numpy as np
 from PIL import Image
 from sklearn.decomposition import NMF
@@ -10,7 +10,10 @@ from focus.utils import write_h5ad_compat, concat_on_disk_compat, read_merged_sa
 from focus.GUI.direct_mapping_alignment import DirectMappingAlignmentGUI
 from focus.alignment.spot_payload import pack_spots, acquisition_basis
 from focus.spot_colors import cluster_colors, label_order
-from focus.provenance import cached_fingerprint, fingerprint
+from focus.provenance import (
+	cached_fingerprint, content_signature, fingerprint, read_ome_annotations,
+	PIXEL_DIGEST_KEY, CROP_OFFSET_KEY, SUPERSEDED_SIGNATURE_KEY,
+)
 from focus.reporting import get_reporter
 
 logger = logging.getLogger("focus.alignment")
@@ -400,33 +403,115 @@ class DirectMappingAligner:
 		else:
 			raise ValueError(f"Unsupported modality type: {modality_type}")
 
-	def _input_key(self, sample_id):
-		def signature(path):
-			key = cached_fingerprint(path)
-			if key is not None:
-				return key
-			stat = os.stat(path)
-			return [os.path.abspath(path), stat.st_size, stat.st_mtime_ns]
-		return fingerprint({"version": 1, "fixed": signature(self._reference_modality[sample_id]),
-			"moving": signature(self._target_modality[sample_id])})
+	def _fixed_annotations(self, sample_id) -> dict:
+		"""FOCUS provenance of the fixed layer (empty unless it is an annotated FOCUS image)."""
+		if self._reference_modality_type not in _IMAGE_MODALITIES:
+			return {}
+		return read_ome_annotations(self._reference_modality[sample_id]) or {}
 
-	def _cache_matches(self, sample_id):
+	def _crop_offset(self, sample_id) -> np.ndarray:
+		"""
+		Pixel offset ``(x, y)`` of the fixed image's origin in its source image.
+
+		Preprocessing crops microscopy images to the tissue and records where the crop starts.
+		A microscopy image without that record (written before it existed, reachable only when
+		preprocessing is skipped) gets offset 0 with a warning.
+		"""
+		value = self._fixed_annotations(sample_id).get(CROP_OFFSET_KEY)
+		if value is not None:
+			return np.array([float(v) for v in value.split(",")], dtype=np.float32)
+		if self._reference_modality_type == ModalityType.MICROSCOPY_IMAGE and not getattr(self, "_warned_offset", False):
+			self._warned_offset = True
+			(getattr(self, "_reporter", None) or get_reporter()).warning(
+				f"'{self._reference_modality_name}' records no crop offset (preprocessed before it was stored): "
+				f"pre-aligned coordinates are used without one"
+			)
+		return np.zeros(2, dtype=np.float32)
+
+	def _input_key(self, sample_id, pre_aligned: bool = False):
+		"""
+		Fingerprint of the inputs an alignment was made on.
+
+		Each side is identified by ``content_signature``: the level-0 pixel digest of a FOCUS
+		image, the preprocessing fingerprint of an AnnData, otherwise the file's stat. A
+		pre-aligned image pair also depends on the image's crop offset.
+		"""
+		payload = {"version": 1, "fixed": content_signature(self._reference_modality[sample_id]),
+			"moving": content_signature(self._target_modality[sample_id])}
+		if pre_aligned and self._reference_modality_type in _IMAGE_MODALITIES:
+			payload["offset"] = [float(v) for v in self._crop_offset(sample_id)]
+		return fingerprint(payload)
+
+	def _legacy_input_key(self, sample_id):
+		"""
+		The key an alignment made on the file a regenerated image replaced would carry, or None.
+
+		Preprocessing records the replaced file's stat signature only when the regenerated
+		image's level-0 pixels are identical to it, so a match proves the alignment still holds.
+		"""
+		superseded = self._fixed_annotations(sample_id).get(SUPERSEDED_SIGNATURE_KEY)
+		if not superseded:
+			return None
+		return fingerprint({"version": 1, "fixed": json.loads(superseded),
+			"moving": content_signature(self._target_modality[sample_id])})
+
+	def _restamp_input_key(self, path: str, key: str) -> None:
+		"""Replace this pair's stored input key in the aligned file, in place."""
+		with h5py.File(path, "r+") as f:
+			if "uns/focus_alignment_inputs" in f:
+				anndata.io.write_elem(f["uns/focus_alignment_inputs"], self._reference_modality_name, key)
+			else:
+				anndata.io.write_elem(f["uns"], "focus_alignment_inputs", {self._reference_modality_name: key})
+
+	def _cache_matches(self, sample_id, pre_aligned: bool = False):
+		"""
+		True when the stored alignment of ``sample_id`` still matches its inputs.
+
+		The stored input key is compared for pre-aligned pairs, pairs involving ST, and pairs
+		whose fixed layer is a FOCUS image with a pixel digest (against a fingerprinted anchor).
+		A manual alignment made on an image that preprocessing later regenerated with identical
+		pixels is accepted through the replaced file's signature, and its key is re-stamped.
+		"""
 		path = self._aligned_output_path(sample_id)
 		if not os.path.exists(path):
 			return False
 		if self._target_modality_type in _IMAGE_MODALITIES:
 			return True
+		name = self._reference_modality_name
 		with h5py.File(path, 'r') as f:
-			if f"obsm/{self._reference_modality_name}_spatial" not in f:
+			if f"obsm/{name}_spatial" not in f:
 				return False
-			if ModalityType.ST not in (self._target_modality_type, self._reference_modality_type):
+			key = f"uns/focus_alignment_inputs/{name}"
+			stored = None
+			if key in f:
+				stored = f[key][()]
+				stored = stored.decode() if isinstance(stored, bytes) else str(stored)
+
+		fixed_is_image = self._reference_modality_type in _IMAGE_MODALITIES
+		annotations = self._fixed_annotations(sample_id)
+		digested = PIXEL_DIGEST_KEY in annotations
+		has_st = ModalityType.ST in (self._target_modality_type, self._reference_modality_type)
+		checked = (pre_aligned or has_st
+			or (digested and cached_fingerprint(self._target_modality[sample_id]) is not None))
+		if not checked:
+			return True
+
+		expected = self._input_key(sample_id, pre_aligned)
+		if stored == expected:
+			return True
+		if not pre_aligned and fixed_is_image:
+			legacy = self._legacy_input_key(sample_id)
+			if legacy is not None and (stored == legacy or (stored is None and not has_st)):
+				self._restamp_input_key(path, expected)
 				return True
-			key = f"uns/focus_alignment_inputs/{self._reference_modality_name}"
-			if key not in f:
-				return False
-			value = f[key][()]
-			value = value.decode() if isinstance(value, bytes) else str(value)
-		return value == self._input_key(sample_id)
+		if digested and stored is not None and not pre_aligned:
+			warned = self.__dict__.setdefault("_warned_changed", set())
+			if sample_id not in warned:
+				warned.add(sample_id)
+				(getattr(self, "_reporter", None) or get_reporter()).warning(
+					f"'{name}' changed since it was aligned: the alignment must be redone"
+				)
+		return False
 
 	def _fresh_aligned_adata(self, sample_id):
 		# Always refresh counts/labels/metadata from preprocessing. Preserve other pair
@@ -661,6 +746,9 @@ class DirectMappingAligner:
 		Used when the target modality's coordinates are already expressed in the
 		reference modality's coordinate system (e.g. 10x Visium spots on H&E).
 
+		For an image reference, the coordinates are in the source image's pixel frame: the
+		preprocessed image's crop offset is subtracted so they land on the preprocessed pixels.
+
 		The obsm key for this pair is added to the shared aligned file for the target
 		modality, preserving any obsm keys added by previous alignment passes.
 
@@ -680,13 +768,19 @@ class DirectMappingAligner:
 			os.makedirs(alignment_folder, exist_ok=True)
 			aligned_file = self._aligned_output_path(sample_id)
 
-			needs_write = force_recomputing or not self._cache_matches(sample_id)
+			needs_write = force_recomputing or not self._cache_matches(sample_id, pre_aligned=True)
 			if not needs_write:
 				self._reporter.cached()
 			else:
 				adata = self._fresh_aligned_adata(sample_id)
-				adata.obsm[obsm_key] = adata.obsm['spatial'].copy()
-				adata.uns.setdefault('focus_alignment_inputs', {})[self._reference_modality_name] = self._input_key(sample_id)
+				coords = adata.obsm['spatial'].copy()
+				if self._reference_modality_type in _IMAGE_MODALITIES:
+					# Pre-aligned coordinates are in the source image's pixel frame; the preprocessed
+					# image starts where preprocessing cropped it.
+					coords = (np.asarray(coords, dtype=np.float32) - self._crop_offset(sample_id)).astype(np.float32)
+				adata.obsm[obsm_key] = coords
+				adata.uns.setdefault('focus_alignment_inputs', {})[self._reference_modality_name] = self._input_key(
+					sample_id, pre_aligned=True)
 				write_h5ad_compat(adata, aligned_file, compression=_H5AD_COMPRESSION)
 				changed = True
 				del adata

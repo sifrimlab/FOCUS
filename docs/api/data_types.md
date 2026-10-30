@@ -11,7 +11,16 @@ This page documents the canonical data schemas that FOCUS writes at each pipelin
 
 ### Image modalities (microscopy, raman) → OME-TIFF outputs
 
-- **Microscopy preprocessing** writes a multi-resolution OME-TIFF pyramid using `tifffile` with `zlib` compression and a predictor matched to the storage dtype (3 for `float32`, 2 for integers). The storage dtype follows the source file: `uint8`/`uint16` pass through, float sources stay `float32`, and any other integer depth becomes `uint16`. Integer output is the internally normalised image scaled by the dtype maximum and rounded; `float32` output is written on that normalised scale unchanged.
+- **Microscopy preprocessing** writes a multi-resolution OME-TIFF pyramid using `tifffile` with `zlib` compression and a predictor matched to the storage dtype (3 for `float32`, 2 for integers). The storage dtype follows the source file: `uint8`/`uint16` pass through, float sources stay `float32`, and any other integer depth becomes `uint16`. Integer output is the internally normalised image scaled by the dtype maximum and rounded; `float32` output is written on that normalised scale unchanged. When the source file records a pixel size, every level's `Pixels` element carries `PhysicalSizeX/Y` in µm (the level-0 size scaled by the measured size ratio). The OME-XML also holds a FOCUS `MapAnnotation` (namespace `focus`) with string values:
+
+    | Key | Value |
+    |---|---|
+    | `focus_preprocessing_fingerprint` | SHA-256 fingerprint of the method version, source file, sample, modality, settings and software versions; the cached file is reused only when it matches |
+    | `focus_pixel_digest` | SHA-256 digest of the level-0 pixel planes as written; downstream caches use it as the image's identity |
+    | `focus_crop_offset` | `"x,y"`: position of the output's origin in the source image, in source pixels (`"0,0"` without tissue cropping) |
+    | `focus_method` | Preprocessing method version |
+    | `focus_pixel_size_source` | Where the pixel size was read: `ome`, `aperio`, `imagej`, `tiff_resolution`, `czi`, `nd2`, or `none` |
+    | `focus_superseded_signature` | Present when a regenerated file is pixel-identical to the file it replaced: that file's path, size and modification time (JSON), so alignments made on it stay valid |
 - **Raman preprocessing** writes the OME-TIFF pyramid produced by the ASHLAR stitching step (via the external `FOCUS_ASHLAR` environment): `uint8`, one channel per spectral channel in scan order, Adobe-Deflate compressed with a horizontal predictor, with successive 2× levels. Its OME-XML holds the physical pixel size in µm; it carries no channel names and no wavenumber values, so the spectral axis cannot be read back from the file.
 
 In both cases the full-resolution level is at index `0` and higher indices are progressively downsampled, but they are stored differently: microscopy writes one TIFF series per level, while ASHLAR stores the Raman levels as SubIFDs of a single series (`tifffile.TiffFile(...).series[0].levels`). OME-TIFF files can be read with `tifffile.TiffFile`, `bioformats`, QuPath, or Napari.
@@ -42,7 +51,7 @@ In both cases the full-resolution level is at index `0` and higher indices are p
     When both positive and negative ion mode acquisitions are present, their features are concatenated along `var` (columns), and mode identity is tracked in `.var['mz_mode']`.
 
 !!! note "spot_size"
-    For MSI, `spot_size` is propagated from parsed raster metadata and used during `spot_interpolation` registration to determine the Gaussian kernel width.
+    For MSI, `spot_size` is propagated from parsed raster metadata. When MSI is the reference modality, it defines the registration footprint of every reference spot and the Gaussian kernel width.
 
 #### Spatial transcriptomics (ST)
 
@@ -60,7 +69,7 @@ In both cases the full-resolution level is at index `0` and higher indices are p
 | `.uns['spot_size']` | float32 ndarray | $(2,)$ | Spot diameter $[x,\ y]$ in µm, read from the input AnnData's `.uns['spot_size']`; defaults to `[1.0, 1.0]` µm when absent. In the **merged** file this is instead a `dict` keyed by `sample_id` |
 
 !!! note "spot_size"
-    For ST modalities, `spot_size` is read from the input AnnData file's `.uns['spot_size']` field during preprocessing. If this field is absent, FOCUS applies the default `[1.0, 1.0]` µm. This value is critical for accurate spot interpolation during registration; ensure your input ST AnnData has the correct spot diameter.
+    For ST modalities, `spot_size` is read from the input AnnData file's `.uns['spot_size']` field during preprocessing, in the same units as `.obsm['spatial']`. If this field is absent, FOCUS applies the default `[1.0, 1.0]`. When ST is the reference modality, it defines the registration footprint of every reference spot; ensure your input ST AnnData has the correct spot diameter.
 
 ---
 
@@ -71,12 +80,13 @@ The Alignment stage does not produce a new file for each non-reference modality.
 | Attribute | Type | Shape | Description |
 |-----------|------|-------|-------------|
 | `.obsm['spatial']` | float32 ndarray | $(n_\text{ref},\ 2)$ | Reference modality coordinates (unchanged) |
-| `.obsm['{non_ref_name}_spatial']` | float32 ndarray | $(n_\text{ref},\ 2)$ | Reference spots expressed in the non-reference modality's coordinate space |
+| `.obsm['{non_ref_name}_spatial']` | float32 ndarray | $(n_\text{ref},\ 2)$ | Reference spots expressed in the non-reference modality's coordinate space (full-resolution pixels for an image modality) |
+| `.uns['focus_alignment_inputs']` | dict of str | - | Per non-reference modality, the fingerprint of the two inputs the alignment was made on; see [Alignment caching](../pipeline/alignment.md) |
 
 One `.obsm['{non_ref_name}_spatial']` key is added per non-reference modality that was aligned. For example, if the reference is `"st"` and non-reference modalities are `"msi"` and `"microscopy"`, the aligned reference AnnData will contain `.obsm['spatial']`, `.obsm['msi_spatial']`, and `.obsm['microscopy_spatial']`.
 
 !!! note "Pre-aligned modalities"
-    Modalities configured with `alignment_strategy: "pre_aligned"` store passthrough coordinates in `.obsm['{reference_modality_name}_spatial']` (a copy of `.obsm['spatial']`).
+    Modalities configured with `alignment_strategy: "pre_aligned"` store passthrough coordinates in `.obsm['{non_ref_name}_spatial']`: a copy of `.obsm['spatial']`, or for a microscopy image `.obsm['spatial']` minus the image's crop offset (`focus_crop_offset`), because pre-aligned coordinates are in the source image's pixel frame and the preprocessed image starts where preprocessing cropped it.
 
 ---
 
@@ -89,17 +99,22 @@ Every registered file, whatever the mode, carries:
 | Attribute | Type | Shape | Description |
 |-----------|------|-------|-------------|
 | `.obs['sample_id']` | categorical | $(n_\text{ref},)$ | Sample identifier |
-| `.obsm['spatial']` | float32 ndarray | $(n_\text{ref},\ 2)$ | Positions the features were read at, in the **target modality's** coordinate frame, not the reference's own frame. See each mode below |
-| `.uns['registration_type']` | str | - | The mode that produced the file; the cache is only reused when this matches the configured `registration_type` |
+| `.obsm['spatial']` | float32 ndarray | $(n_\text{ref},\ 2)$ | The reference coordinates in the **target modality's** coordinate frame (`obsm['{target}_spatial']` of the aligned reference), not the reference's own frame |
+| `.uns['registration_type']` | str | - | The mode that produced the file |
+| `.uns['focus_registration_fingerprint']` | str | - | SHA-256 fingerprint of the inputs and settings the file was computed from; the cached file is reused only when it matches |
+| `.uns['focus_registration_geometry']` | dict | - | `transform` (`identity`, `translation`, `homography` or `local_affine`: the alignment map recovered between the two reference frames), `lattice` (`hexagonal`, `square`, `rectangular`, `oblique` or `irregular`), `footprint` (`ellipse` or `rectangle`) and `footprint_angle` (radians). In the merged file this is a `dict` keyed by `sample_id` |
 
 In the merged file, `.obs_names` are rewritten as `{sample_id}_{row_index}`.
+
+Every mode reads the footprint from `.uns['spot_size']` of the **anchor** (aligned reference) AnnData, in the units of the anchor's `.obsm['spatial']`, and evaluates it in that frame: target positions are mapped back through the alignment map. The footprint is an ellipse inscribed in $s_x \times s_y$ on a hexagonal anchor lattice and a rectangle $s_x \times s_y$ along the lattice axes otherwise; a target element belongs to it when its centre lies inside. A missing `spot_size` falls back to `[1.0, 1.0]`. See [Registration Methods §1](../scientific/registration_methods.md#1-objective).
 
 ### Feature extraction registration (`feature_extraction`)
 
 | Attribute | Type | Shape | Description |
 |-----------|------|-------|-------------|
-| `.X` | float32 ndarray (dense) | $(n_\text{ref},\ n_\text{dims})$ | Patch embeddings (1536-dim for Prov-GigaPath). Rows whose patch was classified as background are all-zero |
-| `.obsm['spatial']` | float32 ndarray | $(n_\text{ref},\ 2)$ | The **actual patch centres** in image pixel coordinates. Patch origins are clamped so each patch fits inside the image, so a centre near a border differs from the anchor coordinate that was requested |
+| `.X` | float32 ndarray (dense) | $(n_\text{ref},\ n_\text{dims})$ | One Prov-GigaPath CLS embedding per reference spot, restricted to the image tokens inside its footprint (1536-dim). Rows whose footprint holds only background, or lies outside the image, are all-zero |
+| `.obsm['spatial']` | float32 ndarray | $(n_\text{ref},\ 2)$ | Reference coordinates in full-resolution image pixels |
+| `.uns['focus_registration_geometry']` | dict | - | Also records `encoder` (model id), `encoded_level` (pyramid level encoded) and, when the pixel size is known, `encoded_um_per_px` |
 | `.var_names` | Index | $(n_\text{dims},)$ | Positional strings `"0" … "n_dims-1"`; the embedding has no feature metadata |
 
 No `.layers` are written.
@@ -116,7 +131,7 @@ No `.layers` are written.
 | `.var` / `.var_names` | DataFrame / Index | $(n_\text{features},)$ | Copied from the target modality (m/z values or gene names) |
 | `.layers['…']` | float32 ndarray (dense) | $(n_\text{ref},\ n_\text{features})$ | Every target layer, interpolated with the same kernel |
 
-The footprint and the kernel come from `.uns['spot_size']` of the **anchor** (aligned reference) AnnData, not from the target's. The footprint is the rectangle $s_x \times s_y$ centred on the anchor, and the Gaussian bandwidth is $\sigma = \sqrt{s_x s_y}/2$. A missing `spot_size` falls back to `[1.0, 1.0]`.
+The Gaussian bandwidth is $\sigma = \sqrt{s_x s_y}/2$ on anchor-frame distances.
 
 ### Spot aggregation registration (`spot_aggregation`)
 
@@ -134,7 +149,7 @@ Same footprint rule and `spot_size` source as `spot_interpolation`; no kernel an
 | Attribute | Type | Shape | Description |
 |-----------|------|-------|-------------|
 | `.X` | float32 ndarray (dense) | $(n_\text{ref},\ n_\text{channels})$ | Gaussian-weighted average of the Raman pixels inside each anchor footprint, using the same kernel as `spot_interpolation`. Anchors with no pixel inside are all-zero |
-| `.obsm['spatial']` | float32 ndarray | $(n_\text{ref},\ 2)$ | Anchor coordinates in the Raman image's pixel frame |
+| `.obsm['spatial']` | float32 ndarray | $(n_\text{ref},\ 2)$ | Anchor coordinates in the Raman image's full-resolution pixel frame; pixel $(\text{col}, \text{row})$ is the point $(\text{col}+0.5, \text{row}+0.5)$ |
 | `.var_names` | Index | $(n_\text{channels},)$ | Channel names from the OME-XML, falling back to `Channel_0 … Channel_{C-1}` |
 
 No `.layers` are written.

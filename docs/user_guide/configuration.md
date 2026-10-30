@@ -80,7 +80,7 @@ The example below covers all three supported modality types and uses every avail
         "force_recomputing": false
       },
       "registration_settings": {
-        "patch_size": 224,
+        "background_color": "white",
         "force_recomputing": false
       },
       "registration_type": "feature_extraction",
@@ -196,7 +196,7 @@ The computational method used to map this modality's features onto the reference
 | `"spot_interpolation"` | Gaussian-weighted average of the spot-based data in each anchor footprint. Runs on CPU. | `msi`, `st` |
 | `"spot_aggregation"` | Equal-weight **sum** of the spot-based data in each anchor footprint (no normalization); accumulates signal for subcellular-resolution data (e.g. Visium HD). Runs on CPU. | `msi`, `st` |
 | `"raman_pixel_interpolation"` | Gaussian-weighted interpolation over the hyperspectral OME-TIFF pixels, each pixel acting as a spot. Runs on CPU. | `raman` |
-| `"feature_extraction"` | Prov-GigaPath patch embeddings (deep learning). **Only for H&E-stained brightfield RGB images**: the model is pretrained on H&E tiles and FOCUS does not check the stain, so other image types yield embeddings that carry no morphological meaning; use `"none"` for those. Requires an NVIDIA GPU and a HuggingFace token. | `microscopy_image` |
+| `"feature_extraction"` | One Prov-GigaPath embedding (deep learning) per reference spot, restricted to the image inside its footprint. **Only for H&E-stained brightfield RGB images**: the model is pretrained on H&E tiles and FOCUS does not check the stain, so other image types yield embeddings that carry no morphological meaning; use `"none"` for those. Requires a HuggingFace token; runs on an NVIDIA GPU when available, otherwise on the CPU (impractically slow for real images). | `microscopy_image` |
 
 ### `processing_settings` _(required, object)_
 
@@ -204,7 +204,7 @@ Modality-specific preprocessing parameters. See the per-type sections below.
 
 ### `registration_settings` _(optional, object, default: `{}`)_
 
-Additional settings for the chosen registration method. May be an empty object when `registration_type` is `"none"`.
+Additional settings for the chosen registration method. May be an empty object when `registration_type` is `"none"`. Every method accepts `force_recomputing`; `feature_extraction` also accepts `background_color` (`"white"` or `"black"`). See [Configuration Fields](../configuration/config_fields.md#registration-settings).
 
 ---
 

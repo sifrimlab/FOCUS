@@ -6,9 +6,13 @@ Implementation reference for `focus/preprocessing/microscopy_image.py`.
 while processing a sample are caught, printed as `Error processing sample <id>: <error>`, and the
 loop moves to the next sample.
 
-When the output OME-TIFF is present and `force_recomputing` is false, `process_image()` prints
-`Processed image already exists. Using cached results.` and returns the existing output path.
-There are no intermediate caches, so this is the only reuse point.
+FOCUS design choice: the output is reused by content fingerprint. `process_image()` computes the
+SHA-256 fingerprint of the method version (`microscopy-1`), the source file (its size and the
+SHA-256 of its first and last 8 MiB, or of the whole file up to 16 MiB), the sample and modality
+names, every processing setting, the internal detection and pyramid constants, and the versions of
+NumPy, OpenCV, scikit-image, SciPy and tifffile. When the output OME-TIFF carries that fingerprint
+(§5) and `force_recomputing` is false, it is reused as is. An output with another fingerprint, or
+without one, is regenerated. There are no intermediate caches, so this is the only reuse point.
 
 ---
 
@@ -185,6 +189,11 @@ full-resolution coordinates), expanded by `crop_margin` (default 250 px) and cla
 A mask with no foreground raises
 `ValueError("The image appears to be entirely background; cannot crop.")`.
 
+The crop origin \((x_{\min}, y_{\min})\), in source-image pixels, is recorded in the output as the
+crop offset (§5); it is \((0, 0)\) when `crop_to_tissue` is false. Pre-aligned coordinates, which are
+given in the source image's pixel frame, are shifted by it during
+[alignment](alignment_methods.md#pre_aligned).
+
 Because the mask may come from a downsampled proxy, the bounding box carries an additional boundary
 tolerance of at most one proxy-resolution pixel (i.e. up to `1/scale` full-resolution pixels, where
 `scale` is the detection downsample factor from §3) on top of `crop_margin`.
@@ -218,7 +227,37 @@ Encoding:
 
 Compression is zlib with a predictor matched to the storage dtype (3 for `float32`, 2 for integers).
 Levels are separate top-level IFDs rather than SubIFDs; the OME-XML built with `ome_types` lists one
-`Image` per level (`ResolutionLevel_0 …`) and is written into the description of the first IFD only.
+`Image` per level (`ResolutionLevel_0 …`) and is written into the description of the first IFD only,
+as 7-bit ASCII (non-ASCII characters such as µ become XML character references).
+
+Pixel size. Preprocessing does not resample level 0, so its pixel size is the source's. It is read
+from the source file metadata: OME `PhysicalSizeX/Y` with unit, the Aperio `MPP` field of an SVS
+description, the ImageJ unit with the resolution tags, the TIFF `XResolution`/`YResolution` tags with
+an inch or centimetre `ResolutionUnit`, the resolution tags of the chosen qpTIFF level, the CZI
+`Scaling/Items/Distance` values (metres), or the voxel size of an ND2 file whose X and Y axes are
+calibrated. Values outside 0.01 to 100 µm per pixel are treated as placeholders (e.g. a 72 or 300 dpi
+default) and ignored. When a value is found, every level's `Pixels` element carries
+`PhysicalSizeX/Y` in µm, the level-0 value scaled by the measured size ratio \(W_0/W_\ell\),
+\(H_0/H_\ell\). [Feature extraction](registration_methods.md#21-encoding-scale) uses it to choose the
+encoded level.
+
+Provenance. The OME-XML holds a `MapAnnotation` (namespace `focus`) with string values:
+
+- `focus_preprocessing_fingerprint`: the fingerprint described at the top of this page;
+- `focus_pixel_digest`: SHA-256 over the level-0 planes as written (dtype, shape and bytes of each
+  plane, in IFD order); downstream caches identify the image by it;
+- `focus_crop_offset`: the crop offset of §4, `"x,y"`;
+- `focus_method`: the method version;
+- `focus_pixel_size_source`: `ome`, `aperio`, `imagej`, `tiff_resolution`, `czi`, `nd2` or `none`;
+- `focus_superseded_signature`: written when the output being replaced has the same level-0 pixel
+  digest as the new one (an output without a stored digest is digested from its pixels). It holds
+  the replaced file's path, size and modification time (or the value that file already carried), so
+  an alignment keyed on the replaced file stays valid (see
+  [alignment caching](alignment_methods.md#7-caching-semantics)). When the pixels differ, a warning
+  reports that alignments made on the previous image must be redone.
+
+The file is written to a temporary sibling and renamed into place, so an interrupted run never
+leaves a truncated output.
 
 ---
 

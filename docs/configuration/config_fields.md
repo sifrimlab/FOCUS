@@ -414,19 +414,18 @@ See [Registration](../pipeline/registration.md#feature_extraction).
 
 | Field | Type | Default |
 |---|---|---|
-| `patch_size` | int | `224` |
 | `background_color` | string | `"white"` |
 | `force_recomputing` | bool | `false` |
 
-- `patch_size`: side length in pixels of the patch cut around each anchor spot. Prov-GigaPath expects 224.
-- `background_color`: `"white"` or `"black"`. This is the colour counted by the background test; a patch whose pixels match it in at least 99% of positions is skipped and stored as an all-zero embedding. Set it to the `background_color` used in the modality's `processing_settings`.
-- `force_recomputing`: recompute even when a valid cached registration exists.
+- `background_color`: `"white"` or `"black"`. This is the colour counted by the background test: an encoder token whose pixels match it in at least 99% of positions is never read, and a reference spot whose footprint holds only such tokens is stored as an all-zero embedding. Set it to the `background_color` used in the modality's `processing_settings`.
+- `force_recomputing`: recompute even when the cached registration matches its inputs.
+
+The encoder window and the encoded pyramid level are not settings: the window is the encoder's input size and the level is the one closest to 0.5 µm per pixel. A `patch_size` key is ignored with a warning.
 
 Example:
 
 ```json
 "registration_settings": {
-  "patch_size": 224,
   "background_color": "white",
   "force_recomputing": false
 }
@@ -573,7 +572,6 @@ Example:
         "force_recomputing": false
       },
       "registration_settings": {
-        "patch_size": 224,
         "background_color": "white",
         "force_recomputing": false
       }
@@ -589,6 +587,6 @@ Example:
 - `dataset_path` exists and is readable/writable.
 - `reference_modality` matches one declared modality `name`.
 - Every sample directory contains every declared modality subdirectory.
-- If `registration_type: "feature_extraction"` is used, `huggingface_token` is set and a CUDA GPU is available.
+- If `registration_type: "feature_extraction"` is used, `huggingface_token` is set; a CUDA GPU is strongly recommended (the CPU fallback is impractically slow for real images).
 - `alignment_strategy: "pre_aligned"` is only used where modalities are already co-registered.
 - `spatial_annotations.file_type` is `"geojson"` when annotations are enabled.
