@@ -250,8 +250,9 @@ When samples are built by the pipeline rather than constructed directly, these t
 
 - `ion_modes`: list of `MsiIonMode` values available in this sample
 - `foreground_mask`: boolean array indicating tissue vs. background spots
-- `recalibration_reference`: reference m/z vector(s) for mass recalibration
-- `min_intensity_threshold`: intensity threshold for recalibration
+- `recalibration_reference`: reference m/z per ion mode for mass recalibration
+- `recalibration_model`: per-ion-mode `MsiRecalibration` (per-spectrum ppm offset and slope), set on the first `load_payload` with references
+- `min_intensity_threshold`: minimum intensity of a calibrant peak
 
 ---
 
@@ -271,10 +272,12 @@ class MsiDataset(BaseDataset):
         mass_tolerance: int = 10,
         frequency_threshold: float = 0.01,
         intensity_normalization: MsiIntensityNormalization = MsiIntensityNormalization.NONE,
-        recalibration_reference: dict | None = None,
+        recalibration_reference: dict | str | None = None,
         min_intensity_threshold: float = 10000.0,
+        internal_standard_mz: dict | str | None = None,
         detect_background: bool = False,
         sample_type: str = MsiSampleType.TISSUE,  # "tissue"
+        resolution: str = SpotResolution.STANDARD,  # "standard"
         force_recomputing: bool = False,
         step_reporter=None,
     ) -> dict[str, str]:
@@ -286,12 +289,14 @@ class MsiDataset(BaseDataset):
 | `lipid_annotation_db` | `str` or `None` | `None` | Path to a CSV or JSON lipid annotation database. Required columns: `db_name`, `ionized_mass`, `ion_mode`. |
 | `mass_tolerance` | `int` | `10` | Adaptive mass tolerance in ppm for m/z consensus clustering. Must be a Python `int`. A float raises `ValueError`. |
 | `frequency_threshold` | `float` | `0.01` | Minimum fraction of spectra in which an m/z must appear to be included in the reference grid. |
-| `intensity_normalization` | `MsiIntensityNormalization` | `"none"` | Normalization method (applied per sample and per ion mode): `"tic"`, `"log"`, `"clr"`, `"tic_mean_scaled"`, or `"none"`. `"tic"` makes each spectrum sum to 1; `"tic_mean_scaled"` rescales each spectrum to the mean total ion current over that sample's spots for that ion mode, preserving absolute scale (not comparable across samples). |
-| `recalibration_reference` | `dict` or `None` | `None` | Per-ion-mode reference m/z vectors for recalibration. |
-| `min_intensity_threshold` | `float` | `10000.0` | Minimum peak intensity for recalibration peak selection. |
-| `detect_background` | `bool` | `False` | If `True` **and** `lipid_annotation_db` is set, GMM-based (or Otsu, for `microgrid`) tissue/background classification is run. Without a database the step is silently skipped and all spots are marked foreground. |
+| `intensity_normalization` | `MsiIntensityNormalization` | `"none"` | Normalization method (applied per sample and per ion mode): `"tic"`, `"log"`, `"clr"`, `"tic_mean_scaled"`, `"median"`, `"internal_standard"`, or `"none"`. `"tic"` makes each spectrum sum to 1; `"tic_mean_scaled"` rescales each spectrum to the mean total ion current over that sample's spots for that ion mode, preserving absolute scale (not comparable across samples); `"median"` divides each spectrum by the median of its nonzero features; `"internal_standard"` divides each spectrum by the summed intensity of the internal standards. |
+| `recalibration_reference` | `dict`, `str` or `None` | `None` | Per-ion-mode reference m/z values for recalibration (`{"pos": [...]}`, arrays accepted, or `"pos: 760.585; neg: 885.550"`). Selected from the dataset when `None`. |
+| `min_intensity_threshold` | `float` | `10000.0` | Minimum intensity of a calibrant peak during recalibration. |
+| `internal_standard_mz` | `dict`, `str` or `None` | `None` | m/z of sprayed internal standards per ion mode (same forms). Always used as recalibration references; required by `"internal_standard"`. |
+| `detect_background` | `bool` | `False` | If `True` **and** `lipid_annotation_db` is set, GMM-based (or local-outlier detection, for `microgrid`) tissue/background classification is run. Without a database the step is silently skipped and all spots are marked foreground. |
 | `sample_type` | `str` | `"tissue"` | `"tissue"` or `"microgrid"`. Affects background detection strategy. |
-| `force_recomputing` | `bool` | `False` | Re-run even if output already exists. |
+| `resolution` | `str` | `"standard"` | Clustering preset for the alignment colours: `"standard"` or `"sub_cellular"`. |
+| `force_recomputing` | `bool` | `False` | Re-run even if output with the current fingerprint (inputs, settings, method version) already exists. |
 
 Returns `dict[str, str]` with keys for each sample ID plus `"merged"`.
 

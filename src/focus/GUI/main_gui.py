@@ -544,6 +544,7 @@ def _build_schema() -> dict:
 					"default": MsiIntensityNormalization.NONE,
 				},
 				MsiPreprocessingParams.RECALIBRATION_REFERENCE: {"type": "string", "default": None, "nullable": True},
+				MsiPreprocessingParams.INTERNAL_STANDARD_MZ: {"type": "string", "default": None, "nullable": True},
 				MsiPreprocessingParams.MIN_INTENSITY_THRESHOLD: {"type": "float", "default": 1e4},
 				MsiPreprocessingParams.DETECT_BACKGROUND: {"type": "bool", "default": False},
 				MsiPreprocessingParams.SAMPLE_TYPE: {"type": "enum", "options": MsiSampleType.list(), "default": MsiSampleType.TISSUE},

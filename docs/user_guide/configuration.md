@@ -234,11 +234,12 @@ Additional settings for the chosen registration method. May be an empty object w
     |-----------|------|-------------|
     | `mass_tolerance` | int | m/z clustering tolerance in ppm. Must be an integer. A float raises `ValueError`. Default `10`. |
     | `frequency_threshold` | float | Minimum fraction of the maximum cluster weight for an m/z to enter the per-sample backbone. Default `0.01`. |
-    | `intensity_normalization` | string | Normalization method (per sample and per ion mode): `"none"` (default), `"tic"`, `"log"`, `"clr"`, or `"tic_mean_scaled"` (rescales each spectrum to the mean total ion current over that sample's spots for that ion mode, preserving absolute scale; not comparable across samples). |
-    | `min_intensity_threshold` | float | Minimum *peak* intensity for a peak to be used when estimating m/z recalibration offsets. Does not mask or filter spots. Default `10000.0`. |
+    | `intensity_normalization` | string | Normalization method (per sample and per ion mode): `"none"` (default), `"tic"`, `"log"`, `"clr"`, `"tic_mean_scaled"` (rescales each spectrum to the mean total ion current over that sample's spots for that ion mode, preserving absolute scale; not comparable across samples), `"median"` (divides each spectrum by the median of its nonzero features), or `"internal_standard"` (divides each spectrum by the summed intensity of the internal standards; requires `internal_standard_mz`). |
+    | `min_intensity_threshold` | float | Minimum intensity of a calibrant peak during m/z recalibration. Does not mask or filter spots; lines and pixels without a calibrant above it are corrected from their neighbours. Default `10000.0`. |
     | `detect_background` | bool | Detect and flag off-tissue background spots in `obs["foreground"]` (all spots are still written). Only effective when `lipid_annotation_db` is also set. Default `false`. |
     | `sample_type` | string | Background-detection strategy: `"tissue"` (GMM + BIC, default) or `"microgrid"` (sparse cells on a background-dominated slide, detected as local outliers against a background ion model with median-filter background correction and a hysteresis threshold). |
-    | `recalibration_reference` | dict or null | Pre-computed per-ion-mode reference m/z arrays. Computed from the dataset when `null`. Default `null`. |
+    | `recalibration_reference` | dict, string or null | Per-ion-mode reference m/z values, as `{"pos": [760.585, 798.541]}` or `"pos: 760.585, 798.541; neg: 885.550"`. Selected from the dataset when `null`. Default `null`. |
+    | `internal_standard_mz` | dict, string or null | m/z of internal standards sprayed over the sections, per ion mode (same forms as `recalibration_reference`). Always used as recalibration references and required by `"internal_standard"` normalization. Default `null`. |
     | `lipid_annotation_db` | string or null | Path to a CSV or JSON lipid database with columns `db_name`, `ionized_mass`, `ion_mode`. Default `null`. |
     | `force_recomputing` | bool | Reprocess even if output already exists. Default `false`. |
 

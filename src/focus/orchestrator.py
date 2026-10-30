@@ -81,7 +81,8 @@ def _run_stages(config: dict, reporter: StepReporter) -> dict:
 			mod_name = modality[ModalityParameters.NAME]
 			mod_type = modality[ModalityParameters.TYPE]
 			merged_path = MODALITY_PREPROCESSING_MERGED(dataset_path, mod_name, "h5ad")
-			before = cached_fingerprint(merged_path) if mod_type == ModalityType.ST else None
+			fingerprinted = mod_type in (ModalityType.ST, ModalityType.MSI)
+			before = cached_fingerprint(merged_path) if fingerprinted else None
 			with reporter.modality(mod_name, mod_idx, total_modalities):
 				modality_files[mod_name] = preprocess_modality(
 					path=dataset_path,
@@ -92,7 +93,7 @@ def _run_stages(config: dict, reporter: StepReporter) -> dict:
 					ignore_samples=config.get(ConfigParameters.IGNORE_SAMPLES, []),
 				)
 
-			if mod_type == ModalityType.ST and before != cached_fingerprint(merged_path):
+			if fingerprinted and before != cached_fingerprint(merged_path):
 				changed_preprocessing.add(mod_name)
 
 	# Collect preprocessing outputs — per_modality groups per-sample files by modality name

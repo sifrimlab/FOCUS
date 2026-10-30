@@ -289,17 +289,19 @@ Example:
 | `detect_background` | bool | `false` |
 | `sample_type` | string | `"tissue"` |
 | `resolution` | string | `"standard"` |
-| `recalibration_reference` | dict or null | `null` |
+| `recalibration_reference` | dict, string or null | `null` |
+| `internal_standard_mz` | dict, string or null | `null` |
 | `lipid_annotation_db` | string or null | `null` |
 | `force_recomputing` | bool | `false` |
 
-- `intensity_normalization` allowed values: `"none"`, `"tic"`, `"log"`, `"clr"`, `"tic_mean_scaled"` (all applied per sample and per ion mode). `"tic"` makes each spectrum sum to 1; `"tic_mean_scaled"` rescales each spectrum to the mean total ion current over that sample's spots for that ion mode, preserving absolute intensity scale (values are therefore not comparable across samples).
+- `intensity_normalization` allowed values: `"none"`, `"tic"`, `"log"`, `"clr"`, `"tic_mean_scaled"`, `"median"`, `"internal_standard"` (all applied per sample and per ion mode). `"tic"` makes each spectrum sum to 1; `"tic_mean_scaled"` rescales each spectrum to the mean total ion current over that sample's spots for that ion mode, preserving absolute intensity scale (values are therefore not comparable across samples); `"median"` divides each spectrum by the median of its nonzero features; `"internal_standard"` divides each spectrum by the summed intensity of the internal standards and requires `internal_standard_mz`.
+- `recalibration_reference` and `internal_standard_mz`: per-ion-mode m/z values, as a mapping (`{"pos": [760.585, 798.541], "neg": [885.550]}`) or as the string `"pos: 760.585, 798.541; neg: 885.550"`. `recalibration_reference` replaces the automatic reference selection; `internal_standard_mz` lists sprayed internal standards, which are always used as recalibration references.
 - `sample_type` allowed values: `"tissue"`, `"microgrid"`. `"tissue"` separates a contiguous section from background with a GMM + BIC model and morphological cleanup. `"microgrid"` treats the slide as a dominant background with sparse cells of one or a few spots, and detects cells as local outliers against a background ion model.
 - `resolution` allowed values: `"standard"` (default, multicellular pixels), `"sub_cellular"` (weak high-resolution pixels). It sets the spatial neighbourhood of the alignment clustering (1 or 2 rings).
 - `lipid_annotation_db`: path to a CSV or JSON file with columns `db_name`, `ionized_mass`, `ion_mode`.
 - `detect_background` only takes effect when `lipid_annotation_db` is also set. Without a database the detection step is skipped and every spot is flagged foreground.
 - `mass_tolerance` must be an integer; a float value raises `ValueError` during processing.
-- `min_intensity_threshold` is the minimum *peak* intensity for a peak to count when estimating m/z recalibration offsets. It does not filter or mask spots.
+- `min_intensity_threshold` is the minimum intensity of a calibrant peak during m/z recalibration. It does not filter or mask spots.
 
 The example below enables TIC normalization and background detection explicitly; these are not the defaults.
 

@@ -118,17 +118,20 @@ The MSI pipeline operates at the **dataset level**: all samples are processed to
      - No morphological cleanup. Components above 25 spots are logged as possible debris or matrix crystals and kept. When no cell is detected, every spot is marked foreground and a warning is printed
    - The foreground classification is stored as `obs["foreground"]`; all spots (including background) are included in the output and can be filtered downstream.
 
-3. **Recalibration Reference Selection**
-   - Every spectrum of every sample contributes. Each sample is reduced on arrival to a compact m/z occurrence histogram on a logarithmic grid and its raw peaks are released, so memory stays bounded by the mass range and tolerance rather than the spectrum count
-   - Candidates are the annotation-matched m/z when a `lipid_annotation_db` is configured, otherwise all m/z
-   - Histogram bins are grouped within `mass_tolerance` ppm (same weighted sliding window used for the m/z backbone), collapsing the many slightly different measurements of one calibrant into a single candidate
-   - For each ion mode, greedily select at least 5 candidates by descending score (occurrences × fraction of samples containing the candidate, ties broken by ascending m/z), adding more if needed until every sample is covered
-   - Alternatively, a user-supplied `recalibration_reference` dictionary can be passed directly, which skips this step entirely
+3. **Recalibration Reference Selection** (method and references: [MSI methods §4.1](../scientific/msi_methods.md#41-recalibration-reference-selection))
+   - Every spectrum of every sample contributes: the tissue spectra when background detection ran, all spectra otherwise. Each sample is reduced on arrival to a compact m/z occurrence histogram on a logarithmic grid and its raw peaks are released, so memory stays bounded by the mass range and tolerance rather than the spectrum count
+   - Histogram bins are grouped within `mass_tolerance` ppm (same weighted sliding window used for the m/z backbone), and each group is pooled with its neighbours within the calibrant search window (max(5 × `mass_tolerance`, 50) ppm), so one calibrant spread by drift counts as one candidate
+   - Candidates must be isolated: at most 10% of their occurrences may share the spectrum with a peak of at least 10% of their intensity within the search window
+   - For each ion mode, select at least 10 references: sprayed internal standards from `internal_standard_mz` first, then the best candidate (occurrences × fraction of samples covered, ties broken by ascending m/z) in each of 10 equal log-m/z segments, then by score, adding more if needed until every sample is covered. References are more than twice the search window apart
+   - When internal standards are observed, the references are moved onto the standards' mass scale
+   - Alternatively, a user-supplied `recalibration_reference` can be passed directly, which skips this step entirely
 
-4. **Per-Row m/z Recalibration** (per sample)
-   - For each reference m/z peak, find the highest-intensity peak within `mass_tolerance` in each spectrum
-   - Compute per-column (spatial row) mean offset between observed and reference m/z values
-   - Apply the row-wise offset to all m/z values in that row
+4. **Per-Spectrum m/z Recalibration** (per sample; [MSI methods §4.2](../scientific/msi_methods.md#42-per-spectrum-recalibration))
+   - Scan lines follow the imzML scan type (horizontal by default)
+   - Line level: match every reference within the search window, take the median ppm error per line and reference, fit an offset (and a slope in m/z when at least 3 references spanning 25% of their m/z range are matched), smooth over 5 lines and interpolate lines without calibrants
+   - Pixel level: match again within the search window centred on the line prediction, take each spectrum's median residual, smooth over the 3 x 3 pixel neighbourhood
+   - Correct every m/z as m / (1 + e(m) × 1e-6), with e(m) the spectrum's ppm error model; the same model serves the backbone and the intensity matrix
+   - Runs with or without a lipid annotation database; the applied correction is stored in `obs["recalibration_ppm_<mode>"]`
 
 5. **Per-Sample m/z Backbone Computation**
    - Pool all (recalibrated) m/z values of a sample, restricted to foreground spots only when background detection ran (see step 2), otherwise all spots
@@ -143,17 +146,19 @@ The MSI pipeline operates at the **dataset level**: all samples are processed to
    - Match each reference m/z to the database within `mass_tolerance` ppm
    - Store semicolon-separated matching `db_name` entries in `var["lipid_annotation"]` (or `"Unannotated"`)
 
-8. **Intensity Interpolation** (per sample, parallel)
-   - Rebin all spectra (including background spots) onto the global reference m/z grid
-   - Each original peak distributes its intensity to reference bins within `mass_tolerance` ppm using inverse-distance weighting
+8. **Intensity Binning** (per sample, parallel; [MSI methods §5](../scientific/msi_methods.md#5-intensity-binning-to-backbone))
+   - Bin all spectra (including background spots) onto the global reference m/z grid
+   - Each peak adds its whole intensity to the nearest reference feature within `mass_tolerance` ppm; peaks with no feature in reach are dropped
    - Produces a dense (N_spots × N_features) float32 matrix
 
-9. **Intensity Normalization** (applied independently per sample and per ion mode)
+9. **Intensity Normalization** (applied independently per sample and per ion mode; [MSI methods §6](../scientific/msi_methods.md#6-intensity-normalization))
    - `"tic"`: divide each spectrum by its total ion count (each spectrum sums to 1)
    - `"log"`: apply log(1 + x) transform
    - `"clr"`: sparsity-preserving centered log-ratio. Log-centers each spectrum over its nonzero entries only, leaving structural zeros at 0
    - `"tic_mean_scaled"`: rescale each spectrum to the mean total ion count over that sample's spots for that ion mode (each spectrum's total becomes the mean TIC). This is similar to `"tic"`, but it preserves an interpretable absolute intensity scale instead of forcing a sum of 1. The mean is per sample, so values are not comparable across samples
-   - `"none"`: keep raw interpolated intensities
+   - `"median"`: divide each spectrum by the median of its nonzero features
+   - `"internal_standard"`: divide each spectrum by the summed intensity of the internal standard features (`internal_standard_mz`)
+   - `"none"`: keep raw binned intensities
 
 10. **Per-Sample Cluster Labels** (used only to colour spots during alignment)
     - Samples above 250,000 spots are coarsened first: spots are grouped into k x k blocks of the acquisition raster, inferred from the coordinates (Voronoi supercells when no raster is found), all spots in a block are **summed** into one pseudo-spot, and the pseudo-spots are re-normalized so block occupancy washes out. Smaller samples are clustered spot by spot
@@ -164,6 +169,7 @@ The MSI pipeline operates at the **dataset level**: all samples are processed to
     - Each sample is saved separately (gzip compression)
     - All samples are concatenated on disk into a single merged h5ad (inner join on features, gzip compression)
     - Merged file's `uns["spot_size"]` updated to a per-sample dict
+    - Every file carries `uns["focus_preprocessing_fingerprint"]` (method version, settings, lipid database, inputs). A changed fingerprint rebuilds the dataset and re-runs alignment and registration of the modality
 
 **Parameters**:
 
@@ -171,9 +177,10 @@ The MSI pipeline operates at the **dataset level**: all samples are processed to
 |-----------|---------|-------------|
 | `mass_tolerance` | `10` | Mass tolerance in ppm for m/z clustering, recalibration, and annotation |
 | `frequency_threshold` | `0.01` | Minimum fraction of max cluster weight for backbone m/z inclusion |
-| `intensity_normalization` | `"none"` | Normalization method (per ion mode): `"tic"`, `"log"`, `"clr"`, `"tic_mean_scaled"`, or `"none"` |
-| `recalibration_reference` | `null` | User-supplied reference m/z dict per ion mode; auto-computed if null |
-| `min_intensity_threshold` | `10000.0` | Minimum intensity for a peak to be used in recalibration offset estimation |
+| `intensity_normalization` | `"none"` | Normalization method (per ion mode): `"tic"`, `"log"`, `"clr"`, `"tic_mean_scaled"`, `"median"`, `"internal_standard"`, or `"none"` |
+| `recalibration_reference` | `null` | User-supplied reference m/z per ion mode (`{"pos": [...]}` or `"pos: 760.585, 798.541; neg: 885.550"`); selected from the data if null |
+| `internal_standard_mz` | `null` | m/z of the sprayed internal standards per ion mode (same forms); always recalibration references, required by `"internal_standard"` normalization |
+| `min_intensity_threshold` | `10000.0` | Minimum intensity of a calibrant peak during recalibration |
 | `detect_background` | `false` | Run background detection to classify tissue vs background spots. Requires `lipid_annotation_db`; without it the step is skipped |
 | `sample_type` | `"tissue"` | Sample type for background detection: `"tissue"` (GMM + BIC, morphological cleanup) or `"microgrid"` (local-outlier detection of sparse cells) |
 | `resolution` | `"standard"` | Clustering preset for the alignment colours: `"standard"` (multicellular pixels) or `"sub_cellular"` (weak high-resolution pixels, wider spatial neighbourhood) |

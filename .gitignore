@@ -211,9 +211,6 @@ gui_src/**/dist/
 **/.DS_Store
 ._*
 
-# Graphify data
-graphify-out/
-
 # Claude Code
 CLAUDE.md
 .claude/

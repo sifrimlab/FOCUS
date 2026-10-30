@@ -114,6 +114,7 @@ class MsiMetadata(_AbstractEnum):
 	RASTER_COORDINATES = "raster_coordinates"
 	MZ_BINARY_METADATA = "mz_binary_metadata"
 	INTENSITIES_BINARY_METADATA = "intensities_binary_metadata"
+	LINE_AXIS = "line_axis"  # PIXEL_COORDINATES column indexing the scan lines (0: horizontal, 1: vertical)
 
 class MsiIonMode(_AbstractEnum):
 	POSITIVE = "pos"
@@ -179,6 +180,7 @@ class MsiPreprocessingParams(_AbstractEnum):
 	FREQUENCY_THRESHOLD = "frequency_threshold"
 	INTENSITY_NORMALIZATION = "intensity_normalization"
 	RECALIBRATION_REFERENCE = "recalibration_reference"
+	INTERNAL_STANDARD_MZ = "internal_standard_mz"
 	MIN_INTENSITY_THRESHOLD = "min_intensity_threshold"
 	DETECT_BACKGROUND = "detect_background"
 	SAMPLE_TYPE = "sample_type"
@@ -265,6 +267,8 @@ class MsiIntensityNormalization(_AbstractEnum):
 	LOG = "log"
 	CLR = "clr"
 	TIC_MEAN_SCALED = "tic_mean_scaled"
+	MEDIAN = "median"
+	INTERNAL_STANDARD = "internal_standard"
 	NONE = "none"
 
 class DecompositionMethod(_AbstractEnum):
@@ -294,6 +298,8 @@ DISPLAY_NAMES: dict[str, str] = {
 	MsiIntensityNormalization.LOG:  "Log",
 	MsiIntensityNormalization.CLR:  "CLR",
 	MsiIntensityNormalization.TIC_MEAN_SCALED: "TIC Mean Scaled",
+	MsiIntensityNormalization.MEDIAN: "Median",
+	MsiIntensityNormalization.INTERNAL_STANDARD: "Internal Standard",
 	MsiIntensityNormalization.NONE: "None",
 	# Background colour
 	SegmentationBackgroundColor.WHITE: "White",

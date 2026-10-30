@@ -8,7 +8,7 @@ from focus.constants import SegmentationBackgroundColor, RamanPreprocessingParam
 
 if __name__ == "__main__":
     PATH = "/mnt/data/lorenzo/FOCUS/p_LipidQMap/d_liver_VIB_Ghent/"
-    HF_TOKEN = "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"
+    HF_TOKEN = os.environ.get("HF_TOKEN")  # never commit tokens; export HF_TOKEN before running
 
     PROCESSED_MODALITIES = [ModalityType.MSI, ModalityType.MICROSCOPY_IMAGE]
     ALIGN = True
