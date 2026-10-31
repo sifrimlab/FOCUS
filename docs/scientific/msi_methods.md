@@ -245,12 +245,10 @@ intensity:
 n_b = \#\{\text{peaks in bin } b\},
 \qquad
 \sigma_b = \sum_{m \,\in\, b} m ,
-\qquad
-q_b = \#\{\text{crowded peaks in bin } b\},
 \]
 
 via `np.bincount` (a single linear pass, no sort), in blocks of at most \(2 \cdot 10^7\) peaks
-(`peak_histogram`). Crowded peaks are defined in §4.1.3. The representative mass of a bin is the exact
+(`peak_histogram`). The representative mass of a bin is the exact
 mean \(\sigma_b / n_b\) of the raw values that fell in it; the grid only indexes peaks, it never
 replaces a measured mass with a bin centre. The raw peaks are released immediately; what persists is
 the occupied bins with their statistics, and the number of spectra \(M\) of the sample. Retained
@@ -299,39 +297,27 @@ which are kept.
 
 #### 4.1.3 Isolation, scoring and selection
 
-Matching (§4.2) takes the most intense peak inside a search window of half-width
+Matching (§4.2) takes the most intense peak that passes the noise gate inside a search window of
+half-width
 
 \[
 W = \max(5\tau,\ 50)\ \text{ppm}
 \]
 
-around a reference. In the raw spectra drift can spread one ion wider than its feature range, so
-every feature \(j\) is measured over a search window: the window is placed by mean
-shift[^fukunaga1975][^cheng1995], starting at the feature's m/z and moving 5 times to the mean m/z
-of the peaks it holds. Peaks spread evenly about the centre, the background, then no longer pull it.
-The window reaches \(W\) ppm on either side but stops at the valleys toward the neighbouring
-features, so a neighbouring ion never enters it. The reference mass \(\mu_j\) is that mean, the
-sample's average position of the ion. With \(C_j\) the peaks in the window and \(|W_j|\) its width in
-bins, the score is the presence over the window, \(p_j = \min\bigl(1, (C_j - f_j |W_j|)/M\bigr)\): the
-share of spectra that can match the ion. FOCUS adaptation: a flat kernel, bounded by the valleys, and a
-fixed number of steps.
-
-A calibrant can be matched to another ion in two ways. A peak with a competitor at least as intense
-within \(W\) ppm in the same spectrum loses the match to it; such a peak is **crowded**
-(`crowded_peaks`, numba), and \(s_j\) is the crowded share of the peaks in the feature's range. The
-test is made per spectrum: m/z drift spreads one calibrant over neighbouring masses across spectra,
-but never puts two copies of it into one spectrum, so drift alone never makes a calibrant crowded.
-And in a spectrum without the calibrant, another ion of the window is matched; with \(o_j\) the summed
-presence of the other features within \(W\) ppm (at most 1), taken as independent of the calibrant's,
-the expected share of the matches that go to another ion is
-
-\[
-\frac{p_j s_j + (1 - p_j)\, o_j}{p_j + (1 - p_j)\, o_j} .
-\]
-
-A feature is **isolated** when this share is at most 10 %. FOCUS design choice: in dense spectra most
-ions have neighbours within \(W\), and an ion that wins its window in nearly every spectrum is still a
-sound calibrant; what matters is how often matching takes something else.
+around a reference. What makes a good calibrant is therefore how this matching behaves on it, and
+the selection measures that directly: the matching is replayed on the sample's spectra with each
+candidate as a reference (`_replay_matching`). The candidates are the 1,000 features holding the most
+peaks, plus the feature nearest each internal standard. For candidate \(j\), the window is centred on
+the feature, and in each spectrum the match is a **hit** when it lies within the feature itself,
+between the valleys toward its neighbouring features (so drift that spreads the ion wider than its
+range is still a hit), and a **miss** when it lies elsewhere in the window: another ion was taken,
+because a competitor outshone the calibrant or because the calibrant was absent. With \(h_j\) hits
+and \(x_j\) misses over the \(M\) spectra, the candidate is **isolated** when
+\(x_j \le 0.1\,(h_j + x_j)\), its score is \(h_j / M\), the share of spectra in which matching finds
+it, and its reference mass \(\mu_j\) is the mean m/z of its hits, the sample's average position of what
+matching finds. FOCUS design choice: in dense spectra most ions have neighbours within \(W\), and an
+ion that wins its window in nearly every spectrum is still a sound calibrant; replaying the matching
+measures how often it wins without a model of intensities, crowding or co-occurrence.
 
 Features are ordered by descending score with **ascending \(\mu_j\) as tie-break** (a `lexsort`,
 giving a total order). Two chosen references are always more than \(2W\) ppm apart, so their search
@@ -339,7 +325,7 @@ windows never overlap and no peak can match two references. Selection, with \(N_
 (hard-coded):
 
 1. Internal standards (`internal_standard_mz`, when set): the feature nearest each standard mass
-   within \(W\), regardless of isolation. A standard with no feature in reach is reported as not
+   within \(W\), regardless of isolation, at the mean m/z of its hits. A standard with no feature in reach is reported as not
    observed and skipped.
 2. Pool: up to \(20 N_\text{ref}\) isolated features in score order, each scoring at least 0.1 times
    the best isolated feature. The score floor keeps rare peaks out of the pool.
@@ -731,8 +717,6 @@ the stored references and backbone, and only the remaining samples are processed
 [^dunn1961]: Dunn OJ. Multiple comparisons among means. *J Am Stat Assoc* 56:52-64 (1961). [doi:10.1080/01621459.1961.10482090](https://doi.org/10.1080/01621459.1961.10482090)
 [^zhang2008]: Zhang Y, Liu T, Meyer CA, et al. Model-based analysis of ChIP-Seq (MACS). *Genome Biol* 9:R137 (2008). [doi:10.1186/gb-2008-9-9-r137](https://doi.org/10.1186/gb-2008-9-9-r137). Peak significance against a local Poisson background rate.
 [^virtanen2020]: Virtanen P, Gommers R, Oliphant TE, et al. SciPy 1.0: fundamental algorithms for scientific computing in Python. *Nat Methods* 17:261-272 (2020). [doi:10.1038/s41592-019-0686-2](https://doi.org/10.1038/s41592-019-0686-2). Peak prominence as defined for `scipy.signal.peak_prominences`.
-[^fukunaga1975]: Fukunaga K, Hostetler L. The estimation of the gradient of a density function, with applications in pattern recognition. *IEEE Trans Inf Theory* 21:32-40 (1975). [doi:10.1109/TIT.1975.1055330](https://doi.org/10.1109/TIT.1975.1055330)
-[^cheng1995]: Cheng Y. Mean shift, mode seeking, and clustering. *IEEE Trans Pattern Anal Mach Intell* 17:790-799 (1995). [doi:10.1109/34.400568](https://doi.org/10.1109/34.400568)
 [^rousseeuw1993]: Rousseeuw PJ, Croux C. Alternatives to the median absolute deviation. *J Am Stat Assoc* 88:1273-1283 (1993). [doi:10.1080/01621459.1993.10476408](https://doi.org/10.1080/01621459.1993.10476408)
 [^tukey1977]: Tukey JW. *Exploratory Data Analysis*. Addison-Wesley, Reading, MA (1977).
 [^schramm2012]: Schramm T, Hester Z, Klinkert I, et al. imzML: a common data format for the flexible exchange and processing of mass spectrometry imaging data. *J Proteomics* 75:5106-5110 (2012). [doi:10.1016/j.jprot.2012.07.026](https://doi.org/10.1016/j.jprot.2012.07.026). Controlled-vocabulary terms from the imzML ontology (`imagingMS.obo`).
