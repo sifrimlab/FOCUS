@@ -211,28 +211,17 @@ calibrants from the data, instead of from an a priori list, avoids false calibra
 degrade the recalibration[^larocca2021]. FOCUS design choice: one set of references per sample.
 Recalibration corrects the mass shift within a sample, so each sample uses the ions its own spectra
 hold; a set shared by the dataset can be nearly absent from a sample of different composition, whose
-spectra then match no reference. The samples' mass scales are aligned afterwards (§4.1.4). The
-selection rules below (histogram, isolation, scoring, centring, spread, anchoring and alignment) are
-FOCUS design choices; none of them is taken from a published method.
+spectra then match no reference. The candidates are the sample's m/z features (§4.1.2), found by the
+same detection that builds the backbone (§4.3), and the samples' mass scales are aligned afterwards
+(§4.1.4). The selection rules (isolation, scoring, spread, anchoring and alignment) are FOCUS design
+choices; none of them is taken from a published method.
 
-**Signal peaks.** Selection and matching (§4.2) consider only the signal peaks of a spectrum: peaks
-whose intensity reaches \(\text{SNR} \cdot N_s\), with \(N_s = 1.4826 \cdot
-\operatorname{MAD}(I_s)\) the noise of spectrum \(s\) estimated from the intensities \(I_s\) of all
-its peaks (`noise_threshold`, `signal_peaks`). Peak detection against SNR times a per-spectrum MAD
-noise estimate is the MALDIquant rule[^gibb2012]. FOCUS adaptation: the noise is estimated from the
-centroid intensities of the spectrum instead of from the profile signal, and \(\text{SNR} = 5\)
-instead of MALDIquant's default 2, because the centroids of a noise-dominated spectrum are already
-local maxima of the noise and a factor of 2 keeps most of them. The threshold is relative to each
-spectrum, so it follows a loss of intensity (a degrading laser, a weak region, a different instrument
-setting) instead of failing below a fixed intensity. In dense spectra (thousands of centroids per
-spectrum, mostly noise) it also keeps the noise out of the counts below, where it would otherwise
-fill every m/z window and mask the calibrants.
+#### 4.1.1 Logarithmic histogram
 
-#### 4.1.1 Logarithmic reduction
-
-A calibrant is never recorded at exactly the same m/z twice, so candidates must be pooled within a
+A calibrant is never recorded at exactly the same m/z twice, so peaks must be pooled within a
 relative tolerance before they can be counted. Peaks are therefore indexed on a logarithmic grid.
-For tolerance \(\tau\) (ppm) and subdivision \(\beta=2\), the bin width in natural-log units is
+For tolerance \(\tau\) (ppm) and \(\beta = 10\) bins per tolerance, the bin width in natural-log units
+is
 
 \[
 w = \frac{\tau \cdot 10^{-6}}{\beta},
@@ -246,29 +235,68 @@ This is the natural grid for a *relative* tolerance: for \(m_1 < m_2\) within \(
 \ln m_2 - \ln m_1 = \ln\!\left(1 + \frac{m_2 - m_1}{m_1}\right) \approx \frac{m_2 - m_1}{m_1} \le \tau \cdot 10^{-6},
 \]
 
-so one uniform grid resolves the tolerance identically across the whole mass range, and two peaks
-within tolerance lie at most \(\beta\) bins apart. Bins are narrower than the tolerance, so the
-grouping in §4.1.3 determines what counts as one candidate. Boundary splits are resolved there.
+so one uniform grid resolves the tolerance identically across the whole mass range.
 
-Per sample and ion mode the reduction accumulates, over occupied bins only,
+Per sample and ion mode the histogram accumulates, over occupied bins only, every peak whatever its
+intensity:
 
 \[
-n_b = \#\{\text{signal peaks in bin } b\},
+n_b = \#\{\text{peaks in bin } b\},
 \qquad
 \sigma_b = \sum_{m \,\in\, b} m ,
 \qquad
-q_b = \#\{\text{crowded signal peaks in bin } b\},
+q_b = \#\{\text{crowded peaks in bin } b\},
 \]
 
-via `np.bincount` (a single linear pass, no sort), in blocks of at most \(2 \cdot 10^7\) peaks.
-Crowded peaks are defined in §4.1.2. The
-representative mass of a bin is the exact mean \(\sigma_b / n_b\) of the raw values that fell in it.
-The grid only indexes peaks; it never replaces a measured mass with a bin centre. The raw peaks are
-released immediately; what persists is the occupied bins with their statistics, and the number of
-spectra \(M\) of the sample. Retained memory is therefore \(O(\ln(m_{\max}/m_{\min})/w)\), i.e.
-bounded by the **mass span and tolerance**, and independent of the number of spectra.
+via `np.bincount` (a single linear pass, no sort), in blocks of at most \(2 \cdot 10^7\) peaks
+(`peak_histogram`). Crowded peaks are defined in §4.1.3. The representative mass of a bin is the exact
+mean \(\sigma_b / n_b\) of the raw values that fell in it; the grid only indexes peaks, it never
+replaces a measured mass with a bin centre. The raw peaks are released immediately; what persists is
+the occupied bins with their statistics, and the number of spectra \(M\) of the sample. Retained
+memory is therefore \(O(\ln(m_{\max}/m_{\min})/w)\), bounded by the **mass span and tolerance** and
+independent of the number of spectra.
 
-#### 4.1.2 Isolation
+#### 4.1.2 m/z features
+
+A real ion recurs at the same m/z across the spectra of a sample, while noise centroids fall at
+random m/z and form a background that varies slowly along the mass axis. A feature is therefore a
+maximum of the peak density that rises significantly above its local background (`find_features`).
+Peak intensity plays no part: an ion that recurs is a feature however weak it is, and noise is not,
+however many centroids a spectrum holds.
+
+1. **Density.** The counts are smoothed with a Gaussian kernel whose full width at half maximum is
+   \(\tau\): \(d_b = \sum_k G_\sigma(b - k)\, n_k\), with \(\sigma = \beta / (2\sqrt{2 \ln 2})\) bins.
+2. **Candidates** (`density_feature_ranges`). Every local maximum of \(d\) is a candidate \(j\). Its
+   range \(R_j\) extends on each side to the lowest point of \(d\) before the neighbouring maximum
+   (the valley), and at most \(\tau\) ppm (\(\beta\) bins) from its maximum.
+3. **Background.** Per bin, \(\lambda_j = \max(f_j, c_j)\). The floor \(f_j\) is the running
+   median[^tukey1977] of the peak counts in blocks of \(5\tau\), over \(50\tau\) on either side of the
+   candidate (21 blocks; \(\pm 500\) ppm at \(\tau = 10\)), divided by the block width; blocks beyond
+   the mass range are mirrored. The col \(c_j\) is the density at the valley toward each neighbouring
+   maximum higher than \(j\), the larger of the two, and 0 when no neighbour is higher: the base of
+   the topographic prominence of a peak, as in SciPy `peak_prominences`[^virtanen2020].
+4. **Test.** With \(N_j = \sum_{b \in R_j} n_b\), the candidate is a feature when \(N_j \ge 5\) and
+   \(P(X \ge N_j) < 10^{-6}\) for \(X \sim \text{Poisson}(\lambda_j |R_j|)\). Testing the count of a
+   pile-up against a Poisson background rate estimated from its surroundings is the peak test of
+   MACS[^zhang2008]. FOCUS adaptation: the background is the larger of a running-median floor and the
+   col toward a higher neighbour, instead of the largest of several fixed-window rates.
+5. **Merging.** Rejected candidates are removed and the ranges and cols recomputed, so the bins of a
+   rejected maximum join its neighbours, until every candidate passes.
+6. **Outputs.** A feature's m/z is the mean m/z of the peaks within \(\tau/2\) of its maximum (a
+   window symmetric about the maximum and clipped to the range, so a uniform background does not pull
+   it), and its presence is \(p_j = \min\bigl(1, (N_j - \lambda_j |R_j|) / M\bigr)\), the share of
+   spectra holding it above the background.
+
+FOCUS design choice, for the background: the floor follows the noise level of each mass region. The
+median ignores the ions of the window as long as they occupy fewer than half of its blocks, and blocks
+of \(5\tau\) hold enough noise peaks for their median not to fall below the mean, as the median of
+small Poisson counts does. The col keeps a small maximum on the flank of a large ion (a noise
+fluctuation, a drift tail) from becoming a feature, while the larger ion is measured against the
+floor, and two ions separated by a significant dip stay two features. Without noise the floor is 0
+and every ion recurring in at least 5 spectra is a feature; the frequency threshold (§4.3) decides
+which are kept.
+
+#### 4.1.3 Isolation, scoring and selection
 
 Matching (§4.2) takes the most intense peak inside a search window of half-width
 
@@ -276,65 +304,41 @@ Matching (§4.2) takes the most intense peak inside a search window of half-widt
 W = \max(5\tau,\ 50)\ \text{ppm}
 \]
 
-around a reference. A signal peak with a competitor in the same spectrum (another signal peak within
-\(W\) ppm whose intensity is at least 0.1 times its own) can lose that match to the competitor. Such a
-peak is
-**crowded** (`crowded_peaks`, numba). The test is made per spectrum: m/z drift spreads one calibrant
-over neighbouring masses across spectra, but never puts two copies of it into one spectrum, so drift
-alone never makes a calibrant crowded.
+around a reference. In the raw spectra drift can spread one ion wider than its feature range, so
+every feature \(j\) is measured over a search window: the window is placed by mean
+shift[^fukunaga1975][^cheng1995], starting at the feature's m/z and moving 5 times to the mean m/z
+of the peaks it holds. Peaks spread evenly about the centre, the background, then no longer pull it.
+The reference mass \(\mu_j\) is that mean, the sample's average position of the ion. With \(C_j\) the
+peaks in the window and \(|W_j|\) its width in bins, the score is the presence over the window,
+\(\min\bigl(1, (C_j - f_j |W_j|)/M\bigr)\): the share of spectra that can match the ion. FOCUS
+adaptation: a flat kernel of half-width \(W\) and a fixed number of steps.
 
-#### 4.1.3 Grouping, scoring and selection
+A peak with a competitor in the same spectrum (another peak within \(W\) ppm whose intensity is at
+least 0.1 times its own) can lose the match to the competitor. Such a peak is **crowded**
+(`crowded_peaks`, numba). The test is made per spectrum: m/z drift spreads one calibrant over
+neighbouring masses across spectra, but never puts two copies of it into one spectrum, so drift alone
+never makes a calibrant crowded. A feature is **isolated** when at most 10 % of the peaks in its range
+are crowded and no other feature with at least 0.1 times its presence lies within \(W\) ppm: a window
+that also holds another frequent ion, even in other spectra, can match that ion instead.
 
-The sample's per-mode histogram is grouped within \(\tau\) ppm by a weighted sliding window
-(`cluster_unique_mz_labels`): bins are visited in ascending mass and a bin joins the current group
-while it stays within \(\tau\) ppm of the group's running weighted centroid. A calibrant whose drift
-range exceeds \(\tau\) occupies several neighbouring groups, so every group \(g\), at mass
-\(\mu_g\), receives statistics pooled over its search window \(\mathcal{W}_g=\{h : |\mu_h-\mu_g| \le
-W \cdot 10^{-6}\, \mu_g\}\):
+Features are ordered by descending score with **ascending \(\mu_j\) as tie-break** (a `lexsort`,
+giving a total order). Two chosen references are always more than \(2W\) ppm apart, so their search
+windows never overlap and no peak can match two references. Selection, with \(N_\text{ref} = 10\)
+(hard-coded):
 
-\[
-C_g = \sum_{h \in \mathcal{W}_g} \sum_{b \in h} n_b ,
-\qquad
-\hat\mu_g = \frac{\sum_{h \in \mathcal{W}_g} \sum_{b \in h} \sigma_b}{C_g},
-\qquad
-Q_g = \sum_{h \in \mathcal{W}_g} \sum_{b \in h} q_b ,
-\]
-
-A group is **isolated** when \(Q_g \le 0.1\, C_g\), and is scored by its detection
-
-\[
-\text{score}_g = \min\Bigl(1,\ \frac{C_g}{M}\Bigr),
-\]
-
-the share of the sample's spectra with a signal peak in \(\mathcal{W}_g\). An isolated group holds at
-most about one such peak per spectrum; the cap bounds the others. FOCUS design choice: the pixel-level
-pass (§4.2) needs calibrants in most spectra, and an ion that is frequent in a few spectra only
-scores low.
-
-Groups are ordered by descending score with **ascending \(\mu_g\) as tie-break** (a `lexsort`,
-giving a total order). Two chosen groups are always more than \(2W\) ppm apart, so their search
-windows never overlap and no peak can match two references. Selection, with
-\(N_\text{ref} = 10\) (hard-coded):
-
-1. Internal standards (`internal_standard_mz`, when set): the group nearest each standard mass
-   within \(W\), regardless of isolation. A standard with no group in reach is reported as not
+1. Internal standards (`internal_standard_mz`, when set): the feature nearest each standard mass
+   within \(W\), regardless of isolation. A standard with no feature in reach is reported as not
    observed and skipped.
-2. Pool: up to \(20 N_\text{ref}\) isolated groups in score order, each scoring at least 0.1 times
-   the best isolated group. The score floor keeps rare (noise) peaks out of the pool.
+2. Pool: up to \(20 N_\text{ref}\) isolated features in score order, each scoring at least 0.1 times
+   the best isolated feature. The score floor keeps rare peaks out of the pool.
 3. Spread: the pool's \(\ln m\) span is cut into \(N_\text{ref}\) equal segments and the best pool
    member of each segment is taken, so the references cover the mass range.
 4. Fill from the pool in score order until \(N_\text{ref}\) references are chosen.
 
-Every window that holds a calibrant scores alike, so a selected group \(g\) can sit anywhere around
-the calibrant, and the tie-break on ascending \(\mu_g\) favours groups below it. Each selected group
-is therefore centred first: its centre is the heaviest group \(c(g) = \arg\max_{h \in \mathcal{W}_g}
-\sum_{b \in h} n_b\), and the reference is reported at \(\hat\mu_{c(g)}\), the mean of every
-occurrence within the search window around that centre: a lower-variance estimate of the calibrant
-mass than any single observation. The \(2W\) separation is measured between centres. These means carry the
-sample's average drift. When internal standards are observed, the references are moved onto the
-standards' mass scale. Internal calibration against known masses is the most effective correction of
-mass shift[^larocca2021], and sprayed standards cover the whole section[^vandenbosch2023]. With
-\(d_s = (\hat\mu_{g(s)} - m_s)/m_s \cdot 10^6\) the offset of standard \(s\) from its given mass
+When internal standards are observed, the references are moved onto the standards' mass scale.
+Internal calibration against known masses is the most effective correction of mass
+shift[^larocca2021], and sprayed standards cover the whole section[^vandenbosch2023]. With
+\(d_s = (\mu_{j(s)} - m_s)/m_s \cdot 10^6\) the offset of standard \(s\) from its given mass
 \(m_s\), every reference \(\mu\) is divided by \(1 + d(\mu)\cdot 10^{-6}\), where \(d\) is the
 least-squares line through the \((m_s, d_s)\) when at least two standards span 25 % of the reference
 m/z span, and \(\operatorname{median}_s d_s\) otherwise.
@@ -345,22 +349,24 @@ A sample's references sit at its own mean calibrant masses, so they carry its ca
 and recalibration (§4.2) maps the sample onto that scale. Samples acquired at different calibrations
 would keep their offsets, and one ion more than about \(\tau\) ppm apart in two samples becomes two
 backbone features (§4.3) instead of one. One constant ppm shift per sample and ion mode puts the
-references on a common scale (`mass_scale_shifts`). For samples \(s\) and \(t\) sharing at least 3
-references (one reference of each within \(W\) ppm), \(\delta_{st}\) is the median ppm difference of
-the shared references. The shifts \(c_s\) minimize
+references on a common scale (`mass_scale_shifts`). It is estimated from the samples' candidate
+pools (§4.1.3, up to 200 isolated ions each), which share more ions between samples than the 10
+references do. For samples \(s\) and \(t\) whose pools share at least 3 ions (one ion of each within
+\(W\) ppm), \(\delta_{st}\) is the median ppm difference of the shared ions. The shifts \(c_s\)
+minimize
 
 \[
 \sum_{(s,t)} k_{st}\,(c_s - c_t - \delta_{st})^2 ,
 \]
 
-with \(k_{st}\) the number of shared references, under \(\sum_s c_s = 0\) over each group of samples
+with \(k_{st}\) the number of shared ions, under \(\sum_s c_s = 0\) over each group of samples
 connected by such pairs, so the common scale is the samples' mean scale. Every reference \(\mu\) of
-sample \(s\) is then divided by \(1 + c_s \cdot 10^{-6}\). A sample sharing fewer than 3 references
-with every other sample keeps its own scale and is reported. When an interrupted run resumes, the
-cached samples' references are already on the common scale and hold \(c = 0\). When internal
-standards are configured, they anchor every sample that observes them and no alignment runs. FOCUS
-design choice: the median resists a reference matched to a different ion in the other sample, and
-the least-squares solution uses the agreement of all sample pairs at once.
+sample \(s\) is then divided by \(1 + c_s \cdot 10^{-6}\). A sample sharing fewer than 3 ions with
+every other sample keeps its own scale and is reported. When an interrupted run resumes, the cached
+samples' references are already on the common scale and hold \(c = 0\). When internal standards are
+configured, they anchor every sample that observes them and no alignment runs. FOCUS design choice:
+the median resists an ion paired with a different ion in the other sample, and the least-squares
+solution uses the agreement of all sample pairs at once.
 
 The references of each sample, after alignment, are stored in its `.uns['recalibration_reference']`
 (per sample, then per ion mode, in the merged file). The per-spectrum correction derived from them is
@@ -372,12 +378,11 @@ Recalibration (`estimate_recalibration`) gives every spectrum its own m/z correc
 for MSI[^mccann2021][^larocca2021]. Each spectrum is aligned to the same reference peaks by a
 per-spectrum warping function, the approach of MALDIquant `determineWarpingFunctions`[^gibb2012].
 The matching rule is MALDIquant's as well: a reference matches the most intense peak inside a window
-proportional to the reference mass[^gibb2012]; FOCUS also requires that peak to be a signal peak of
-its spectrum (§4.1). FOCUS adaptation: the error model is linear in m/z, in ppm, and is
-estimated in two levels, scan line then pixel. FOCUS design choice, for this split: pooling a whole
-scan line gives many matches per estimate, so the line estimate is robust to the occasional false
-match, and the pixel pass, centred on the line prediction, then follows the drift where it changes
-along the line.
+proportional to the reference mass[^gibb2012]; FOCUS also requires that peak to pass the noise gate
+below. FOCUS adaptation: the error model is linear in m/z, in ppm, and is estimated in two levels,
+scan line then pixel. FOCUS design choice, for this split: pooling a whole scan line gives many
+matches per estimate, so the line estimate is robust to the occasional false match, and the pixel
+pass, centred on the line prediction, then follows the drift where it changes along the line.
 
 With references \(\mu_1 < \dots < \mu_R\), \(\bar\mu\) their mean, and \(l(i)\) the scan line of
 spectrum \(i\), the ppm error of a match is
@@ -386,6 +391,21 @@ spectrum \(i\), the ppm error of a match is
 e_{ij} = \frac{m_{ij} - \mu_j}{\mu_j} \cdot 10^{6}.
 \]
 
+**Noise gate** (`noise_threshold`, `recurrence_map`). A match must reach \(5 \cdot N_i\), with
+\(N_i = 1.4826 \cdot \operatorname{MAD}\) of the intensities of the noise peaks of spectrum \(i\): its
+peaks outside the sample's recurrent m/z ranges, the ranges of the sample's own features (§4.1.2)
+widened by \(W\) on either side so drift does not move an ion out of them. A spectrum with fewer than
+10 noise peaks has no gate. A noise estimate from the MAD of the signal is MALDIquant
+`estimateNoise`, and peaks are kept above a multiple of it[^gibb2012]. FOCUS adaptation: the noise is
+estimated from the centroids that do not recur instead of from the profile signal, and the multiple
+is 5 instead of MALDIquant's default 2, because the centroids of noise are already local maxima of
+it. FOCUS design choice: in a spectrum of mostly real ions, the MAD of all its peaks measures the
+spread of the ions themselves, and a threshold on it removes most of them; the peaks that do not recur
+are noise by the definition of §4.1.2, so their MAD measures the noise alone. The gate keeps chance
+matches to noise out of spectra that hold no calibrant, and is relative to each spectrum, so it
+follows a loss of intensity (a degrading laser, a weak region) instead of failing below a fixed
+intensity.
+
 **Scan lines.** The line axis is read from the imzML scan type (`horizontal line scan`, IMS:1000480,
 or `vertical line scan`, IMS:1000481)[^schramm2012]; when absent, lines are taken as horizontal
 (constant `position y`). Line indices are taken relative to the smallest coordinate, so 0-based and
@@ -393,7 +413,7 @@ or `vertical line scan`, IMS:1000481)[^schramm2012]; when absent, lines are take
 
 **Sample offset** (`sample_offset_ppm`). A sample can sit further than \(W\) from the dataset-wide
 reference masses, for example after a calibration change between acquisitions. Per reference, the
-signal peaks within \(10\,W\) ppm (500 ppm at \(\tau = 10\)) are counted at every whole-ppm offset
+peaks passing the noise gate within \(10\,W\) ppm (500 ppm at \(\tau = 10\)) are counted at every whole-ppm offset
 (`offset_histogram`), and a reference supports an offset \(c\) when its peaks within \(\tau\) ppm of
 \(c\) exceed, at Poisson tail probability below \(10^{-6}\), the count expected if its peaks were
 spread evenly over the search range. The sample offset \(c_0\) is the offset supported by the most
@@ -433,7 +453,7 @@ a_l = \operatorname{median}_{j}\bigl(\tilde e_{lj} - b_l\,(\mu_j - \bar\mu)\bigr
 estimated when the line holds at least 3 matched (spectrum, reference) pairs. Both \(b_l\) and
 \(a_l\) are smoothed by a running median over 5 lines[^tukey1977], and lines still without an
 estimate are filled by linear interpolation along the line index, holding the edge values. Every
-line therefore receives a correction, including lines in which no calibrant is a signal peak.
+line therefore receives a correction, including lines in which no calibrant passes the noise gate.
 FOCUS design choice: the instrument state drifts continuously during the
 acquisition, so a line without calibrants is corrected from its neighbours instead of being left
 unchanged.
@@ -441,9 +461,13 @@ unchanged.
 **Pixel level (window \(W\)).** References are matched again in a window of \(W\) ppm centred on the
 line prediction \(\hat e_{ij} = a_{l(i)} + b_{l(i)}(\mu_j - \bar\mu)\). Centring on the prediction
 keeps the calibrant in reach where the drift changes along the line (laser decay within a row moves
-the row ends away from the line median), and the references are isolated within \(W\) (§4.1.2), so
-the window does not admit a competing peak. A spectrum with at least
-2 matches has the residual \(r_i = \operatorname{median}_j (e'_{ij} - \hat e_{ij})\). Smoothing
+the row ends away from the line median), and the references are isolated within \(W\) (§4.1.3), so
+the window does not admit a competing peak. With \(\rho_{ij} = e'_{ij} - \hat e_{ij}\), a spectrum's
+residual \(r_i\) is the median of the \(\rho_{ij}\) that lie within \(\tau\) ppm of
+\(\operatorname{median}_j \rho_{ij}\), provided at least 3 of them do. FOCUS design choice: chance
+matches, to noise in a spectrum without calibrants, spread over the whole window and rarely agree,
+so they do not make a residual; three agreeing references are required because two chance matches
+still agree often enough, in a sea of background spectra, to displace a few cells. Smoothing
 calibration coefficients over the sample's 2D positions follows Wolski et al.[^wolski2005]. FOCUS
 adaptation: \(\delta_i\) is the median of the valid residuals over the 3 x 3 raster neighbourhood of
 spectrum \(i\), itself included (`neighbourhood_nanmedian`), instead of a thin-plate spline, so the
@@ -463,58 +487,49 @@ The backbone (§4.3, built from the tissue spectra) and the intensity matrix (§
 spectra) therefore see the same correction. The applied correction at \(\bar\mu\) and the number of
 pixel-level matches are written to `.obs` (§7).
 
-A sample and ion mode in which fewer than half of the spectra match at least 2 references, and an ion
-mode with fewer than \(N_\text{ref}\) selected references, are reported as warnings, with the
-recalibration summary and the selected masses.
+A sample and ion mode in which fewer than half of the spectra have their own residual (3 agreeing
+matches), and an ion mode with fewer than \(N_\text{ref}\) selected references, are reported as
+warnings, with the recalibration summary and the selected masses.
 
 ### 4.3 Consensus backbone construction
 
 The backbone holds one m/z feature per ion and is shared by every sample (`_BackboneBuilder`). It is
-built from the signal peaks (§4.1) of the recalibrated spectra: the tissue spectra when background
-detection ran (§3), all spectra otherwise. Detecting peaks, binning them across spectra and keeping
-the bins whose peaks occur in a minimum fraction of the spectra is the MALDIquant workflow
+built in two stages from the recalibrated spectra: the tissue spectra when background detection ran
+(§3), all spectra otherwise. Detecting the peaks of each sample, binning them across samples and
+keeping the bins whose peaks occur in a minimum fraction of the spectra is the MALDIquant workflow
 (`detectPeaks`, `binPeaks`, `filterPeaks` with `minFrequency`)[^gibb2012]. FOCUS adaptation: the
-binning is replaced by the density grouping below, and the frequency is measured against the
-sample's most frequent feature instead of the number of spectra.
+peaks of a sample are its m/z features (§4.1.2), found by recurrence above the local background
+instead of by intensity; the frequency is measured against the sample's most present feature instead
+of the number of spectra; and the binning is the density grouping below.
 
-1. **Histogram** (`peak_histogram`). Per sample \(s\) and ion mode, the signal peaks are counted on
-   the logarithmic grid of §4.1.1 with \(\beta = 10\), i.e. bins one tenth of \(\tau\) wide, each
-   holding the occurrence count \(n_{s,b}\) and the sum \(\sigma_{s,b}\) of the raw m/z values.
-2. **Density.** The samples are pooled, each divided by its number of spectra \(N_s\) so that every
-   sample counts alike, and smoothed with a Gaussian kernel whose full width at half maximum is
-   \(\tau\):
-   \[
-   d_b = \sum_k G_\sigma(b - k) \sum_s \frac{n_{s,k}}{N_s},
-   \qquad
-   \sigma = \frac{\beta}{2\sqrt{2 \ln 2}} \ \text{bins}.
-   \]
-3. **Features** (`density_feature_ranges`). Every local maximum of \(d\) is a feature \(j\). Its
-   range \(R_j\) extends on each side to the lowest point of \(d\) before the neighbouring maximum,
-   and at most \(\tau\) ppm (\(\beta\) bins) from its maximum. Its m/z is the mean of the peaks in
-   that range,
-   \[
-   \hat m_j = \frac{\sum_s \sum_{b \in R_j} \sigma_{s,b}}{\sum_s \sum_{b \in R_j} n_{s,b}} .
-   \]
-   Grouping peaks at the maxima of a kernel density estimate, each group extending down to the
-   density minima on either side of its maximum, is the peak-density grouping of XCMS, which applies
-   it to retention times within m/z slices[^smith2006]. FOCUS adaptation: the density runs along
-   log m/z with a bandwidth set by \(\tau\), a group is also capped at \(\tau\) from its maximum,
-   every maximum becomes a feature (XCMS skips maxima below 1/20 of the highest one in the slice),
-   and the frequency filter below replaces the minimum fraction of samples.
-4. **Frequency filter.** A feature is kept when, in at least one sample,
-   \(\sum_{b \in R_j} n_{s,b} \ge \texttt{frequency\_threshold} \cdot \max_{j'} \sum_{b \in R_{j'}} n_{s,b}\).
+1. **Sample features.** Per sample and ion mode, the features of the recalibrated spectra
+   (§4.1.1, §4.1.2), each with its m/z \(m_{s,j}\) and presence \(p_{s,j}\).
+2. **Frequency filter.** A feature of sample \(s\) is kept when
+   \(p_{s,j} \ge \texttt{frequency\_threshold} \cdot \max_{j'} p_{s,j'}\). Only the kept features'
+   m/z and presence are retained.
+3. **Grouping.** The kept features of all samples are placed on the grid of §4.1.1, each weighted by
+   its presence, so every sample weighs alike whatever its number of spectra, and smoothed with the
+   kernel of §4.1.2. Every maximum of this density is one backbone feature. It collects the sample
+   features up to the lowest point of the density before each neighbouring maximum, and at most
+   \(\tau\) ppm from its maximum; its m/z is their presence-weighted mean m/z. Grouping at the maxima
+   of a kernel density estimate, each group extending down to the density minima on either side of
+   its maximum, is the peak-density grouping of XCMS, which applies it to retention times within m/z
+   slices[^smith2006]. FOCUS adaptation: the density runs along log m/z with a bandwidth set by
+   \(\tau\), a group is also capped at \(\tau\) from its maximum, and every maximum becomes a
+   feature; the frequency filter of step 2 replaces XCMS's minimum fraction of samples.
 
-FOCUS design choice: a boundary between two features requires a dip in the peak density. The peaks
-of one ion can spread wider than \(\tau\), for example through a tail of shifted centroids. They
-still have a single density maximum, so the ion gets a single feature. A window of fixed width
-\(\tau\) cuts such an ion into two adjacent features, and each spectrum's intensity then lands in
-one or the other depending on where its peak fell. Only signal peaks define features, so the many
-centroids of a noise-dominated spectrum do not turn the mass axis into a comb of noise features.
-Every peak, signal or not, is still binned into the features (§5).
+FOCUS design choice: noise is removed in each sample by the test of §4.1.2, before any frequency
+filter, so `frequency_threshold` decides which real ions are kept and is the setting that controls
+the number of features: an ion is kept when, in at least one sample, its presence is at least that
+fraction of the sample's most present ion. A boundary between two features requires a dip in the
+peak density, so one ion whose peaks spread wider than \(\tau\) keeps a single feature. In a microgrid
+the cell ions recur only in the few cell spectra, and among all spectra they do not rise above the
+background noise; their features come from the cell spectra kept by background detection (§3). Every
+peak is binned into the features (§5).
 
-Retained memory is, per sample and ion mode, the occupied bins with their counts and sums. The pooled
-density spans the dataset's mass range at \(\tau / 10\) ppm per bin: about 4 million bins (33 MB) for
-m/z 50 to 3,000 at \(\tau = 10\).
+Retained memory is, per sample and ion mode, the kept features' m/z and presence. The density of one
+sample spans its mass range at \(\tau / 10\) ppm per bin while its features are found: about 2 million
+bins (16 MB) for m/z 300 to 2,000 at \(\tau = 10\).
 
 ---
 
@@ -676,7 +691,8 @@ the stored references and backbone, and only the remaining samples are processed
 ## 8. Parameters reflected by implementation
 
 - `mass_tolerance` (default 10; must be an `int`, since `process_dataset` rejects floats)
-- `frequency_threshold` (default 0.01)
+- `frequency_threshold` (default 0.01): minimum presence of a sample feature, as a fraction of the
+  sample's most present feature (§4.3)
 - `intensity_normalization` (default `none`, in both the settings extractor `_extract_msi_settings`
   and the `process_dataset` signature)
 - `recalibration_reference` (default `null`): per-ion-mode m/z lists, given as a mapping
@@ -701,6 +717,10 @@ the stored references and backbone, and only the remaining samples are processed
 [^wolski2005]: Wolski WE, Lalowski M, Jungblut P, Reinert K. Calibration of mass spectrometric peptide mass fingerprint data without specific external or internal calibrants. *BMC Bioinformatics* 6:203 (2005). [doi:10.1186/1471-2105-6-203](https://doi.org/10.1186/1471-2105-6-203)
 [^barlow1984]: Barlow RE, Heidtmann KD. Computing k-out-of-n system reliability. *IEEE Trans Reliab* R-33:322-323 (1984). [doi:10.1109/TR.1984.5221843](https://doi.org/10.1109/TR.1984.5221843)
 [^dunn1961]: Dunn OJ. Multiple comparisons among means. *J Am Stat Assoc* 56:52-64 (1961). [doi:10.1080/01621459.1961.10482090](https://doi.org/10.1080/01621459.1961.10482090)
+[^zhang2008]: Zhang Y, Liu T, Meyer CA, et al. Model-based analysis of ChIP-Seq (MACS). *Genome Biol* 9:R137 (2008). [doi:10.1186/gb-2008-9-9-r137](https://doi.org/10.1186/gb-2008-9-9-r137). Peak significance against a local Poisson background rate.
+[^virtanen2020]: Virtanen P, Gommers R, Oliphant TE, et al. SciPy 1.0: fundamental algorithms for scientific computing in Python. *Nat Methods* 17:261-272 (2020). [doi:10.1038/s41592-019-0686-2](https://doi.org/10.1038/s41592-019-0686-2). Peak prominence as defined for `scipy.signal.peak_prominences`.
+[^fukunaga1975]: Fukunaga K, Hostetler L. The estimation of the gradient of a density function, with applications in pattern recognition. *IEEE Trans Inf Theory* 21:32-40 (1975). [doi:10.1109/TIT.1975.1055330](https://doi.org/10.1109/TIT.1975.1055330)
+[^cheng1995]: Cheng Y. Mean shift, mode seeking, and clustering. *IEEE Trans Pattern Anal Mach Intell* 17:790-799 (1995). [doi:10.1109/34.400568](https://doi.org/10.1109/34.400568)
 [^rousseeuw1993]: Rousseeuw PJ, Croux C. Alternatives to the median absolute deviation. *J Am Stat Assoc* 88:1273-1283 (1993). [doi:10.1080/01621459.1993.10476408](https://doi.org/10.1080/01621459.1993.10476408)
 [^tukey1977]: Tukey JW. *Exploratory Data Analysis*. Addison-Wesley, Reading, MA (1977).
 [^schramm2012]: Schramm T, Hester Z, Klinkert I, et al. imzML: a common data format for the flexible exchange and processing of mass spectrometry imaging data. *J Proteomics* 75:5106-5110 (2012). [doi:10.1016/j.jprot.2012.07.026](https://doi.org/10.1016/j.jprot.2012.07.026). Controlled-vocabulary terms from the imzML ontology (`imagingMS.obo`).

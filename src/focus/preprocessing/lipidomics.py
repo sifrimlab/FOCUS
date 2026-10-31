@@ -51,7 +51,7 @@ def _step(index: int) -> tuple[int, int, str]:
 
 # Part of the preprocessing fingerprint: bump whenever the same input and settings produce a
 # different output, so cached results are rebuilt.
-METHOD_VERSION = "msi-8"
+METHOD_VERSION = "msi-9"
 
 
 def _parse_mz_by_mode(value, setting: str) -> dict[str, np.ndarray] | None:
@@ -172,63 +172,6 @@ def normalize_intensities(raw: np.ndarray, method: str, pixel_coordinates: np.nd
 
 
 @njit(cache=True)
-def cluster_unique_mz_labels(unique_mz, counts, mass_tolerance_ppm):
-	"""
-	Group sorted unique m/z within a ppm tolerance and return the group index of every input value.
-
-	Sliding window over ascending m/z: a value joins the current group while it stays within
-	`mass_tolerance_ppm` of the group's running weighted centroid. Used by the recalibration
-	reference selector, which pools statistics over the calibrant search window around each group,
-	so where a group boundary falls does not matter there. The m/z backbone does not use it: a
-	window cut splits any ion whose peaks spread wider than the tolerance (see `_BackboneBuilder`).
-
-	Parameters
-	----------
-	unique_mz : 1D np.ndarray (sorted ascending)
-		Distinct m/z values.
-	counts : 1D np.ndarray (float64)
-		Weight associated with each m/z.
-	mass_tolerance_ppm : int
-		Mass tolerance in ppm.
-
-	Returns
-	-------
-	labels : 1D np.ndarray (int32)
-		Group index per input value, ascending and gap-free (`labels[0] == 0`).
-	"""
-
-	n = len(unique_mz)
-	labels = np.empty(n, dtype=np.int32)
-
-	group = 0
-	start_idx = 0
-
-	while start_idx < n:
-		centroid = unique_mz[start_idx]
-		weight_sum = counts[start_idx]
-		weighted_sum = unique_mz[start_idx] * counts[start_idx]
-		labels[start_idx] = group
-		end_idx = start_idx + 1
-
-		while end_idx < n:
-			candidate_mz = unique_mz[end_idx]
-			ppm_diff = abs(candidate_mz - centroid) / centroid * 1e6
-			if ppm_diff <= mass_tolerance_ppm:
-				weight_sum += counts[end_idx]
-				weighted_sum += candidate_mz * counts[end_idx]
-				centroid = weighted_sum / weight_sum
-				labels[end_idx] = group
-				end_idx += 1
-			else:
-				break
-
-		group += 1
-		start_idx = end_idx
-
-	return labels
-
-
-@njit(cache=True)
 def interpolate_single(original_mz, original_intensity, reference_mz, mass_tolerance):
 	"""
 	Bin one spectrum onto the reference m/z grid.
@@ -282,12 +225,15 @@ _RECAL_OUTLIER_SIGMA = 3.0
 _MAD_TO_SIGMA = 1.4826
 # Running-median window, in scan lines, applied to the line model.
 _RECAL_LINE_SMOOTHING = 5
-# Matched references a pixel needs before its own residual is used.
-_RECAL_MIN_PIXEL_MATCHES = 2
-# A peak is calibrant-grade when its intensity is at least this multiple of its spectrum's noise
-# (1.4826 x MAD of the spectrum's peak intensities). Relative to each spectrum, so it follows the
-# intensity loss of a degrading laser instead of failing below a fixed intensity.
+# Matched references, agreeing within one mass tolerance, a pixel needs before its own residual is used.
+_RECAL_MIN_PIXEL_MATCHES = 3
+# A calibrant match must reach this multiple of its spectrum's noise: 1.4826 x MAD of the intensities
+# of the spectrum's noise peaks, the peaks outside the sample's recurrent m/z ranges (see
+# noise_threshold). Relative to each spectrum, so it follows the intensity loss of a degrading laser
+# instead of failing below a fixed intensity.
 _SIGNAL_TO_NOISE = 5.0
+# A spectrum with fewer noise peaks than this has no noise gate: its peaks are nearly all recurrent ions.
+_NOISE_MIN_PEAKS = 10
 # Peaks flattened per numba call (two float64 arrays); bounds the transient memory whatever the
 # number of peaks per spectrum.
 _BLOCK_PEAKS = 20_000_000
@@ -324,27 +270,34 @@ def _peak_blocks(spectra: list[np.ndarray], max_peaks: int = _BLOCK_PEAKS):
 		yield start, len(spectra)
 
 
+# No recurrence map: every peak of a spectrum counts as a noise peak (see noise_threshold).
+_NO_RECURRENCE = (0, np.zeros(0, dtype=np.bool_), 1.0)
+
+
 @njit(cache=True)
-def noise_threshold(intensity, signal_to_noise):
-	"""`signal_to_noise` x 1.4826 x MAD of one spectrum's peak intensities (0 for an empty spectrum)."""
-	if intensity.size == 0:
+def noise_threshold(mz, intensity, recurrent_lo, recurrent, log_bin_width, signal_to_noise):
+	"""
+	`signal_to_noise` x 1.4826 x MAD of the intensities of one spectrum's noise peaks.
+
+	Noise peaks are the peaks outside the recurrent m/z ranges of the sample: `recurrent` is a bool
+	mask over the log bins ``floor(ln(m) / log_bin_width)`` starting at `recurrent_lo`
+	(:func:`recurrence_map`); with an empty mask every peak counts. Fewer than `_NOISE_MIN_PEAKS`
+	noise peaks give 0, no gate.
+	"""
+	values = np.empty(intensity.size, dtype=np.float64)
+	n = 0
+	for k in range(intensity.size):
+		if recurrent.size > 0 and mz[k] > 0.0:
+			b = int(np.floor(np.log(mz[k]) / log_bin_width)) - recurrent_lo
+			if 0 <= b < recurrent.size and recurrent[b]:
+				continue
+		values[n] = intensity[k]
+		n += 1
+	if n < _NOISE_MIN_PEAKS:
 		return 0.0
-	median = np.median(intensity)
-	return signal_to_noise * 1.4826 * np.median(np.abs(intensity - median))
-
-
-@njit(cache=True)
-def signal_peaks(flat_intensity, offsets, signal_to_noise):
-	"""Bool mask over the flattened peaks: intensity >= the spectrum's `noise_threshold`."""
-	mask = np.zeros(flat_intensity.size, dtype=np.bool_)
-	for s in range(offsets.size - 1):
-		start = offsets[s]
-		end = offsets[s + 1]
-		if end > start:
-			threshold = noise_threshold(flat_intensity[start:end].astype(np.float64), signal_to_noise)
-			for k in range(start, end):
-				mask[k] = flat_intensity[k] >= threshold
-	return mask
+	noise = values[:n]
+	median = np.median(noise)
+	return signal_to_noise * 1.4826 * np.median(np.abs(noise - median))
 
 
 def _flatten_spectra(mz_list: list[np.ndarray], intensity_list: list[np.ndarray] | None = None):
@@ -362,14 +315,15 @@ def _flatten_spectra(mz_list: list[np.ndarray], intensity_list: list[np.ndarray]
 
 
 @njit(cache=True)
-def match_references(flat_mz, flat_intensity, offsets, reference_mz, centre_ppm, window_ppm, signal_to_noise):
+def match_references(flat_mz, flat_intensity, offsets, reference_mz, centre_ppm, window_ppm, signal_to_noise,
+					 recurrent_lo, recurrent, log_bin_width):
 	"""
 	Match every reference m/z in every spectrum.
 
 	For spectrum s and reference j the search window is centred at
 	`reference_mz[j] * (1 + centre_ppm[s, j] * 1e-6)` with half-width `window_ppm` ppm of the
 	reference. The most intense peak in the window is the match, provided it reaches the spectrum's
-	`noise_threshold(intensity, signal_to_noise)`.
+	`noise_threshold` (recurrence map `recurrent_lo`, `recurrent`, `log_bin_width`).
 
 	Returns
 	-------
@@ -387,7 +341,7 @@ def match_references(flat_mz, flat_intensity, offsets, reference_mz, centre_ppm,
 			continue
 		mz = flat_mz[start:end]
 		intensity = flat_intensity[start:end]
-		min_intensity = noise_threshold(intensity, signal_to_noise)
+		min_intensity = noise_threshold(mz, intensity, recurrent_lo, recurrent, log_bin_width, signal_to_noise)
 
 		# imzML centroid spectra are normally stored in ascending m/z; sort only if they are not.
 		ascending = True
@@ -419,7 +373,8 @@ def match_references(flat_mz, flat_intensity, offsets, reference_mz, centre_ppm,
 
 
 @njit(cache=True)
-def offset_histogram(flat_mz, flat_intensity, offsets, reference_mz, half_width_ppm, signal_to_noise):
+def offset_histogram(flat_mz, flat_intensity, offsets, reference_mz, half_width_ppm, signal_to_noise,
+					 recurrent_lo, recurrent, log_bin_width):
 	"""
 	Per reference, the number of signal peaks at every whole-ppm offset from it.
 
@@ -435,7 +390,7 @@ def offset_histogram(flat_mz, flat_intensity, offsets, reference_mz, half_width_
 			continue
 		mz = flat_mz[start:end]
 		intensity = flat_intensity[start:end]
-		threshold = noise_threshold(intensity, signal_to_noise)
+		threshold = noise_threshold(mz, intensity, recurrent_lo, recurrent, log_bin_width, signal_to_noise)
 		ascending = True
 		for k in range(1, mz.size):
 			if mz[k] < mz[k - 1]:
@@ -473,12 +428,14 @@ def at_least_probability(probabilities: np.ndarray, k: int) -> np.ndarray:
 	return np.clip(1.0 - below.sum(axis=1), 0.0, 1.0) if k > 0 else np.ones(probabilities.shape[0])
 
 
-def sample_offset_ppm(mz_list, intensity_list, reference_mz, half_width_ppm, mass_tolerance) -> float:
+def sample_offset_ppm(mz_list, intensity_list, reference_mz, half_width_ppm, mass_tolerance,
+					  recurrence=_NO_RECURRENCE) -> float:
 	"""
 	The ppm offset of a sample's calibrants from the reference masses, searched within `half_width_ppm`.
 
-	The calibrants of one spectrum drift together, so their offsets agree while other ions near each
-	reference fall at unrelated offsets. Per reference, the signal peaks within `mass_tolerance` of
+	A signal peak reaches its spectrum's `noise_threshold` under the recurrence map `recurrence`
+	(:func:`recurrence_map`). The calibrants of one spectrum drift together, so their offsets agree
+	while other ions near each reference fall at unrelated offsets. Per reference, the signal peaks within `mass_tolerance` of
 	every candidate offset are counted (:func:`offset_histogram`) and compared with the count its
 	peaks would give if spread evenly over the search range: a reference supports the offset when
 	that count is exceeded at Poisson tail probability below `_RECAL_OFFSET_ALPHA`. The offset is
@@ -500,7 +457,8 @@ def sample_offset_ppm(mz_list, intensity_list, reference_mz, half_width_ppm, mas
 		flat_mz, flat_intensity, offsets = _flatten_spectra(mz_list[start:stop], intensity_list[start:stop])
 		if flat_mz.size == 0:
 			continue
-		block = offset_histogram(flat_mz, flat_intensity, offsets, reference_mz, float(half_width_ppm), _SIGNAL_TO_NOISE)
+		block = offset_histogram(flat_mz, flat_intensity, offsets, reference_mz, float(half_width_ppm), _SIGNAL_TO_NOISE,
+								 *recurrence)
 		counts = block if counts is None else counts + block
 	if counts is None or counts.sum() == 0:
 		return 0.0
@@ -524,7 +482,7 @@ def sample_offset_ppm(mz_list, intensity_list, reference_mz, half_width_ppm, mas
 	return float(best[np.argmax(density[best])] - int(half_width_ppm))
 
 
-def _match_all(mz_list, intensity_list, reference_mz, centre_ppm, window_ppm):
+def _match_all(mz_list, intensity_list, reference_mz, centre_ppm, window_ppm, recurrence=_NO_RECURRENCE):
 	"""Blocked `match_references` over a whole sample; `centre_ppm(start, stop)` gives each block's centres."""
 	n_spectra = len(mz_list)
 	errors = np.full((n_spectra, reference_mz.size), np.nan, dtype=np.float32)
@@ -533,7 +491,7 @@ def _match_all(mz_list, intensity_list, reference_mz, centre_ppm, window_ppm):
 		if flat_mz.size == 0:
 			continue
 		errors[start:stop] = match_references(flat_mz, flat_intensity, offsets, reference_mz,
-											  centre_ppm(start, stop), float(window_ppm), _SIGNAL_TO_NOISE)
+											  centre_ppm(start, stop), float(window_ppm), _SIGNAL_TO_NOISE, *recurrence)
 	return errors
 
 
@@ -648,9 +606,10 @@ def estimate_recalibration(
 	   line prediction, so drift along a line (e.g. laser decay within the row) stays in reach of
 	   the row ends. The references are isolated within that window (see
 	   _CalibrationReferenceSelector), so the width does not add ambiguity. Each spectrum's
-	   residual is the median residual over its matched references (at least
-	   `_RECAL_MIN_PIXEL_MATCHES`), then the 3 x 3 raster nan-median of the residuals is taken;
-	   spectra with no valid neighbour keep the line model alone.
+	   residual is the median residual over its matched references that lie within `mass_tolerance`
+	   of their median (at least `_RECAL_MIN_PIXEL_MATCHES` of them, so chance matches do not count),
+	   then the 3 x 3 raster nan-median of the residuals is taken; spectra with no valid neighbour
+	   keep the line model alone.
 
 	Parameters
 	----------
@@ -665,7 +624,9 @@ def estimate_recalibration(
 	mass_tolerance : float
 		Mass tolerance in ppm; sets the search window (`recalibration_search_ppm`).
 
-	A match must reach `_SIGNAL_TO_NOISE` times its spectrum's noise (see `noise_threshold`).
+	A match must reach `_SIGNAL_TO_NOISE` times its spectrum's noise (see `noise_threshold`), the
+	noise peaks being those outside the sample's recurrent m/z ranges (:func:`recurrence_map` of the
+	sample's own features, :func:`find_features`).
 	'''
 	n_spectra = len(mz_list)
 	reference_mz = np.sort(np.asarray(reference_mz, dtype=np.float64))
@@ -687,8 +648,11 @@ def estimate_recalibration(
 	# held at the edges), until no further line is estimated: drift larger than the window is
 	# followed line by line, as long as neighbouring lines differ by less than the window.
 	search_ppm = recalibration_search_ppm(mass_tolerance)
+	log_bin_width = feature_bin_width(mass_tolerance)
+	recurrence = recurrence_map(find_features(*peak_histogram(mz_list, log_bin_width)[:3], n_spectra, mass_tolerance),
+								log_bin_width, search_ppm)
 	start_ppm = sample_offset_ppm(mz_list, intensity_list, reference_mz, _RECAL_COARSE_FACTOR * search_ppm,
-								  mass_tolerance)
+								  mass_tolerance, recurrence)
 	line_median = np.full((n_lines, n_ref), np.nan, dtype=np.float64)
 	line_matches = np.zeros(n_lines, dtype=np.int64)
 	estimated = np.zeros(n_lines, dtype=bool)
@@ -696,7 +660,8 @@ def estimate_recalibration(
 	centre = np.full(n_spectra, start_ppm)
 	while todo.size:
 		errors = _match_all([mz_list[i] for i in todo], [intensity_list[i] for i in todo], reference_mz,
-							lambda start, stop: np.repeat(centre[start:stop, None], n_ref, axis=1), search_ppm)
+							lambda start, stop: np.repeat(centre[start:stop, None], n_ref, axis=1), search_ppm,
+							recurrence)
 		redo = np.unique(line[todo])
 		line_median[redo] = np.nan
 		line_matches[redo] = 0
@@ -755,13 +720,19 @@ def estimate_recalibration(
 	# Pass 2: the same window, centred on the line prediction.
 	predicted = lambda start, stop: (offset[line[start:stop], None]
 									 + slope[line[start:stop], None] * reference_offset[None, :])
-	fine = _match_all(mz_list, intensity_list, reference_mz, predicted, search_ppm)
+	fine = _match_all(mz_list, intensity_list, reference_mz, predicted, search_ppm, recurrence)
 	matches = np.isfinite(fine).sum(axis=1).astype(np.int16)
+	# A spectrum's residual counts only when enough of its matches agree within one mass tolerance of
+	# their median: chance matches (noise peaks in a spectrum without calibrants) spread over the
+	# whole window and rarely agree.
 	with warnings.catch_warnings():
 		warnings.simplefilter("ignore", RuntimeWarning)  # spectra without matches
-		residual = np.nanmedian(fine - predicted(0, n_spectra), axis=1)
-	del fine
-	residual[matches < _RECAL_MIN_PIXEL_MATCHES] = np.nan
+		deviation = fine - predicted(0, n_spectra)
+		residual = np.nanmedian(deviation, axis=1)
+		agreeing = (np.abs(deviation - residual[:, None]) <= mass_tolerance).sum(axis=1)
+		residual = np.nanmedian(np.where(np.abs(deviation - residual[:, None]) <= mass_tolerance, deviation, np.nan), axis=1)
+	del fine, deviation
+	residual[agreeing < _RECAL_MIN_PIXEL_MATCHES] = np.nan
 	own = np.isfinite(residual)
 	smoothed = neighbourhood_nanmedian(residual, pixel_coordinates)
 	filled = np.isfinite(smoothed)
@@ -2094,9 +2065,9 @@ def peak_histogram(spectra: list[np.ndarray], log_bin_width: float, intensities:
 	Reduce one sample + ion mode to an m/z occurrence histogram on a logarithmic grid.
 
 	The bin of a peak is ``floor(ln(m) / log_bin_width)``, so bins have a constant width in ppm.
-	With `intensities`, only the signal peaks (see :func:`signal_peaks`) are counted, so dense,
-	noise-dominated spectra do not flood every m/z window with noise. With `search_ppm` as well, the
-	crowded occurrences among them are counted too (see :func:`crowded_peaks`). Spectra are consumed
+	Every peak is counted, whatever its intensity: what separates an ion from noise is that it recurs
+	at the same m/z (:func:`find_features`). With `intensities` and `search_ppm`, the crowded
+	occurrences are counted too (see :func:`crowded_peaks`). Spectra are consumed
 	in blocks of at most ``_BLOCK_PEAKS`` peaks, and the dense accumulator spans only the masses this
 	sample actually contains (it is grown on demand), so peak memory is bounded by the block size plus
 	the sample's own mass span, never by its spectrum or peak count. Only occupied bins are returned.
@@ -2109,7 +2080,7 @@ def peak_histogram(spectra: list[np.ndarray], log_bin_width: float, intensities:
 	log_bin_width : float
 		Bin width in natural-log units.
 	intensities : list[np.ndarray] | None
-		The matching intensity arrays; None counts every peak.
+		The matching intensity arrays, for the crowded-peak statistic.
 	search_ppm : float | None
 		Calibrant search half-width in ppm, for the crowded-peak statistic; None skips it.
 	intensity_ratio : float
@@ -2141,17 +2112,8 @@ def peak_histogram(spectra: list[np.ndarray], log_bin_width: float, intensities:
 			spectra[start:stop], None if intensities is None else intensities[start:stop])
 		if block_mz.size == 0:
 			continue
-		block_crowded = None
-		if intensities is not None:
-			# Keep the signal peaks only, then flag the crowded ones among them.
-			signal = signal_peaks(block_intensity, offsets, _SIGNAL_TO_NOISE)
-			spectrum_of_peak = np.repeat(np.arange(offsets.size - 1), np.diff(offsets))
-			offsets = np.zeros_like(offsets)
-			np.cumsum(np.bincount(spectrum_of_peak[signal], minlength=offsets.size - 1), out=offsets[1:])
-			block_mz, block_intensity = block_mz[signal], block_intensity[signal]
-			del signal, spectrum_of_peak
-			if with_crowded:
-				block_crowded = crowded_peaks(block_mz, block_intensity, offsets, search_ppm, intensity_ratio)
+		block_crowded = (crowded_peaks(block_mz, block_intensity, offsets, search_ppm, intensity_ratio)
+						 if with_crowded else None)
 		# ln is undefined at or below zero, and such m/z are invalid for MSI anyway.
 		positive = block_mz > 0.0
 		block_mz = block_mz[positive]
@@ -2198,32 +2160,147 @@ def peak_histogram(spectra: list[np.ndarray], log_bin_width: float, intensities:
 			accumulators[2][occupied] if with_crowded else None)
 
 
+# --- m/z features (docs/scientific/msi_methods.md §4.1) ---
+
+# Histogram bins per mass tolerance: 10 => bins a tenth of the tolerance wide.
+_FEATURE_BINS_PER_TOLERANCE = 10
+# Gaussian kernel FWHM (2 sqrt(2 ln 2) sigma), in mass tolerances, smoothing the peak density.
+_FEATURE_KERNEL_FWHM = 1.0
+# Half-width, in mass tolerances, of the running median giving the local background of the density.
+_FEATURE_FLOOR_TOLERANCES = 50
+# Width, in mass tolerances, of the blocks whose peak counts the running median is taken over.
+_FEATURE_FLOOR_BLOCK = 5
+# A density maximum is a feature when its range holds at least _FEATURE_MIN_PEAKS peaks, more than its
+# background explains at Poisson tail probability _FEATURE_ALPHA.
+_FEATURE_MIN_PEAKS = 5
+_FEATURE_ALPHA = 1e-6
+
+
+def feature_bin_width(mass_tolerance: float) -> float:
+	"""Bin width, in natural-log units, of the feature grid: a tenth of the mass tolerance."""
+	return mass_tolerance * 1e-6 / _FEATURE_BINS_PER_TOLERANCE
+
+
+@dataclass
+class MzFeatures:
+	'''The features of one peak histogram (see find_features), in ascending m/z.'''
+	mz: np.ndarray        # mean m/z of the peaks within half a tolerance of the maximum
+	presence: np.ndarray  # peaks above the background, per spectrum (at most 1)
+	left: np.ndarray      # first and last bin of the feature's range on the feature grid
+	right: np.ndarray
+	floor: np.ndarray     # local floor of the density at the maximum, in peaks per bin
+
+	@classmethod
+	def empty(cls) -> 'MzFeatures':
+		return cls(np.array([], dtype=np.float64), np.array([], dtype=np.float64),
+				   np.array([], dtype=np.int64), np.array([], dtype=np.int64), np.array([], dtype=np.float64))
+
+
+def find_features(bins: np.ndarray, counts: np.ndarray, mz_sums: np.ndarray, n_spectra: int,
+				  mass_tolerance: float) -> MzFeatures:
+	'''
+	The ions of a peak histogram: the maxima of its smoothed density that rise above the local background.
+
+	A real ion recurs at the same m/z across spectra; noise peaks fall at random m/z and form a
+	background. The histogram (:func:`peak_histogram` on the grid of :func:`feature_bin_width`, every
+	peak counted) is smoothed with a Gaussian kernel whose FWHM is ``_FEATURE_KERNEL_FWHM`` tolerances,
+	and every local maximum is a candidate. A candidate's range reaches the lowest point between it and
+	each neighbouring candidate (the valley) and at most one tolerance from it. Its background, in peaks
+	per bin, is the larger of
+
+	- the local floor: the running median over ``_FEATURE_FLOOR_TOLERANCES`` tolerances on either
+	  side, of the peak counts in blocks of one tolerance, and
+	- the smoothed density at the valley toward each higher neighbouring candidate (the col, as in
+	  topographic prominence), so a maximum on the flank of a larger one must rise above the col
+	  between them, while the larger one is measured against the floor.
+
+	It is a feature when its range holds at least ``_FEATURE_MIN_PEAKS`` peaks and more than background
+	x range width at Poisson tail probability below ``_FEATURE_ALPHA``. Rejected candidates are removed
+	and the ranges recomputed, so their bins join the neighbouring features, until every candidate
+	passes. A feature's m/z is the mean m/z of the peaks within half a tolerance of its maximum, a
+	window symmetric about the maximum so the background does not pull it; its presence is (peaks in
+	range - background x range width) / `n_spectra`, at most 1.
+	'''
+	if bins.size == 0 or n_spectra == 0:
+		return MzFeatures.empty()
+	reach = _FEATURE_BINS_PER_TOLERANCE  # one tolerance, in bins
+	# Margins so that no range reaches the ends of the grid.
+	lo = int(bins[0]) - 2 * reach
+	size = int(bins[-1]) + 2 * reach - lo + 1
+	dense = np.zeros(size, dtype=np.float64)
+	dense[bins - lo] = counts
+	smooth = gaussian_filter1d(dense, _FEATURE_KERNEL_FWHM * reach / (2 * np.sqrt(2 * np.log(2))),
+							   mode='constant', cval=0.0, truncate=4.0)
+	# Local maxima, strict on the low-mass side so a plateau yields one maximum.
+	padded = np.concatenate(([0.0], smooth, [0.0]))
+	maxima = np.flatnonzero((padded[1:-1] > padded[:-2]) & (padded[1:-1] >= padded[2:]) & (smooth > 0))
+	block = _FEATURE_FLOOR_BLOCK * reach
+	blocks = np.add.reduceat(dense, np.arange(0, size, block))
+	window = 2 * (_FEATURE_FLOOR_TOLERANCES // _FEATURE_FLOOR_BLOCK) + 1
+	floor = np.repeat(median_filter(blocks, size=window, mode='reflect') / block, block)[:size]
+	prefix = np.concatenate(([0.0], np.cumsum(dense)))
+
+	while maxima.size:
+		left, right = density_feature_ranges(smooth, maxima, reach)
+		# Col between each pair of neighbouring maxima; it counts for the lower of the two.
+		height = smooth[maxima]
+		between = valley_heights(smooth, maxima)
+		col = np.zeros(maxima.size, dtype=np.float64)
+		col[1:] = np.where(height[:-1] > height[1:], between, 0.0)
+		col[:-1] = np.maximum(col[:-1], np.where(height[1:] > height[:-1], between, 0.0))
+		expected = np.maximum(floor[maxima], col) * (right - left + 1)
+		peaks = prefix[right + 1] - prefix[left]
+		keep = (peaks >= _FEATURE_MIN_PEAKS) & (
+			poisson_distribution.sf(peaks - 1, np.maximum(expected, 1e-12)) < _FEATURE_ALPHA)
+		if keep.all():
+			break
+		maxima = maxima[keep]
+	if maxima.size == 0:
+		return MzFeatures.empty()
+
+	sums = np.zeros(size, dtype=np.float64)
+	sums[bins - lo] = mz_sums
+	sum_prefix = np.concatenate(([0.0], np.cumsum(sums)))
+	half = np.minimum(np.minimum(maxima - left, right - maxima), reach // 2)
+	core = prefix[maxima + half + 1] - prefix[maxima - half]
+	core_sum = sum_prefix[maxima + half + 1] - sum_prefix[maxima - half]
+	range_sum = sum_prefix[right + 1] - sum_prefix[left]
+	mz = np.where(core > 0, core_sum / np.maximum(core, 1), range_sum / peaks)
+	presence = np.clip((peaks - expected) / n_spectra, 0.0, 1.0)
+	return MzFeatures(mz, presence, left + lo, right + lo, floor[maxima])
+
+
+def recurrence_map(features: MzFeatures, log_bin_width: float, search_ppm: float) -> tuple[int, np.ndarray, float]:
+	'''
+	The m/z ranges of a sample where its peaks are ions rather than noise, for :func:`noise_threshold`.
+
+	Every feature range, widened by the calibrant search window `search_ppm` on each side so peaks that
+	drift moved off the range still count, marked on the feature grid. Returns (first bin, bool mask,
+	bin width); no features give the empty map, under which every peak counts as noise.
+	'''
+	if features.mz.size == 0:
+		return _NO_RECURRENCE
+	pad = int(np.ceil(np.log1p(search_ppm * 1e-6) / log_bin_width))
+	lo = int(features.left.min()) - pad
+	size = int(features.right.max()) + pad - lo + 1
+	delta = np.zeros(size + 1, dtype=np.int64)
+	np.add.at(delta, features.left - pad - lo, 1)
+	np.add.at(delta, features.right + pad - lo + 1, -1)
+	return lo, np.cumsum(delta[:-1]) > 0, log_bin_width
+
+
 class _CalibrationReferenceSelector:
 	'''
-	Deterministic, streaming selection of the reference M/Z values used for m/z recalibration.
+	Deterministic selection of the reference M/Z values one sample is recalibrated against.
 
-	One selector serves one sample: the references are the ions that sample's own spectra hold
-	(see :meth:`select`). Every spectrum contributes -- there is no subsampling and no RNG, so
-	repeated runs on the same input return byte-identical references.
+	One selector serves one sample: the references are ions of that sample's own spectra. Every
+	spectrum contributes -- there is no subsampling and no RNG, so repeated runs on the same input
+	return byte-identical references.
 
-	Usage: construct with the ppm tolerance, feed the sample's payload with :meth:`add_sample`
-	(the payload can be released immediately afterwards), then call :meth:`select`.
-
-	How it stays cheap
-	------------------
-	The payload is reduced on arrival to an m/z *occurrence histogram* on a fixed logarithmic
-	grid, and only the histogram survives. Its length is bounded by the mass span divided by the
-	bin width (a few hundred thousand entries at the default 10 ppm), not by the peak count.
-
-	Why a logarithmic grid
-	----------------------
-	For small relative differences ln(m2) - ln(m1) = ln(1 + (m2 - m1) / m1) ~= (m2 - m1) / m1, so a
-	constant ppm tolerance is a constant width in log space. A single uniform grid therefore
-	resolves the tolerance identically across the whole mass range, with no per-mass bookkeeping.
-	Bins are deliberately narrower than the tolerance (see ``_BIN_SUBDIVISION``), so two peaks
-	within tolerance land at most that many bins apart; the ppm grouping in :meth:`select` then
-	re-merges them across bin boundaries. The grid only ever *indexes* peaks -- the mass reported
-	for a bin is the exact mean of the raw m/z that fell in it, never a bin centre.
+	Usage: construct with the ppm tolerance, feed the sample's payload with :meth:`add_sample` (the
+	payload can be released immediately afterwards), then call :meth:`select`. The payload is reduced on
+	arrival to a peak histogram on the feature grid (:func:`peak_histogram`), so memory is bounded by the
+	mass span and tolerance, not by the number of peaks.
 
 	Isolation
 	---------
@@ -2235,27 +2312,27 @@ class _CalibrationReferenceSelector:
 	over neighbouring masses across spectra, but never puts two copies of it in one spectrum.
 	'''
 
-	# Bin width as a fraction of the ppm tolerance. 2 => bins are half a tolerance wide.
-	_BIN_SUBDIVISION = 2
 	# A competitor counts when its intensity is at least this fraction of the peak's own.
 	_ISOLATION_INTENSITY_RATIO = 0.1
-	# A candidate is isolated when at most this fraction of its occurrences is crowded.
+	# A candidate is isolated when at most this fraction of the peaks in its range is crowded.
 	_ISOLATION_MAX_CROWDED = 0.1
 	# Size of the candidate pool, as a multiple of the number of references requested.
 	_POOL_FACTOR = 20
 	# Pool members need at least this fraction of the best candidate's score, so the spread step
-	# cannot fill an empty m/z segment with a rare (noise) peak.
+	# cannot fill an empty m/z segment with a rare peak.
 	_POOL_MIN_RELATIVE_SCORE = 0.1
+	# Mean-shift steps placing each candidate's window on its peaks (see select).
+	_MEAN_SHIFT_STEPS = 5
 
 	def __init__(self, mass_tolerance: int) -> None:
 		'''
 		Parameters
 		----------
 		mass_tolerance : int
-			Mass tolerance in ppm, used both for the grid width and for the final ppm grouping.
+			Mass tolerance in ppm, used for the feature grid and the feature kernel.
 		'''
 		self._mass_tolerance = mass_tolerance
-		self._log_bin_width = (mass_tolerance * 1e-6) / self._BIN_SUBDIVISION
+		self._log_bin_width = feature_bin_width(mass_tolerance)
 		self._search_ppm = recalibration_search_ppm(mass_tolerance)
 
 		# Histogram per ion mode, and the number of spectra it was built from.
@@ -2264,6 +2341,8 @@ class _CalibrationReferenceSelector:
 		self._mz_sums: dict[MsiIonMode, np.ndarray] = {}
 		self._crowded: dict[MsiIonMode, np.ndarray] = {}
 		self._spectra: dict[MsiIonMode, int] = {}
+		# Filled by select(): per ion mode, the ascending m/z of the candidate pool (for mass_scale_shifts).
+		self.pool: dict[MsiIonMode, np.ndarray] = {}
 
 	def add_sample(self, sample_mz: dict[MsiIonMode, list[np.ndarray]],
 				   sample_intensity: dict[MsiIonMode, list[np.ndarray]]) -> None:
@@ -2278,7 +2357,7 @@ class _CalibrationReferenceSelector:
 		sample_mz : dict[MsiIonMode, list[np.ndarray]]
 			One M/Z array per spectrum, per ion mode present in this sample.
 		sample_intensity : dict[MsiIonMode, list[np.ndarray]]
-			The matching intensity arrays, used by the signal-peak filter and the isolation statistic.
+			The matching intensity arrays, used by the isolation statistic.
 		'''
 
 		for mode, spectra in sample_mz.items():
@@ -2315,35 +2394,37 @@ class _CalibrationReferenceSelector:
 		'''
 		Select the reference M/Z values from everything added so far.
 
-		Per ion mode the merged histogram bins are grouped within ``mass_tolerance`` ppm by the
-		same weighted sliding window used to build the m/z backbone (:func:`cluster_unique_mz_labels`).
-		Every group then gets statistics pooled over the calibrant search window around it
-		(±``recalibration_search_ppm``): occurrences, crowded occurrences and mass sum. Pooling over
-		the window gathers the copies of one calibrant that drift has spread over several
-		neighbouring groups. A group is a candidate when it is isolated (see the class docstring) and
-		is scored by its detection: windowed occurrences over the number of spectra (at most 1), the
-		share of the spectra that can match it.
+		Per ion mode the sample's features are found (:func:`find_features`): the maxima of its peak
+		density that rise above the local background. In the raw spectra drift can spread one ion wider
+		than a feature's range, so every feature is measured over the calibrant search window around it,
+		the reach of the matching. The window is placed by mean shift: starting at the feature, it moves
+		to the mean m/z of its peaks, ``_MEAN_SHIFT_STEPS`` times, so peaks spread evenly about it (the
+		background) no longer pull it. The feature's m/z is that mean, and its presence is (peaks in the
+		window - local floor x window width) / spectra, at most 1. A feature
+		is a candidate when it is isolated: at most ``_ISOLATION_MAX_CROWDED`` of the peaks in its range
+		are crowded (see the class docstring), and no other feature present in at least
+		``_ISOLATION_INTENSITY_RATIO`` times its spectra lies within the window. It is scored by its
+		presence, the share of the spectra that can match it.
 
 		Selection, in order:
 
-		1. `required_mz` (e.g. sprayed internal standards): the group nearest each mass within the
+		1. `required_mz` (e.g. sprayed internal standards): the feature nearest each mass within the
 		   search window, regardless of isolation.
 		2. A pool of at most ``_POOL_FACTOR * number_of_references`` candidates scoring at least
 		   ``_POOL_MIN_RELATIVE_SCORE`` of the best candidate, taken greedily in descending score; a
-		   group closer than twice the search window to an already chosen one is skipped, so no two
+		   feature closer than twice the search window to an already chosen one is skipped, so no two
 		   references can ever match the same peak.
 		3. Spread: the pool's log-m/z span is cut into `number_of_references` equal segments and
 		   the best pool member of each segment is taken.
 		4. Fill from the pool by score until `number_of_references` are chosen.
 
-		Ties are broken by ascending m/z, giving a total order. Each reference is reported at the
-		windowed mean mass of its group, i.e. the mean of every occurrence within the search window.
-		These means carry the sample's average drift. When required masses (known standards) are
-		observed, the references are moved onto the standards' mass scale: every reference m is
+		Ties are broken by ascending m/z, giving a total order. Each reference is reported at its
+		feature's m/z, which carries the sample's average drift. When required masses (known standards)
+		are observed, the references are moved onto the standards' mass scale: every reference m is
 		divided by (1 + d(m) * 1e-6), where d is the ppm offset of the observed standards from their
 		given masses. d is a least-squares line in m when at least two standards span
 		``_RECAL_SLOPE_MIN_SPAN`` of the reference m/z span, and their median offset (a constant)
-		otherwise.
+		otherwise. The pool's m/z are kept in :attr:`pool`.
 
 		Parameters
 		----------
@@ -2355,84 +2436,84 @@ class _CalibrationReferenceSelector:
 		Returns
 		-------
 		dict[MsiIonMode, np.ndarray]
-			Ascending reference M/Z values per ion mode; an empty array for a mode without spectra.
+			Ascending reference M/Z values per ion mode; an empty array for a mode without features.
 		'''
 
 		recalibration_reference: dict[MsiIonMode, np.ndarray] = {}
 		window = self._search_ppm * 1e-6
 
 		for mode in MsiIonMode.list():
+			recalibration_reference[mode] = np.array([], dtype=np.float64)
+			self.pool[mode] = np.array([], dtype=np.float64)
 			if mode not in self._bins or self._bins[mode].size == 0:
-				recalibration_reference[mode] = np.array([], dtype=np.float64)
 				continue
 
-			counts = self._counts[mode].astype(np.float64)
-			mz_sums = self._mz_sums[mode]
+			bins, counts = self._bins[mode], self._counts[mode]
+			features = find_features(bins, counts, self._mz_sums[mode], self._spectra[mode], self._mass_tolerance)
+			if features.mz.size == 0:
+				continue
 
-			# Exact mean mass of each bin. Bin indices ascend and ln is monotone, so these ascend
-			# too, which is what the sliding-window grouping requires.
-			bin_mz = mz_sums / counts
+			# Range and window sums from prefix sums over the occupied bins.
+			count_prefix = np.concatenate(([0], np.cumsum(counts)))
+			crowded_prefix = np.concatenate(([0], np.cumsum(self._crowded[mode])))
+			sum_prefix = np.concatenate(([0.0], np.cumsum(self._mz_sums[mode])))
+			first = np.searchsorted(bins, features.left, side='left')
+			last = np.searchsorted(bins, features.right, side='right')
+			in_range = count_prefix[last] - count_prefix[first]
+			isolated = (crowded_prefix[last] - crowded_prefix[first]) <= self._ISOLATION_MAX_CROWDED * in_range
 
-			labels = cluster_unique_mz_labels(bin_mz, counts, self._mass_tolerance)
-			n_groups = int(labels[-1]) + 1
+			# Mean shift: the window moves to the mean m/z of its peaks until it settles, where peaks
+			# spread evenly about the centre (the background) no longer pull it.
+			reach = int(np.ceil(np.log1p(window) / self._log_bin_width))
+			feature_mz = features.mz.copy()
+			for _ in range(self._MEAN_SHIFT_STEPS):
+				centre = np.floor(np.log(feature_mz) / self._log_bin_width).astype(np.int64)
+				first = np.searchsorted(bins, centre - reach, side='left')
+				last = np.searchsorted(bins, centre + reach, side='right')
+				in_window = count_prefix[last] - count_prefix[first]
+				feature_mz = (sum_prefix[last] - sum_prefix[first]) / np.maximum(in_window, 1)
+			excess = in_window - features.floor * (2 * reach + 1)
+			scores = np.clip(excess / self._spectra[mode], 0.0, 1.0)
 
-			group_weight = np.bincount(labels, weights=counts, minlength=n_groups)
-			group_mz_sum = np.bincount(labels, weights=mz_sums, minlength=n_groups)
-			group_crowded = np.bincount(labels, weights=self._crowded[mode].astype(np.float64), minlength=n_groups)
-			group_mz = group_mz_sum / group_weight
+			# No other frequent feature within the window, where matching could take it instead.
+			low = np.searchsorted(features.mz, features.mz * (1 - window), side='left')
+			high = np.searchsorted(features.mz, features.mz * (1 + window), side='right')
+			for k in np.flatnonzero(isolated):
+				others = np.r_[low[k]:k, k + 1:high[k]]
+				if others.size and features.presence[others].max() >= self._ISOLATION_INTENSITY_RATIO * features.presence[k]:
+					isolated[k] = False
+			order = np.lexsort((feature_mz, -scores))
 
-			# Statistics pooled over the search window around each group (prefix sums).
-			low = np.searchsorted(group_mz, group_mz * (1 - window), side='left')
-			high = np.searchsorted(group_mz, group_mz * (1 + window), side='right')
-			def windowed(values: np.ndarray) -> np.ndarray:
-				prefix = np.concatenate(([0.0], np.cumsum(values)))
-				return prefix[high] - prefix[low]
-
-			window_weight = windowed(group_weight)
-			isolated = windowed(group_crowded) <= self._ISOLATION_MAX_CROWDED * window_weight
-			# Isolated groups hold at most about one signal peak per spectrum; the cap bounds the others.
-			scores = np.minimum(window_weight / max(self._spectra[mode], 1), 1.0)
-			order = np.lexsort((group_mz, -scores))
-
-			def centred(group: int) -> tuple[int, float, float]:
-				# Every window holding a calibrant scores alike, so the seed can sit anywhere around it.
-				# Centre on the heaviest group of the seed's window, and report the mean of every
-				# occurrence within the search window around that centre.
-				heaviest = int(low[group] + np.argmax(group_weight[low[group]:high[group]]))
-				centre = group_mz[heaviest]
-				lo = np.searchsorted(group_mz, centre * (1 - window), side='left')
-				hi = np.searchsorted(group_mz, centre * (1 + window), side='right')
-				return heaviest, float(centre), float(group_mz_sum[lo:hi].sum() / group_weight[lo:hi].sum())
-
-			def separated(candidate: tuple[int, float, float], others: list) -> bool:
+			def separated(candidate: tuple[int, float], others: list) -> bool:
 				return all(abs(candidate[1] - other[1]) > 2 * window * other[1] for other in others)
 
-			chosen: list[tuple[int, float, float]] = []  # (centre group, centre m/z, reference m/z)
+			chosen: list[tuple[int, float]] = []  # (feature, m/z)
 
 			# 1. Required masses.
 			anchors: list[tuple[float, float]] = []  # (reference m/z, given m/z)
 			if required_mz is not None and mode in required_mz:
 				for mass in np.sort(np.asarray(required_mz[mode], dtype=np.float64)):
-					nearest = int(np.argmin(np.abs(group_mz - mass)))
-					if abs(group_mz[nearest] - mass) > window * mass:
+					nearest = int(np.argmin(np.abs(feature_mz - mass)))
+					if abs(feature_mz[nearest] - mass) > window * mass:
 						get_reporter().warning(f"Internal standard m/z {mass:.4f} ({str(mode).upper()}) is not observed; "
 											   f"it is not used as a recalibration reference")
 						continue
-					candidate = centred(nearest)
+					candidate = (nearest, float(feature_mz[nearest]))
 					if separated(candidate, chosen):
 						chosen.append(candidate)
-						anchors.append((candidate[2], float(mass)))
+						anchors.append((candidate[1], float(mass)))
 
 			# 2. Candidate pool.
-			pool: list[tuple[int, float, float]] = []
+			pool: list[tuple[int, float]] = []
 			best_score = scores[isolated].max() if isolated.any() else 0.0
-			for group in order:
-				if len(pool) >= self._POOL_FACTOR * number_of_references or scores[group] < self._POOL_MIN_RELATIVE_SCORE * best_score:
+			for feature in order:
+				if len(pool) >= self._POOL_FACTOR * number_of_references or scores[feature] < self._POOL_MIN_RELATIVE_SCORE * best_score:
 					break
-				if isolated[group]:
-					candidate = centred(group)
+				if isolated[feature] and scores[feature] > 0:
+					candidate = (int(feature), float(feature_mz[feature]))
 					if separated(candidate, chosen + pool):
 						pool.append(candidate)
+			self.pool[mode] = np.sort(np.array([candidate[1] for candidate in pool], dtype=np.float64))
 
 			# 3. Spread over the pool's log-m/z span.
 			if pool:
@@ -2451,7 +2532,7 @@ class _CalibrationReferenceSelector:
 				if separated(candidate, chosen):
 					chosen.append(candidate)
 
-			references = np.array([candidate[2] for candidate in chosen], dtype=np.float64)
+			references = np.array([candidate[1] for candidate in chosen], dtype=np.float64)
 			if anchors:
 				masses = np.array([mass for _, mass in anchors])
 				offsets = np.array([(reference - mass) / mass * 1e6 for reference, mass in anchors])
@@ -2548,10 +2629,14 @@ def mass_scale_shifts(references: list[np.ndarray], window_ppm: float,
 
 # --- m/z backbone (docs/scientific/msi_methods.md §4.3) ---
 
-# Histogram bins per mass tolerance: 10 => bins a tenth of the tolerance wide.
-_BACKBONE_BINS_PER_TOLERANCE = 10
-# Gaussian kernel FWHM (2 sqrt(2 ln 2) sigma), in mass tolerances, smoothing the peak density.
-_BACKBONE_KERNEL_FWHM = 1.0
+
+@njit(cache=True)
+def valley_heights(density, maxima):
+	"""`density` at the lowest point between each pair of neighbouring maxima (n - 1 values)."""
+	heights = np.empty(max(maxima.size - 1, 0), dtype=np.float64)
+	for k in range(maxima.size - 1):
+		heights[k] = np.min(density[maxima[k]:maxima[k + 1] + 1])
+	return heights
 
 
 @njit(cache=True)
@@ -2578,76 +2663,74 @@ def density_feature_ranges(density, maxima, half_width):
 
 class _BackboneBuilder:
 	'''
-	m/z backbone of a dataset: one feature per maximum of the density of signal-peak m/z.
+	m/z backbone of a dataset: the ions found in its samples, grouped across samples.
 
-	Usage: construct with the ppm tolerance, feed one sample's (recalibrated) payload at a time with
-	:meth:`add_sample`, then call :meth:`build`. Each sample is reduced on arrival to a histogram of
-	its signal peaks (:func:`peak_histogram`) on a logarithmic grid ``_BACKBONE_BINS_PER_TOLERANCE``
-	bins per tolerance; only the histogram is kept.
+	Usage: construct with the ppm tolerance and the frequency threshold, feed one sample's
+	(recalibrated) payload at a time with :meth:`add_sample`, then call :meth:`build`.
 
-	:meth:`build` pools the samples, each weighted by its number of spectra so that every sample
-	counts alike, smooths the pooled histogram with a Gaussian kernel whose FWHM is
-	``_BACKBONE_KERNEL_FWHM`` tolerances, and places one feature at every local maximum. A feature
-	collects the peaks up to the lowest point between it and each neighbouring maximum, and at most one
-	tolerance from its maximum. Its m/z is the mean m/z of those peaks. A broad or skewed peak
-	distribution has a single maximum, so one ion gives one feature however far its peaks spread; two
-	features need a dip in the density between them. A feature is kept when, in at least one sample,
-	its peaks number at least `frequency_threshold` times those of that sample's largest feature.
+	Per sample (:meth:`add_sample`), every peak is counted on the feature grid (:func:`peak_histogram`)
+	and the sample's features are found (:func:`find_features`): the maxima of its peak density that
+	rise above the local background, so noise makes no feature and every recurring ion does, whatever
+	its intensity. A feature is kept when its presence is at least `frequency_threshold` times that of
+	the sample's most present feature. Only the kept features' m/z and presence are retained.
+
+	:meth:`build` groups the samples' features: their presences are summed on the feature grid (every
+	sample weighs alike, a presence being a share of that sample's spectra) and smoothed with the
+	feature kernel. Each maximum of this density is one backbone feature; it collects the sample
+	features up to the lowest point between it and each neighbouring maximum, and at most one tolerance
+	from it. Its m/z is the presence-weighted mean m/z of those sample features.
 	'''
 
-	def __init__(self, mass_tolerance: int) -> None:
+	def __init__(self, mass_tolerance: int, frequency_threshold: float) -> None:
 		self._mass_tolerance = mass_tolerance
-		self._log_bin_width = mass_tolerance * 1e-6 / _BACKBONE_BINS_PER_TOLERANCE
-		# Per ion mode, one (bins, counts, mz_sums, n_spectra) entry per contributing sample.
-		self._samples: dict[MsiIonMode, list[tuple[np.ndarray, np.ndarray, np.ndarray, int]]] = {}
+		self._frequency_threshold = frequency_threshold
+		self._log_bin_width = feature_bin_width(mass_tolerance)
+		# Per ion mode, one (m/z, presence) entry per contributing sample.
+		self._samples: dict[MsiIonMode, list[tuple[np.ndarray, np.ndarray]]] = {}
 
-	def add_sample(self, sample_mz: dict[MsiIonMode, list[np.ndarray]],
-				   sample_intensity: dict[MsiIonMode, list[np.ndarray]]) -> None:
-		'''Fold one sample's payload into the histograms; the payload is only read, never retained.'''
+	def add_sample(self, sample_mz: dict[MsiIonMode, list[np.ndarray]]) -> dict[MsiIonMode, tuple[int, int]]:
+		'''
+		Find one sample's features and keep the frequent ones; the payload is only read, never retained.
+		Returns, per ion mode, the number of features found and kept.
+		'''
+		summary = {}
 		for mode, spectra in sample_mz.items():
-			bins, counts, mz_sums, _ = peak_histogram(spectra, self._log_bin_width, sample_intensity[mode])
-			if bins.size:
-				self._samples.setdefault(mode, []).append((bins, counts, mz_sums, len(spectra)))
+			bins, counts, mz_sums, _ = peak_histogram(spectra, self._log_bin_width)
+			features = find_features(bins, counts, mz_sums, len(spectra), self._mass_tolerance)
+			kept = (features.presence >= self._frequency_threshold * features.presence.max()
+					if features.mz.size else np.zeros(0, dtype=bool))
+			summary[mode] = (int(features.mz.size), int(kept.sum()))
+			if kept.any():
+				self._samples.setdefault(mode, []).append((features.mz[kept], features.presence[kept]))
+		return summary
 
-	def build(self, frequency_threshold: float) -> dict[MsiIonMode, np.ndarray]:
-		'''Ascending feature m/z per ion mode; an empty array for a mode without signal peaks.'''
+	def build(self) -> dict[MsiIonMode, np.ndarray]:
+		'''Ascending feature m/z per ion mode; an empty array for a mode without features.'''
 		backbone = {}
 		for mode in MsiIonMode.list():
 			samples = self._samples.get(mode, [])
-			backbone[mode] = self._features(samples, frequency_threshold) if samples else np.array([], dtype=np.float64)
+			backbone[mode] = self._group(samples) if samples else np.array([], dtype=np.float64)
 		return backbone
 
-	def _features(self, samples: list, frequency_threshold: float) -> np.ndarray:
-		lo = min(int(bins[0]) for bins, _, _, _ in samples)
-		hi = max(int(bins[-1]) for bins, _, _, _ in samples)
-		density = np.zeros(hi - lo + 1, dtype=np.float64)
-		for bins, counts, _, n_spectra in samples:
-			density[bins - lo] += counts / n_spectra
-		sigma = _BACKBONE_KERNEL_FWHM * _BACKBONE_BINS_PER_TOLERANCE / (2 * np.sqrt(2 * np.log(2)))
-		density = gaussian_filter1d(density, sigma, mode='constant', cval=0.0, truncate=4.0)
-
-		# Local maxima, strict on the low-mass side so a plateau yields one maximum.
-		padded = np.concatenate(([0.0], density, [0.0]))
-		maxima = np.flatnonzero((padded[1:-1] > padded[:-2]) & (padded[1:-1] >= padded[2:]))
-		if maxima.size == 0:
+	def _group(self, samples: list[tuple[np.ndarray, np.ndarray]]) -> np.ndarray:
+		mz = np.concatenate([m for m, _ in samples])
+		weight = np.maximum(np.concatenate([w for _, w in samples]), 1e-12)
+		if mz.size == 0:
 			return np.array([], dtype=np.float64)
-		left, right = density_feature_ranges(density, maxima, _BACKBONE_BINS_PER_TOLERANCE)
-		del density, padded
-
-		total_counts = np.zeros(maxima.size, dtype=np.float64)
-		total_mz = np.zeros(maxima.size, dtype=np.float64)
-		keep = np.zeros(maxima.size, dtype=bool)
-		for bins, counts, mz_sums, _ in samples:
-			position = bins - lo
-			feature = np.searchsorted(left, position, side='right') - 1
-			inside = (feature >= 0) & (position <= right[np.maximum(feature, 0)])
-			weight = np.bincount(feature[inside], weights=counts[inside], minlength=maxima.size)
-			total_counts += weight
-			total_mz += np.bincount(feature[inside], weights=mz_sums[inside], minlength=maxima.size)
-			if weight.max() > 0:
-				keep |= weight >= frequency_threshold * weight.max()
-		keep &= total_counts > 0
-		return np.sort(total_mz[keep] / total_counts[keep])
+		position = np.floor(np.log(mz) / self._log_bin_width).astype(np.int64)
+		position -= position.min()
+		reach = _FEATURE_BINS_PER_TOLERANCE
+		density = gaussian_filter1d(np.bincount(position, weights=weight).astype(np.float64),
+									_FEATURE_KERNEL_FWHM * reach / (2 * np.sqrt(2 * np.log(2))),
+									mode='constant', cval=0.0, truncate=4.0)
+		padded = np.concatenate(([0.0], density, [0.0]))
+		maxima = np.flatnonzero((padded[1:-1] > padded[:-2]) & (padded[1:-1] >= padded[2:]) & (density > 0))
+		left, right = density_feature_ranges(density, maxima, reach)
+		feature = np.searchsorted(left, position, side='right') - 1
+		inside = (feature >= 0) & (position <= right[np.maximum(feature, 0)])
+		total = np.bincount(feature[inside], weights=weight[inside], minlength=maxima.size)
+		total_mz = np.bincount(feature[inside], weights=(weight * mz)[inside], minlength=maxima.size)
+		return np.sort(total_mz[total > 0] / total[total > 0])
 
 
 class MsiDataset(BaseDataset):
@@ -3057,6 +3140,7 @@ class MsiDataset(BaseDataset):
 		# on one mass scale (mass_scale_shifts) and reports them. A user-supplied reference serves every
 		# sample as is. Recalibration runs with or without a lipid DB.
 		selected: dict[str, dict[MsiIonMode, np.ndarray]] = {}
+		pools: dict[str, dict[MsiIonMode, np.ndarray]] = {}
 		for sample in reporter.tqdm(iter_samples, *_step(2), unit="sample"):
 			_, _, filtered_mz, filtered_intensity = sample.load_payload(annotation_db=self.lipid_annotation_db,
 																		mass_tolerance=mass_tolerance,
@@ -3066,6 +3150,7 @@ class MsiDataset(BaseDataset):
 				selector.add_sample(filtered_mz, filtered_intensity)
 				selected[sample.sample_id] = selector.select(number_of_references=_RECALIBRATION_REFERENCES,
 															 required_mz=internal_standard_mz)
+				pools[sample.sample_id] = selector.pool
 				del selector
 			del filtered_mz, filtered_intensity  # Free memory
 			gc.collect()
@@ -3073,7 +3158,9 @@ class MsiDataset(BaseDataset):
 		if recalibration_reference is None:
 			# Samples' own references carry their calibration offsets; one constant ppm shift per sample
 			# and ion mode puts them on a common scale, so one ion stays one backbone feature across
-			# samples. Internal standards already anchor every sample that observes them.
+			# samples. The shifts come from each sample's candidate pool (its isolated, frequent ions),
+			# which holds more ions shared with other samples than the references alone. Internal
+			# standards already anchor every sample that observes them.
 			scale_shift: dict[str, dict[MsiIonMode, tuple[float, bool]]] = {s: {} for s in selected}
 			for mode in MsiIonMode.list():
 				names = [s for s in selected if selected[s].get(mode, np.array([])).size]
@@ -3081,7 +3168,8 @@ class MsiDataset(BaseDataset):
 				if not names or (internal_standard_mz is not None and mode in internal_standard_mz):
 					continue
 				shifts, connected = mass_scale_shifts(
-					[selected[s][mode] for s in names] + [stored_references[s][str(mode)] for s in anchors],
+					[pools[s][mode] if pools[s].get(mode, np.array([])).size else selected[s][mode] for s in names]
+					+ [stored_references[s][str(mode)] for s in anchors],
 					recalibration_search_ppm(mass_tolerance),
 					fixed=np.arange(len(names) + len(anchors)) >= len(names))
 				for k, s in enumerate(names):
@@ -3100,8 +3188,8 @@ class MsiDataset(BaseDataset):
 					scale = f"; mass scale shifted {shift:+.1f} ppm" if shift != 0.0 else ""
 					if not connected:
 						reporter.warning(f"Recalibration references ({str(mode).upper()}): {listed}; fewer than "
-										 f"{_SCALE_MIN_SHARED} shared with any other sample, so its mass scale is not "
-										 f"aligned with theirs")
+										 f"{_SCALE_MIN_SHARED} calibrant ions shared with any other sample, so its mass "
+										 f"scale is not aligned with theirs")
 					elif len(masses) < _RECALIBRATION_REFERENCES:
 						reporter.warning(f"Only {len(masses)} recalibration reference(s) found ({str(mode).upper()}): {listed}{scale}")
 					else:
@@ -3113,19 +3201,21 @@ class MsiDataset(BaseDataset):
 				sample.recalibration_reference = recalibration_reference
 
 		if not has_partial_cache:
-			# STEP 4: Reduce the recalibrated signal peaks of every sample (tissue spectra when
-			# background detection ran) to an m/z histogram; only the histograms are kept.
-			backbone = _BackboneBuilder(mass_tolerance)
+			# STEP 4: Find the features of every recalibrated sample (tissue spectra when background
+			# detection ran) and keep the frequent ones; only their m/z and presence are kept.
+			backbone = _BackboneBuilder(mass_tolerance, frequency_threshold)
 			for sample in reporter.tqdm(iter_samples, *_step(4), unit="sample"):
-				_, _, filtered_mz, filtered_intensity = sample.load_payload(annotation_db=self.lipid_annotation_db,
-																			mass_tolerance=mass_tolerance)
-				backbone.add_sample(filtered_mz, filtered_intensity)
-				del filtered_mz, filtered_intensity  # Free memory
+				_, _, filtered_mz, _ = sample.load_payload(annotation_db=self.lipid_annotation_db,
+														   mass_tolerance=mass_tolerance)
+				for mode, (found, kept) in backbone.add_sample(filtered_mz).items():
+					reporter.detail(f"m/z features ({str(mode).upper()}): {found} found, {kept} present in at least "
+									f"{frequency_threshold:g} times the spectra of the most present one")
+				del filtered_mz  # Free memory
 				gc.collect()
 
-			# STEP 5: One backbone feature per maximum of the pooled peak density (see _BackboneBuilder)
+			# STEP 5: Group the samples' features into the backbone (see _BackboneBuilder)
 			reporter.step(*_step(5))
-			self.reference_mz = backbone.build(frequency_threshold)
+			self.reference_mz = backbone.build()
 			del backbone  # Free memory
 			gc.collect()
 

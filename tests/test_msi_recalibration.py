@@ -76,6 +76,21 @@ class RecalibrationModelTests(unittest.TestCase):
         self.assertTrue(np.all(model.matches[missing] == 0))
         self.assertEqual(model.summary["lines_estimated"], n_lines - 2)
 
+    def test_clean_spectra_match_every_calibrant(self):
+        # No noise and calibrant intensities over two orders of magnitude: no spectrum-wide intensity
+        # rule may drop the weaker calibrants.
+        n_lines, n_cols = 20, 25
+        rng = np.random.default_rng(4)
+        mz_list, intensity_list, coords = synthetic_sample(n_lines, n_cols, dim_lines=(), missing_lines=(), n_noise=0)
+        level = rng.lognormal(0, 1.5, CALIBRANTS.size + 1)
+        intensity_list = [(1e4 * level * rng.lognormal(0, 0.2, level.size)).astype(np.float32) for _ in mz_list]
+        model = estimate_recalibration(mz_list, intensity_list, coords, line_axis=0, reference_mz=CALIBRANTS,
+                                       mass_tolerance=10)
+        self.assertGreater(model.summary["pixels_matched"], 0.95)
+        truth = true_error_ppm(coords[:, 0], coords[:, 1], CENTRE, n_lines, n_cols)
+        estimate = model.offset_ppm + model.slope_ppm_per_da * (CENTRE - model.centre_mz)
+        self.assertLess(np.abs(estimate - truth).max(), 1.0)
+
     def test_dense_low_intensity_spectra(self):
         # Like a timsTOF export: thousands of noise centroids per spectrum and calibrants far below
         # any fixed intensity threshold (about 800 counts over a noise median of about 35).
@@ -235,13 +250,58 @@ def backbone_sample(ions, n_spectra=2000, n_noise=0, seed=0):
     return mz_list, intensity_list
 
 
+# Ions of the synthetic sample kinds: resolvable masses, the share of tissue (or cell) spectra holding
+# each, and a median intensity spread over two orders of magnitude.
+_KIND = np.random.default_rng(7)
+KIND_IONS = np.sort(np.exp(_KIND.uniform(np.log(300), np.log(1200), 150)))
+KIND_IONS = KIND_IONS[np.concatenate(([True], np.diff(KIND_IONS) / KIND_IONS[1:] * 1e6 > 30))]
+KIND_PRESENCE = _KIND.uniform(0.02, 1.0, KIND_IONS.size)
+KIND_LEVEL = _KIND.lognormal(0, 1.5, KIND_IONS.size)
+MATRIX = np.array([379.0925, 568.1350, 757.1775])
+
+
+def kind_sample(kind, n_spectra=1500, seed=0):
+    """
+    Spectra of one kind of sample, and which of them hold the ions: 'tissue' (ions only), 'culture'
+    (ions among 1000 noise centroids), 'mixed' (every other spectrum is background: matrix ions and
+    noise) or 'microgrid' (3% cells in background).
+    """
+    rng = np.random.default_rng(seed)
+    mz_list, intensity_list, holds = [], [], []
+    for k in range(n_spectra):
+        cell = {"tissue": True, "culture": True, "mixed": k % 2 == 0}.get(kind, rng.random() < 0.03)
+        noise = 0 if kind == "tissue" else (200 if kind == "mixed" and cell else 1000)
+        parts, intensities = [rng.uniform(300, 1200, noise)], [rng.exponential(50, noise)]
+        if cell:
+            present = rng.random(KIND_IONS.size) < KIND_PRESENCE
+            parts.append(KIND_IONS[present] * (1 + rng.normal(0, 1.5, present.sum()) * 1e-6))
+            intensities.append(1000 * KIND_LEVEL[present] * rng.lognormal(0, 0.3, present.sum()))
+        else:
+            parts.append(MATRIX * (1 + rng.normal(0, 1.5, MATRIX.size) * 1e-6))
+            intensities.append(rng.lognormal(np.log(2000), 0.3, MATRIX.size))
+        mz, intensity = np.concatenate(parts), np.concatenate(intensities)
+        order = np.argsort(mz)
+        mz_list.append(mz[order])
+        intensity_list.append(intensity[order].astype(np.float32))
+        holds.append(cell)
+    return mz_list, intensity_list, np.array(holds)
+
+
 class BackboneTests(unittest.TestCase):
     @staticmethod
     def build(*samples, frequency_threshold=0.01):
-        builder = _BackboneBuilder(mass_tolerance=10)
-        for mz_list, intensity_list in samples:
-            builder.add_sample({MsiIonMode.POSITIVE: mz_list}, {MsiIonMode.POSITIVE: intensity_list})
-        return builder.build(frequency_threshold)[MsiIonMode.POSITIVE]
+        builder = _BackboneBuilder(mass_tolerance=10, frequency_threshold=frequency_threshold)
+        for mz_list, _ in samples:
+            builder.add_sample({MsiIonMode.POSITIVE: mz_list})
+        return builder.build()[MsiIonMode.POSITIVE]
+
+    @staticmethod
+    def found(features, masses, ppm=10):
+        """Per mass, whether a feature lies within `ppm`; and the number of features near no mass."""
+        if features.size == 0:
+            return np.zeros(masses.size, dtype=bool), 0
+        near = np.abs(features[:, None] - masses[None, :]) / masses[None, :] * 1e6 <= ppm
+        return near.any(axis=0), int((~near.any(axis=1)).sum())
 
     @staticmethod
     def near(features, mass, ppm=50):
@@ -272,6 +332,31 @@ class BackboneTests(unittest.TestCase):
         self.assertEqual(features.size, len(masses))
         for mass in masses:
             self.assertEqual(self.near(features, mass, ppm=3).size, 1)
+
+    def test_every_recurring_ion_is_a_feature_whatever_its_intensity(self):
+        # High-quality tissue: no noise, ion intensities spread over two orders of magnitude.
+        mz_list, intensity_list, _ = kind_sample("tissue")
+        found, false = self.found(self.build((mz_list, intensity_list)), KIND_IONS)
+        self.assertTrue(found[KIND_PRESENCE >= 0.05].all())
+        self.assertEqual(false, 0)
+
+    def test_noise_makes_no_feature_in_any_kind_of_sample(self):
+        # Background removal hands the tissue (cell) spectra to the backbone; pure noise gives nothing.
+        for kind, n_spectra, minimum in (("culture", 1500, 0.05), ("mixed", 1500, 0.05), ("microgrid", 6000, 0.3)):
+            mz_list, intensity_list, holds = kind_sample(kind, n_spectra)
+            spectra = [mz for mz, cell in zip(mz_list, holds) if cell]
+            found, false = self.found(self.build((spectra, None)), np.concatenate([KIND_IONS, MATRIX]))
+            self.assertTrue(found[:KIND_IONS.size][KIND_PRESENCE >= minimum].all(), kind)
+            self.assertEqual(false, 0, kind)
+        rng = np.random.default_rng(3)
+        self.assertEqual(self.build(([np.sort(rng.uniform(300, 1200, 1000)) for _ in range(1500)], None)).size, 0)
+
+    def test_frequency_threshold_sets_the_feature_count(self):
+        mz_list, intensity_list, _ = kind_sample("tissue")
+        for threshold in (0.1, 0.5):
+            features = self.build((mz_list, intensity_list), frequency_threshold=threshold)
+            expected = int((KIND_PRESENCE >= threshold * KIND_PRESENCE.max()).sum())
+            self.assertLessEqual(abs(features.size - expected), max(2, expected // 20), threshold)
 
     def test_frequency_is_judged_per_sample(self):
         common, rare, local = 500.0, 700.0, 900.0
@@ -352,6 +437,17 @@ class ReferenceSelectorTests(unittest.TestCase):
     def test_references_spread_over_the_mass_range(self):
         references = self.select(2)
         self.assertEqual(self.near(references, 900.50).size, 1)
+
+    def test_clean_spectra_give_the_most_present_ions(self):
+        # No noise: every ion counts, so the references are the ions most spectra hold, not only the
+        # most intense ones.
+        mz_list, intensity_list, _ = kind_sample("tissue")
+        selector = _CalibrationReferenceSelector(mass_tolerance=10)
+        selector.add_sample({MsiIonMode.POSITIVE: mz_list}, {MsiIonMode.POSITIVE: intensity_list})
+        references = selector.select(10)[MsiIonMode.POSITIVE]
+        self.assertEqual(references.size, 10)
+        nearest = np.abs(references[:, None] - KIND_IONS[None, :]).argmin(axis=1)
+        self.assertGreater(KIND_PRESENCE[nearest].min(), 0.5)
 
     def test_required_mass_is_always_selected(self):
         references = self.select(2, required={MsiIonMode.POSITIVE: np.array([700.0])})
@@ -558,8 +654,13 @@ class ProcessDatasetTests(unittest.TestCase):
             for sample_id in stored:
                 for reference in stored[sample_id]["pos"]:
                     self.assertLess(np.min(np.abs(species - reference) / species * 1e6), 50)
-            shared = [np.mean((stored[s]["pos"][:CALIBRANTS.size] - CALIBRANTS) / CALIBRANTS * 1e6) for s in "AB"]
-            self.assertLess(abs(shared[0] - shared[1]), 1.0)
+            def offsets(sample_id):
+                references = np.asarray(stored[sample_id]["pos"])
+                nearest = species[np.abs(references[:, None] - species[None, :]).argmin(axis=1)]
+                return dict(zip(np.round(nearest, 4), (references - nearest) / nearest * 1e6))
+            a, b = offsets("A"), offsets("B")
+            self.assertGreaterEqual(len(set(a) & set(b)), 3)
+            self.assertLess(abs(np.mean([a[m] - b[m] for m in set(a) & set(b)])), 1.0)
 
             # The analyte lands in exactly one feature, in every spectrum of both samples.
             nearby = np.flatnonzero(np.abs(mz - ANALYTE) / ANALYTE * 1e6 <= 100)

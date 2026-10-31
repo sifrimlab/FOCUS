@@ -300,6 +300,7 @@ Example:
 - `lipid_annotation_db`: path to a CSV or JSON file with columns `db_name`, `ionized_mass`, `ion_mode`.
 - `detect_background` only takes effect when `lipid_annotation_db` is also set. Without a database the detection step is skipped and every spot is flagged foreground.
 - `mass_tolerance` must be an integer; a float value raises `ValueError` during processing.
+- `frequency_threshold`: minimum presence of an m/z backbone feature (the share of spectra holding it above the background noise), as a fraction of the most present feature of a sample. A feature passing in one sample is kept. It controls the number of features.
 
 The example below enables TIC normalization and background detection explicitly; these are not the defaults.
 

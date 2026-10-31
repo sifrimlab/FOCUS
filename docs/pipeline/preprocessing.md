@@ -123,29 +123,31 @@ The MSI pipeline operates at the **dataset level**: all samples are processed to
    - The foreground classification is stored as `obs["foreground"]`; all spots (including background) are included in the output and can be filtered downstream.
 
 3. **Recalibration Reference Selection** (method and references: [MSI methods §4.1](../scientific/msi_methods.md#41-recalibration-reference-selection))
-   - Per sample: every spectrum of that sample contributes, the tissue spectra when background detection ran, all spectra otherwise. Only signal peaks are counted: peaks at least 5 times their spectrum's noise (1.4826 × MAD of its peak intensities); the same rule admits calibrant matches in step 4. The sample is reduced to a compact m/z occurrence histogram on a logarithmic grid and its raw peaks are released, so memory stays bounded by the mass range and tolerance rather than the spectrum count
-   - Histogram bins are grouped within `mass_tolerance` ppm by a weighted sliding window, and each group is pooled with its neighbours within the calibrant search window (max(5 × `mass_tolerance`, 50) ppm), so one calibrant spread by drift counts as one candidate
-   - Candidates must be isolated: at most 10% of their occurrences may share the spectrum with a signal peak of at least 10% of their intensity within the search window. Each reference is centred on the heaviest group of its window
-   - Score: the share of the sample's spectra holding the candidate
+   - Per sample: every spectrum of that sample contributes, the tissue spectra when background detection ran, all spectra otherwise. Every peak is counted, whatever its intensity, on a logarithmic m/z grid with bins one tenth of `mass_tolerance` wide; the raw peaks are then released, so memory stays bounded by the mass range and tolerance rather than the spectrum count
+   - The sample's m/z features are the maxima of its smoothed peak density that rise above the local background: a running median of the density, or the col toward a larger neighbouring maximum, tested with a Poisson test. An ion that recurs is a feature however weak it is; noise is not, however many centroids a spectrum holds
+   - Each feature is measured over the calibrant search window (max(5 × `mass_tolerance`, 50) ppm), placed on its peaks by mean shift, so one calibrant spread by drift counts as one candidate at its mean mass
+   - Candidates must be isolated: at most 10% of their peaks may share the spectrum with a peak of at least 10% of their intensity within the search window, and no other frequent feature may lie within the window
+   - Score: the share of the sample's spectra holding the candidate above the background
    - For each ion mode, select at least 10 references: sprayed internal standards from `internal_standard_mz` first, then the best candidate (ties broken by ascending m/z) in each of 10 equal log-m/z segments, then by score. References are more than twice the search window apart
-   - When internal standards are observed, the references are moved onto the standards' mass scale. Otherwise one constant ppm shift per sample, from the references samples share, puts all samples on a common mass scale, so one ion stays one feature across samples; the shift is logged with the sample's references
+   - When internal standards are observed, the references are moved onto the standards' mass scale. Otherwise one constant ppm shift per sample, from the calibrant candidates samples share, puts all samples on a common mass scale, so one ion stays one feature across samples; the shift is logged with the sample's references
    - Alternatively, a user-supplied `recalibration_reference` can be passed directly, which skips this step entirely
 
 4. **Per-Spectrum m/z Recalibration** (per sample; [MSI methods §4.2](../scientific/msi_methods.md#42-per-spectrum-recalibration))
    - Scan lines follow the imzML scan type (horizontal by default)
-   - Sample offset: locate the calibrants within ±10 times the search window, where more references show significantly more signal peaks than their background than chance agreement explains; the search then starts there (at 0 when no offset is supported)
+   - Noise gate: a calibrant match must reach 5 times its spectrum's noise, 1.4826 × MAD of the intensities of its peaks outside the sample's features (widened by the search window); a spectrum with fewer than 10 such peaks has no gate, so clean spectra keep every calibrant
+   - Sample offset: locate the calibrants within ±10 times the search window, where more references show significantly more peaks than their background than chance agreement explains; the search then starts there (at 0 when no offset is supported)
    - Line level: match every reference within the search window, take the median ppm error per line and reference; lines without an estimate are searched again around the drift of their estimated neighbours until no further line is estimated; fit an offset (and a slope in m/z when at least 3 references spanning 25% of their m/z range are matched), smooth over 5 lines and interpolate lines without calibrants
-   - Pixel level: match again within the search window centred on the line prediction, take each spectrum's median residual, smooth over the 3 x 3 pixel neighbourhood
+   - Pixel level: match again within the search window centred on the line prediction; a spectrum's residual is the median of its residuals within `mass_tolerance` of their median, used when at least 3 agree; smooth over the 3 x 3 pixel neighbourhood
    - Correct every m/z as m / (1 + e(m) × 1e-6), with e(m) the spectrum's ppm error model; the same model serves the backbone and the intensity matrix
    - Runs with or without a lipid annotation database; the applied correction is stored in `obs["recalibration_ppm_<mode>"]`
 
-5. **Per-Sample m/z Peak Collection** ([MSI methods §4.3](../scientific/msi_methods.md#43-consensus-backbone-construction))
-   - Count the signal peaks of the recalibrated spectra on a logarithmic m/z grid with bins one tenth of `mass_tolerance` wide, restricted to foreground spots when background detection ran (see step 2), otherwise all spots. Only the histogram is kept
+5. **Per-Sample m/z Features** ([MSI methods §4.3](../scientific/msi_methods.md#43-consensus-backbone-construction))
+   - Find the m/z features of the recalibrated spectra as in step 3, restricted to foreground spots when background detection ran (see step 2), otherwise all spots
+   - Keep a feature when its presence (share of spectra holding it above the background) is ≥ `frequency_threshold` times that of the sample's most present feature. The log reports, per sample, the features found and kept. Only the kept features' m/z and presence are retained
 
 6. **Global Reference m/z Backbone**
-   - Pool the histograms of all samples (each weighted by its number of spectra) and smooth them with a Gaussian kernel whose full width at half maximum is `mass_tolerance`
-   - Every maximum of this peak density is one feature: it collects the peaks up to the density minimum on either side, at most `mass_tolerance` ppm away, and its m/z is their mean. One ion gives one feature even when its peaks spread wider than the tolerance
-   - Keep a feature when, in at least one sample, it holds ≥ `frequency_threshold` times the peaks of that sample's most frequent feature
+   - Place the kept features of all samples on the logarithmic grid, each weighted by its presence, and smooth with a Gaussian kernel whose full width at half maximum is `mass_tolerance`
+   - Every maximum of this density is one backbone feature: it collects the sample features up to the density minimum on either side, at most `mass_tolerance` ppm away, and its m/z is their presence-weighted mean. A feature kept in one sample is enough
    - This single reference grid is used to align all samples
 
 7. **Lipid Annotation** (optional, requires `lipid_annotation_db`)
@@ -184,7 +186,7 @@ The MSI pipeline operates at the **dataset level**: all samples are processed to
 | Parameter | Default | Description |
 |-----------|---------|-------------|
 | `mass_tolerance` | `10` | Mass tolerance in ppm for m/z clustering, recalibration, and annotation |
-| `frequency_threshold` | `0.01` | Minimum signal-peak count of a backbone feature, as a fraction of a sample's most frequent feature |
+| `frequency_threshold` | `0.01` | Minimum presence of a backbone feature (share of spectra holding it above the background), as a fraction of a sample's most present feature; a feature passing in one sample is kept |
 | `intensity_normalization` | `"none"` | Normalization method (per ion mode): `"tic"`, `"log"`, `"clr"`, `"tic_mean_scaled"`, `"median"`, `"internal_standard"`, or `"none"` |
 | `recalibration_reference` | `null` | User-supplied reference m/z per ion mode (`{"pos": [...]}` or `"pos: 760.585, 798.541; neg: 885.550"`); selected from the data if null |
 | `internal_standard_mz` | `null` | m/z of the sprayed internal standards per ion mode (same forms); always recalibration references, required by `"internal_standard"` normalization |
