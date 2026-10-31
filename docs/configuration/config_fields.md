@@ -285,7 +285,6 @@ Example:
 | `mass_tolerance` | int | `10` |
 | `frequency_threshold` | float | `0.01` |
 | `intensity_normalization` | string | `"none"` |
-| `min_intensity_threshold` | float | `10000.0` |
 | `detect_background` | bool | `false` |
 | `sample_type` | string | `"tissue"` |
 | `resolution` | string | `"standard"` |
@@ -301,7 +300,6 @@ Example:
 - `lipid_annotation_db`: path to a CSV or JSON file with columns `db_name`, `ionized_mass`, `ion_mode`.
 - `detect_background` only takes effect when `lipid_annotation_db` is also set. Without a database the detection step is skipped and every spot is flagged foreground.
 - `mass_tolerance` must be an integer; a float value raises `ValueError` during processing.
-- `min_intensity_threshold` is the minimum intensity of a calibrant peak during m/z recalibration. It does not filter or mask spots.
 
 The example below enables TIC normalization and background detection explicitly; these are not the defaults.
 
@@ -312,7 +310,6 @@ Example:
   "mass_tolerance": 10,
   "frequency_threshold": 0.01,
   "intensity_normalization": "tic",
-  "min_intensity_threshold": 10000.0,
   "detect_background": true,
   "sample_type": "tissue",
   "recalibration_reference": null,
@@ -523,7 +520,6 @@ Example:
         "mass_tolerance": 10,
         "frequency_threshold": 0.01,
         "intensity_normalization": "tic",
-        "min_intensity_threshold": 10000.0,
         "detect_background": true,
         "sample_type": "tissue",
         "recalibration_reference": null,

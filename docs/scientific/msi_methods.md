@@ -187,7 +187,20 @@ If no `recalibration_reference` is supplied, reference masses are selected autom
 the tissue spectra when background detection ran (§3), all spectra otherwise. Selecting calibrants
 from the data, instead of from an a priori list, avoids false calibrant matches that degrade the
 recalibration[^larocca2021]. FOCUS design choice: the selection rules below (histogram, isolation,
-scoring, spread and anchoring); none of them is taken from a published method.
+scoring, centring, spread and anchoring); none of them is taken from a published method.
+
+**Signal peaks.** Selection and matching (§4.2) consider only the signal peaks of a spectrum: peaks
+whose intensity reaches \(\text{SNR} \cdot N_s\), with \(N_s = 1.4826 \cdot
+\operatorname{MAD}(I_s)\) the noise of spectrum \(s\) estimated from the intensities \(I_s\) of all
+its peaks (`noise_threshold`, `signal_peaks`). Peak detection against SNR times a per-spectrum MAD
+noise estimate is the MALDIquant rule[^gibb2012]. FOCUS adaptation: the noise is estimated from the
+centroid intensities of the spectrum instead of from the profile signal, and \(\text{SNR} = 5\)
+instead of MALDIquant's default 2, because the centroids of a noise-dominated spectrum are already
+local maxima of the noise and a factor of 2 keeps most of them. The threshold is relative to each
+spectrum, so it follows a loss of intensity (a degrading laser, a weak region, a different instrument
+setting) instead of failing below a fixed intensity. In dense spectra (thousands of centroids per
+spectrum, mostly noise) it also keeps the noise out of the counts below, where it would otherwise
+fill every m/z window and mask the calibrants.
 
 #### 4.1.1 Logarithmic reduction
 
@@ -214,14 +227,15 @@ grouping in §4.1.3 determines what counts as one candidate. Boundary splits are
 Per sample and ion mode the reduction accumulates, over occupied bins only,
 
 \[
-n_b = \#\{\text{peaks in bin } b\},
+n_b = \#\{\text{signal peaks in bin } b\},
 \qquad
 \sigma_b = \sum_{m \,\in\, b} m ,
 \qquad
-q_b = \#\{\text{crowded peaks in bin } b\},
+q_b = \#\{\text{crowded signal peaks in bin } b\},
 \]
 
-via `np.bincount` (a single linear pass, no sort). Crowded peaks are defined in §4.1.2. The
+via `np.bincount` (a single linear pass, no sort), in blocks of at most \(2 \cdot 10^7\) peaks.
+Crowded peaks are defined in §4.1.2. The
 representative mass of a bin is the exact mean \(\sigma_b / n_b\) of the raw values that fell in it.
 The grid only indexes peaks; it never replaces a measured mass with a bin centre. Samples are folded
 in one at a time and their raw peaks released immediately; what persists per sample is one `int32`
@@ -236,8 +250,9 @@ Matching (§4.2) takes the most intense peak inside a search window of half-widt
 W = \max(5\tau,\ 50)\ \text{ppm}
 \]
 
-around a reference. A peak with a competitor in the same spectrum (another peak within \(W\) ppm
-whose intensity is at least 0.1 times its own) can lose that match to the competitor. Such a peak is
+around a reference. A signal peak with a competitor in the same spectrum (another signal peak within
+\(W\) ppm whose intensity is at least 0.1 times its own) can lose that match to the competitor. Such a
+peak is
 **crowded** (`crowded_peaks`, numba). The test is made per spectrum: m/z drift spreads one calibrant
 over neighbouring masses across spectra, but never puts two copies of it into one spectrum, so drift
 alone never makes a calibrant crowded.
@@ -285,8 +300,12 @@ windows never overlap and no peak can match two references. Selection, with
 5. Coverage: while a sample has no chosen reference, add the best group (isolated groups first)
    that covers it.
 
-Each reference is reported at \(\hat\mu_g\), the mean of every occurrence within its search window:
-a lower-variance estimate of the calibrant mass than any single observation. These means carry the
+Every window that holds a calibrant scores alike, so a selected group \(g\) can sit anywhere around
+the calibrant, and the tie-break on ascending \(\mu_g\) favours groups below it. Each selected group
+is therefore centred first: its centre is the heaviest group \(c(g) = \arg\max_{h \in \mathcal{W}_g}
+\sum_{b \in h} n_b\), and the reference is reported at \(\hat\mu_{c(g)}\), the mean of every
+occurrence within the search window around that centre: a lower-variance estimate of the calibrant
+mass than any single observation. The \(2W\) separation is measured between centres. These means carry the
 dataset's average drift. When internal standards are observed, the references are moved onto the
 standards' mass scale. Internal calibration against known masses is the most effective correction of
 mass shift[^larocca2021], and sprayed standards cover the whole section[^vandenbosch2023]. With
@@ -304,8 +323,8 @@ Recalibration (`estimate_recalibration`) gives every spectrum its own m/z correc
 for MSI[^mccann2021][^larocca2021]. Each spectrum is aligned to the same reference peaks by a
 per-spectrum warping function, the approach of MALDIquant `determineWarpingFunctions`[^gibb2012].
 The matching rule is MALDIquant's as well: a reference matches the most intense peak inside a window
-proportional to the reference mass[^gibb2012]; FOCUS also requires the peak intensity to be at least
-`min_intensity_threshold`. FOCUS adaptation: the error model is linear in m/z, in ppm, and is
+proportional to the reference mass[^gibb2012]; FOCUS also requires that peak to be a signal peak of
+its spectrum (§4.1). FOCUS adaptation: the error model is linear in m/z, in ppm, and is
 estimated in two levels, scan line then pixel. FOCUS design choice, for this split: pooling a whole
 scan line gives many matches per estimate, so the line estimate is robust to the occasional false
 match, and the pixel pass, centred on the line prediction, then follows the drift where it changes
@@ -337,8 +356,8 @@ a_l = \operatorname{median}_{j}\bigl(\tilde e_{lj} - b_l\,(\mu_j - \bar\mu)\bigr
 estimated when the line holds at least 3 matched (spectrum, reference) pairs. Both \(b_l\) and
 \(a_l\) are smoothed by a running median over 5 lines[^tukey1977], and lines still without an
 estimate are filled by linear interpolation along the line index, holding the edge values. Every
-line therefore receives a correction, including lines in which no calibrant clears
-`min_intensity_threshold`. FOCUS design choice: the instrument state drifts continuously during the
+line therefore receives a correction, including lines in which no calibrant is a signal peak.
+FOCUS design choice: the instrument state drifts continuously during the
 acquisition, so a line without calibrants is corrected from its neighbours instead of being left
 unchanged.
 
@@ -366,6 +385,10 @@ The model is estimated once per sample and ion mode from **all** spectra and app
 The backbone (§4.3, built from the tissue spectra) and the intensity matrix (§5, built from all
 spectra) therefore see the same correction. The applied correction at \(\bar\mu\) and the number of
 pixel-level matches are written to `.obs` (§7).
+
+A sample and ion mode in which fewer than half of the spectra match at least 2 references, and an ion
+mode with fewer than \(N_\text{ref}\) selected references, are reported as warnings, with the
+recalibration summary and the selected masses.
 
 ### 4.3 Consensus backbone construction
 
@@ -558,7 +581,6 @@ the stored references and backbone, and only the remaining samples are processed
   (`{"pos": [760.585, 798.541]}`) or as the GUI string `"pos: 760.585, 798.541; neg: 885.550"`
 - `internal_standard_mz` (default `null`): same forms; m/z of the sprayed internal standards, always
   used as recalibration references and required by `internal_standard` normalization
-- `min_intensity_threshold` (default 10000.0): minimum intensity of a calibrant match (§4.2)
 - `detect_background` (default `false`; effective only when `lipid_annotation_db` is also set)
 - `sample_type` (`tissue` or `microgrid`, default `tissue`)
 - `lipid_annotation_db` (optional CSV/JSON with `db_name`, `ionized_mass`, `ion_mode`)
@@ -572,7 +594,7 @@ the stored references and backbone, and only the remaining samples are processed
 [^larocca2021]: La Rocca R, Kune C, Tiquet M, et al. Adaptive pixel mass recalibration for mass spectrometry imaging based on locally endogenous biological signals. *Anal Chem* 93:4066-4074 (2021). [doi:10.1021/acs.analchem.0c05071](https://doi.org/10.1021/acs.analchem.0c05071)
 [^rafols2020]: Ràfols P, Heijs B, del Castillo E, et al. rMSIproc: an R package for mass spectrometry imaging data processing. *Bioinformatics* 36:3618-3619 (2020). [doi:10.1093/bioinformatics/btaa142](https://doi.org/10.1093/bioinformatics/btaa142)
 [^bemis2023]: Bemis KA, Föll MC, Guo D, Lakkimsetty SS, Vitek O. Cardinal v3: a versatile open source software for mass spectrometry imaging analysis. *bioRxiv* (2023). [doi:10.1101/2023.02.20.529280](https://doi.org/10.1101/2023.02.20.529280). Peak alignment as described in the package documentation (`peakAlign`).
-[^gibb2012]: Gibb S, Strimmer K. MALDIquant: a versatile R package for the analysis of mass spectrometry data. *Bioinformatics* 28:2270-2271 (2012). [doi:10.1093/bioinformatics/bts447](https://doi.org/10.1093/bioinformatics/bts447). Warping and binning as described in the package documentation (`determineWarpingFunctions`, `binPeaks`).
+[^gibb2012]: Gibb S, Strimmer K. MALDIquant: a versatile R package for the analysis of mass spectrometry data. *Bioinformatics* 28:2270-2271 (2012). [doi:10.1093/bioinformatics/bts447](https://doi.org/10.1093/bioinformatics/bts447). Peak detection, noise estimation, warping and binning as described in the package documentation (`detectPeaks`, `estimateNoise`, `determineWarpingFunctions`, `binPeaks`).
 [^wolski2005]: Wolski WE, Lalowski M, Jungblut P, Reinert K. Calibration of mass spectrometric peptide mass fingerprint data without specific external or internal calibrants. *BMC Bioinformatics* 6:203 (2005). [doi:10.1186/1471-2105-6-203](https://doi.org/10.1186/1471-2105-6-203)
 [^rousseeuw1993]: Rousseeuw PJ, Croux C. Alternatives to the median absolute deviation. *J Am Stat Assoc* 88:1273-1283 (1993). [doi:10.1080/01621459.1993.10476408](https://doi.org/10.1080/01621459.1993.10476408)
 [^tukey1977]: Tukey JW. *Exploratory Data Analysis*. Addison-Wesley, Reading, MA (1977).

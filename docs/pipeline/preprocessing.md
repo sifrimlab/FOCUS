@@ -123,9 +123,9 @@ The MSI pipeline operates at the **dataset level**: all samples are processed to
    - The foreground classification is stored as `obs["foreground"]`; all spots (including background) are included in the output and can be filtered downstream.
 
 3. **Recalibration Reference Selection** (method and references: [MSI methods §4.1](../scientific/msi_methods.md#41-recalibration-reference-selection))
-   - Every spectrum of every sample contributes: the tissue spectra when background detection ran, all spectra otherwise. Each sample is reduced on arrival to a compact m/z occurrence histogram on a logarithmic grid and its raw peaks are released, so memory stays bounded by the mass range and tolerance rather than the spectrum count
+   - Every spectrum of every sample contributes: the tissue spectra when background detection ran, all spectra otherwise. Only signal peaks are counted: peaks at least 5 times their spectrum's noise (1.4826 × MAD of its peak intensities); the same rule admits calibrant matches in step 4. Each sample is reduced on arrival to a compact m/z occurrence histogram on a logarithmic grid and its raw peaks are released, so memory stays bounded by the mass range and tolerance rather than the spectrum count
    - Histogram bins are grouped within `mass_tolerance` ppm (same weighted sliding window used for the m/z backbone), and each group is pooled with its neighbours within the calibrant search window (max(5 × `mass_tolerance`, 50) ppm), so one calibrant spread by drift counts as one candidate
-   - Candidates must be isolated: at most 10% of their occurrences may share the spectrum with a peak of at least 10% of their intensity within the search window
+   - Candidates must be isolated: at most 10% of their occurrences may share the spectrum with a signal peak of at least 10% of their intensity within the search window. Each reference is centred on the heaviest group of its window
    - For each ion mode, select at least 10 references: sprayed internal standards from `internal_standard_mz` first, then the best candidate (occurrences × fraction of samples covered, ties broken by ascending m/z) in each of 10 equal log-m/z segments, then by score, adding more if needed until every sample is covered. References are more than twice the search window apart
    - When internal standards are observed, the references are moved onto the standards' mass scale
    - Alternatively, a user-supplied `recalibration_reference` can be passed directly, which skips this step entirely
@@ -184,7 +184,6 @@ The MSI pipeline operates at the **dataset level**: all samples are processed to
 | `intensity_normalization` | `"none"` | Normalization method (per ion mode): `"tic"`, `"log"`, `"clr"`, `"tic_mean_scaled"`, `"median"`, `"internal_standard"`, or `"none"` |
 | `recalibration_reference` | `null` | User-supplied reference m/z per ion mode (`{"pos": [...]}` or `"pos: 760.585, 798.541; neg: 885.550"`); selected from the data if null |
 | `internal_standard_mz` | `null` | m/z of the sprayed internal standards per ion mode (same forms); always recalibration references, required by `"internal_standard"` normalization |
-| `min_intensity_threshold` | `10000.0` | Minimum intensity of a calibrant peak during recalibration |
 | `detect_background` | `false` | Run background detection to classify tissue vs background spots. Requires `lipid_annotation_db`; without it the step is skipped |
 | `sample_type` | `"tissue"` | Sample type for background detection: `"tissue"` (GMM + BIC, morphological cleanup) or `"microgrid"` (local-outlier detection of sparse cells) |
 | `resolution` | `"standard"` | Clustering preset for the alignment colours: `"standard"` (multicellular pixels) or `"sub_cellular"` (weak high-resolution pixels, wider spatial neighbourhood) |

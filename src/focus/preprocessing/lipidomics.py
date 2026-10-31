@@ -50,7 +50,7 @@ def _step(index: int) -> tuple[int, int, str]:
 
 # Part of the preprocessing fingerprint: bump whenever the same input and settings produce a
 # different output, so cached results are rebuilt.
-METHOD_VERSION = "msi-2"
+METHOD_VERSION = "msi-3"
 
 
 def _parse_mz_by_mode(value, setting: str) -> dict[str, np.ndarray] | None:
@@ -384,15 +384,57 @@ _MAD_TO_SIGMA = 1.4826
 _RECAL_LINE_SMOOTHING = 5
 # Matched references a pixel needs before its own residual is used.
 _RECAL_MIN_PIXEL_MATCHES = 2
-# Spectra flattened per numba call; bounds the transient arrays.
-_RECAL_BLOCK_SPECTRA = 20_000
+# A peak is calibrant-grade when its intensity is at least this multiple of its spectrum's noise
+# (1.4826 x MAD of the spectrum's peak intensities). Relative to each spectrum, so it follows the
+# intensity loss of a degrading laser instead of failing below a fixed intensity.
+_SIGNAL_TO_NOISE = 5.0
+# Peaks flattened per numba call (two float64 arrays); bounds the transient memory whatever the
+# number of peaks per spectrum.
+_BLOCK_PEAKS = 20_000_000
 # Minimum number of automatically selected recalibration references per ion mode.
 _RECALIBRATION_REFERENCES = 10
+# A sample whose spectra match a reference less often than this is reported as a warning.
+_RECAL_WARN_MATCHED = 0.5
 
 
 def recalibration_search_ppm(mass_tolerance: float) -> float:
 	"""Half-width, in ppm, of the line-level calibrant search window."""
 	return float(max(_RECAL_SEARCH_FACTOR * mass_tolerance, _RECAL_MIN_SEARCH_PPM))
+
+
+def _peak_blocks(spectra: list[np.ndarray], max_peaks: int = _BLOCK_PEAKS):
+	"""Consecutive (start, stop) spectrum ranges holding at most `max_peaks` peaks (at least one spectrum each)."""
+	start, peaks = 0, 0
+	for k, spectrum in enumerate(spectra):
+		if k > start and peaks + spectrum.size > max_peaks:
+			yield start, k
+			start, peaks = k, 0
+		peaks += spectrum.size
+	if start < len(spectra):
+		yield start, len(spectra)
+
+
+@njit(cache=True)
+def noise_threshold(intensity, signal_to_noise):
+	"""`signal_to_noise` x 1.4826 x MAD of one spectrum's peak intensities (0 for an empty spectrum)."""
+	if intensity.size == 0:
+		return 0.0
+	median = np.median(intensity)
+	return signal_to_noise * 1.4826 * np.median(np.abs(intensity - median))
+
+
+@njit(cache=True)
+def signal_peaks(flat_intensity, offsets, signal_to_noise):
+	"""Bool mask over the flattened peaks: intensity >= the spectrum's `noise_threshold`."""
+	mask = np.zeros(flat_intensity.size, dtype=np.bool_)
+	for s in range(offsets.size - 1):
+		start = offsets[s]
+		end = offsets[s + 1]
+		if end > start:
+			threshold = noise_threshold(flat_intensity[start:end].astype(np.float64), signal_to_noise)
+			for k in range(start, end):
+				mask[k] = flat_intensity[k] >= threshold
+	return mask
 
 
 def _flatten_spectra(mz_list: list[np.ndarray], intensity_list: list[np.ndarray] | None = None):
@@ -410,13 +452,14 @@ def _flatten_spectra(mz_list: list[np.ndarray], intensity_list: list[np.ndarray]
 
 
 @njit(cache=True)
-def match_references(flat_mz, flat_intensity, offsets, reference_mz, centre_ppm, window_ppm, min_intensity):
+def match_references(flat_mz, flat_intensity, offsets, reference_mz, centre_ppm, window_ppm, signal_to_noise):
 	"""
 	Match every reference m/z in every spectrum.
 
 	For spectrum s and reference j the search window is centred at
 	`reference_mz[j] * (1 + centre_ppm[s, j] * 1e-6)` with half-width `window_ppm` ppm of the
-	reference. The most intense peak in the window with intensity >= `min_intensity` is the match.
+	reference. The most intense peak in the window is the match, provided it reaches the spectrum's
+	`noise_threshold(intensity, signal_to_noise)`.
 
 	Returns
 	-------
@@ -434,6 +477,7 @@ def match_references(flat_mz, flat_intensity, offsets, reference_mz, centre_ppm,
 			continue
 		mz = flat_mz[start:end]
 		intensity = flat_intensity[start:end]
+		min_intensity = noise_threshold(intensity, signal_to_noise)
 
 		# imzML centroid spectra are normally stored in ascending m/z; sort only if they are not.
 		ascending = True
@@ -464,17 +508,16 @@ def match_references(flat_mz, flat_intensity, offsets, reference_mz, centre_ppm,
 	return errors
 
 
-def _match_all(mz_list, intensity_list, reference_mz, centre_ppm, window_ppm, min_intensity):
+def _match_all(mz_list, intensity_list, reference_mz, centre_ppm, window_ppm):
 	"""Blocked `match_references` over a whole sample; `centre_ppm(start, stop)` gives each block's centres."""
 	n_spectra = len(mz_list)
 	errors = np.full((n_spectra, reference_mz.size), np.nan, dtype=np.float32)
-	for start in range(0, n_spectra, _RECAL_BLOCK_SPECTRA):
-		stop = min(start + _RECAL_BLOCK_SPECTRA, n_spectra)
+	for start, stop in _peak_blocks(mz_list):
 		flat_mz, flat_intensity, offsets = _flatten_spectra(mz_list[start:stop], intensity_list[start:stop])
 		if flat_mz.size == 0:
 			continue
 		errors[start:stop] = match_references(flat_mz, flat_intensity, offsets, reference_mz,
-											  centre_ppm(start, stop), float(window_ppm), float(min_intensity))
+											  centre_ppm(start, stop), float(window_ppm), _SIGNAL_TO_NOISE)
 	return errors
 
 
@@ -571,7 +614,6 @@ def estimate_recalibration(
 		line_axis: int,
 		reference_mz: np.ndarray,
 		mass_tolerance: float,
-		min_intensity: float = 0.0,
 ) -> MsiRecalibration:
 	'''
 	Estimate the per-spectrum m/z recalibration of one sample and ion mode.
@@ -603,8 +645,8 @@ def estimate_recalibration(
 		Ascending reference m/z values.
 	mass_tolerance : float
 		Mass tolerance in ppm; sets the search window (`recalibration_search_ppm`).
-	min_intensity : float
-		Minimum intensity of a calibrant match.
+
+	A match must reach `_SIGNAL_TO_NOISE` times its spectrum's noise (see `noise_threshold`).
 	'''
 	n_spectra = len(mz_list)
 	reference_mz = np.sort(np.asarray(reference_mz, dtype=np.float64))
@@ -623,7 +665,7 @@ def estimate_recalibration(
 	search_ppm = recalibration_search_ppm(mass_tolerance)
 	coarse = _match_all(mz_list, intensity_list, reference_mz,
 						lambda start, stop: np.zeros((stop - start, n_ref), dtype=np.float64),
-						search_ppm, min_intensity)
+						search_ppm)
 
 	# Per line and reference: median error and match count.
 	line_median = np.full((n_lines, n_ref), np.nan, dtype=np.float64)
@@ -675,7 +717,7 @@ def estimate_recalibration(
 	# Pass 2: the same window, centred on the line prediction.
 	predicted = lambda start, stop: (offset[line[start:stop], None]
 									 + slope[line[start:stop], None] * reference_offset[None, :])
-	fine = _match_all(mz_list, intensity_list, reference_mz, predicted, search_ppm, min_intensity)
+	fine = _match_all(mz_list, intensity_list, reference_mz, predicted, search_ppm)
 	matches = np.isfinite(fine).sum(axis=1).astype(np.int16)
 	with warnings.catch_warnings():
 		warnings.simplefilter("ignore", RuntimeWarning)  # spectra without matches
@@ -790,7 +832,6 @@ class MsiSample(BaseSample):
 
 		self.recalibration_reference: dict[
 										  MsiIonMode, np.ndarray] | None = None  # To be set during dataset preprocessing
-		self.min_intensity_threshold: float | None = None  # To be set during dataset preprocessing
 		self.recalibration_model: dict[MsiIonMode, MsiRecalibration] = {}  # Estimated during dataset preprocessing
 		self.filtered_idx: list[int] | None = None  # To be computed during dataset preprocessing
 		self._sample_type: MsiSampleType = MsiSampleType.TISSUE  # To be set from process_dataset
@@ -847,18 +888,6 @@ class MsiSample(BaseSample):
 		self._recalibration_reference = value
 
 	@property
-	def min_intensity_threshold(self) -> float | None:
-		'''
-		Get the minimum intensity threshold for this sample.
-
-		Returns
-		-------
-		float | None
-			Dictionary containing the minimum intensity threshold for each ion mode.
-		'''
-		return self._min_intensity_threshold
-
-	@property
 	def foreground_mask(self) -> np.ndarray | None:
 		'''
 		Get the foreground mask for this sample.
@@ -878,23 +907,6 @@ class MsiSample(BaseSample):
 			foreground_mask = ~foreground_mask
 
 		return foreground_mask
-
-	@min_intensity_threshold.setter
-	def min_intensity_threshold(self, value: float | None) -> None:
-		'''
-		Set the minimum intensity threshold for this sample.
-
-		Parameters
-		----------
-		value : float | None
-			Dictionary containing the minimum intensity threshold for each ion mode.
-		'''
-
-		if value is not None:
-			if type(value) not in [float, int]:
-				raise TypeError("Minimum intensity threshold must be a float value.")
-
-		self._min_intensity_threshold = value
 
 	def _spectra_to_dict(self, spectra: ET.Element) -> dict:
 		'''
@@ -1961,10 +1973,15 @@ class MsiSample(BaseSample):
 						line_axis=self._metadata[mode].get(MsiMetadata.LINE_AXIS, 0),
 						reference_mz=reference,
 						mass_tolerance=mass_tolerance,
-						min_intensity=self.min_intensity_threshold or 0.0,
 					)
-					get_reporter().detail(f"Recalibration ({str(mode).upper()}): "
-										  f"{describe_recalibration(self.recalibration_model[mode])}")
+					model = self.recalibration_model[mode]
+					message = f"Recalibration ({str(mode).upper()}): {describe_recalibration(model)}"
+					if model.summary.get("pixels_matched", 0.0) < _RECAL_WARN_MATCHED:
+						get_reporter().warning(message + f"; fewer than {_RECAL_WARN_MATCHED:.0%} of the spectra "
+														  f"matched a reference, so most of this sample is corrected "
+														  f"from its neighbours or not at all")
+					else:
+						get_reporter().detail(message)
 				mz_vectors[mode] = self.recalibration_model[mode].apply(mz_vectors[mode])
 
 		# Always populate filtered vectors: use filtered_idx when available, otherwise keep all spectra
@@ -2052,9 +2069,6 @@ class _CalibrationReferenceSelector:
 
 	# Bin width as a fraction of the ppm tolerance. 2 => bins are half a tolerance wide.
 	_BIN_SUBDIVISION = 2
-	# Spectra concatenated per reduction block. Bounds the transient arrays independently of how
-	# many spectra a sample has.
-	_BLOCK_SPECTRA = 20_000
 	# A competitor counts when its intensity is at least this fraction of the peak's own.
 	_ISOLATION_INTENSITY_RATIO = 0.1
 	# A candidate is isolated when at most this fraction of its occurrences is crowded.
@@ -2103,8 +2117,8 @@ class _CalibrationReferenceSelector:
 
 		for mode, spectra in sample_mz.items():
 			bins, counts, mz_sums, crowded = self._reduce_spectra(
-				spectra, sample_intensity[mode], self._log_bin_width, self._BLOCK_SPECTRA,
-				self._search_ppm, self._ISOLATION_INTENSITY_RATIO)
+				spectra, sample_intensity[mode], self._log_bin_width, self._search_ppm,
+				self._ISOLATION_INTENSITY_RATIO)
 			if bins.size == 0:
 				continue
 
@@ -2225,7 +2239,6 @@ class _CalibrationReferenceSelector:
 				return prefix[high] - prefix[low]
 
 			window_weight = windowed(group_weight)
-			window_mz = windowed(group_mz_sum) / window_weight
 			isolated = windowed(group_crowded) <= self._ISOLATION_MAX_CROWDED * window_weight
 			prefix_present = np.zeros((n_samples, n_groups + 1), dtype=np.int32)
 			np.cumsum(present, axis=1, out=prefix_present[:, 1:])
@@ -2235,66 +2248,81 @@ class _CalibrationReferenceSelector:
 			scores = window_weight * (window_present.sum(axis=0) / n_samples)
 			order = np.lexsort((group_mz, -scores))
 
-			selected: list[int] = []
+			def centred(group: int) -> tuple[int, float, float]:
+				# Every window holding a calibrant scores alike, so the seed can sit anywhere around it.
+				# Centre on the heaviest group of the seed's window, and report the mean of every
+				# occurrence within the search window around that centre.
+				heaviest = int(low[group] + np.argmax(group_weight[low[group]:high[group]]))
+				centre = group_mz[heaviest]
+				lo = np.searchsorted(group_mz, centre * (1 - window), side='left')
+				hi = np.searchsorted(group_mz, centre * (1 + window), side='right')
+				return int(group), float(centre), float(group_mz_sum[lo:hi].sum() / group_weight[lo:hi].sum())
 
-			def separated(group: int, chosen: list[int]) -> bool:
-				return all(abs(group_mz[group] - group_mz[c]) > 2 * window * group_mz[c] for c in chosen)
+			def separated(candidate: tuple[int, float, float], others: list) -> bool:
+				return all(abs(candidate[1] - other[1]) > 2 * window * other[1] for other in others)
+
+			chosen: list[tuple[int, float, float]] = []  # (seed group, centre m/z, reference m/z)
 
 			# 1. Required masses.
-			anchors: list[tuple[int, float]] = []
+			anchors: list[tuple[float, float]] = []  # (reference m/z, given m/z)
 			if required_mz is not None and mode in required_mz:
 				for mass in np.sort(np.asarray(required_mz[mode], dtype=np.float64)):
 					nearest = int(np.argmin(np.abs(group_mz - mass)))
 					if abs(group_mz[nearest] - mass) > window * mass:
 						get_reporter().warning(f"Internal standard m/z {mass:.4f} ({str(mode).upper()}) is not observed; "
 											   f"it is not used as a recalibration reference")
-					elif separated(nearest, selected):
-						selected.append(nearest)
-						anchors.append((nearest, float(mass)))
+						continue
+					candidate = centred(nearest)
+					if separated(candidate, chosen):
+						chosen.append(candidate)
+						anchors.append((candidate[2], float(mass)))
 
 			# 2. Candidate pool.
-			pool: list[int] = []
+			pool: list[tuple[int, float, float]] = []
 			best_score = scores[isolated].max() if isolated.any() else 0.0
 			for group in order:
 				if len(pool) >= self._POOL_FACTOR * number_of_references or scores[group] < self._POOL_MIN_RELATIVE_SCORE * best_score:
 					break
-				if isolated[group] and separated(group, selected + pool):
-					pool.append(int(group))
+				if isolated[group]:
+					candidate = centred(group)
+					if separated(candidate, chosen + pool):
+						pool.append(candidate)
 
 			# 3. Spread over the pool's log-m/z span.
 			if pool:
-				log_mz = np.log(group_mz[pool])
+				log_mz = np.log([candidate[1] for candidate in pool])
 				edges = np.linspace(log_mz.min(), log_mz.max(), number_of_references + 1)
 				segment = np.clip(np.searchsorted(edges, log_mz, side='right') - 1, 0, number_of_references - 1)
 				for s in range(number_of_references):
-					members = [group for group, seg in zip(pool, segment) if seg == s]
-					if members and separated(members[0], selected):
-						selected.append(members[0])
+					members = [candidate for candidate, seg in zip(pool, segment) if seg == s]
+					if members and separated(members[0], chosen):
+						chosen.append(members[0])
 
 			# 4. Fill from the pool by score.
-			for group in pool:
-				if len(selected) >= number_of_references:
+			for candidate in pool:
+				if len(chosen) >= number_of_references:
 					break
-				if group not in selected and separated(group, selected):
-					selected.append(group)
+				if separated(candidate, chosen):
+					chosen.append(candidate)
 
 			# 5. Coverage: isolated groups first, then any group.
-			covered = window_present[:, selected].any(axis=1) if selected else np.zeros(n_samples, dtype=bool)
+			covered = (window_present[:, [c[0] for c in chosen]].any(axis=1) if chosen
+					   else np.zeros(n_samples, dtype=bool))
 			for require_isolation in (True, False):
 				for group in order:
 					if covered.all():
 						break
-					if require_isolation and not isolated[group]:
+					if (require_isolation and not isolated[group]) or not (window_present[:, group] & ~covered).any():
 						continue
-					if group in selected or not (window_present[:, group] & ~covered).any() or not separated(group, selected):
-						continue
-					selected.append(int(group))
-					covered |= window_present[:, group]
+					candidate = centred(group)
+					if separated(candidate, chosen):
+						chosen.append(candidate)
+						covered |= window_present[:, group]
 
-			references = window_mz[np.array(selected, dtype=np.intp)]
+			references = np.array([candidate[2] for candidate in chosen], dtype=np.float64)
 			if anchors:
 				masses = np.array([mass for _, mass in anchors])
-				offsets = np.array([(window_mz[group] - mass) / mass * 1e6 for group, mass in anchors])
+				offsets = np.array([(reference - mass) / mass * 1e6 for reference, mass in anchors])
 				span = references.max() - references.min()
 				if len(anchors) >= 2 and span > 0 and np.ptp(masses) >= _RECAL_SLOPE_MIN_SPAN * span:
 					slope, intercept = np.polyfit(masses, offsets, 1)
@@ -2312,14 +2340,16 @@ class _CalibrationReferenceSelector:
 
 	@staticmethod
 	def _reduce_spectra(spectra: list[np.ndarray], intensities: list[np.ndarray], log_bin_width: float,
-						block_spectra: int, search_ppm: float,
-						intensity_ratio: float) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+						search_ppm: float, intensity_ratio: float) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
 		'''
-		Reduce one sample + ion mode to a compact m/z occurrence histogram.
+		Reduce one sample + ion mode to a compact m/z occurrence histogram of its signal peaks.
 
-		Spectra are consumed in blocks, and the dense accumulator spans only the masses this
-		sample actually contains (it is grown on demand), so peak memory is bounded by the block
-		size plus the sample's own mass span -- never by its spectrum count. Only occupied bins are
+		Only peaks reaching ``_SIGNAL_TO_NOISE`` times their spectrum's noise (see :func:`signal_peaks`)
+		are counted, so dense, noise-dominated spectra do not flood every m/z window with noise; the
+		crowded test then compares signal peaks with signal peaks. Spectra are consumed in blocks of
+		at most ``_BLOCK_PEAKS`` peaks, and the dense accumulator spans only the masses this sample
+		actually contains (it is grown on demand), so peak memory is bounded by the block size plus
+		the sample's own mass span -- never by its spectrum or peak count. Only occupied bins are
 		returned. Binning uses ``np.bincount``, which is a single linear pass with no sort.
 
 		Parameters
@@ -2330,8 +2360,6 @@ class _CalibrationReferenceSelector:
 			One intensity array per spectrum.
 		log_bin_width : float
 			Bin width in natural-log units.
-		block_spectra : int
-			Number of spectra concatenated at a time.
 		search_ppm : float
 			Calibrant search half-width in ppm, for the crowded-peak statistic.
 		intensity_ratio : float
@@ -2342,7 +2370,7 @@ class _CalibrationReferenceSelector:
 		bins : np.ndarray[np.int32]
 			Ascending occupied bin indices, ``floor(ln(m) / log_bin_width)``.
 		counts : np.ndarray[np.int64]
-			Peak occurrences per bin.
+			Signal-peak occurrences per bin.
 		mz_sums : np.ndarray[np.float64]
 			Sum of the raw m/z values per bin; divide by `counts` for the bin's exact mean mass.
 		crowded : np.ndarray[np.int64]
@@ -2361,9 +2389,17 @@ class _CalibrationReferenceSelector:
 		mz_sums = None
 		crowded_counts = None
 
-		for start in range(0, len(spectra), block_spectra):
-			block_mz, block_intensity, offsets = _flatten_spectra(
-				spectra[start:start + block_spectra], intensities[start:start + block_spectra])
+		for start, stop in _peak_blocks(spectra):
+			block_mz, block_intensity, offsets = _flatten_spectra(spectra[start:stop], intensities[start:stop])
+			if block_mz.size == 0:
+				continue
+			# Keep the signal peaks only, then flag the crowded ones among them.
+			signal = signal_peaks(block_intensity, offsets, _SIGNAL_TO_NOISE)
+			spectrum_of_peak = np.repeat(np.arange(offsets.size - 1), np.diff(offsets))
+			offsets = np.zeros_like(offsets)
+			np.cumsum(np.bincount(spectrum_of_peak[signal], minlength=offsets.size - 1), out=offsets[1:])
+			block_mz, block_intensity = block_mz[signal], block_intensity[signal]
+			del signal, spectrum_of_peak
 			block_crowded = crowded_peaks(block_mz, block_intensity, offsets, search_ppm, intensity_ratio)
 			# ln is undefined at or below zero, and such m/z are invalid for MSI anyway.
 			positive = block_mz > 0.0
@@ -2735,7 +2771,6 @@ class MsiDataset(BaseDataset):
 						frequency_threshold: float = 0.01,
 						intensity_normalization: str = MsiIntensityNormalization.NONE,
 						recalibration_reference: dict[MsiIonMode, np.ndarray] | str | None = None,
-						min_intensity_threshold: float = 10000.0,
 						internal_standard_mz: dict[MsiIonMode, np.ndarray] | str | None = None,
 						detect_background: bool = False,
 						sample_type: str = MsiSampleType.TISSUE,
@@ -2765,8 +2800,6 @@ class MsiDataset(BaseDataset):
 		recalibration_reference : dict[MsiIonMode, np.ndarray] | str | None
 			Reference M/Z values for recalibration per ion mode (see _parse_mz_by_mode for the
 			accepted forms). Selected from the dataset when None.
-		min_intensity_threshold : float
-			Minimum intensity threshold to consider a peak valid in the recalibration process.
 		internal_standard_mz : dict[MsiIonMode, np.ndarray] | str | None
 			M/Z values of the internal standards sprayed over the sections, per ion mode. They are
 			always included in the automatically selected recalibration references, and are
@@ -2801,8 +2834,6 @@ class MsiDataset(BaseDataset):
 			raise ValueError('mass_tolerance must be a positive integer representing ppm.')
 		if type(frequency_threshold) is not float or frequency_threshold < 0.0 or frequency_threshold > 1.0:
 			raise ValueError('frequency_threshold must be a float between 0.0 and 1.0.')
-		if type(min_intensity_threshold) not in [int, float] or min_intensity_threshold < 0.0:
-			raise ValueError('min_intensity_threshold must be a non-negative number.')
 		recalibration_reference = _parse_mz_by_mode(recalibration_reference, MsiPreprocessingParams.RECALIBRATION_REFERENCE)
 		internal_standard_mz = _parse_mz_by_mode(internal_standard_mz, MsiPreprocessingParams.INTERNAL_STANDARD_MZ)
 		if intensity_normalization == MsiIntensityNormalization.INTERNAL_STANDARD:
@@ -2820,7 +2851,7 @@ class MsiDataset(BaseDataset):
 			"intensity_normalization": intensity_normalization,
 			"recalibration_reference": as_lists(recalibration_reference),
 			"internal_standard_mz": as_lists(internal_standard_mz),
-			"min_intensity_threshold": float(min_intensity_threshold), "detect_background": detect_background,
+			"detect_background": detect_background,
 			"sample_type": sample_type, "resolution": resolution,
 		})
 
@@ -2963,11 +2994,16 @@ class MsiDataset(BaseDataset):
 													  required_mz=internal_standard_mz)
 			del selector  # Free memory
 			gc.collect()
-			found = [f"{len(masses)} ({str(mode).upper()})" for mode, masses in recalibration_reference.items() if len(masses)]
-			if found:
-				reporter.detail("Recalibration references: " + ", ".join(found))
-			else:
-				reporter.warning("No recalibration reference found; m/z values are not recalibrated")
+			sample_modes = {mode for sample in iter_samples for mode in sample.ion_modes}
+			for mode in sorted(sample_modes):
+				masses = recalibration_reference.get(mode, np.array([]))
+				listed = ", ".join(f"{m:.4f}" for m in masses)
+				if len(masses) == 0:
+					reporter.warning(f"No recalibration reference found ({str(mode).upper()}); m/z values are not recalibrated")
+				elif len(masses) < _RECALIBRATION_REFERENCES:
+					reporter.warning(f"Only {len(masses)} recalibration reference(s) found ({str(mode).upper()}): {listed}")
+				else:
+					reporter.detail(f"Recalibration references ({str(mode).upper()}): {listed}")
 		else:
 			# Dummy call to still filter the datapoints in each sample
 			for sample in reporter.tqdm(iter_samples, *_step(2), unit="sample"):
@@ -2982,7 +3018,6 @@ class MsiDataset(BaseDataset):
 		# Store the recalibration reference in each sample to reprocess
 		for sample in iter_samples:
 			sample.recalibration_reference = recalibration_reference
-			sample.min_intensity_threshold = min_intensity_threshold
 
 		if not has_partial_cache:
 			# STEP 3: For each ion mode in each sample, compute the reference M/Z vector
@@ -3302,13 +3337,15 @@ def _create_msi_dataset(path, samples, settings):
 	return MsiDataset(path=path, samples=samples, lipid_annotation_db=lipid_annotation_db)
 
 def _extract_msi_settings(settings):
+	if "min_intensity_threshold" in settings:
+		get_reporter().warning("MSI setting 'min_intensity_threshold' is no longer used and is ignored: calibrant peaks "
+							   "are selected per spectrum, relative to that spectrum's noise level")
 	return {
 		'mass_tolerance': settings.get(MsiPreprocessingParams.MASS_TOLERANCE, 10),
 		'frequency_threshold': settings.get(MsiPreprocessingParams.FREQUENCY_THRESHOLD, 0.01),
 		'intensity_normalization': settings.get(MsiPreprocessingParams.INTENSITY_NORMALIZATION, MsiIntensityNormalization.NONE),
 		'recalibration_reference': _parse_mz_by_mode(settings.get(MsiPreprocessingParams.RECALIBRATION_REFERENCE, None),
 													 MsiPreprocessingParams.RECALIBRATION_REFERENCE),
-		'min_intensity_threshold': settings.get(MsiPreprocessingParams.MIN_INTENSITY_THRESHOLD, 1e4),
 		'internal_standard_mz': _parse_mz_by_mode(settings.get(MsiPreprocessingParams.INTERNAL_STANDARD_MZ, None),
 												  MsiPreprocessingParams.INTERNAL_STANDARD_MZ),
 		'detect_background': settings.get(MsiPreprocessingParams.DETECT_BACKGROUND, False),

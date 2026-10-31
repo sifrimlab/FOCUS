@@ -181,7 +181,6 @@ class MsiPreprocessingParams(_AbstractEnum):
 	INTENSITY_NORMALIZATION = "intensity_normalization"
 	RECALIBRATION_REFERENCE = "recalibration_reference"
 	INTERNAL_STANDARD_MZ = "internal_standard_mz"
-	MIN_INTENSITY_THRESHOLD = "min_intensity_threshold"
 	DETECT_BACKGROUND = "detect_background"
 	SAMPLE_TYPE = "sample_type"
 	RESOLUTION = "resolution"

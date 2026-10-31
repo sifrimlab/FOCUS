@@ -17,7 +17,6 @@ CALIBRANTS = np.array([401.2512, 455.3021, 512.4150, 568.3307, 624.4789,
                        703.5751, 766.5381, 828.5519, 886.6191, 952.7022])
 ANALYTE = 678.5070
 CENTRE = 700.0
-MIN_INTENSITY = 1e4
 
 
 def true_error_ppm(line, col, mz, n_lines, n_cols, line_drift=(0.0, 30.0), row_ramp=5.0):
@@ -28,8 +27,12 @@ def true_error_ppm(line, col, mz, n_lines, n_cols, line_drift=(0.0, 30.0), row_r
             + 0.01 * (mz - CENTRE))
 
 
-def synthetic_sample(n_lines=30, n_cols=40, weak_lines=(20, 21), line_drift=(0.0, 30.0), seed=0, row_ramp=5.0):
-    """Drifted centroid spectra on a raster; `weak_lines` have every peak below MIN_INTENSITY."""
+def synthetic_sample(n_lines=30, n_cols=40, dim_lines=(10, 11), missing_lines=(20, 21), line_drift=(0.0, 30.0),
+                     seed=0, row_ramp=5.0, n_noise=30):
+    """
+    Drifted centroid spectra on a raster. `dim_lines` lose 98% of every intensity (a weak laser);
+    `missing_lines` have no calibrant at all.
+    """
     rng = np.random.default_rng(seed)
     mz_list, intensity_list, coords = [], [], []
     for line in range(n_lines):
@@ -38,11 +41,13 @@ def synthetic_sample(n_lines=30, n_cols=40, weak_lines=(20, 21), line_drift=(0.0
             error = true_error_ppm(line, col, true, n_lines, n_cols, line_drift, row_ramp) + rng.normal(0, 0.3, true.size)
             peaks = true * (1 + error * 1e-6)
             intensity = 1e5 * rng.lognormal(0.0, 0.2, true.size)  # pixel-to-pixel variation for the clustering
-            noise = rng.uniform(300, 1100, 30)
+            if line in missing_lines:
+                peaks, intensity = peaks[-1:], intensity[-1:]     # analyte only
+            noise = rng.uniform(300, 1100, n_noise)
             noise = noise[np.abs(noise[:, None] - true[None, :]).min(axis=1) > 200e-6 * noise]
             mz = np.concatenate([peaks, noise])
-            intensity = np.concatenate([intensity, np.full(noise.size, 1e3)])
-            if line in weak_lines:
+            intensity = np.concatenate([intensity, rng.exponential(1e3, noise.size)])
+            if line in dim_lines:
                 intensity = intensity * 0.02
             order = np.argsort(mz)
             mz_list.append(mz[order])
@@ -56,7 +61,7 @@ class RecalibrationModelTests(unittest.TestCase):
         n_lines, n_cols = 30, 40
         mz_list, intensity_list, coords = synthetic_sample(n_lines, n_cols)
         model = estimate_recalibration(mz_list, intensity_list, coords, line_axis=0, reference_mz=CALIBRANTS,
-                                       mass_tolerance=10, min_intensity=MIN_INTENSITY)
+                                       mass_tolerance=10)
 
         self.assertTrue(np.all(np.isfinite(model.offset_ppm)))
         for mass in (CALIBRANTS[0], CENTRE, CALIBRANTS[-1]):
@@ -64,10 +69,31 @@ class RecalibrationModelTests(unittest.TestCase):
             estimate = model.offset_ppm + model.slope_ppm_per_da * (mass - model.centre_mz)
             self.assertLess(np.abs(estimate - truth).max(), 1.0, f"at m/z {mass}")
 
-        # The weak lines had no calibrant above the threshold and still got a correction.
-        weak = np.isin(coords[:, 0], (20, 21))
-        self.assertTrue(np.all(model.matches[weak] == 0))
+        # Dim lines are matched (the threshold follows each spectrum's own noise); lines without
+        # calibrants have no match and are corrected from their neighbours.
+        dim, missing = np.isin(coords[:, 0], (10, 11)), np.isin(coords[:, 0], (20, 21))
+        self.assertTrue(np.all(model.matches[dim] >= 2))
+        self.assertTrue(np.all(model.matches[missing] == 0))
         self.assertEqual(model.summary["lines_estimated"], n_lines - 2)
+
+    def test_dense_low_intensity_spectra(self):
+        # Like a timsTOF export: thousands of noise centroids per spectrum and calibrants far below
+        # any fixed intensity threshold (about 800 counts over a noise median of about 35).
+        n_lines, n_cols = 20, 25
+        rng = np.random.default_rng(1)
+        mz_list, intensity_list, coords = synthetic_sample(n_lines, n_cols, dim_lines=(), n_noise=3000)
+        intensity_list = [inten * np.float32(0.008) for inten in intensity_list]
+        species = np.concatenate([CALIBRANTS, [ANALYTE]])
+        for inten, mz in zip(intensity_list, mz_list):
+            noise = (np.abs(mz[:, None] - species[None, :]) / species[None, :] * 1e6).min(axis=1) > 100
+            inten[noise] = rng.exponential(50, noise.sum())
+        model = estimate_recalibration(mz_list, intensity_list, coords, line_axis=0, reference_mz=CALIBRANTS,
+                                       mass_tolerance=10)
+        present = ~np.isin(coords[:, 0], (20, 21))
+        self.assertGreater(np.mean(model.matches[present] >= 2), 0.95)
+        truth = true_error_ppm(coords[:, 0], coords[:, 1], CENTRE, n_lines, n_cols)
+        estimate = model.offset_ppm + model.slope_ppm_per_da * (CENTRE - model.centre_mz)
+        self.assertLess(np.abs(estimate - truth).max(), 1.5)
 
     def test_strong_drift_along_the_row(self):
         # 30 ppm along each row (e.g. laser decay): wider than the mass tolerance on either side of
@@ -75,14 +101,14 @@ class RecalibrationModelTests(unittest.TestCase):
         n_lines, n_cols = 30, 40
         mz_list, intensity_list, coords = synthetic_sample(n_lines, n_cols, row_ramp=30.0)
         model = estimate_recalibration(mz_list, intensity_list, coords, line_axis=0, reference_mz=CALIBRANTS,
-                                       mass_tolerance=10, min_intensity=MIN_INTENSITY)
+                                       mass_tolerance=10)
         truth = true_error_ppm(coords[:, 0], coords[:, 1], CENTRE, n_lines, n_cols, row_ramp=30.0)
         estimate = model.offset_ppm + model.slope_ppm_per_da * (CENTRE - model.centre_mz)
         self.assertLess(np.abs(estimate - truth).max(), 1.5)
 
     def test_zero_and_one_based_coordinates_agree(self):
-        mz_list, intensity_list, coords = synthetic_sample(10, 12, weak_lines=())
-        kwargs = dict(reference_mz=CALIBRANTS, mass_tolerance=10, min_intensity=MIN_INTENSITY, line_axis=0)
+        mz_list, intensity_list, coords = synthetic_sample(10, 12, dim_lines=(), missing_lines=())
+        kwargs = dict(reference_mz=CALIBRANTS, mass_tolerance=10, line_axis=0)
         zero = estimate_recalibration(mz_list, intensity_list, coords, **kwargs)
         one = estimate_recalibration(mz_list, intensity_list, coords + 1, **kwargs)
         np.testing.assert_allclose(zero.offset_ppm, one.offset_ppm)
@@ -91,7 +117,7 @@ class RecalibrationModelTests(unittest.TestCase):
         n_lines, n_cols = 30, 40
         mz_list, intensity_list, coords = synthetic_sample(n_lines, n_cols)
         model = estimate_recalibration(mz_list, intensity_list, coords, line_axis=0, reference_mz=CALIBRANTS,
-                                       mass_tolerance=10, min_intensity=MIN_INTENSITY)
+                                       mass_tolerance=10)
         backbone = np.array([ANALYTE])
 
         def analyte_intensity(spectra):
@@ -105,7 +131,7 @@ class RecalibrationModelTests(unittest.TestCase):
         np.testing.assert_allclose(after, expected)  # no line drops or splits the analyte
 
     def test_no_references_is_identity(self):
-        mz_list, intensity_list, coords = synthetic_sample(4, 4, weak_lines=())
+        mz_list, intensity_list, coords = synthetic_sample(4, 4, dim_lines=(), missing_lines=())
         model = estimate_recalibration(mz_list, intensity_list, coords, 0, np.array([]), 10)
         for original, corrected in zip(mz_list, model.apply(mz_list)):
             np.testing.assert_array_equal(original, corrected)
@@ -144,6 +170,21 @@ def selector_sample(n_spectra=400, seed=0):
     return mz_list, intensity_list
 
 
+def dense_selector_sample(n_spectra=600, n_noise=3000, seed=0):
+    """Calibrants at about 800 counts among thousands of noise centroids (about 50 counts), drifting 0 to 30 ppm."""
+    rng = np.random.default_rng(seed)
+    mz_list, intensity_list = [], []
+    for k in range(n_spectra):
+        drift = 30.0 * k / n_spectra
+        calibrants = CALIBRANTS * (1 + (drift + rng.normal(0, 1, CALIBRANTS.size)) * 1e-6)
+        mz = np.concatenate([calibrants, rng.uniform(350, 2000, n_noise)])
+        intensity = np.concatenate([800 * rng.lognormal(0, 0.3, CALIBRANTS.size), rng.exponential(50, n_noise)])
+        order = np.argsort(mz)
+        mz_list.append(mz[order])
+        intensity_list.append(intensity[order].astype(np.float32))
+    return mz_list, intensity_list
+
+
 class ReferenceSelectorTests(unittest.TestCase):
     def select(self, number_of_references, required=None):
         mz_list, intensity_list = selector_sample()
@@ -154,6 +195,16 @@ class ReferenceSelectorTests(unittest.TestCase):
     @staticmethod
     def near(references, mass, ppm=100):
         return references[np.abs(references - mass) / mass * 1e6 <= ppm]
+
+    def test_dense_noise_selects_every_calibrant_without_bias(self):
+        mz_list, intensity_list = dense_selector_sample()
+        selector = _CalibrationReferenceSelector(mass_tolerance=10)
+        selector.add_sample({MsiIonMode.POSITIVE: mz_list}, {MsiIonMode.POSITIVE: intensity_list})
+        references = selector.select(10)[MsiIonMode.POSITIVE]
+        self.assertEqual(references.size, CALIBRANTS.size)
+        offsets = (references - CALIBRANTS) / CALIBRANTS * 1e6
+        # Every reference is a calibrant at the dataset's mean drift (15 ppm), with no extra bias.
+        np.testing.assert_allclose(offsets, 15.0, atol=1.0)
 
     def test_rejects_crowded_candidate(self):
         references = self.select(4)
@@ -261,8 +312,7 @@ class ProcessDatasetTests(unittest.TestCase):
 
     def process(self, root, **settings):
         samples = [MsiSample(root, sample_id, "MSI", ion_mode=MsiIonMode.POSITIVE) for sample_id in self.DRIFTS]
-        return MsiDataset(root, samples).process_dataset(mass_tolerance=10, min_intensity_threshold=MIN_INTENSITY,
-                                                          **settings)
+        return MsiDataset(root, samples).process_dataset(mass_tolerance=10, **settings)
 
     def test_recalibrated_dataset_has_no_stripes_and_is_cached(self):
         with tempfile.TemporaryDirectory() as root:

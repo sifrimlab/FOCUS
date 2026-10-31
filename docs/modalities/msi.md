@@ -153,7 +153,7 @@ If the database is omitted or set to `None`, FOCUS will process the data without
 
 3. **Dual ion mode alignment**: when both ion modes are present, unpaired spots (acquisition artifacts) are removed by set intersection. An affine transformation is fitted from positive to negative mode physical coordinates; the transformed positive coordinates are averaged with the negative coordinates to yield the consensus spot centre positions.
 
-4. **M/z recalibration**: see [MSI methods §4.1-4.2](../scientific/msi_methods.md#4-recalibration-and-mz-backbone) for the method and its references. Unless a `recalibration_reference` is supplied, at least ten reference peaks per ion mode are selected from the tissue spectra of the whole dataset: frequent peaks, present in many samples, spread over the mass range, and isolated (no peak of comparable intensity within the search window in the same spectrum). Sprayed internal standards given in `internal_standard_mz` are always included, and the references are then placed on the standards' mass scale. Every spectrum then gets its own correction, in ppm and linear in m/z: a per-scan-line drift (estimated over the whole line, smoothed and interpolated over lines without calibrants, so no line is left uncorrected) plus a per-pixel residual (smoothed over the 3 x 3 pixel neighbourhood). The scan-line direction is read from the imzML scan type. Recalibration runs with or without a lipid annotation database. The applied correction is stored per spot in `obs["recalibration_ppm_<mode>"]`.
+4. **M/z recalibration**: see [MSI methods §4.1-4.2](../scientific/msi_methods.md#4-recalibration-and-mz-backbone) for the method and its references. Only signal peaks take part: peaks at least 5 times their own spectrum's noise level (1.4826 × MAD of its peak intensities), so the selection adapts to each spectrum's intensity scale and to intensity loss along the acquisition, with no intensity threshold to set. Unless a `recalibration_reference` is supplied, at least ten reference peaks per ion mode are selected from the tissue spectra of the whole dataset: frequent signal peaks, present in many samples, spread over the mass range, and isolated (no signal peak of comparable intensity within the search window in the same spectrum). Sprayed internal standards given in `internal_standard_mz` are always included, and the references are then placed on the standards' mass scale. Every spectrum then gets its own correction, in ppm and linear in m/z: a per-scan-line drift (estimated over the whole line, smoothed and interpolated over lines without calibrants, so no line is left uncorrected) plus a per-pixel residual (smoothed over the 3 x 3 pixel neighbourhood). The scan-line direction is read from the imzML scan type. Recalibration runs with or without a lipid annotation database. The applied correction is stored per spot in `obs["recalibration_ppm_<mode>"]`.
 
 5. **Consensus m/z grid construction**: the recalibrated m/z values of each sample (foreground spots only when background detection ran) are rounded to six decimal places and clustered using a sliding-window weighted-centroid algorithm within `mass_tolerance` ppm; clusters present in fewer than `frequency_threshold × max_cluster_count` spectra are discarded. The per-sample grids are then merged into the dataset grid. Clustering is parallelised across CPU cores with chunked overlap merging.
 
@@ -186,7 +186,6 @@ If the database is omitted or set to `None`, FOCUS will process the data without
 | `mass_tolerance` | `int` | `10` | Mass tolerance in ppm for m/z clustering and interpolation | Positive integer |
 | `frequency_threshold` | `float` | `0.01` | Minimum relative cluster frequency to retain an m/z in the consensus grid | `0.0` - `1.0` |
 | `intensity_normalization` | `str` | `"none"` | Intensity normalisation method (applied per ion mode) | `"none"`, `"tic"`, `"log"`, `"clr"`, `"tic_mean_scaled"`, `"median"`, `"internal_standard"` |
-| `min_intensity_threshold` | `float` | `10000.0` | Minimum intensity of a calibrant peak during m/z recalibration. Scan lines and pixels without a calibrant above it are corrected from their neighbours | Non-negative float |
 | `detect_background` | `bool` | `False` | Detect and flag background spots in the output (`obs["foreground"]`); all spots are still written. **Requires `lipid_annotation_db`**. Without it the step is skipped and all spots are marked foreground | `True`, `False` |
 | `sample_type` | `str` | `"tissue"` | Tissue architecture type; controls background detection strategy (`"tissue"`: GMM + BIC with morphological cleanup; `"microgrid"`: local-outlier detection of sparse cells) | `"tissue"`, `"microgrid"` |
 | `resolution` | `str` | `"standard"` | Clustering preset for the alignment colours: `"standard"` for multicellular pixels, `"sub_cellular"` for weak high-resolution pixels (wider spatial neighbourhood). See [MSI methods §6b](../scientific/msi_methods.md#6b-per-sample-clustering) | `"standard"`, `"sub_cellular"` |
@@ -266,7 +265,6 @@ modalities:
       mass_tolerance: 10
       frequency_threshold: 0.01
       intensity_normalization: tic
-      min_intensity_threshold: 10000.0
       detect_background: true
       sample_type: tissue
     registration_type: spot_interpolation
@@ -283,7 +281,6 @@ modalities:
           mass_tolerance: 10
           frequency_threshold: 0.01
           intensity_normalization: tic
-          min_intensity_threshold: 10000.0
           detect_background: true
           sample_type: tissue
         registration_type: spot_interpolation

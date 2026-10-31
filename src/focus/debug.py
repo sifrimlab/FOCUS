@@ -29,8 +29,7 @@ if __name__ == "__main__":
             MsiPreprocessingParams.INTENSITY_NORMALIZATION: preprocessing.MsiIntensityNormalization.TIC,
             MsiPreprocessingParams.LIPID_ANNOTATION_DB: os.path.join(PATH, "resources", "MSI_database_POS_NEG_combined.json"),
             MsiPreprocessingParams.MASS_TOLERANCE: 10,
-            MsiPreprocessingParams.RECALIBRATION_REFERENCE: None,
-            MsiPreprocessingParams.MIN_INTENSITY_THRESHOLD: 1e4
+            MsiPreprocessingParams.RECALIBRATION_REFERENCE: None
         }
 
         # Preprocess MSI Dataset

@@ -342,7 +342,6 @@ The JSON configuration file contains:
       "processing_settings": {
         "mass_tolerance": 10,
         "intensity_normalization": "tic",
-        "min_intensity_threshold": 10000,
         "detect_background": true,
         "force_recomputing": false
       },
