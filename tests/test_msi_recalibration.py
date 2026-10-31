@@ -6,10 +6,10 @@ import unittest
 import anndata as ad
 import numpy as np
 
-from focus.constants import MsiIntensityNormalization, MsiIonMode
+from focus.constants import MsiIntensityNormalization, MsiIonMode, MsiMetadata
 from focus.preprocessing.lipidomics import (
-    MsiDataset, MsiSample, _CalibrationReferenceSelector, _parse_mz_by_mode, estimate_recalibration,
-    interpolate_single, normalize_intensities,
+    MsiDataset, MsiSample, _BackboneBuilder, _CalibrationReferenceSelector, _parse_mz_by_mode,
+    estimate_recalibration, interpolate_single, normalize_intensities,
 )
 
 # Ten isolated calibrants spread over the mass range, plus one analyte that is never a reference.
@@ -150,6 +150,80 @@ class BinningTests(unittest.TestCase):
         np.testing.assert_array_equal(binned, [0.0])
 
 
+def ion_peaks(rng, mass, n, ppm_sd=1.0, tail=None):
+    """`n` centroids of one ion: Gaussian m/z scatter, plus an optional (fraction, low, high) ppm tail."""
+    error = rng.normal(0.0, ppm_sd, n)
+    if tail is not None:
+        fraction, low, high = tail
+        in_tail = rng.random(n) < fraction
+        error[in_tail] = rng.uniform(low, high, int(in_tail.sum()))
+    return mass * (1 + error * 1e-6)
+
+
+def backbone_sample(ions, n_spectra=2000, n_noise=0, seed=0):
+    """Spectra holding each (mass, detection rate, ppm_sd, tail) ion at 1e5, among `n_noise` noise centroids at about 50."""
+    rng = np.random.default_rng(seed)
+    columns = [(ion_peaks(rng, mass, n_spectra, ppm_sd, tail), rng.random(n_spectra) < rate)
+               for mass, rate, ppm_sd, tail in ions]
+    mz_list, intensity_list = [], []
+    for k in range(n_spectra):
+        peaks = [mz[k] for mz, present in columns if present[k]]
+        mz = np.concatenate([peaks, rng.uniform(350, 1000, n_noise)])
+        intensity = np.concatenate([1e5 * rng.lognormal(0, 0.2, len(peaks)), rng.exponential(50, n_noise)])
+        order = np.argsort(mz)
+        mz_list.append(mz[order])
+        intensity_list.append(intensity[order].astype(np.float32))
+    return mz_list, intensity_list
+
+
+class BackboneTests(unittest.TestCase):
+    @staticmethod
+    def build(*samples, frequency_threshold=0.01):
+        builder = _BackboneBuilder(mass_tolerance=10)
+        for mz_list, intensity_list in samples:
+            builder.add_sample({MsiIonMode.POSITIVE: mz_list}, {MsiIonMode.POSITIVE: intensity_list})
+        return builder.build(frequency_threshold)[MsiIonMode.POSITIVE]
+
+    @staticmethod
+    def near(features, mass, ppm=50):
+        return features[np.abs(features - mass) / mass * 1e6 <= ppm]
+
+    def test_broad_skewed_ion_gives_one_feature(self):
+        # 15% of the peaks scatter 4 to 22 ppm above the ion: a window cut at the tolerance used to
+        # turn that tail into a second feature that never co-occurs with the first.
+        mz_list, intensity_list = backbone_sample([(700.0, 1.0, 2.0, (0.15, 4.0, 22.0)), (500.0, 1.0, 1.0, None)])
+        features = self.build((mz_list, intensity_list))
+        ion = self.near(features, 700.0)
+        self.assertEqual(ion.size, 1)
+        self.assertLess(abs(ion[0] - 700.0) / 700.0 * 1e6, 3.0)
+        # Every peak within the tolerance of the feature bins into that one feature.
+        binned = np.array([interpolate_single(mz, i.astype(np.float64), features, 10)
+                           for mz, i in zip(mz_list, intensity_list)])
+        column = int(np.flatnonzero(np.isin(features, ion))[0])
+        self.assertEqual(int((binned[:, np.abs(features - 700.0) / 700.0 * 1e6 <= 50].sum(axis=0) > 0).sum()), 1)
+        self.assertGreater((binned[:, column] > 0).mean(), 0.9)
+
+    def test_ions_separated_by_a_dip_stay_two_features(self):
+        features = self.build(backbone_sample([(700.0, 1.0, 2.0, None), (700.0 * (1 + 30e-6), 1.0, 2.0, None)]))
+        self.assertEqual(self.near(features, 700.0, ppm=60).size, 2)
+
+    def test_noise_peaks_make_no_feature(self):
+        masses = (412.3, 538.2, 671.5, 803.6, 944.7)
+        features = self.build(backbone_sample([(mass, 1.0, 1.0, None) for mass in masses], n_spectra=3000, n_noise=3000))
+        self.assertEqual(features.size, len(masses))
+        for mass in masses:
+            self.assertEqual(self.near(features, mass, ppm=3).size, 1)
+
+    def test_frequency_is_judged_per_sample(self):
+        common, rare, local = 500.0, 700.0, 900.0
+        first = backbone_sample([(common, 1.0, 1.0, None), (rare, 0.005, 1.0, None), (local, 0.005, 1.0, None)], seed=1)
+        second = backbone_sample([(common, 1.0, 1.0, None), (rare, 0.5, 1.0, None)], seed=2)
+        features = self.build(first, second)
+        self.assertEqual(self.near(features, common).size, 1)
+        self.assertEqual(self.near(features, rare).size, 1)    # frequent in the second sample
+        self.assertEqual(self.near(features, local).size, 0)   # rare in the only sample holding it
+
+
 def selector_sample(n_spectra=400, seed=0):
     """Spectra with isolated calibrants, one crowded candidate and one calibrant smeared by drift."""
     rng = np.random.default_rng(seed)
@@ -240,10 +314,34 @@ class NormalizationTests(unittest.TestCase):
         # Spectrum 3 has no standard: divisor = median of its neighbours' divisors (2, 3, 4).
         self.assertAlmostEqual(out[3, 0], 5.0 / 3.0)
 
+    def test_every_method_keeps_the_input_dtype(self):
+        # A float64 result would double the memory of the dense per-sample matrix.
+        raw = np.random.default_rng(0).uniform(0, 10, (4, 3)).astype(np.float32)
+        for method in MsiIntensityNormalization.list():
+            out = normalize_intensities(raw, method, self.coords, np.array([1]))
+            self.assertEqual(out.dtype, np.float32, method)
+
     def test_internal_standard_absent_everywhere_raises(self):
         raw = np.array([[4.0, 0.0], [6.0, 0.0], [8.0, 0.0], [5.0, 0.0]])
         with self.assertRaises(ValueError):
             normalize_intensities(raw, MsiIntensityNormalization.INTERNAL_STANDARD, self.coords, np.array([1]))
+
+
+class MicrogridTests(unittest.TestCase):
+    def test_cells_are_found_against_the_background_ions(self):
+        rng = np.random.default_rng(0)
+        coords = np.array([(y, x) for y in range(60) for x in range(60)], dtype=np.int32)
+        cells = {(10, 10), (30, 42), (50, 20)}
+        mz_list, intensity_list = [], []
+        for y, x in coords:
+            mz = [400.1, 500.2, 600.3] + ([700.5, 750.6, 780.7] if (y, x) in cells else [])
+            intensity = list(rng.lognormal(np.log(1e4), 0.1, 3)) + [5e4] * (len(mz) - 3)
+            mz_list.append(np.array(mz))
+            intensity_list.append(np.array(intensity))
+        sample = MsiSample.__new__(MsiSample)
+        sample._metadata = {MsiIonMode.POSITIVE: {MsiMetadata.PIXEL_COORDINATES: coords}}
+        found = sample._detect_microgrid_spots(mz_list, intensity_list, MsiIonMode.POSITIVE, mass_tolerance=10)
+        self.assertEqual({tuple(int(v) for v in coords[i]) for i in found}, cells)
 
 
 class SettingParserTests(unittest.TestCase):

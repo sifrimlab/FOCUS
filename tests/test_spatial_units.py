@@ -245,13 +245,27 @@ class PresetTests(unittest.TestCase):
         rng = np.random.default_rng(7)
         X = rng.uniform(0, 1, (len(xy), N_TOP_FEATURES + 500))
         X[ij[:, 0] < 15, :20] += 3
-        X -= X.mean(axis=1, keepdims=True)   # negative values, as after CLR
         seen = []
         real_pca = sc.pp.pca
         with patch('scanpy.pp.pca', side_effect=lambda sub, **kw: (seen.append(sub.n_vars), real_pca(sub, **kw))[1]):
             labels = compute_cluster_labels(X, leiden_resolution=0.5, normalize_target_sum=None, coordinates=xy)
         self.assertLessEqual(seen[0], N_TOP_FEATURES + 1)
-        self.assertGreater(adjusted_rand_score(ij[:, 0] < 15, labels), 0.9)
+        # No label mixes the two domains (the rows along their edge, whose neighbourhood straddles
+        # it, may form their own cluster).
+        self.assertGreater(homogeneity_score(ij[:, 0] < 15, labels), 0.99)
+
+    def test_msi_clustering_ignores_the_intensity_scale_and_a_few_intense_ions(self):
+        xy, ij = lattice(40, 40, [20, 0], [0, 20], origin=(10, 10))
+        rng = np.random.default_rng(8)
+        X = rng.poisson(20, (len(xy), 200)).astype(np.float64)
+        X[ij[:, 0] < 20, 10:60] *= 2.0                           # composition: half the features double
+        X[:, :3] = rng.uniform(1e4, 1e5, (len(xy), 3))           # three intense ions varying at random
+        labels = compute_cluster_labels(sp.csr_matrix(X), leiden_resolution=0.5, normalize_target_sum=None,
+                                        coordinates=xy, smoothing_rings=1)
+        self.assertGreater(homogeneity_score(ij[:, 0] < 20, labels), 0.99)
+        scaled = compute_cluster_labels(sp.csr_matrix(X * 1e-4), leiden_resolution=0.5, normalize_target_sum=None,
+                                        coordinates=xy, smoothing_rings=1)
+        self.assertEqual(adjusted_rand_score(labels, scaled), 1.0)
 
 
 if __name__ == '__main__': unittest.main()

@@ -124,7 +124,7 @@ The MSI pipeline operates at the **dataset level**: all samples are processed to
 
 3. **Recalibration Reference Selection** (method and references: [MSI methods §4.1](../scientific/msi_methods.md#41-recalibration-reference-selection))
    - Every spectrum of every sample contributes: the tissue spectra when background detection ran, all spectra otherwise. Only signal peaks are counted: peaks at least 5 times their spectrum's noise (1.4826 × MAD of its peak intensities); the same rule admits calibrant matches in step 4. Each sample is reduced on arrival to a compact m/z occurrence histogram on a logarithmic grid and its raw peaks are released, so memory stays bounded by the mass range and tolerance rather than the spectrum count
-   - Histogram bins are grouped within `mass_tolerance` ppm (same weighted sliding window used for the m/z backbone), and each group is pooled with its neighbours within the calibrant search window (max(5 × `mass_tolerance`, 50) ppm), so one calibrant spread by drift counts as one candidate
+   - Histogram bins are grouped within `mass_tolerance` ppm by a weighted sliding window, and each group is pooled with its neighbours within the calibrant search window (max(5 × `mass_tolerance`, 50) ppm), so one calibrant spread by drift counts as one candidate
    - Candidates must be isolated: at most 10% of their occurrences may share the spectrum with a signal peak of at least 10% of their intensity within the search window. Each reference is centred on the heaviest group of its window
    - For each ion mode, select at least 10 references: sprayed internal standards from `internal_standard_mz` first, then the best candidate (occurrences × fraction of samples covered, ties broken by ascending m/z) in each of 10 equal log-m/z segments, then by score, adding more if needed until every sample is covered. References are more than twice the search window apart
    - When internal standards are observed, the references are moved onto the standards' mass scale
@@ -137,13 +137,13 @@ The MSI pipeline operates at the **dataset level**: all samples are processed to
    - Correct every m/z as m / (1 + e(m) × 1e-6), with e(m) the spectrum's ppm error model; the same model serves the backbone and the intensity matrix
    - Runs with or without a lipid annotation database; the applied correction is stored in `obs["recalibration_ppm_<mode>"]`
 
-5. **Per-Sample m/z Backbone Computation**
-   - Pool all (recalibrated) m/z values of a sample, restricted to foreground spots only when background detection ran (see step 2), otherwise all spots
-   - Cluster nearby values using adaptive sliding-window clustering with weighted centroids (parallel, chunked)
-   - Filter clusters by frequency: keep only those appearing in ≥ `frequency_threshold` fraction of the maximum cluster weight
+5. **Per-Sample m/z Peak Collection** ([MSI methods §4.3](../scientific/msi_methods.md#43-consensus-backbone-construction))
+   - Count the signal peaks of the recalibrated spectra on a logarithmic m/z grid with bins one tenth of `mass_tolerance` wide, restricted to foreground spots when background detection ran (see step 2), otherwise all spots. Only the histogram is kept
 
 6. **Global Reference m/z Backbone**
-   - Concatenate all per-sample backbone m/z vectors and apply a final clustering pass (no frequency filter)
+   - Pool the histograms of all samples (each weighted by its number of spectra) and smooth them with a Gaussian kernel whose full width at half maximum is `mass_tolerance`
+   - Every maximum of this peak density is one feature: it collects the peaks up to the density minimum on either side, at most `mass_tolerance` ppm away, and its m/z is their mean. One ion gives one feature even when its peaks spread wider than the tolerance
+   - Keep a feature when, in at least one sample, it holds ≥ `frequency_threshold` times the peaks of that sample's most frequent feature
    - This single reference grid is used to align all samples
 
 7. **Lipid Annotation** (optional, requires `lipid_annotation_db`)
@@ -165,7 +165,9 @@ The MSI pipeline operates at the **dataset level**: all samples are processed to
    - `"none"`: keep raw binned intensities
 
 10. **Per-Sample Cluster Labels** (used only to colour spots during alignment)
-    - Samples above 250,000 spots are coarsened first: spots are grouped into k x k blocks of the acquisition raster, inferred from the coordinates (Voronoi supercells when no raster is found), all spots in a block are **summed** into one pseudo-spot, and the pseudo-spots are re-normalized so block occupancy washes out. Smaller samples are clustered spot by spot
+    - Input: the raw binned matrix (`layers["raw"]`), whatever the `intensity_normalization`
+    - Samples above 250,000 spots are coarsened first: spots are grouped into k x k blocks of the acquisition raster, inferred from the coordinates (Voronoi supercells when no raster is found), and all spots in a block are **summed** into one pseudo-spot. Smaller samples are clustered spot by spot
+    - Each spot or pseudo-spot is divided by the median of its nonzero values (robust to a few intense ions, independent of the instrument's intensity scale), then `log1p`-transformed ([MSI methods §6b](../scientific/msi_methods.md#6b-per-sample-clustering))
     - Feature selection (the 2,000 most variable features, as in ST; samples with fewer keep all) → PCA (up to 50 components) → each unit's PCs joined to the mean PCs of its spatial neighbourhood (1 ring for `resolution="standard"`, 2 rings for `"sub_cellular"`) → neighbor graph → Leiden (`resolution=0.5`, `flavor="igraph"`, `n_iterations=2`, `directed=False`) on that matrix; each block's label then propagates back to every spot it contains
     - Labels stored in `obs["cluster"]`. The summed matrix, PCA embedding and neighbor graph are all discarded (only `obs["cluster"]` is kept) to minimize file size
 
@@ -180,7 +182,7 @@ The MSI pipeline operates at the **dataset level**: all samples are processed to
 | Parameter | Default | Description |
 |-----------|---------|-------------|
 | `mass_tolerance` | `10` | Mass tolerance in ppm for m/z clustering, recalibration, and annotation |
-| `frequency_threshold` | `0.01` | Minimum fraction of max cluster weight for backbone m/z inclusion |
+| `frequency_threshold` | `0.01` | Minimum signal-peak count of a backbone feature, as a fraction of a sample's most frequent feature |
 | `intensity_normalization` | `"none"` | Normalization method (per ion mode): `"tic"`, `"log"`, `"clr"`, `"tic_mean_scaled"`, `"median"`, `"internal_standard"`, or `"none"` |
 | `recalibration_reference` | `null` | User-supplied reference m/z per ion mode (`{"pos": [...]}` or `"pos: 760.585, 798.541; neg: 885.550"`); selected from the data if null |
 | `internal_standard_mz` | `null` | m/z of the sprayed internal standards per ion mode (same forms); always recalibration references, required by `"internal_standard"` normalization |
@@ -461,7 +463,7 @@ Parallelism is exploited **within** a single sample's processing steps, where th
 | Modality | Intra-sample parallelism |
 |----------|--------------------------|
 | Microscopy | No explicit parallelism: every step is a whole-array NumPy or OpenCV call |
-| MSI | m/z backbone clustering runs on a `ProcessPoolExecutor` across CPU cores; intensity interpolation uses `joblib` parallel workers (one chunk per core) |
+| MSI | Peak counting and calibrant matching are numba-compiled; intensity binning uses `joblib` parallel workers (one chunk per core) |
 | Raman | BaSiC correction parallelizes spectral channels via a `ThreadPoolExecutor` (one subprocess per channel); spectral cleaning parallelizes tile × spectra-slice work units via `joblib` |
 | ST | Single-threaded (scanpy and scipy operations are internally vectorized) |
 

@@ -1,7 +1,7 @@
 import numpy as np
 import scipy.sparse as sp
 import mmap
-import os, tqdm, psutil
+import os, tqdm
 from focus.preprocessing._utils import get_reporter, compute_cluster_labels, clustering_preset, find_imzml_pair
 from collections import defaultdict
 from sklearn.linear_model import LinearRegression
@@ -17,7 +17,7 @@ import scanpy as sc
 import gc
 import warnings
 from dataclasses import dataclass
-from scipy.ndimage import binary_fill_holes, binary_opening, median_filter, label as label_components
+from scipy.ndimage import binary_fill_holes, binary_opening, gaussian_filter1d, median_filter, label as label_components
 from scipy.stats import norm as normal_distribution
 
 import focus.utils as utils
@@ -35,7 +35,7 @@ _DATASET_STEPS = (
 	"Loading MSI data",
 	"Selecting tissue spots",
 	"Selecting recalibration references",
-	"Computing per-sample m/z backbones",
+	"Collecting per-sample m/z peaks",
 	"Building global m/z backbone",
 	"Annotating features",
 	"Interpolating intensities",
@@ -50,7 +50,7 @@ def _step(index: int) -> tuple[int, int, str]:
 
 # Part of the preprocessing fingerprint: bump whenever the same input and settings produce a
 # different output, so cached results are rebuilt.
-METHOD_VERSION = "msi-3"
+METHOD_VERSION = "msi-4"
 
 
 def _parse_mz_by_mode(value, setting: str) -> dict[str, np.ndarray] | None:
@@ -107,6 +107,9 @@ def normalize_intensities(raw: np.ndarray, method: str, pixel_coordinates: np.nd
 		(n_spectra, 2) raster coordinates; required by 'internal_standard' to fill empty divisors.
 	standard_columns : np.ndarray | None
 		Feature columns of the internal standards; required by 'internal_standard'.
+
+	Every method returns the dtype of `raw`: the per-spectrum divisors are cast to it, so a float32
+	matrix is never promoted to a float64 copy.
 	'''
 	if method == MsiIntensityNormalization.NONE or raw.size == 0:
 		return raw
@@ -123,7 +126,7 @@ def normalize_intensities(raw: np.ndarray, method: str, pixel_coordinates: np.nd
 		log_x = np.log(raw, where=nz, out=np.zeros_like(raw))
 		counts = nz.sum(axis=1, keepdims=True)
 		counts[counts == 0] = 1
-		row_mean = log_x.sum(axis=1, keepdims=True) / counts
+		row_mean = (log_x.sum(axis=1, keepdims=True) / counts).astype(raw.dtype, copy=False)
 		return np.where(nz, log_x - row_mean, 0.0)
 	if method == MsiIntensityNormalization.TIC_MEAN_SCALED:
 		# Rescale every spectrum so its total ion current equals the mean TIC over this sample's
@@ -139,7 +142,7 @@ def normalize_intensities(raw: np.ndarray, method: str, pixel_coordinates: np.nd
 	if method == MsiIntensityNormalization.MEDIAN:
 		# Median over each spectrum's nonzero features: binned centroid spectra are sparse, so the
 		# median over all features would be 0. Spectra without signal use divisor 1.
-		median = np.ones((raw.shape[0], 1), dtype=np.float64)
+		median = np.ones((raw.shape[0], 1), dtype=raw.dtype)
 		for start in range(0, raw.shape[0], 10_000):
 			block = raw[start:start + 10_000]
 			with warnings.catch_warnings():
@@ -163,61 +166,8 @@ def normalize_intensities(raw: np.ndarray, method: str, pixel_coordinates: np.nd
 			get_reporter().detail(f"Internal standard absent from {int(missing.sum()):,} spectra: "
 								  f"{int((missing & ~still_missing).sum()):,} filled from neighbours, "
 								  f"{int(still_missing.sum()):,} from the sample median")
-		return raw / divisor[:, None]
+		return raw / divisor[:, None].astype(raw.dtype)
 	raise ValueError(f"Invalid intensity normalization method '{method}'. Expected one of {MsiIntensityNormalization.list()}.")
-
-
-@njit(cache=True)
-def cluster_unique_mz_chunk(unique_mz, counts, mass_tolerance_ppm):
-	"""
-	Cluster m/z values within a chunk using sliding window clustering and weighted centroids.
-
-	Parameters
-	----------
-	unique_mz : 1D np.ndarray (sorted)
-		Sorted m/z values within the chunk.
-	counts : 1D np.ndarray
-		Counts associated with each m/z.
-	mass_tolerance_ppm : int
-		Mass tolerance in ppm.
-
-	Returns
-	-------
-	consensus_mz : list of floats
-		Clustered consensus m/z values.
-	consensus_weights : list of floats
-		Corresponding cluster weights.
-	"""
-
-	consensus_mz = []
-	consensus_weights = []
-
-	n = len(unique_mz)
-	start_idx = 0
-
-	while start_idx < n:
-		centroid = unique_mz[start_idx]
-		weight_sum = counts[start_idx]
-		weighted_sum = unique_mz[start_idx] * counts[start_idx]
-		end_idx = start_idx + 1
-
-		while end_idx < n:
-			candidate_mz = unique_mz[end_idx]
-			ppm_diff = abs(candidate_mz - centroid) / centroid * 1e6
-			if ppm_diff <= mass_tolerance_ppm:
-				weight_sum += counts[end_idx]
-				weighted_sum += candidate_mz * counts[end_idx]
-				centroid = weighted_sum / weight_sum
-				end_idx += 1
-			else:
-				break
-
-		consensus_mz.append(centroid)
-		consensus_weights.append(weight_sum)
-
-		start_idx = end_idx
-
-	return np.array(consensus_mz), np.array(consensus_weights)
 
 
 @njit(cache=True)
@@ -225,11 +175,11 @@ def cluster_unique_mz_labels(unique_mz, counts, mass_tolerance_ppm):
 	"""
 	Group sorted unique m/z within a ppm tolerance and return the group index of every input value.
 
-	Applies the SAME sliding-window weighted-centroid growth rule as `cluster_unique_mz_chunk` — a
-	value joins the current group while it stays within `mass_tolerance_ppm` of the running weighted
-	centroid — but emits per-value labels instead of the centroids. Callers need the labels to
-	aggregate extra per-group statistics that the centroid form cannot express, in particular how
-	many distinct samples contribute to a group. Keep the two growth rules in sync.
+	Sliding window over ascending m/z: a value joins the current group while it stays within
+	`mass_tolerance_ppm` of the group's running weighted centroid. Used by the recalibration
+	reference selector, which pools statistics over the calibrant search window around each group,
+	so where a group boundary falls does not matter there. The m/z backbone does not use it: a
+	window cut splits any ion whose peaks spread wider than the tolerance (see `_BackboneBuilder`).
 
 	Parameters
 	----------
@@ -275,57 +225,6 @@ def cluster_unique_mz_labels(unique_mz, counts, mass_tolerance_ppm):
 		start_idx = end_idx
 
 	return labels
-
-
-@njit(cache=True)
-def merge_chunks(prev_mz, prev_w, curr_mz, curr_w, mass_tolerance_ppm):
-	"""
-	Merge consensus clusters from two adjacent chunks resolving overlaps.
-
-	Both prev_mz and curr_mz are sorted arrays.
-
-	Returns merged consensus m/z and weights arrays.
-	"""
-	max_size = len(prev_mz) + len(curr_mz)
-	merged_mz = np.empty(max_size, dtype=np.float64)
-	merged_w = np.empty(max_size, dtype=np.float64)
-	k = 0
-	i, j = 0, 0
-
-	while i < len(prev_mz) and j < len(curr_mz):
-		ppm_diff = abs(curr_mz[j] - prev_mz[i]) / ((curr_mz[j] + prev_mz[i]) / 2) * 1e6
-		if ppm_diff <= mass_tolerance_ppm:
-			# Merge clusters by weighted average
-			tot_w = prev_w[i] + curr_w[j]
-			merged_mz[k] = (prev_mz[i] * prev_w[i] + curr_mz[j] * curr_w[j]) / tot_w
-			merged_w[k] = tot_w
-			k += 1
-			i += 1
-			j += 1
-		elif prev_mz[i] < curr_mz[j]:
-			merged_mz[k] = prev_mz[i]
-			merged_w[k] = prev_w[i]
-			k += 1
-			i += 1
-		else:
-			merged_mz[k] = curr_mz[j]
-			merged_w[k] = curr_w[j]
-			k += 1
-			j += 1
-
-	# Append remaining
-	while i < len(prev_mz):
-		merged_mz[k] = prev_mz[i]
-		merged_w[k] = prev_w[i]
-		k += 1
-		i += 1
-	while j < len(curr_mz):
-		merged_mz[k] = curr_mz[j]
-		merged_w[k] = curr_w[j]
-		k += 1
-		j += 1
-
-	return merged_mz[:k], merged_w[:k]
 
 
 @njit(cache=True)
@@ -1731,8 +1630,7 @@ class MsiSample(BaseSample):
 		# ------------------------------------------------------------------
 		# 1. Background ion set
 		# ------------------------------------------------------------------
-		occupied_bins, bin_counts, _ = _CalibrationReferenceSelector._reduce_spectra(
-			mz_vectors, log_bin_width, block_spectra)
+		occupied_bins, bin_counts, _, _ = peak_histogram(mz_vectors, log_bin_width)
 		background_bins = occupied_bins[bin_counts >= self._MICROGRID_BACKGROUND_OCCUPANCY * n_valid].astype(np.int64)
 		n_background_ions = background_bins.size
 		# Dilate by one bin: a background ion near a bin edge spreads over two adjacent bins.
@@ -2027,6 +1925,117 @@ def crowded_peaks(flat_mz, flat_intensity, offsets, window_ppm, intensity_ratio)
 	return crowded
 
 
+def peak_histogram(spectra: list[np.ndarray], log_bin_width: float, intensities: list[np.ndarray] | None = None,
+				   search_ppm: float | None = None, intensity_ratio: float = 0.0
+				   ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray | None]:
+	'''
+	Reduce one sample + ion mode to an m/z occurrence histogram on a logarithmic grid.
+
+	The bin of a peak is ``floor(ln(m) / log_bin_width)``, so bins have a constant width in ppm.
+	With `intensities`, only the signal peaks (see :func:`signal_peaks`) are counted, so dense,
+	noise-dominated spectra do not flood every m/z window with noise. With `search_ppm` as well, the
+	crowded occurrences among them are counted too (see :func:`crowded_peaks`). Spectra are consumed
+	in blocks of at most ``_BLOCK_PEAKS`` peaks, and the dense accumulator spans only the masses this
+	sample actually contains (it is grown on demand), so peak memory is bounded by the block size plus
+	the sample's own mass span, never by its spectrum or peak count. Only occupied bins are returned.
+	Binning uses ``np.bincount``, a single linear pass with no sort.
+
+	Parameters
+	----------
+	spectra : list[np.ndarray]
+		One M/Z array per spectrum.
+	log_bin_width : float
+		Bin width in natural-log units.
+	intensities : list[np.ndarray] | None
+		The matching intensity arrays; None counts every peak.
+	search_ppm : float | None
+		Calibrant search half-width in ppm, for the crowded-peak statistic; None skips it.
+	intensity_ratio : float
+		Relative intensity a competing peak needs to make a peak crowded.
+
+	Returns
+	-------
+	bins : np.ndarray[np.int64]
+		Ascending occupied bin indices.
+	counts : np.ndarray[np.int64]
+		Occurrences per bin.
+	mz_sums : np.ndarray[np.float64]
+		Sum of the raw m/z values per bin; divide by `counts` for the bin's exact mean mass.
+	crowded : np.ndarray[np.int64] | None
+		Crowded occurrences per bin; None without `search_ppm`.
+	'''
+
+	with_crowded = intensities is not None and search_ppm is not None
+	empty = (np.array([], dtype=np.int64), np.array([], dtype=np.int64), np.array([], dtype=np.float64),
+			 np.array([], dtype=np.int64) if with_crowded else None)
+	if not spectra:
+		return empty
+
+	bins_lo = 0
+	accumulators = None  # counts, mz_sums[, crowded]
+
+	for start, stop in _peak_blocks(spectra):
+		block_mz, block_intensity, offsets = _flatten_spectra(
+			spectra[start:stop], None if intensities is None else intensities[start:stop])
+		if block_mz.size == 0:
+			continue
+		block_crowded = None
+		if intensities is not None:
+			# Keep the signal peaks only, then flag the crowded ones among them.
+			signal = signal_peaks(block_intensity, offsets, _SIGNAL_TO_NOISE)
+			spectrum_of_peak = np.repeat(np.arange(offsets.size - 1), np.diff(offsets))
+			offsets = np.zeros_like(offsets)
+			np.cumsum(np.bincount(spectrum_of_peak[signal], minlength=offsets.size - 1), out=offsets[1:])
+			block_mz, block_intensity = block_mz[signal], block_intensity[signal]
+			del signal, spectrum_of_peak
+			if with_crowded:
+				block_crowded = crowded_peaks(block_mz, block_intensity, offsets, search_ppm, intensity_ratio)
+		# ln is undefined at or below zero, and such m/z are invalid for MSI anyway.
+		positive = block_mz > 0.0
+		block_mz = block_mz[positive]
+		if block_crowded is not None:
+			block_crowded = block_crowded[positive]
+		if block_mz.size == 0:
+			continue
+
+		bin_idx = np.floor(np.log(block_mz) / log_bin_width).astype(np.int64)
+		block_lo, block_hi = int(bin_idx.min()), int(bin_idx.max())
+
+		if accumulators is None:
+			bins_lo = block_lo
+			size = block_hi - block_lo + 1
+			accumulators = [np.zeros(size, dtype=np.int64), np.zeros(size, dtype=np.float64)]
+			if with_crowded:
+				accumulators.append(np.zeros(size, dtype=np.int64))
+		elif block_lo < bins_lo or block_hi > bins_lo + accumulators[0].size - 1:
+			# Grow the accumulators to span the widened mass range, preserving alignment.
+			new_lo = min(bins_lo, block_lo)
+			new_size = max(bins_lo + accumulators[0].size - 1, block_hi) - new_lo + 1
+			offset = bins_lo - new_lo
+			grown = []
+			for values in accumulators:
+				larger = np.zeros(new_size, dtype=values.dtype)
+				larger[offset:offset + values.size] = values
+				grown.append(larger)
+			accumulators = grown
+			bins_lo = new_lo
+
+		bin_idx -= bins_lo
+		size = accumulators[0].size
+		accumulators[0] += np.bincount(bin_idx, minlength=size)
+		accumulators[1] += np.bincount(bin_idx, weights=block_mz, minlength=size)
+		if with_crowded:
+			accumulators[2] += np.bincount(bin_idx, weights=block_crowded, minlength=size).astype(np.int64)
+		del block_mz, block_intensity, block_crowded, bin_idx
+
+	if accumulators is None:
+		return empty
+
+	occupied = np.flatnonzero(accumulators[0])
+	return (occupied + bins_lo, accumulators[0][occupied], accumulators[1][occupied],
+			accumulators[2][occupied] if with_crowded else None)
+
+
 class _CalibrationReferenceSelector:
 	'''
 	Deterministic, streaming selection of the reference M/Z values used for m/z recalibration.
@@ -2042,7 +2051,7 @@ class _CalibrationReferenceSelector:
 	------------------
 	Each sample is reduced on arrival to an m/z *occurrence histogram* on a fixed logarithmic
 	grid, and only the histogram survives. Peak memory therefore never scales with the number of
-	spectra: what is retained per sample is one int32 array of occupied bin indices, whose length
+	spectra: what is retained per sample is one array of occupied bin indices, whose length
 	is bounded by the sample's mass span divided by the bin width (a few hundred thousand entries
 	at the default 10 ppm), not by its peak count. This is what makes the pass safe on the
 	datasets that previously exhausted RAM while holding every sample's raw peaks at once.
@@ -2116,8 +2125,8 @@ class _CalibrationReferenceSelector:
 		'''
 
 		for mode, spectra in sample_mz.items():
-			bins, counts, mz_sums, crowded = self._reduce_spectra(
-				spectra, sample_intensity[mode], self._log_bin_width, self._search_ppm,
+			bins, counts, mz_sums, crowded = peak_histogram(
+				spectra, self._log_bin_width, sample_intensity[mode], self._search_ppm,
 				self._ISOLATION_INTENSITY_RATIO)
 			if bins.size == 0:
 				continue
@@ -2338,108 +2347,109 @@ class _CalibrationReferenceSelector:
 
 		return recalibration_reference
 
-	@staticmethod
-	def _reduce_spectra(spectra: list[np.ndarray], intensities: list[np.ndarray], log_bin_width: float,
-						search_ppm: float, intensity_ratio: float) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-		'''
-		Reduce one sample + ion mode to a compact m/z occurrence histogram of its signal peaks.
 
-		Only peaks reaching ``_SIGNAL_TO_NOISE`` times their spectrum's noise (see :func:`signal_peaks`)
-		are counted, so dense, noise-dominated spectra do not flood every m/z window with noise; the
-		crowded test then compares signal peaks with signal peaks. Spectra are consumed in blocks of
-		at most ``_BLOCK_PEAKS`` peaks, and the dense accumulator spans only the masses this sample
-		actually contains (it is grown on demand), so peak memory is bounded by the block size plus
-		the sample's own mass span -- never by its spectrum or peak count. Only occupied bins are
-		returned. Binning uses ``np.bincount``, which is a single linear pass with no sort.
+# --- m/z backbone (docs/scientific/msi_methods.md §4.3) ---
 
-		Parameters
-		----------
-		spectra : list[np.ndarray]
-			One M/Z array per spectrum.
-		intensities : list[np.ndarray]
-			One intensity array per spectrum.
-		log_bin_width : float
-			Bin width in natural-log units.
-		search_ppm : float
-			Calibrant search half-width in ppm, for the crowded-peak statistic.
-		intensity_ratio : float
-			Relative intensity a competing peak needs to make a peak crowded.
+# Histogram bins per mass tolerance: 10 => bins a tenth of the tolerance wide.
+_BACKBONE_BINS_PER_TOLERANCE = 10
+# Gaussian kernel FWHM (2 sqrt(2 ln 2) sigma), in mass tolerances, smoothing the peak density.
+_BACKBONE_KERNEL_FWHM = 1.0
 
-		Returns
-		-------
-		bins : np.ndarray[np.int32]
-			Ascending occupied bin indices, ``floor(ln(m) / log_bin_width)``.
-		counts : np.ndarray[np.int64]
-			Signal-peak occurrences per bin.
-		mz_sums : np.ndarray[np.float64]
-			Sum of the raw m/z values per bin; divide by `counts` for the bin's exact mean mass.
-		crowded : np.ndarray[np.int64]
-			Crowded occurrences per bin (see :func:`crowded_peaks`).
-		'''
 
-		empty = (np.array([], dtype=np.int32),
-				 np.array([], dtype=np.int64),
-				 np.array([], dtype=np.float64),
-				 np.array([], dtype=np.int64))
-		if not spectra:
-			return empty
+@njit(cache=True)
+def density_feature_ranges(density, maxima, half_width):
+	"""
+	Bin range [left, right] of every density maximum.
 
-		bins_lo = 0
-		counts = None
-		mz_sums = None
-		crowded_counts = None
+	A range reaches the lowest point of `density` between the maximum and each neighbouring maximum
+	(the valley belongs to the lower-mass feature), and at most `half_width` bins from the maximum.
+	"""
+	n = maxima.size
+	left = np.empty(n, dtype=np.int64)
+	right = np.empty(n, dtype=np.int64)
+	for k in range(n):
+		left[k] = max(maxima[k] - half_width, 0)
+		right[k] = min(maxima[k] + half_width, density.size - 1)
+	for k in range(n - 1):
+		start = maxima[k]
+		valley = start + np.argmin(density[start:maxima[k + 1] + 1])
+		right[k] = min(right[k], valley)
+		left[k + 1] = max(left[k + 1], valley + 1)
+	return left, right
 
-		for start, stop in _peak_blocks(spectra):
-			block_mz, block_intensity, offsets = _flatten_spectra(spectra[start:stop], intensities[start:stop])
-			if block_mz.size == 0:
-				continue
-			# Keep the signal peaks only, then flag the crowded ones among them.
-			signal = signal_peaks(block_intensity, offsets, _SIGNAL_TO_NOISE)
-			spectrum_of_peak = np.repeat(np.arange(offsets.size - 1), np.diff(offsets))
-			offsets = np.zeros_like(offsets)
-			np.cumsum(np.bincount(spectrum_of_peak[signal], minlength=offsets.size - 1), out=offsets[1:])
-			block_mz, block_intensity = block_mz[signal], block_intensity[signal]
-			del signal, spectrum_of_peak
-			block_crowded = crowded_peaks(block_mz, block_intensity, offsets, search_ppm, intensity_ratio)
-			# ln is undefined at or below zero, and such m/z are invalid for MSI anyway.
-			positive = block_mz > 0.0
-			block_mz, block_crowded = block_mz[positive], block_crowded[positive]
-			if block_mz.size == 0:
-				continue
 
-			bin_idx = np.floor(np.log(block_mz) / log_bin_width).astype(np.int64)
-			block_lo, block_hi = int(bin_idx.min()), int(bin_idx.max())
+class _BackboneBuilder:
+	'''
+	m/z backbone of a dataset: one feature per maximum of the density of signal-peak m/z.
 
-			if counts is None:
-				bins_lo = block_lo
-				counts = np.zeros(block_hi - block_lo + 1, dtype=np.int64)
-				mz_sums = np.zeros(block_hi - block_lo + 1, dtype=np.float64)
-				crowded_counts = np.zeros(block_hi - block_lo + 1, dtype=np.int64)
-			elif block_lo < bins_lo or block_hi > bins_lo + counts.size - 1:
-				# Grow the accumulator to span the widened mass range, preserving alignment.
-				new_lo = min(bins_lo, block_lo)
-				new_size = max(bins_lo + counts.size - 1, block_hi) - new_lo + 1
-				offset = bins_lo - new_lo
-				grown = []
-				for values in (counts, mz_sums, crowded_counts):
-					larger = np.zeros(new_size, dtype=values.dtype)
-					larger[offset:offset + values.size] = values
-					grown.append(larger)
-				counts, mz_sums, crowded_counts = grown
-				bins_lo = new_lo
+	Usage: construct with the ppm tolerance, feed one sample's (recalibrated) payload at a time with
+	:meth:`add_sample`, then call :meth:`build`. Each sample is reduced on arrival to a histogram of
+	its signal peaks (:func:`peak_histogram`) on a logarithmic grid ``_BACKBONE_BINS_PER_TOLERANCE``
+	bins per tolerance; only the histogram is kept.
 
-			bin_idx -= bins_lo
-			counts += np.bincount(bin_idx, minlength=counts.size)
-			mz_sums += np.bincount(bin_idx, weights=block_mz, minlength=mz_sums.size)
-			crowded_counts += np.bincount(bin_idx, weights=block_crowded, minlength=crowded_counts.size).astype(np.int64)
-			del block_mz, block_intensity, block_crowded, bin_idx
+	:meth:`build` pools the samples, each weighted by its number of spectra so that every sample
+	counts alike, smooths the pooled histogram with a Gaussian kernel whose FWHM is
+	``_BACKBONE_KERNEL_FWHM`` tolerances, and places one feature at every local maximum. A feature
+	collects the peaks up to the lowest point between it and each neighbouring maximum, and at most one
+	tolerance from its maximum. Its m/z is the mean m/z of those peaks. A broad or skewed peak
+	distribution has a single maximum, so one ion gives one feature however far its peaks spread; two
+	features need a dip in the density between them. A feature is kept when, in at least one sample,
+	its peaks number at least `frequency_threshold` times those of that sample's largest feature.
+	'''
 
-		if counts is None:
-			return empty
+	def __init__(self, mass_tolerance: int) -> None:
+		self._mass_tolerance = mass_tolerance
+		self._log_bin_width = mass_tolerance * 1e-6 / _BACKBONE_BINS_PER_TOLERANCE
+		# Per ion mode, one (bins, counts, mz_sums, n_spectra) entry per contributing sample.
+		self._samples: dict[MsiIonMode, list[tuple[np.ndarray, np.ndarray, np.ndarray, int]]] = {}
 
-		occupied = np.flatnonzero(counts)
-		return ((occupied + bins_lo).astype(np.int32), counts[occupied], mz_sums[occupied],
-				crowded_counts[occupied])
+	def add_sample(self, sample_mz: dict[MsiIonMode, list[np.ndarray]],
+				   sample_intensity: dict[MsiIonMode, list[np.ndarray]]) -> None:
+		'''Fold one sample's payload into the histograms; the payload is only read, never retained.'''
+		for mode, spectra in sample_mz.items():
+			bins, counts, mz_sums, _ = peak_histogram(spectra, self._log_bin_width, sample_intensity[mode])
+			if bins.size:
+				self._samples.setdefault(mode, []).append((bins, counts, mz_sums, len(spectra)))
+
+	def build(self, frequency_threshold: float) -> dict[MsiIonMode, np.ndarray]:
+		'''Ascending feature m/z per ion mode; an empty array for a mode without signal peaks.'''
+		backbone = {}
+		for mode in MsiIonMode.list():
+			samples = self._samples.get(mode, [])
+			backbone[mode] = self._features(samples, frequency_threshold) if samples else np.array([], dtype=np.float64)
+		return backbone
+
+	def _features(self, samples: list, frequency_threshold: float) -> np.ndarray:
+		lo = min(int(bins[0]) for bins, _, _, _ in samples)
+		hi = max(int(bins[-1]) for bins, _, _, _ in samples)
+		density = np.zeros(hi - lo + 1, dtype=np.float64)
+		for bins, counts, _, n_spectra in samples:
+			density[bins - lo] += counts / n_spectra
+		sigma = _BACKBONE_KERNEL_FWHM * _BACKBONE_BINS_PER_TOLERANCE / (2 * np.sqrt(2 * np.log(2)))
+		density = gaussian_filter1d(density, sigma, mode='constant', cval=0.0, truncate=4.0)
+
+		# Local maxima, strict on the low-mass side so a plateau yields one maximum.
+		padded = np.concatenate(([0.0], density, [0.0]))
+		maxima = np.flatnonzero((padded[1:-1] > padded[:-2]) & (padded[1:-1] >= padded[2:]))
+		if maxima.size == 0:
+			return np.array([], dtype=np.float64)
+		left, right = density_feature_ranges(density, maxima, _BACKBONE_BINS_PER_TOLERANCE)
+		del density, padded
+
+		total_counts = np.zeros(maxima.size, dtype=np.float64)
+		total_mz = np.zeros(maxima.size, dtype=np.float64)
+		keep = np.zeros(maxima.size, dtype=bool)
+		for bins, counts, mz_sums, _ in samples:
+			position = bins - lo
+			feature = np.searchsorted(left, position, side='right') - 1
+			inside = (feature >= 0) & (position <= right[np.maximum(feature, 0)])
+			weight = np.bincount(feature[inside], weights=counts[inside], minlength=maxima.size)
+			total_counts += weight
+			total_mz += np.bincount(feature[inside], weights=mz_sums[inside], minlength=maxima.size)
+			if weight.max() > 0:
+				keep |= weight >= frequency_threshold * weight.max()
+		keep &= total_counts > 0
+		return np.sort(total_mz[keep] / total_counts[keep])
 
 
 class MsiDataset(BaseDataset):
@@ -2497,132 +2507,6 @@ class MsiDataset(BaseDataset):
 				raise ValueError(f"Lipid annotation database must contain the following columns: {required_columns}")
 		else:
 			self.lipid_annotation_db = None
-
-	def _calculate_chunks_for_consensus_estimation(self, unique_mz_len, item_size_bytes=8, safety_factor=1.5):
-		"""
-		Estimate number of chunks constrained by memory and CPU.
-
-		Parameters
-		----------
-		unique_mz_len : int
-			Total number of unique m/z values.
-		item_size_bytes : int
-			Approximate bytes per item in arrays (float64 ~ 8 bytes).
-		safety_factor : float
-			Factor to account for overhead and auxiliary arrays.
-
-		Returns
-		-------
-		n_chunks : int
-			Number of chunks limited by CPU cores and available memory.
-		"""
-
-		# Estimate memory needed for one chunk as a fraction of total data
-		total_data_bytes = unique_mz_len * item_size_bytes
-
-		# Get available RAM in bytes (use psutil)
-		available_mem = psutil.virtual_memory().available
-
-		# Estimate max chunk size in bytes based on memory and safety factor
-		max_chunk_bytes = available_mem / safety_factor
-
-		# Max chunks by memory constraint
-		max_chunks_mem = int(np.ceil(total_data_bytes / max_chunk_bytes))
-
-		# Number of logical CPU cores
-		n_cores = utils.available_cpus() or 1
-
-		# Choose number of chunks limited by cores and memory
-		n_chunks = max(n_cores, max_chunks_mem)
-		n_chunks = min(n_chunks, 32)  # Optional: cap max chunks to avoid overhead
-
-		return n_chunks
-
-	def _compute_reference_mz(self, spectra_list: list[np.ndarray], mass_tolerance: int,
-							  frequency_threshold: float) -> np.ndarray:
-		"""
-		Create consensus reference m/z vector using adaptive mass tolerance with parallel CPU clustering.
-
-		Parameters:
-		-----------
-		spectra_list : list of np.ndarray
-			List of m/z arrays from different spectra.
-		mass_tolerance : int
-			Mass tolerance in ppm for grouping m/z values.
-		frequency_threshold : float
-			Minimum frequency threshold for m/z values to be included in the consensus.
-
-		Returns:
-		-----------
-		consensus_mz : np.ndarray
-			Consensus m/z values after grouping and filtering.
-		"""
-
-		# Guard: return empty array if there are no spectra or all spectra are empty
-		if not spectra_list:
-			return np.array([], dtype=np.float64)
-		all_mz = np.concatenate(spectra_list).astype(np.float64)
-		if all_mz.size == 0:
-			return np.array([], dtype=np.float64)
-
-		# Concatenate and round m/z values
-		all_mz = np.round(all_mz, decimals=6)
-		all_mz.sort()
-
-		# Unique m/z and counts
-		unique_mz, counts = np.unique(all_mz, return_counts=True)
-
-		n = len(unique_mz)
-		# Never more chunks than values, so no chunk is empty.
-		n_chunks = min(self._calculate_chunks_for_consensus_estimation(n, item_size_bytes=8, safety_factor=2.0), n)
-
-		chunk_size = n // n_chunks
-		overlap = int(chunk_size * 0.05)  # 5% overlap dynamically scaled
-
-		chunk_indices = []
-		for i in range(n_chunks):
-			start = max(0, i * chunk_size - overlap)
-			# The last chunk runs to the end: n // n_chunks floors, and the remainder holds the
-			# highest m/z values.
-			end = n if i == n_chunks - 1 else min(n, (i + 1) * chunk_size + overlap)
-			chunk_indices.append((start, end))
-
-		# Prepare chunk arrays with overlap
-		chunks = [(unique_mz[start:end], counts[start:end]) for start, end in chunk_indices]
-
-		n_workers = utils.available_cpus() or 1
-		executor = concurrent.futures.ProcessPoolExecutor(max_workers=n_workers)
-		try:
-			futures = [executor.submit(cluster_unique_mz_chunk, chunk[0], chunk[1], mass_tolerance) for chunk in chunks]
-			results = [f.result() for f in futures]
-		except Exception:
-			executor.shutdown(wait=False, cancel_futures=True)
-			raise
-		else:
-			executor.shutdown(wait=True)
-
-		# Merge clusters across chunks
-		merged_mz, merged_w = results[0]
-		for i in range(1, len(results)):
-			merged_mz, merged_w = merge_chunks(merged_mz, merged_w, results[i][0], results[i][1], mass_tolerance)
-
-		# merge_chunks can leave adjacent centroids closer than mass_tolerance at chunk
-		# boundaries / overlap regions. Re-run the weighted sliding-window consolidation
-		# on the merged result so consecutive reference peaks are guaranteed >= tolerance.
-		if merged_mz.size > 1:
-			order = np.argsort(merged_mz)
-			merged_mz, merged_w = cluster_unique_mz_chunk(merged_mz[order], merged_w[order], mass_tolerance)
-
-		# Guard: return empty array if clustering produced no results
-		if merged_w.size == 0:
-			return np.array([], dtype=np.float64)
-
-		# Filter by frequency threshold
-		max_count = merged_w.max()
-		threshold_count = max_count * frequency_threshold
-		filtered_idx = merged_w >= threshold_count
-
-		return merged_mz[filtered_idx]
 
 	@staticmethod
 	def _interpolate_intensities(original_mzs_list: list[np.ndarray], original_intensities_list: list[np.ndarray],
@@ -2959,8 +2843,6 @@ class MsiDataset(BaseDataset):
 
 		iter_samples = samples_to_process
 
-		reference_mz_samples: dict[MsiIonMode, list[np.float32]] = {MsiIonMode.POSITIVE: [], MsiIonMode.NEGATIVE: []}
-
 		# STEP 1: Initialize each sample to load the metadata
 		for sample in reporter.tqdm(iter_samples, *_step(1), unit="sample"):
 			sample._step_reporter = reporter
@@ -3020,34 +2902,20 @@ class MsiDataset(BaseDataset):
 			sample.recalibration_reference = recalibration_reference
 
 		if not has_partial_cache:
-			# STEP 3: For each ion mode in each sample, compute the reference M/Z vector
+			# STEP 4: Reduce the recalibrated signal peaks of every sample (tissue spectra when
+			# background detection ran) to an m/z histogram; only the histograms are kept.
+			backbone = _BackboneBuilder(mass_tolerance)
 			for sample in reporter.tqdm(iter_samples, *_step(4), unit="sample"):
-				raw_mz, _, filtered_mz, _ = sample.load_payload(annotation_db=self.lipid_annotation_db,
-																mass_tolerance=mass_tolerance)
-				for mode in sample.ion_modes:
-					reference_mz_samples[mode].append(
-						self._compute_reference_mz(
-							filtered_mz[mode],
-							mass_tolerance=mass_tolerance,
-							frequency_threshold=frequency_threshold
-						)
-					)
-				del raw_mz, filtered_mz  # Free memory
+				_, _, filtered_mz, filtered_intensity = sample.load_payload(annotation_db=self.lipid_annotation_db,
+																			mass_tolerance=mass_tolerance)
+				backbone.add_sample(filtered_mz, filtered_intensity)
+				del filtered_mz, filtered_intensity  # Free memory
 				gc.collect()
 
-			# STEP 4: Compute the global reference M/Z vector for each ion mode. No frequency thresholding is applied here
+			# STEP 5: One backbone feature per maximum of the pooled peak density (see _BackboneBuilder)
 			reporter.step(*_step(5))
-			for mode in reference_mz_samples.keys():
-				if len(reference_mz_samples[mode]) > 0:
-					self.reference_mz[mode] = self._compute_reference_mz(
-						reference_mz_samples[mode],
-						mass_tolerance=mass_tolerance,
-						frequency_threshold=0.0
-					)
-				else:
-					self.reference_mz[mode] = np.array([], dtype=np.float32)
-
-			del reference_mz_samples  # Free memory
+			self.reference_mz = backbone.build(frequency_threshold)
+			del backbone  # Free memory
 			gc.collect()
 
 			reporter.detail(
@@ -3241,14 +3109,15 @@ class MsiDataset(BaseDataset):
 						 'focus_preprocessing_fingerprint': dataset_key}
 				)
 
-				# Per-sample cluster labels for alignment colouring (unit aggregation + Leiden).
-				# .X is already normalized here; large samples are coarsened into k x k blocks of the
-				# acquisition raster (Voronoi supercells if no raster is recovered): the spots of a
-				# unit are summed, then re-normalized internally so occupancy washes out. Only
-				# obs['cluster'] is produced; the summed/normalized matrix and PCA / neighbour
-				# intermediates are throwaway, never written to the AnnData.
+				# Per-sample cluster labels for alignment colouring (unit aggregation + Leiden), from the
+				# raw binned intensities: every linear normalization of .X is undone by the clustering's
+				# own total normalization anyway, and log1p needs non-negative input (CLR is not). Large
+				# samples are coarsened into k x k blocks of the acquisition raster (Voronoi supercells
+				# if no raster is recovered) and the spots of a unit are summed. Only obs['cluster'] is
+				# produced; the summed/normalized matrix and PCA / neighbour intermediates are
+				# throwaway, never written to the AnnData.
 				adata.obs['cluster'] = pd.Categorical(compute_cluster_labels(
-					adata.X,
+					adata.layers['raw'],
 					leiden_resolution=self._LEIDEN_RESOLUTION,
 					normalize_target_sum=None,
 					coordinates=adata.obsm.get('spatial'),

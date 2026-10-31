@@ -286,7 +286,7 @@ class MsiDataset(BaseDataset):
 |-----------|------|---------|-------------|
 | `lipid_annotation_db` | `str` or `None` | `None` | Path to a CSV or JSON lipid annotation database. Required columns: `db_name`, `ionized_mass`, `ion_mode`. |
 | `mass_tolerance` | `int` | `10` | Adaptive mass tolerance in ppm for m/z consensus clustering. Must be a Python `int`. A float raises `ValueError`. |
-| `frequency_threshold` | `float` | `0.01` | Minimum fraction of spectra in which an m/z must appear to be included in the reference grid. |
+| `frequency_threshold` | `float` | `0.01` | Minimum signal-peak count of a reference grid feature, as a fraction of the most frequent feature of a sample; a feature passing in one sample is kept. |
 | `intensity_normalization` | `MsiIntensityNormalization` | `"none"` | Normalization method (applied per sample and per ion mode): `"tic"`, `"log"`, `"clr"`, `"tic_mean_scaled"`, `"median"`, `"internal_standard"`, or `"none"`. `"tic"` makes each spectrum sum to 1; `"tic_mean_scaled"` rescales each spectrum to the mean total ion current over that sample's spots for that ion mode, preserving absolute scale (not comparable across samples); `"median"` divides each spectrum by the median of its nonzero features; `"internal_standard"` divides each spectrum by the summed intensity of the internal standards. |
 | `recalibration_reference` | `dict`, `str` or `None` | `None` | Per-ion-mode reference m/z values for recalibration (`{"pos": [...]}`, arrays accepted, or `"pos: 760.585; neg: 885.550"`). Selected from the dataset when `None`. |
 | `internal_standard_mz` | `dict`, `str` or `None` | `None` | m/z of sprayed internal standards per ion mode (same forms). Always used as recalibration references; required by `"internal_standard"`. |

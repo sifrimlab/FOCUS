@@ -474,6 +474,18 @@ def _bin_sum_matrix(X, bin_ids: np.ndarray, n_bins: int):
 	return A @ X
 
 
+def _divide_rows_by_nonzero_median(X):
+	"""``X`` with every row divided by the median of its nonzero values (rows without any stay 0)."""
+	X = sp.csr_matrix(X, dtype=np.float32)
+	X.eliminate_zeros()
+	medians = np.ones(X.shape[0], dtype=np.float32)
+	for row in range(X.shape[0]):
+		values = X.data[X.indptr[row]:X.indptr[row + 1]]
+		if values.size:
+			medians[row] = np.median(values)
+	return sp.diags(1.0 / medians).astype(np.float32) @ X
+
+
 def compute_cluster_labels(
 	X,
 	*,
@@ -497,8 +509,8 @@ def compute_cluster_labels(
 	   the spots into at most ``cap`` units: k x k blocks of the acquisition raster (inferred
 	   from ``coordinates``) or Voronoi supercells when no raster is found. Every spot of a unit
 	   is SUMMED into one pseudo-spot (:func:`_bin_sum_matrix`). Smaller samples run on every spot.
-	2. Normalize the run matrix (see ``normalize_target_sum``), keep the ``N_TOP_FEATURES`` most
-	   variable features (as ST does), run PCA, append each unit's
+	2. Normalize and log1p the run matrix (see ``normalize_target_sum``), keep the
+	   ``N_TOP_FEATURES`` most variable features (as ST does), run PCA, append each unit's
 	   ``smoothing_rings`` neighbourhood mean to its PCs (:func:`spatial_embedding`), then
 	   ``neighbors -> leiden``, bounded by ``cap`` rows.
 	3. Propagate each unit's Leiden label back to every spot of the unit (identity when no
@@ -512,15 +524,15 @@ def compute_cluster_labels(
 	Parameters
 	----------
 	X : scipy.sparse matrix | np.ndarray
-		Expression / intensity matrix, shape (n_obs, n_vars).
+		Raw, non-negative counts or intensities, shape (n_obs, n_vars).
 	leiden_resolution : float
 		Resolution for the Leiden run on the (binned or full) run matrix.
 	normalize_target_sum : float | None
-		When a float (spatial transcriptomics), ``X`` holds raw counts: the run matrix is
-		total-count normalized to this target and log1p-transformed before PCA. When ``None``
-		(MSI, already per-spot normalized): if the run matrix was produced by summing bins it
-		is total-count normalized (target = median) so per-bin occupancy washes out — summed
-		bins are no longer per-spot normalized — otherwise the matrix is used as-is.
+		Normalization of every row of the run matrix before log1p and PCA. A float (spatial
+		transcriptomics counts): total-count normalization to this target. ``None`` (MSI
+		intensities): division by the median of the row's nonzero values, which a few intense
+		ions cannot dominate the way they dominate the total, and which puts the log1p offset at a
+		typical peak of the row whatever the instrument's intensity scale.
 	coordinates : np.ndarray | None
 		(n_obs, 2) spatial coordinates enabling coarsening. When ``None``, no coarsening is
 		done and Leiden runs on every spot regardless of ``cap``.
@@ -553,28 +565,22 @@ def compute_cluster_labels(
 		get_reporter().detail(describe_units(n_obs, units.info))
 	if bin_ids is not None:
 		X_run = _bin_sum_matrix(X, bin_ids, units.n_units)   # (n_units, n_vars); sparse-preserving, throwaway
-		binned = True
 	else:
 		X_run = X.copy()                              # copy: normalize_total/log1p mutate in place
-		binned = False
 
 	n_run = X_run.shape[0]
 	if n_run < 2 or n_vars < 3:
 		return np.array(['0'] * n_obs, dtype=object)
 
-	# 2. Normalize the run matrix, then pca -> neighbors -> leiden on the bounded matrix.
+	# 2. Normalize the run matrix, then pca -> neighbors -> leiden on the bounded matrix. The row
+	# normalization also washes out how many spots a summed unit holds.
+	if normalize_target_sum is None:
+		X_run = _divide_rows_by_nonzero_median(X_run)
 	sub = ad.AnnData(X=X_run)
 	if normalize_target_sum is not None:
-		# ST: run matrix holds (summed) raw counts -> total-count normalize + log1p.
 		sc.pp.normalize_total(sub, target_sum=normalize_target_sum, inplace=True)
-		sc.pp.log1p(sub)
-	elif binned:
-		# MSI: spots were already normalized, but SUMMING bins breaks that; re-normalize each
-		# pseudo-spot (target = median) so cluster structure reflects composition, not how many
-		# spots happened to fall in a bin. No log1p (matches MSI's unbinned no-log path).
-		sc.pp.normalize_total(sub, inplace=True)
-	# Same feature budget as ST. The 'cell_ranger' flavor ranks mean-binned normalized dispersion
-	# without assuming log counts, so it holds for every MSI intensity normalization (CLR is negative).
+	sc.pp.log1p(sub)
+	# Same feature budget as ST; the 'cell_ranger' flavor ranks mean-binned normalized dispersion.
 	if sub.n_vars > N_TOP_FEATURES:
 		sc.pp.highly_variable_genes(sub, flavor='cell_ranger', n_top_genes=N_TOP_FEATURES)
 		sub = sub[:, sub.var['highly_variable'].to_numpy()].copy()

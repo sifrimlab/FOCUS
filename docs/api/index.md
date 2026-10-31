@@ -96,7 +96,7 @@ BaseDataset._check_cache(output_path: str, force_recomputing: bool) -> bool
 [step] [sample] [modality] [stage]
 ```
 
-For example `[4/8 - Computing per-sample m/z backbones] [S01] [MSI] [Preprocessing]`. A finished step adds a line with its duration (`... done in 12.4s`), except when the step was served from cache. Detail lines start with `-`, warnings with `!`.
+For example `[4/8 - Collecting per-sample m/z peaks] [S01] [MSI] [Preprocessing]`. A finished step adds a line with its duration (`... done in 12.4s`), except when the step was served from cache. Detail lines start with `-`, warnings with `!`.
 
 ```python
 from focus.reporting import StepReporter, get_reporter

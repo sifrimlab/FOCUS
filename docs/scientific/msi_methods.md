@@ -238,8 +238,8 @@ via `np.bincount` (a single linear pass, no sort), in blocks of at most \(2 \cdo
 Crowded peaks are defined in §4.1.2. The
 representative mass of a bin is the exact mean \(\sigma_b / n_b\) of the raw values that fell in it.
 The grid only indexes peaks; it never replaces a measured mass with a bin centre. Samples are folded
-in one at a time and their raw peaks released immediately; what persists per sample is one `int32`
-array of occupied bin indices. Retained memory is therefore \(O(\ln(m_{\max}/m_{\min})/w)\), i.e.
+in one at a time and their raw peaks released immediately; what persists per sample is one array of
+occupied bin indices. Retained memory is therefore \(O(\ln(m_{\max}/m_{\min})/w)\), i.e.
 bounded by the **mass span and tolerance**, and independent of the number of spectra.
 
 #### 4.1.2 Isolation
@@ -259,9 +259,8 @@ alone never makes a calibrant crowded.
 
 #### 4.1.3 Grouping, scoring and selection
 
-The merged per-mode histogram is grouped within \(\tau\) ppm by the same weighted sliding window
-used to build the m/z backbone (`cluster_unique_mz_labels`, sharing the growth rule of
-`cluster_unique_mz_chunk`): bins are visited in ascending mass and a bin joins the current group
+The merged per-mode histogram is grouped within \(\tau\) ppm by a weighted sliding window
+(`cluster_unique_mz_labels`): bins are visited in ascending mass and a bin joins the current group
 while it stays within \(\tau\) ppm of the group's running weighted centroid. A calibrant whose drift
 range exceeds \(\tau\) occupies several neighbouring groups, so every group \(g\), at mass
 \(\mu_g\), receives statistics pooled over its search window \(\mathcal{W}_g=\{h : |\mu_h-\mu_g| \le
@@ -392,37 +391,52 @@ recalibration summary and the selected masses.
 
 ### 4.3 Consensus backbone construction
 
-FOCUS design choice: the backbone clustering below. The consensus backbone is built in two levels (`_compute_reference_mz`): a per-sample backbone is
-computed with frequency filtering, then the per-sample backbones are merged globally **without**
-a frequency cutoff (`frequency_threshold=0`) to form the final reference m/z vector.
+The backbone holds one m/z feature per ion and is shared by every sample (`_BackboneBuilder`). It is
+built from the signal peaks (§4.1) of the recalibrated spectra: the tissue spectra when background
+detection ran (§3), all spectra otherwise. Detecting peaks, binning them across spectra and keeping
+the bins whose peaks occur in a minimum fraction of the spectra is the MALDIquant workflow
+(`detectPeaks`, `binPeaks`, `filterPeaks` with `minFrequency`)[^gibb2012]. FOCUS adaptation: the
+binning is replaced by the density grouping below, and the frequency is measured against the
+sample's most frequent feature instead of the number of spectra.
 
-Within each level, all m/z are rounded (6 decimals), sorted, and uniquified with counts, then:
+1. **Histogram** (`peak_histogram`). Per sample \(s\) and ion mode, the signal peaks are counted on
+   the logarithmic grid of §4.1.1 with \(\beta = 10\), i.e. bins one tenth of \(\tau\) wide, each
+   holding the occurrence count \(n_{s,b}\) and the sum \(\sigma_{s,b}\) of the raw m/z values.
+2. **Density.** The samples are pooled, each divided by its number of spectra \(N_s\) so that every
+   sample counts alike, and smoothed with a Gaussian kernel whose full width at half maximum is
+   \(\tau\):
+   \[
+   d_b = \sum_k G_\sigma(b - k) \sum_s \frac{n_{s,k}}{N_s},
+   \qquad
+   \sigma = \frac{\beta}{2\sqrt{2 \ln 2}} \ \text{bins}.
+   \]
+3. **Features** (`density_feature_ranges`). Every local maximum of \(d\) is a feature \(j\). Its
+   range \(R_j\) extends on each side to the lowest point of \(d\) before the neighbouring maximum,
+   and at most \(\tau\) ppm (\(\beta\) bins) from its maximum. Its m/z is the mean of the peaks in
+   that range,
+   \[
+   \hat m_j = \frac{\sum_s \sum_{b \in R_j} \sigma_{s,b}}{\sum_s \sum_{b \in R_j} n_{s,b}} .
+   \]
+   Grouping peaks at the maxima of a kernel density estimate, each group extending down to the
+   density minima on either side of its maximum, is the peak-density grouping of XCMS, which applies
+   it to retention times within m/z slices[^smith2006]. FOCUS adaptation: the density runs along
+   log m/z with a bandwidth set by \(\tau\), a group is also capped at \(\tau\) from its maximum,
+   every maximum becomes a feature (XCMS skips maxima below 1/20 of the highest one in the slice),
+   and the frequency filter below replaces the minimum fraction of samples.
+4. **Frequency filter.** A feature is kept when, in at least one sample,
+   \(\sum_{b \in R_j} n_{s,b} \ge \texttt{frequency\_threshold} \cdot \max_{j'} \sum_{b \in R_{j'}} n_{s,b}\).
 
-1. **Chunked clustering** (`cluster_unique_mz_chunk`, run in parallel; see below). A sliding window
-   grows a weighted centroid \(c\): the next candidate \(a\) joins the cluster while its ppm distance
-   to the **running centroid** is within tolerance, and \(c\) is updated as the count-weighted mean.
-2. **Chunk merging** (`merge_chunks`). Adjacent chunk centroids are merged when within tolerance,
-   combining them by weighted average.
-3. **Boundary re-consolidation.** Because merging can leave boundary centroids closer than tolerance,
-   the weighted sliding-window clustering is re-run once on the merged result, guaranteeing
-   consecutive reference peaks are \(\ge\) tolerance apart.
-4. **Frequency filter** (per-sample level only): clusters are kept when their accumulated weight
-   \(w\) satisfies \(w \ge \texttt{frequency\_threshold}\cdot \max_k w_k\).
+FOCUS design choice: a boundary between two features requires a dip in the peak density. The peaks
+of one ion can spread wider than \(\tau\), for example through a tail of shifted centroids. They
+still have a single density maximum, so the ion gets a single feature. A window of fixed width
+\(\tau\) cuts such an ion into two adjacent features, and each spectrum's intensity then lands in
+one or the other depending on where its peak fell. Only signal peaks define features, so the many
+centroids of a noise-dominated spectrum do not turn the mass axis into a comb of noise features.
+Every peak, signal or not, is still binned into the features (§5).
 
-The two phases use **different ppm denominators**, matching the implementation:
-
-\[
-\delta_{ppm}^{\text{cluster}}(a,c)=\frac{|a-c|}{c}\times 10^6
-\quad\text{(candidate vs. running centroid)},
-\qquad
-\delta_{ppm}^{\text{merge}}(a,b)=\frac{|a-b|}{(a+b)/2}\times 10^6
-\quad\text{(symmetric mean denominator)}.
-\]
-
-Parallelization uses a `ProcessPoolExecutor` over CPU cores; the chunk count is chosen from the
-number of unique m/z, item size, and available memory (`_calculate_chunks_for_consensus_estimation`),
-and never exceeds the number of unique m/z. Adjacent chunks overlap by 5 % so clusters straddling a
-boundary are not split, and the last chunk runs to the highest m/z.
+Retained memory is, per sample and ion mode, the occupied bins with their counts and sums. The pooled
+density spans the dataset's mass range at \(\tau / 10\) ppm per bin: about 4 million bins (33 MB) for
+m/z 50 to 3,000 at \(\tau = 10\).
 
 ---
 
@@ -500,7 +514,8 @@ The modality setting `resolution` sets the neighbourhood: 1 ring for `standard`
 in both cases
 ([Alignment §4b](alignment_methods.md#4b-native-spot-display-and-compact-transport)).
 
-For a sample with \(n\) spots and cap \(C = 250{,}000\):
+The input is the raw binned matrix `.layers['raw']`, whatever the `intensity_normalization`. For a
+sample with \(n\) spots and cap \(C = 250{,}000\):
 
 - **\(n > C\)**: the spots are coarsened, which also aggregates the weak signal of an individual
   ultra-high-resolution MSI spot into a signal where PCA/Leiden can resolve structure. MSI
@@ -509,17 +524,25 @@ For a sample with \(n\) spots and cap \(C = 250{,}000\):
   smallest k that gives at most \(C\) occupied blocks. Interior blocks hold exactly k² spots, so
   block occupancy has no periodic component. When the coordinates do not sit on raster nodes,
   Voronoi supercells are used instead. All spots of a unit are **summed** into one pseudo-spot.
-  Since summing breaks the per-spot normalization, the pseudo-spots are total-count normalized to
-  the median (no `log1p`, matching the uncoarsened path).
-- **\(n \le C\)**: no coarsening; Leiden runs on every spot, matrix used as-is.
+- **\(n \le C\)**: no coarsening; Leiden runs on every spot.
+
+Each row of that matrix (spot or pseudo-spot) is divided by the median of its nonzero values, then
+`log1p`-transformed. Median normalization is more robust than TIC normalization against a few intense
+signals[^deininger2011], and `log1p` is the transform the ST clustering applies to its counts
+([ST §3.6](st_methods.md#36-per-sample-clustering)). FOCUS design choice: without the transform, the
+principal components of raw intensities follow the absolute intensity of the few most abundant ions,
+and the clusters slice their intensity levels. The median sets the `log1p` offset at a typical peak of
+the row, so the transform does not depend on the instrument's intensity scale. The raw matrix is used
+because every linear `intensity_normalization` (`none`, `tic`, `tic_mean_scaled`, `median`,
+`internal_standard`) only rescales rows, which the median normalization replaces, and because `log1p`
+needs non-negative values, which `clr` is not. The row normalization also removes the number of spots
+a pseudo-spot holds.
 
 Then feature selection, PCA, the neighbourhood embedding (each unit's PCs joined to the mean PCs of its
 neighbourhood, weights 0.2 and 0.8), kNN and Leiden on that matrix. As in ST, at most 2,000 features
 enter the PCA. They are the most variable ones by mean-binned normalized dispersion (Scanpy's
-`highly_variable_genes`, `flavor="cell_ranger"`)[^zheng2017]. This is the ST selection step with a flavor that
-does not assume log counts, because MSI intensities may be normalized by any of the
-[intensity normalization](#6-intensity-normalization) methods, including CLR, which is negative. Samples with
-2,000 features or fewer keep them all. Then
+`highly_variable_genes`, `flavor="cell_ranger"`)[^zheng2017]. Samples with 2,000 features or fewer
+keep them all. Then
 \(n_\text{pcs} = \min(50,\, n_\text{run}-1,\, n_\text{selected}-1)\),
 `n_neighbors = min(15, n_run - 1)`, and Leiden at `resolution=0.5`, `flavor="igraph"`,
 `n_iterations=2`, `directed=False`. Each unit's label then propagates back to every spot of the
@@ -594,7 +617,8 @@ the stored references and backbone, and only the remaining samples are processed
 [^larocca2021]: La Rocca R, Kune C, Tiquet M, et al. Adaptive pixel mass recalibration for mass spectrometry imaging based on locally endogenous biological signals. *Anal Chem* 93:4066-4074 (2021). [doi:10.1021/acs.analchem.0c05071](https://doi.org/10.1021/acs.analchem.0c05071)
 [^rafols2020]: Ràfols P, Heijs B, del Castillo E, et al. rMSIproc: an R package for mass spectrometry imaging data processing. *Bioinformatics* 36:3618-3619 (2020). [doi:10.1093/bioinformatics/btaa142](https://doi.org/10.1093/bioinformatics/btaa142)
 [^bemis2023]: Bemis KA, Föll MC, Guo D, Lakkimsetty SS, Vitek O. Cardinal v3: a versatile open source software for mass spectrometry imaging analysis. *bioRxiv* (2023). [doi:10.1101/2023.02.20.529280](https://doi.org/10.1101/2023.02.20.529280). Peak alignment as described in the package documentation (`peakAlign`).
-[^gibb2012]: Gibb S, Strimmer K. MALDIquant: a versatile R package for the analysis of mass spectrometry data. *Bioinformatics* 28:2270-2271 (2012). [doi:10.1093/bioinformatics/bts447](https://doi.org/10.1093/bioinformatics/bts447). Peak detection, noise estimation, warping and binning as described in the package documentation (`detectPeaks`, `estimateNoise`, `determineWarpingFunctions`, `binPeaks`).
+[^gibb2012]: Gibb S, Strimmer K. MALDIquant: a versatile R package for the analysis of mass spectrometry data. *Bioinformatics* 28:2270-2271 (2012). [doi:10.1093/bioinformatics/bts447](https://doi.org/10.1093/bioinformatics/bts447). Peak detection, noise estimation, warping, binning and frequency filtering as described in the package documentation (`detectPeaks`, `estimateNoise`, `determineWarpingFunctions`, `binPeaks`, `filterPeaks`).
+[^smith2006]: Smith CA, Want EJ, O'Maille G, Abagyan R, Siuzdak G. XCMS: processing mass spectrometry data for metabolite profiling using nonlinear peak alignment, matching, and identification. *Anal Chem* 78:779-787 (2006). [doi:10.1021/ac051437y](https://doi.org/10.1021/ac051437y). Peak-density grouping as implemented in xcms (`do_groupChromPeaks_density`).
 [^wolski2005]: Wolski WE, Lalowski M, Jungblut P, Reinert K. Calibration of mass spectrometric peptide mass fingerprint data without specific external or internal calibrants. *BMC Bioinformatics* 6:203 (2005). [doi:10.1186/1471-2105-6-203](https://doi.org/10.1186/1471-2105-6-203)
 [^rousseeuw1993]: Rousseeuw PJ, Croux C. Alternatives to the median absolute deviation. *J Am Stat Assoc* 88:1273-1283 (1993). [doi:10.1080/01621459.1993.10476408](https://doi.org/10.1080/01621459.1993.10476408)
 [^tukey1977]: Tukey JW. *Exploratory Data Analysis*. Addison-Wesley, Reading, MA (1977).

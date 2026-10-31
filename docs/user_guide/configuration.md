@@ -232,7 +232,7 @@ Additional settings for the chosen registration method. May be an empty object w
     | Parameter | Type | Description |
     |-----------|------|-------------|
     | `mass_tolerance` | int | m/z clustering tolerance in ppm. Must be an integer. A float raises `ValueError`. Default `10`. |
-    | `frequency_threshold` | float | Minimum fraction of the maximum cluster weight for an m/z to enter the per-sample backbone. Default `0.01`. |
+    | `frequency_threshold` | float | Minimum signal-peak count of an m/z backbone feature, as a fraction of the most frequent feature of a sample; a feature passing in one sample is kept. Default `0.01`. |
     | `intensity_normalization` | string | Normalization method (per sample and per ion mode): `"none"` (default), `"tic"`, `"log"`, `"clr"`, `"tic_mean_scaled"` (rescales each spectrum to the mean total ion current over that sample's spots for that ion mode, preserving absolute scale; not comparable across samples), `"median"` (divides each spectrum by the median of its nonzero features), or `"internal_standard"` (divides each spectrum by the summed intensity of the internal standards; requires `internal_standard_mz`). |
     | `detect_background` | bool | Detect and flag off-tissue background spots in `obs["foreground"]` (all spots are still written). Only effective when `lipid_annotation_db` is also set. Default `false`. |
     | `sample_type` | string | Background-detection strategy: `"tissue"` (GMM + BIC, default) or `"microgrid"` (sparse cells on a background-dominated slide, detected as local outliers against a background ion model with median-filter background correction and a hysteresis threshold). |
