@@ -9,7 +9,7 @@ import numpy as np
 from focus.constants import MsiIntensityNormalization, MsiIonMode, MsiMetadata
 from focus.preprocessing.lipidomics import (
     MsiDataset, MsiSample, _BackboneBuilder, _CalibrationReferenceSelector, _parse_mz_by_mode,
-    estimate_recalibration, interpolate_single, normalize_intensities,
+    estimate_recalibration, interpolate_single, normalize_intensities, sample_offset_ppm,
 )
 
 # Ten isolated calibrants spread over the mass range, plus one analyte that is never a reference.
@@ -105,6 +105,38 @@ class RecalibrationModelTests(unittest.TestCase):
         truth = true_error_ppm(coords[:, 0], coords[:, 1], CENTRE, n_lines, n_cols, row_ramp=30.0)
         estimate = model.offset_ppm + model.slope_ppm_per_da * (CENTRE - model.centre_mz)
         self.assertLess(np.abs(estimate - truth).max(), 1.5)
+
+    def test_follows_drift_beyond_the_search_window(self):
+        # Down the lines the drift grows to 120 ppm; in the other cases the whole sample sits 80 to
+        # 110 and 80 to 200 ppm off: all beyond the +-50 ppm window around the reference masses.
+        n_lines, n_cols = 30, 40
+        for drift in ((0.0, 120.0), (80.0, 110.0), (80.0, 200.0)):
+            mz_list, intensity_list, coords = synthetic_sample(n_lines, n_cols, dim_lines=(), missing_lines=(),
+                                                               line_drift=drift)
+            model = estimate_recalibration(mz_list, intensity_list, coords, line_axis=0, reference_mz=CALIBRANTS,
+                                           mass_tolerance=10)
+            self.assertEqual(model.summary["lines_estimated"], n_lines, f"drift {drift}")
+            truth = true_error_ppm(coords[:, 0], coords[:, 1], CENTRE, n_lines, n_cols, line_drift=drift)
+            estimate = model.offset_ppm + model.slope_ppm_per_da * (CENTRE - model.centre_mz)
+            self.assertLess(np.abs(estimate - truth).max(), 2.0, f"drift {drift}")
+
+    def test_sample_offset_needs_two_agreeing_calibrants(self):
+        rng = np.random.default_rng(3)
+
+        def spectra(present):
+            mz_list, intensity_list = [], []
+            for _ in range(2000):
+                mz = np.concatenate([CALIBRANTS[:present] * (1 + 70e-6), rng.uniform(350, 1100, 3000)])
+                intensity = np.concatenate([[800.0] * present, rng.exponential(50, 3000)])
+                order = np.argsort(mz)
+                mz_list.append(mz[order])
+                intensity_list.append(intensity[order].astype(np.float32))
+            return mz_list, intensity_list
+
+        # Noise alone, or one ion near one reference, does not move the search; two calibrants do.
+        self.assertEqual(sample_offset_ppm(*spectra(0), CALIBRANTS, 500.0, 10), 0.0)
+        self.assertEqual(sample_offset_ppm(*spectra(1), CALIBRANTS, 500.0, 10), 0.0)
+        self.assertAlmostEqual(sample_offset_ppm(*spectra(2), CALIBRANTS, 500.0, 10), 70.0, delta=2.0)
 
     def test_zero_and_one_based_coordinates_agree(self):
         mz_list, intensity_list, coords = synthetic_sample(10, 12, dim_lines=(), missing_lines=())

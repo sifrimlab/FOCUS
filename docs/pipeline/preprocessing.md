@@ -132,7 +132,8 @@ The MSI pipeline operates at the **dataset level**: all samples are processed to
 
 4. **Per-Spectrum m/z Recalibration** (per sample; [MSI methods §4.2](../scientific/msi_methods.md#42-per-spectrum-recalibration))
    - Scan lines follow the imzML scan type (horizontal by default)
-   - Line level: match every reference within the search window, take the median ppm error per line and reference, fit an offset (and a slope in m/z when at least 3 references spanning 25% of their m/z range are matched), smooth over 5 lines and interpolate lines without calibrants
+   - Sample offset: locate the calibrants within ±10 times the search window, where at least 2 references show significantly more signal peaks than their background; the search then starts there (at 0 when no offset is supported)
+   - Line level: match every reference within the search window, take the median ppm error per line and reference; lines without an estimate are searched again around the drift of their estimated neighbours until no further line is estimated; fit an offset (and a slope in m/z when at least 3 references spanning 25% of their m/z range are matched), smooth over 5 lines and interpolate lines without calibrants
    - Pixel level: match again within the search window centred on the line prediction, take each spectrum's median residual, smooth over the 3 x 3 pixel neighbourhood
    - Correct every m/z as m / (1 + e(m) × 1e-6), with e(m) the spectrum's ppm error model; the same model serves the backbone and the intensity matrix
    - Runs with or without a lipid annotation database; the applied correction is stored in `obs["recalibration_ppm_<mode>"]`

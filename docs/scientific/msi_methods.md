@@ -363,6 +363,26 @@ or `vertical line scan`, IMS:1000481)[^schramm2012]; when absent, lines are take
 (constant `position y`). Line indices are taken relative to the smallest coordinate, so 0-based and
 1-based files are handled identically.
 
+**Sample offset** (`sample_offset_ppm`). A sample can sit further than \(W\) from the dataset-wide
+reference masses, for example after a calibration change between acquisitions. Per reference, the
+signal peaks within \(10\,W\) ppm (500 ppm at \(\tau = 10\)) are counted at every whole-ppm offset
+(`offset_histogram`), and a reference supports an offset \(c\) when its peaks within \(\tau\) ppm of
+\(c\) exceed, at Poisson tail probability below \(10^{-6}\), the count expected if its peaks were
+spread evenly over the search range. The sample offset \(c_0\) is the offset supported by the most
+references, ties going to the maximum of the summed per-reference histograms (each scaled to unit sum
+and smoothed with a Gaussian kernel of FWHM \(\tau\)). Fewer than 2 supporting references give
+\(c_0 = 0\). FOCUS design choice: the calibrants of a spectrum drift together, so their offsets
+agree, while other ions near each reference fall at unrelated offsets; requiring two references keeps
+noise and a single unrelated ion from moving the search.
+
+**Line tracking.** The line-level matches below are first searched in a window of \(W\) ppm around
+\(c_0\). Lines that do not reach an estimate are searched again around the drift of their estimated
+neighbours: the per-line median of \(\tilde e_{lj}\) over the references, smoothed and filled along
+the lines as below. This repeats until no further line is estimated. FOCUS design choice: drift
+larger than the window, along the acquisition or across the whole sample, is followed line by line as
+long as neighbouring lines differ by less than \(W\). Without it, the lines beyond the window would
+take the correction of the last matched line, which leaves a stripe or a regional offset.
+
 **Line level (wide window \(W\)).** Per line and reference, \(\tilde e_{lj} = \operatorname{median}_{i
 \in l}\, e_{ij}\) over the matched spectra. A line slope \(b_l\) is fitted only when at least 3
 references spanning at least 25 % of \(\mu_R - \mu_1\) are matched on the line: least squares of

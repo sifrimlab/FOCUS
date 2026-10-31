@@ -19,7 +19,7 @@ import warnings
 from dataclasses import dataclass
 from scipy.spatial import cKDTree
 from scipy.ndimage import binary_fill_holes, binary_opening, gaussian_filter1d, median_filter, label as label_components
-from scipy.stats import norm as normal_distribution
+from scipy.stats import norm as normal_distribution, poisson as poisson_distribution
 
 import focus.utils as utils
 from focus.constants import ImzMLFileParser, MsiIntensityNormalization, MsiSampleType, MsiMetadata, MsiIonMode, MsiPreprocessingParams, SpotResolution
@@ -51,7 +51,7 @@ def _step(index: int) -> tuple[int, int, str]:
 
 # Part of the preprocessing fingerprint: bump whenever the same input and settings produce a
 # different output, so cached results are rebuilt.
-METHOD_VERSION = "msi-5"
+METHOD_VERSION = "msi-6"
 
 
 def _parse_mz_by_mode(value, setting: str) -> dict[str, np.ndarray] | None:
@@ -295,6 +295,13 @@ _BLOCK_PEAKS = 20_000_000
 _RECALIBRATION_REFERENCES = 10
 # A sample whose spectra match a reference less often than this is reported as a warning.
 _RECAL_WARN_MATCHED = 0.5
+# Half-width of the sample-level offset search, as a multiple of the line-level search window: how
+# far from the dataset-wide reference masses a sample's calibrants are looked for.
+_RECAL_COARSE_FACTOR = 10
+# An offset is accepted when at least this many references hold, within one mass tolerance of it,
+# more signal peaks than their background explains at Poisson tail probability _RECAL_OFFSET_ALPHA.
+_RECAL_OFFSET_MIN_REFERENCES = 2
+_RECAL_OFFSET_ALPHA = 1e-6
 
 
 def recalibration_search_ppm(mass_tolerance: float) -> float:
@@ -408,6 +415,84 @@ def match_references(flat_mz, flat_intensity, offsets, reference_mz, centre_ppm,
 	return errors
 
 
+@njit(cache=True)
+def offset_histogram(flat_mz, flat_intensity, offsets, reference_mz, half_width_ppm, signal_to_noise):
+	"""
+	Per reference, the number of signal peaks at every whole-ppm offset from it.
+
+	Returns an (n_ref, 2 * half_width_ppm + 1) int64 array; column k counts the peaks reaching their
+	spectrum's `noise_threshold` at `round((m - reference) / reference * 1e6) == k - half_width_ppm`.
+	"""
+	half = int(half_width_ppm)
+	counts = np.zeros((reference_mz.size, 2 * half + 1), dtype=np.int64)
+	for s in range(offsets.size - 1):
+		start = offsets[s]
+		end = offsets[s + 1]
+		if end <= start:
+			continue
+		mz = flat_mz[start:end]
+		intensity = flat_intensity[start:end]
+		threshold = noise_threshold(intensity, signal_to_noise)
+		ascending = True
+		for k in range(1, mz.size):
+			if mz[k] < mz[k - 1]:
+				ascending = False
+				break
+		if not ascending:
+			order = np.argsort(mz)
+			mz = mz[order]
+			intensity = intensity[order]
+		for j in range(reference_mz.size):
+			reference = reference_mz[j]
+			left = np.searchsorted(mz, reference * (1.0 - half * 1e-6))
+			right = np.searchsorted(mz, reference * (1.0 + half * 1e-6), side='right')
+			for k in range(left, right):
+				if intensity[k] >= threshold:
+					b = int(np.round((mz[k] - reference) / reference * 1e6)) + half
+					if 0 <= b <= 2 * half:
+						counts[j, b] += 1
+	return counts
+
+
+def sample_offset_ppm(mz_list, intensity_list, reference_mz, half_width_ppm, mass_tolerance) -> float:
+	"""
+	The ppm offset of a sample's calibrants from the reference masses, searched within `half_width_ppm`.
+
+	The calibrants of one spectrum drift together, so their offsets agree while other ions near each
+	reference fall at unrelated offsets. Per reference, the signal peaks within `mass_tolerance` of
+	every candidate offset are counted (:func:`offset_histogram`) and compared with the count its
+	peaks would give if spread evenly over the search range: a reference supports the offset when
+	that count is exceeded at Poisson tail probability below `_RECAL_OFFSET_ALPHA`. The offset is
+	the one supported by the most references; ties go to the maximum of the summed histograms, each
+	scaled to unit sum so every reference weighs alike and smoothed with a Gaussian kernel whose FWHM
+	is `mass_tolerance`. Fewer than `_RECAL_OFFSET_MIN_REFERENCES` supporting references (calibrants
+	absent, or a single unrelated ion near one reference) give 0.
+	"""
+	counts = None
+	for start, stop in _peak_blocks(mz_list):
+		flat_mz, flat_intensity, offsets = _flatten_spectra(mz_list[start:stop], intensity_list[start:stop])
+		if flat_mz.size == 0:
+			continue
+		block = offset_histogram(flat_mz, flat_intensity, offsets, reference_mz, float(half_width_ppm), _SIGNAL_TO_NOISE)
+		counts = block if counts is None else counts + block
+	if counts is None or counts.sum() == 0:
+		return 0.0
+	reach = max(1, int(np.ceil(mass_tolerance)))
+	cumulative = np.pad(np.cumsum(counts, axis=1), ((0, 0), (reach + 1, reach)), mode='edge')
+	cumulative[:, :reach + 1] = 0
+	near = cumulative[:, 2 * reach + 1:] - cumulative[:, :-2 * reach - 1]
+	totals = counts.sum(axis=1, keepdims=True)
+	expected = totals * (2 * reach + 1) / counts.shape[1]
+	critical = np.where(totals > 0, poisson_distribution.isf(_RECAL_OFFSET_ALPHA, np.maximum(expected, 1e-12)), np.inf)
+	support = (near > critical).sum(axis=0)
+	if support.max() < _RECAL_OFFSET_MIN_REFERENCES:
+		return 0.0
+	density = gaussian_filter1d((counts / np.maximum(totals, 1)).sum(axis=0),
+								mass_tolerance / (2 * np.sqrt(2 * np.log(2))), mode='constant')
+	best = np.flatnonzero(support == support.max())
+	return float(best[np.argmax(density[best])] - int(half_width_ppm))
+
+
 def _match_all(mz_list, intensity_list, reference_mz, centre_ppm, window_ppm):
 	"""Blocked `match_references` over a whole sample; `centre_ppm(start, stop)` gives each block's centres."""
 	n_spectra = len(mz_list)
@@ -519,7 +604,10 @@ def estimate_recalibration(
 	Estimate the per-spectrum m/z recalibration of one sample and ion mode.
 
 	1. Line level. Every reference is matched in every spectrum within the wide window
-	   `recalibration_search_ppm(mass_tolerance)`. Per scan line, the per-reference median ppm
+	   `recalibration_search_ppm(mass_tolerance)`, centred on the sample's offset
+	   (:func:`sample_offset_ppm`); lines still without an estimate are matched again around the
+	   drift of their estimated neighbours until no further line is estimated, so drift larger than
+	   the window is followed line by line. Per scan line, the per-reference median ppm
 	   errors are fitted by `a + b * (reference - centre_mz)`; `b` is kept only when enough
 	   references spanning enough of the m/z range are matched, and is fitted robustly (one
 	   outlier-rejection pass at `_RECAL_OUTLIER_SIGMA` robust standard deviations). `b` and `a`
@@ -561,28 +649,47 @@ def estimate_recalibration(
 	line = (pixel_coordinates[:, line_axis] - pixel_coordinates[:, line_axis].min()).astype(np.int64)
 	n_lines = int(line.max()) + 1
 
-	# Pass 1: wide window centred on the reference itself.
+	# Pass 1, per scan line and reference: the median error of the matches within the search window.
+	# The window is first centred on the sample's offset (sample_offset_ppm), which finds calibrants
+	# that the whole sample carries beyond the window. Lines still without an estimate are then
+	# searched again around the drift of their estimated neighbours (running median, interpolated and
+	# held at the edges), until no further line is estimated: drift larger than the window is
+	# followed line by line, as long as neighbouring lines differ by less than the window.
 	search_ppm = recalibration_search_ppm(mass_tolerance)
-	coarse = _match_all(mz_list, intensity_list, reference_mz,
-						lambda start, stop: np.zeros((stop - start, n_ref), dtype=np.float64),
-						search_ppm)
-
-	# Per line and reference: median error and match count.
+	start_ppm = sample_offset_ppm(mz_list, intensity_list, reference_mz, _RECAL_COARSE_FACTOR * search_ppm,
+								  mass_tolerance)
 	line_median = np.full((n_lines, n_ref), np.nan, dtype=np.float64)
 	line_matches = np.zeros(n_lines, dtype=np.int64)
-	spectrum_idx, ref_idx = np.nonzero(np.isfinite(coarse))
-	if spectrum_idx.size:
-		point_line = line[spectrum_idx]
-		point_error = coarse[spectrum_idx, ref_idx].astype(np.float64)
-		key = point_line * n_ref + ref_idx
-		order = np.argsort(key, kind='stable')
-		key, point_error = key[order], point_error[order]
-		unique_keys, starts = np.unique(key, return_index=True)
-		bounds = np.append(starts, key.size)
-		for k, flat_key in enumerate(unique_keys):
-			line_median[flat_key // n_ref, flat_key % n_ref] = np.median(point_error[bounds[k]:bounds[k + 1]])
-		line_matches = np.bincount(point_line, minlength=n_lines)
-	del coarse
+	estimated = np.zeros(n_lines, dtype=bool)
+	todo = np.arange(n_spectra)
+	centre = np.full(n_spectra, start_ppm)
+	while todo.size:
+		errors = _match_all([mz_list[i] for i in todo], [intensity_list[i] for i in todo], reference_mz,
+							lambda start, stop: np.repeat(centre[start:stop, None], n_ref, axis=1), search_ppm)
+		redo = np.unique(line[todo])
+		line_median[redo] = np.nan
+		line_matches[redo] = 0
+		spectrum_idx, ref_idx = np.nonzero(np.isfinite(errors))
+		if spectrum_idx.size:
+			point_line = line[todo[spectrum_idx]]
+			key = point_line * n_ref + ref_idx
+			order = np.argsort(key, kind='stable')
+			key, point_error = key[order], errors[spectrum_idx, ref_idx].astype(np.float64)[order]
+			unique_keys, starts = np.unique(key, return_index=True)
+			bounds = np.append(starts, key.size)
+			for k, flat_key in enumerate(unique_keys):
+				line_median[flat_key // n_ref, flat_key % n_ref] = np.median(point_error[bounds[k]:bounds[k + 1]])
+			line_matches += np.bincount(point_line, minlength=n_lines)
+		del errors
+		now = (line_matches >= _RECAL_MIN_LINE_MATCHES) & np.isfinite(line_median).any(axis=1)
+		if not (now & ~estimated).any():
+			break
+		estimated = now
+		with warnings.catch_warnings():
+			warnings.simplefilter("ignore", RuntimeWarning)  # lines without matches
+			drift = _smooth_and_fill_lines(np.where(estimated, np.nanmedian(line_median, axis=1), np.nan))
+		todo = np.flatnonzero(~estimated[line])
+		centre = drift[line[todo]]
 
 	# Line slope, where the matched references support it.
 	slope = np.full(n_lines, np.nan, dtype=np.float64)
