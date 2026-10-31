@@ -115,6 +115,7 @@ class MsiMetadata(_AbstractEnum):
 	MZ_BINARY_METADATA = "mz_binary_metadata"
 	INTENSITIES_BINARY_METADATA = "intensities_binary_metadata"
 	LINE_AXIS = "line_axis"  # PIXEL_COORDINATES column indexing the scan lines (0: horizontal, 1: vertical)
+	STAGE_COORDINATES = "stage_coordinates"  # True when every spectrum carries its stage position (3DPositionX/Y)
 
 class MsiIonMode(_AbstractEnum):
 	POSITIVE = "pos"

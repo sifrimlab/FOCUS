@@ -17,6 +17,7 @@ import scanpy as sc
 import gc
 import warnings
 from dataclasses import dataclass
+from scipy.spatial import cKDTree
 from scipy.ndimage import binary_fill_holes, binary_opening, gaussian_filter1d, median_filter, label as label_components
 from scipy.stats import norm as normal_distribution
 
@@ -50,7 +51,7 @@ def _step(index: int) -> tuple[int, int, str]:
 
 # Part of the preprocessing fingerprint: bump whenever the same input and settings produce a
 # different output, so cached results are rebuilt.
-METHOD_VERSION = "msi-4"
+METHOD_VERSION = "msi-5"
 
 
 def _parse_mz_by_mode(value, setting: str) -> dict[str, np.ndarray] | None:
@@ -1025,6 +1026,7 @@ class MsiSample(BaseSample):
 			MsiMetadata.MZ_DTYPE: mz_dtype,
 			MsiMetadata.RASTER_SIZE: raster_size,
 			MsiMetadata.LINE_AXIS: line_axis,
+			MsiMetadata.STAGE_COORDINATES: bool(has_physical.all()),
 			MsiMetadata.PIXEL_COORDINATES: pixel_coordinates,
 			MsiMetadata.PHYSICAL_COORDINATES: physical_coordinates,
 			MsiMetadata.MZ_BINARY_METADATA: mz_binary_metadata,
@@ -1179,36 +1181,64 @@ class MsiSample(BaseSample):
 
 		return pixel_coords
 
-	def _filter_unpaired_spots(self) -> None:
+	@staticmethod
+	def _pair_by_stage(pos_stage: np.ndarray, neg_stage: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
 		'''
-		Analyze the metadata of both ion modes and remove unpaired spots (experimental artifacts).
-		Only pixels present in both ion modes are retained.
+		Pair the POSITIVE and NEGATIVE spectra of one sample by stage position.
+
+		Both rasters are in the instrument's stage frame and differ by one constant offset: the second
+		polarity is acquired a fraction of a pixel away from the first, and the two acquisitions may
+		cover different areas. The offset is the most common displacement from a POSITIVE spectrum to
+		its nearest NEGATIVE one, taken on a grid of a quarter pitch (so that two equally near
+		neighbours, at an offset of half a pitch, are not averaged into a displacement of 0), refined by
+		the median of the displacements in that grid cell. Each POSITIVE spectrum is then paired with
+		the NEGATIVE spectrum nearest to its position plus the offset, within half a pitch; a NEGATIVE
+		spectrum claimed twice goes to the closer POSITIVE one.
+
+		Returns
+		-------
+		pos_indices, neg_indices : np.ndarray
+			Paired spectrum indices, in ascending POSITIVE order.
+		offset : np.ndarray
+			NEGATIVE minus POSITIVE stage position, in the stage unit (micrometres).
+		residual : np.ndarray
+			Distance of every pair from the offset, in the stage unit.
 		'''
+		spacing = cKDTree(pos_stage).query(pos_stage, k=2)[0][:, 1]
+		pitch = float(np.median(spacing[spacing > 0])) if np.any(spacing > 0) else 1.0
+		tree = cKDTree(neg_stage)
+		_, nearest = tree.query(pos_stage)
+		displacement = neg_stage[nearest] - pos_stage
+		_, cell, counts = np.unique(np.round(displacement / (pitch / 4)).astype(np.int64), axis=0,
+									return_inverse=True, return_counts=True)
+		offset = np.median(displacement[cell.ravel() == np.argmax(counts)], axis=0)
 
-		if not self.double_ion_mode:
-			return
+		distance, partner = tree.query(pos_stage + offset, distance_upper_bound=pitch / 2)
+		order = np.argsort(distance, kind='stable')
+		order = order[np.isfinite(distance[order])]
+		_, first = np.unique(partner[order], return_index=True)
+		pos_indices = np.sort(order[first])
+		return pos_indices, partner[pos_indices], offset, distance[pos_indices]
 
-		# Extract pixel and physical coordinates for both ion modes
+	def _pair_by_pixel(self) -> tuple[np.ndarray, np.ndarray]:
+		'''
+		Pair the POSITIVE and NEGATIVE spectra by pixel index, for imzML files without stage positions.
+
+		The NEGATIVE pixel axes are flipped to the POSITIVE orientation first (each mode's
+		pixel-to-physical map is fitted and the flip that best matches the two maps is applied),
+		mirroring the NEGATIVE pixel indices about their own range. That mirror maps each pixel onto
+		its POSITIVE counterpart only when both modes cover the same raster extent, so a difference in
+		extent is reported as a warning.
+
+		Returns
+		-------
+		pos_indices, neg_indices : np.ndarray
+			Paired spectrum indices, in ascending POSITIVE order.
+		'''
 		pos_pixel_coords = self._metadata[MsiIonMode.POSITIVE][MsiMetadata.PIXEL_COORDINATES]
 		neg_pixel_coords = self._metadata[MsiIonMode.NEGATIVE][MsiMetadata.PIXEL_COORDINATES]
 		pos_phys_coords = self._metadata[MsiIonMode.POSITIVE][MsiMetadata.PHYSICAL_COORDINATES]
 		neg_phys_coords = self._metadata[MsiIonMode.NEGATIVE][MsiMetadata.PHYSICAL_COORDINATES]
-
-		# Debug: show pixel and physical extremes before any correction
-		for mode_label, pix, phys in [
-			("POSITIVE", pos_pixel_coords, pos_phys_coords),
-			("NEGATIVE", neg_pixel_coords, neg_phys_coords),
-		]:
-			def _fmt(idx, pix=pix, phys=phys):
-				return f"pixel=({pix[idx, 0]},{pix[idx, 1]}) phys=({phys[idx, 0]:.1f},{phys[idx, 1]:.1f})"
-
-			logger.debug(
-				f"[filter_unpaired_spots] {mode_label} extremes:\n"
-				f"  min_x  {_fmt(int(np.argmin(pix[:, 0])))}\n"
-				f"  max_x  {_fmt(int(np.argmax(pix[:, 0])))}\n"
-				f"  min_y  {_fmt(int(np.argmin(pix[:, 1])))}\n"
-				f"  max_y  {_fmt(int(np.argmax(pix[:, 1])))}"
-			)
 
 		# Detect pixel axis orientation mismatch by fitting a linear pixel->physical map for each mode.
 		# T has shape (2, 2): row i contains how pixel axis i drives (phys_x, phys_y).
@@ -1234,6 +1264,12 @@ class MsiSample(BaseSample):
 			key=lambda k: np.linalg.norm(T_neg_norm * flip_candidates[k][:, None] - T_pos_norm, 'fro')
 		)
 
+		if np.any(np.ptp(pos_pixel_coords, axis=0) != np.ptp(neg_pixel_coords, axis=0)):
+			get_reporter().warning(
+				f"POSITIVE and NEGATIVE cover different rasters ({np.ptp(pos_pixel_coords, axis=0) + 1} vs "
+				f"{np.ptp(neg_pixel_coords, axis=0) + 1} pixels) and the imzML files have no stage positions: "
+				f"spectra are paired by pixel index, which can pair different locations")
+
 		if flip_x or flip_y:
 			neg_pixel_coords = neg_pixel_coords.copy()
 			min_x, max_x = int(neg_pixel_coords[:, 0].min()), int(neg_pixel_coords[:, 0].max())
@@ -1244,62 +1280,50 @@ class MsiSample(BaseSample):
 				neg_pixel_coords[:, 1] = max_y + min_y - neg_pixel_coords[:, 1]
 			self._metadata[MsiIonMode.NEGATIVE][MsiMetadata.PIXEL_COORDINATES] = neg_pixel_coords
 			get_reporter().detail(f"Pixel axis flip applied to the NEGATIVE mode (flip_x={flip_x}, flip_y={flip_y})")
+
+		# Keep the pixels present in both modes. The negative array is still in its original scan
+		# order, which is the reverse of positive when a flip was applied, so the negative indices are
+		# reordered: neg_pixel_coords[neg_indices[k]] == pos_pixel_coords[pos_indices[k]].
+		neg_pix_to_idx = {(int(y), int(x)): ni for ni, (y, x) in enumerate(neg_pixel_coords)}
+		pos_indices = np.array([pi for pi, (y, x) in enumerate(pos_pixel_coords)
+								if (int(y), int(x)) in neg_pix_to_idx], dtype=np.intp)
+		neg_indices = np.array([neg_pix_to_idx[(int(y), int(x))] for y, x in pos_pixel_coords[pos_indices]],
+							   dtype=np.intp)
+		return pos_indices, neg_indices
+
+	def _filter_unpaired_spots(self) -> None:
+		'''
+		Pair the spectra of the two ion modes and drop the unpaired ones (spots acquired in one mode only).
+
+		With stage positions in both imzML files the spectra are paired by stage position
+		(:meth:`_pair_by_stage`), whatever area and pixel orientation each acquisition has; otherwise
+		by pixel index (:meth:`_pair_by_pixel`). Each mode keeps its own pixel coordinates, which only
+		describe that mode's own raster (scan lines and pixel neighbourhoods).
+		'''
+
+		if not self.double_ion_mode:
+			return
+
+		positive = self._metadata[MsiIonMode.POSITIVE]
+		negative = self._metadata[MsiIonMode.NEGATIVE]
+		if positive.get(MsiMetadata.STAGE_COORDINATES) and negative.get(MsiMetadata.STAGE_COORDINATES):
+			pos_indices, neg_indices, offset, residual = MsiSample._pair_by_stage(
+				positive[MsiMetadata.PHYSICAL_COORDINATES].astype(np.float64),
+				negative[MsiMetadata.PHYSICAL_COORDINATES].astype(np.float64))
+			get_reporter().detail(
+				f"POSITIVE and NEGATIVE paired by stage position: {len(pos_indices):,} pairs, NEGATIVE offset "
+				f"({offset[0]:+.1f}, {offset[1]:+.1f}) um, median residual {np.median(residual):.1f} um; unpaired: "
+				f"{len(positive[MsiMetadata.PIXEL_COORDINATES]) - len(pos_indices):,} POSITIVE, "
+				f"{len(negative[MsiMetadata.PIXEL_COORDINATES]) - len(neg_indices):,} NEGATIVE")
 		else:
-			logger.debug("[filter_unpaired_spots] No pixel axis flip needed")
+			pos_indices, neg_indices = self._pair_by_pixel()
+		if len(pos_indices) == 0:
+			raise ValueError(f"Sample '{self.sample_id}': no POSITIVE spectrum has a NEGATIVE counterpart.")
 
-		# Build structured arrays AFTER the flip so comparisons use corrected coordinates
-		dtype = [('x', pos_pixel_coords.dtype), ('y', pos_pixel_coords.dtype)]
-		pos_pixel_coords_struct = pos_pixel_coords.view(dtype)
-		neg_pixel_coords_struct = neg_pixel_coords.view(dtype)
-
-		# Find the intersection: keep pixels present in BOTH modes
-		pos_mask = np.isin(pos_pixel_coords_struct, neg_pixel_coords_struct)
-		neg_mask = np.isin(neg_pixel_coords_struct, pos_pixel_coords_struct)
-
-		pos_indices = np.nonzero(pos_mask)[0]
-		neg_indices = np.nonzero(neg_mask)[0]
-
-		# After the pixel flip the negative array is still in its original scan order, which is
-		# the reverse of positive when a flip was applied. Pairing by array index would therefore
-		# match opposite ends of the scan, producing a reflected affine transform and wavy output.
-		# Reorder neg_indices so that neg_pixel_coords[neg_indices[k]] == pos_pixel_coords[pos_indices[k]].
-		neg_pix_to_idx = {
-			(int(neg_pixel_coords[ni, 0]), int(neg_pixel_coords[ni, 1])): ni
-			for ni in neg_indices
-		}
-		neg_indices = np.array([
-			neg_pix_to_idx[(int(pos_pixel_coords[pi, 0]), int(pos_pixel_coords[pi, 1]))]
-			for pi in pos_indices
-		])
-
-		pos_shape_filtered = (int(pos_pixel_coords[pos_indices, 0].max()), int(pos_pixel_coords[pos_indices, 1].max()))
-		neg_shape_filtered = (int(neg_pixel_coords[neg_indices, 0].max()), int(neg_pixel_coords[neg_indices, 1].max()))
-		logger.debug(f"[filter_unpaired_spots] POSITIVE grid shape after intersection: {pos_shape_filtered}")
-		logger.debug(f"[filter_unpaired_spots] NEGATIVE grid shape after intersection: {neg_shape_filtered}")
-
-		# Filter positive mode metadata
-		self._metadata[MsiIonMode.POSITIVE][MsiMetadata.PIXEL_COORDINATES] = pos_pixel_coords[pos_indices]
-		self._metadata[MsiIonMode.POSITIVE][MsiMetadata.PHYSICAL_COORDINATES] = (
-			self._metadata[MsiIonMode.POSITIVE][MsiMetadata.PHYSICAL_COORDINATES][pos_indices]
-		)
-		self._metadata[MsiIonMode.POSITIVE][MsiMetadata.MZ_BINARY_METADATA] = (
-			self._metadata[MsiIonMode.POSITIVE][MsiMetadata.MZ_BINARY_METADATA][pos_indices]
-		)
-		self._metadata[MsiIonMode.POSITIVE][MsiMetadata.INTENSITIES_BINARY_METADATA] = (
-			self._metadata[MsiIonMode.POSITIVE][MsiMetadata.INTENSITIES_BINARY_METADATA][pos_indices]
-		)
-
-		# Filter negative mode metadata
-		self._metadata[MsiIonMode.NEGATIVE][MsiMetadata.PIXEL_COORDINATES] = neg_pixel_coords[neg_indices]
-		self._metadata[MsiIonMode.NEGATIVE][MsiMetadata.PHYSICAL_COORDINATES] = (
-			self._metadata[MsiIonMode.NEGATIVE][MsiMetadata.PHYSICAL_COORDINATES][neg_indices]
-		)
-		self._metadata[MsiIonMode.NEGATIVE][MsiMetadata.MZ_BINARY_METADATA] = (
-			self._metadata[MsiIonMode.NEGATIVE][MsiMetadata.MZ_BINARY_METADATA][neg_indices]
-		)
-		self._metadata[MsiIonMode.NEGATIVE][MsiMetadata.INTENSITIES_BINARY_METADATA] = (
-			self._metadata[MsiIonMode.NEGATIVE][MsiMetadata.INTENSITIES_BINARY_METADATA][neg_indices]
-		)
+		for metadata, indices in ((positive, pos_indices), (negative, neg_indices)):
+			for key in (MsiMetadata.PIXEL_COORDINATES, MsiMetadata.PHYSICAL_COORDINATES,
+						MsiMetadata.MZ_BINARY_METADATA, MsiMetadata.INTENSITIES_BINARY_METADATA):
+				metadata[key] = metadata[key][indices]
 
 	def initialize_sample(self) -> None:
 		'''

@@ -360,8 +360,11 @@ class SettingParserTests(unittest.TestCase):
                 _parse_mz_by_mode(value, "x")
 
 
-def write_imzml(directory, mz_list, intensity_list, coords, pixel_size=20):
-    """Minimal processed-mode imzML + IBD (positions are written 1-based, as the spec requires)."""
+def write_imzml(directory, mz_list, intensity_list, coords, pixel_size=20, stage=None):
+    """Minimal processed-mode imzML + IBD (positions are written 1-based, as the spec requires).
+
+    `stage`, when given, holds each spectrum's stage position (x, y) in micrometres (3DPositionX/Y).
+    """
     os.makedirs(directory, exist_ok=True)
     entries = []
     with open(os.path.join(directory, "data.ibd"), "wb") as ibd:
@@ -381,10 +384,12 @@ def write_imzml(directory, mz_list, intensity_list, coords, pixel_size=20):
 
     spectra = []
     for k, ((line, col), (n, mz_offset, intensity_offset)) in enumerate(zip(coords, entries)):
+        position = ("" if stage is None else f'<userParam name="3DPositionX" value="{stage[k][0]}"/>'
+                                             f'<userParam name="3DPositionY" value="{stage[k][1]}"/>')
         spectra.append(
             f'<spectrum id="s{k}" index="{k}" defaultArrayLength="0"><scanList count="1"><scan>'
             f'<cvParam name="position x" value="{col + 1}"/><cvParam name="position y" value="{line + 1}"/>'
-            f'</scan></scanList><binaryDataArrayList count="2">'
+            f'{position}</scan></scanList><binaryDataArrayList count="2">'
             f'{array("mzArray", n, 8, mz_offset)}{array("intensities", n, 4, intensity_offset)}'
             f'</binaryDataArrayList></spectrum>')
     xml = ('<?xml version="1.0" encoding="utf-8"?><mzML xmlns="http://psi.hupo.org/ms/mzml" version="1.1">'
@@ -397,6 +402,45 @@ def write_imzml(directory, mz_list, intensity_list, coords, pixel_size=20):
            f'<run id="r"><spectrumList count="{len(spectra)}">{"".join(spectra)}</spectrumList></run></mzML>')
     with open(os.path.join(directory, "data.imzML"), "w") as f:
         f.write(xml)
+
+
+class DualPolarityPairingTests(unittest.TestCase):
+    """NEG covers 8 more rows than POS, sits 5 um away and runs its pixel axes in reverse, as on a
+    real dual-polarity acquisition. Every spectrum carries its true row and column as two m/z values."""
+
+    @staticmethod
+    def write(root, with_stage):
+        neg_rows = range(-8, 20) if with_stage else range(0, 20)
+        for mode, rows, reverse, offset in (("pos", range(0, 20), False, 0.0), ("neg", neg_rows, with_stage, 5.0)):
+            mz_list, intensity_list, coords, stage = [], [], [], []
+            for r in rows:
+                for c in range(25):
+                    mz_list.append(np.array([300.0 + r + 10.0, 700.0 + c]))
+                    intensity_list.append(np.array([1e4, 1e4], dtype=np.float32))
+                    coords.append((19 - r, 24 - c) if reverse else (r, c))
+                    stage.append((1000.0 + 20 * c + offset, 2000.0 + 20 * r + offset))
+            write_imzml(os.path.join(root, "S", "MSI", mode), mz_list, intensity_list, np.array(coords),
+                        stage=stage if with_stage else None)
+
+    @staticmethod
+    def decoded(root):
+        sample = MsiSample(root, "S", "MSI", double_ion_mode=True)
+        sample.initialize_sample()
+        mz, _, _, _ = sample.load_payload()
+        return {mode: np.array([(round(m[0] - 310.0), round(m[1] - 700.0)) for m in mz[mode]]) for mode in mz}
+
+    def test_spectra_are_paired_by_stage_position(self):
+        with tempfile.TemporaryDirectory() as root:
+            self.write(root, with_stage=True)
+            located = self.decoded(root)
+            self.assertEqual(len(located["pos"]), 20 * 25)
+            np.testing.assert_array_equal(located["pos"], located["neg"])
+
+    def test_without_stage_positions_equal_rasters_pair_by_pixel(self):
+        with tempfile.TemporaryDirectory() as root:
+            self.write(root, with_stage=False)
+            located = self.decoded(root)
+            np.testing.assert_array_equal(located["pos"], located["neg"])
 
 
 class ProcessDatasetTests(unittest.TestCase):

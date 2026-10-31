@@ -67,8 +67,32 @@ This removes the scan-line tilt while preserving the centroid and all inter-spot
 When both ion modes are present the two acquisitions must be expressed in a single shared frame
 (`_filter_unpaired_spots`, `initialize_sample`).
 
-**1. Pixel-axis orientation detection.** The two modes may be acquired with mirrored pixel axes.
-For each mode a pixel→physical linear map is fitted by least squares,
+**1. Pairing by stage position.** When every spectrum of both imzML files carries its stage
+position (the `3DPositionX` and `3DPositionY` user parameters, read as the physical coordinates
+\(\mathbf{r}\), rotation-corrected as in §2.1), the spectra are paired by position
+(`_pair_by_stage`). Both acquisitions are in the instrument's stage frame and differ by one
+translation \(\mathbf{t}\): the second polarity is acquired a fraction of a pixel away from the first.
+With \(h\) the pixel pitch, the median distance from a positive spectrum to its nearest positive
+neighbour, \(\mathbf{t}\) is the most common displacement from a positive spectrum to its nearest
+negative spectrum, counted in cells of \(h/4\) and refined by the median of the displacements in the
+most populated cell. Each positive spectrum \(i\) is paired with
+
+\[
+j(i) = \arg\min_j \bigl\lVert \mathbf{r}_{\text{neg},j} - (\mathbf{r}_{\text{pos},i} + \mathbf{t}) \bigr\rVert ,
+\qquad \text{accepted when the distance is at most } h/2 ,
+\]
+
+and a negative spectrum claimed by two positive spectra goes to the closer one. Spectra without a
+partner are removed. FOCUS design choice: the pairing rule. Pixel indices are not used for pairing,
+because the two acquisitions can cover different areas and run their pixel axes in opposite
+directions; mirroring one mode's indices maps each pixel onto its counterpart only when both modes
+cover the same raster extent, and pairs spectra a constant distance apart otherwise. The cells of
+\(h/4\) keep an offset of half a pitch, where two neighbours are equally near, from averaging to 0.
+Each mode keeps its own pixel coordinates, which describe its own raster (scan lines in §4.2, pixel
+neighbourhoods).
+
+**2. Pairing by pixel index** (`_pair_by_pixel`), when at least one file has no stage positions. A
+pixel→physical linear map is fitted for each mode by least squares,
 \(\mathbf{r} \approx [\,\mathbf{p}\ \ \mathbf{1}\,]\,T\), giving \(T\in\mathbb{R}^{2\times2}\) (the
 intercept row is discarded). The maps are normalized, \(\hat T = T/\lVert T\rVert_F\), and the
 axis-flip \((f_x,f_y)\in\{\pm1\}^2\) is chosen to minimize the Frobenius mismatch between the
@@ -78,12 +102,10 @@ negative and positive maps,
 (f_x,f_y)=\arg\min_{f}\;\bigl\lVert \operatorname{diag}(f)\,\hat T_{\text{neg}} - \hat T_{\text{pos}}\bigr\rVert_F .
 \]
 
-If a flip is selected, the negative-mode pixel coordinates are mirrored about their own range
-before pairing (this prevents matching opposite ends of the scan).
-
-**2. Unpaired-spot removal.** Only pixel positions present in **both** modes are retained
-(structured-array intersection); negative indices are reordered so paired rows share the same
-pixel coordinate.
+If a flip is selected, the negative-mode pixel coordinates are mirrored about their own range. Only
+pixel positions present in **both** modes are retained, and the negative indices are reordered so
+paired rows share the same pixel coordinate. This pairs the right spectra only when both modes cover
+the same raster extent; a difference in extent is reported as a warning.
 
 **3. Affine harmonization.** A 2D affine map is fitted from positive to negative physical
 coordinates on augmented inputs \(A=[\,\mathbf{r}_{\text{pos}}\ \ \mathbf{1}\,]\) (one least-squares
