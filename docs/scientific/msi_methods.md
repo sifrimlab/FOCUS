@@ -212,8 +212,9 @@ degrade the recalibration[^larocca2021]. FOCUS design choice: one set of referen
 Recalibration corrects the mass shift within a sample, so each sample uses the ions its own spectra
 hold; a set shared by the dataset can be nearly absent from a sample of different composition, whose
 spectra then match no reference. The candidates are the sample's m/z features (§4.1.2), found by the
-same detection that builds the backbone (§4.3), and the samples' mass scales are aligned afterwards
-(§4.1.4). The selection rules (isolation, scoring, spread, anchoring and alignment) are FOCUS design
+same detection that builds the backbone (§4.3) with a kernel half as wide (FWHM \(\tau/2\)), so that
+two ions about half a tolerance apart are two candidates; the samples' mass scales are aligned
+afterwards (§4.1.4). The selection rules (isolation, scoring, spread, anchoring and alignment) are FOCUS design
 choices; none of them is taken from a published method.
 
 #### 4.1.1 Logarithmic histogram
@@ -308,18 +309,29 @@ around a reference. In the raw spectra drift can spread one ion wider than its f
 every feature \(j\) is measured over a search window: the window is placed by mean
 shift[^fukunaga1975][^cheng1995], starting at the feature's m/z and moving 5 times to the mean m/z
 of the peaks it holds. Peaks spread evenly about the centre, the background, then no longer pull it.
-The reference mass \(\mu_j\) is that mean, the sample's average position of the ion. With \(C_j\) the
-peaks in the window and \(|W_j|\) its width in bins, the score is the presence over the window,
-\(\min\bigl(1, (C_j - f_j |W_j|)/M\bigr)\): the share of spectra that can match the ion. FOCUS
-adaptation: a flat kernel of half-width \(W\) and a fixed number of steps.
+The window reaches \(W\) ppm on either side but stops at the valleys toward the neighbouring
+features, so a neighbouring ion never enters it. The reference mass \(\mu_j\) is that mean, the
+sample's average position of the ion. With \(C_j\) the peaks in the window and \(|W_j|\) its width in
+bins, the score is the presence over the window, \(p_j = \min\bigl(1, (C_j - f_j |W_j|)/M\bigr)\): the
+share of spectra that can match the ion. FOCUS adaptation: a flat kernel, bounded by the valleys, and a
+fixed number of steps.
 
-A peak with a competitor in the same spectrum (another peak within \(W\) ppm whose intensity is at
-least 0.1 times its own) can lose the match to the competitor. Such a peak is **crowded**
-(`crowded_peaks`, numba). The test is made per spectrum: m/z drift spreads one calibrant over
-neighbouring masses across spectra, but never puts two copies of it into one spectrum, so drift alone
-never makes a calibrant crowded. A feature is **isolated** when at most 10 % of the peaks in its range
-are crowded and no other feature with at least 0.1 times its presence lies within \(W\) ppm: a window
-that also holds another frequent ion, even in other spectra, can match that ion instead.
+A calibrant can be matched to another ion in two ways. A peak with a competitor at least as intense
+within \(W\) ppm in the same spectrum loses the match to it; such a peak is **crowded**
+(`crowded_peaks`, numba), and \(s_j\) is the crowded share of the peaks in the feature's range. The
+test is made per spectrum: m/z drift spreads one calibrant over neighbouring masses across spectra,
+but never puts two copies of it into one spectrum, so drift alone never makes a calibrant crowded.
+And in a spectrum without the calibrant, another ion of the window is matched; with \(o_j\) the summed
+presence of the other features within \(W\) ppm (at most 1), taken as independent of the calibrant's,
+the expected share of the matches that go to another ion is
+
+\[
+\frac{p_j s_j + (1 - p_j)\, o_j}{p_j + (1 - p_j)\, o_j} .
+\]
+
+A feature is **isolated** when this share is at most 10 %. FOCUS design choice: in dense spectra most
+ions have neighbours within \(W\), and an ion that wins its window in nearly every spectrum is still a
+sound calibrant; what matters is how often matching takes something else.
 
 Features are ordered by descending score with **ascending \(\mu_j\) as tie-break** (a `lexsort`,
 giving a total order). Two chosen references are always more than \(2W\) ppm apart, so their search

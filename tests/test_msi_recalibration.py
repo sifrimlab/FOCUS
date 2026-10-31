@@ -424,9 +424,28 @@ class ReferenceSelectorTests(unittest.TestCase):
         # Every reference is a calibrant at the dataset's mean drift (15 ppm), with no extra bias.
         np.testing.assert_allclose(offsets, 15.0, atol=1.0)
 
-    def test_rejects_crowded_candidate(self):
+    def test_keeps_the_ion_that_always_wins_its_window(self):
+        # 700.0 is always twice as intense as its neighbour 20 ppm away: matching always takes it, so it
+        # can be a reference; the neighbour cannot.
         references = self.select(4)
-        self.assertEqual(self.near(references, 700.0).size, 0)
+        self.assertEqual(self.near(references, 700.0 * (1 + 20e-6), ppm=5).size, 0)
+        self.assertTrue(np.all(np.abs(self.near(references, 700.0) - 700.0) / 700.0 * 1e6 < 3))
+
+    def test_rejects_ions_that_take_turns_in_their_window(self):
+        # Two ions 20 ppm apart, each the more intense in about half of the spectra: matching would
+        # alternate between them, so neither is a reference.
+        rng = np.random.default_rng(5)
+        mz_list, intensity_list = [], []
+        for _ in range(400):
+            mz = np.array([400.1, 500.0, 500.0 * (1 + 20e-6), 700.2, 900.3])
+            intensity = np.concatenate([[1e5], 1e5 * rng.lognormal(0, 1.0, 2), [1e5, 1e5]])
+            mz_list.append(mz)
+            intensity_list.append(intensity.astype(np.float32))
+        selector = _CalibrationReferenceSelector(mass_tolerance=10)
+        selector.add_sample({MsiIonMode.POSITIVE: mz_list}, {MsiIonMode.POSITIVE: intensity_list})
+        references = selector.select(4)[MsiIonMode.POSITIVE]
+        self.assertEqual(self.near(references, 500.0, ppm=50).size, 0)
+        self.assertEqual(references.size, 3)
 
     def test_smeared_calibrant_gives_one_reference_at_its_centre(self):
         references = self.select(6)
@@ -435,8 +454,33 @@ class ReferenceSelectorTests(unittest.TestCase):
         self.assertLess(abs(smeared[0] - 600.0) / 600.0 * 1e6, 2.0)
 
     def test_references_spread_over_the_mass_range(self):
+        # Two references: one in each half of the candidates' log m/z span (400.10 to 900.50).
         references = self.select(2)
-        self.assertEqual(self.near(references, 900.50).size, 1)
+        middle = np.sqrt(400.10 * 900.50)
+        self.assertEqual(int((references < middle).sum()), 1)
+        self.assertEqual(int((references > middle).sum()), 1)
+
+    def test_dense_spectra_give_references_on_their_own_ions(self):
+        # 3,000 ions over m/z 300 to 1,200, many with a neighbour 12 to 20 ppm away (inside the search
+        # window, closer than one tolerance): each reference must sit on its own ion, at the sample's
+        # mean drift (+2 ppm), not between it and a neighbour.
+        rng = np.random.default_rng(11)
+        ions = np.sort(np.exp(rng.uniform(np.log(300), np.log(1200), 3200)))
+        ions = ions[np.concatenate(([True], np.diff(ions) / ions[1:] * 1e6 > 12))]
+        presence, level = rng.beta(0.6, 1.2, ions.size), rng.lognormal(0, 1.5, ions.size)
+        mz_list, intensity_list = [], []
+        for k in range(600):
+            present = rng.random(ions.size) < presence
+            drift = 4.0 * k / 599 + rng.normal(0, 1.0, present.sum())
+            mz_list.append(ions[present] * (1 + drift * 1e-6))
+            intensity_list.append((1000 * level[present] * rng.lognormal(0, 0.4, present.sum())).astype(np.float32))
+        selector = _CalibrationReferenceSelector(mass_tolerance=10)
+        selector.add_sample({MsiIonMode.POSITIVE: mz_list}, {MsiIonMode.POSITIVE: intensity_list})
+        references = selector.select(10)[MsiIonMode.POSITIVE]
+        self.assertEqual(references.size, 10)
+        nearest = np.abs(references[:, None] - ions[None, :]).argmin(axis=1)
+        np.testing.assert_allclose((references - ions[nearest]) / ions[nearest] * 1e6, 2.0, atol=0.5)
+        self.assertGreater(presence[nearest].min(), 0.8)
 
     def test_clean_spectra_give_the_most_present_ions(self):
         # No noise: every ion counts, so the references are the ions most spectra hold, not only the

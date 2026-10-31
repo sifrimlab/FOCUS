@@ -51,7 +51,7 @@ def _step(index: int) -> tuple[int, int, str]:
 
 # Part of the preprocessing fingerprint: bump whenever the same input and settings produce a
 # different output, so cached results are rebuilt.
-METHOD_VERSION = "msi-9"
+METHOD_VERSION = "msi-10"
 
 
 def _parse_mz_by_mode(value, setting: str) -> dict[str, np.ndarray] | None:
@@ -2189,22 +2189,25 @@ class MzFeatures:
 	left: np.ndarray      # first and last bin of the feature's range on the feature grid
 	right: np.ndarray
 	floor: np.ndarray     # local floor of the density at the maximum, in peaks per bin
+	low: np.ndarray       # first and last bin before the valleys toward the neighbouring features
+	high: np.ndarray      # (the range without the one-tolerance cap)
 
 	@classmethod
 	def empty(cls) -> 'MzFeatures':
-		return cls(np.array([], dtype=np.float64), np.array([], dtype=np.float64),
-				   np.array([], dtype=np.int64), np.array([], dtype=np.int64), np.array([], dtype=np.float64))
+		none = np.array([], dtype=np.int64)
+		return cls(np.array([], dtype=np.float64), np.array([], dtype=np.float64), none, none,
+				   np.array([], dtype=np.float64), none, none)
 
 
 def find_features(bins: np.ndarray, counts: np.ndarray, mz_sums: np.ndarray, n_spectra: int,
-				  mass_tolerance: float) -> MzFeatures:
+				  mass_tolerance: float, kernel_fwhm: float = _FEATURE_KERNEL_FWHM) -> MzFeatures:
 	'''
 	The ions of a peak histogram: the maxima of its smoothed density that rise above the local background.
 
 	A real ion recurs at the same m/z across spectra; noise peaks fall at random m/z and form a
 	background. The histogram (:func:`peak_histogram` on the grid of :func:`feature_bin_width`, every
-	peak counted) is smoothed with a Gaussian kernel whose FWHM is ``_FEATURE_KERNEL_FWHM`` tolerances,
-	and every local maximum is a candidate. A candidate's range reaches the lowest point between it and
+	peak counted) is smoothed with a Gaussian kernel whose FWHM is `kernel_fwhm` tolerances (by default
+	``_FEATURE_KERNEL_FWHM``), and every local maximum is a candidate. A candidate's range reaches the lowest point between it and
 	each neighbouring candidate (the valley) and at most one tolerance from it. Its background, in peaks
 	per bin, is the larger of
 
@@ -2229,7 +2232,7 @@ def find_features(bins: np.ndarray, counts: np.ndarray, mz_sums: np.ndarray, n_s
 	size = int(bins[-1]) + 2 * reach - lo + 1
 	dense = np.zeros(size, dtype=np.float64)
 	dense[bins - lo] = counts
-	smooth = gaussian_filter1d(dense, _FEATURE_KERNEL_FWHM * reach / (2 * np.sqrt(2 * np.log(2))),
+	smooth = gaussian_filter1d(dense, kernel_fwhm * reach / (2 * np.sqrt(2 * np.log(2))),
 							   mode='constant', cval=0.0, truncate=4.0)
 	# Local maxima, strict on the low-mass side so a plateau yields one maximum.
 	padded = np.concatenate(([0.0], smooth, [0.0]))
@@ -2267,7 +2270,8 @@ def find_features(bins: np.ndarray, counts: np.ndarray, mz_sums: np.ndarray, n_s
 	range_sum = sum_prefix[right + 1] - sum_prefix[left]
 	mz = np.where(core > 0, core_sum / np.maximum(core, 1), range_sum / peaks)
 	presence = np.clip((peaks - expected) / n_spectra, 0.0, 1.0)
-	return MzFeatures(mz, presence, left + lo, right + lo, floor[maxima])
+	low, high = density_feature_ranges(smooth, maxima, size)
+	return MzFeatures(mz, presence, left + lo, right + lo, floor[maxima], low + lo, high + lo)
 
 
 def recurrence_map(features: MzFeatures, log_bin_width: float, search_ppm: float) -> tuple[int, np.ndarray, float]:
@@ -2304,18 +2308,20 @@ class _CalibrationReferenceSelector:
 
 	Isolation
 	---------
-	Alongside each bin's occurrence count the histogram counts *crowded* occurrences: peaks that
-	share their spectrum with a competitor (another peak of at least ``_ISOLATION_INTENSITY_RATIO``
-	of their intensity within the calibrant search window, see :func:`crowded_peaks`). A calibrant
-	whose occurrences are often crowded can be confused with its neighbour during matching, so
-	:meth:`select` rejects it. The test is per spectrum on purpose: m/z drift spreads one calibrant
-	over neighbouring masses across spectra, but never puts two copies of it in one spectrum.
+	Matching takes the most intense peak in the calibrant search window, so a calibrant can be
+	matched to another ion in two ways: a competitor at least as intense shares its spectrum (the
+	histogram counts these *crowded* occurrences, see :func:`crowded_peaks`), or the calibrant is
+	absent and another ion in the window is present. :meth:`select` estimates the share of a
+	candidate's matches that go to another ion and rejects it above ``_ISOLATION_MAX_WRONG``. The
+	crowding test is per spectrum on purpose: m/z drift spreads one calibrant over neighbouring masses
+	across spectra, but never puts two copies of it in one spectrum.
 	'''
 
-	# A competitor counts when its intensity is at least this fraction of the peak's own.
-	_ISOLATION_INTENSITY_RATIO = 0.1
-	# A candidate is isolated when at most this fraction of the peaks in its range is crowded.
-	_ISOLATION_MAX_CROWDED = 0.1
+	# A competitor counts when its intensity is at least this fraction of the peak's own: it would
+	# take the match.
+	_ISOLATION_INTENSITY_RATIO = 1.0
+	# A candidate is isolated when at most this share of its expected matches goes to another ion.
+	_ISOLATION_MAX_WRONG = 0.1
 	# Size of the candidate pool, as a multiple of the number of references requested.
 	_POOL_FACTOR = 20
 	# Pool members need at least this fraction of the best candidate's score, so the spread step
@@ -2323,6 +2329,9 @@ class _CalibrationReferenceSelector:
 	_POOL_MIN_RELATIVE_SCORE = 0.1
 	# Mean-shift steps placing each candidate's window on its peaks (see select).
 	_MEAN_SHIFT_STEPS = 5
+	# Kernel FWHM, in mass tolerances, of the candidates' feature detection: half the backbone's, so
+	# that two ions about half a tolerance apart are two candidates, not one.
+	_KERNEL_FWHM = 0.5
 
 	def __init__(self, mass_tolerance: int) -> None:
 		'''
@@ -2341,8 +2350,10 @@ class _CalibrationReferenceSelector:
 		self._mz_sums: dict[MsiIonMode, np.ndarray] = {}
 		self._crowded: dict[MsiIonMode, np.ndarray] = {}
 		self._spectra: dict[MsiIonMode, int] = {}
-		# Filled by select(): per ion mode, the ascending m/z of the candidate pool (for mass_scale_shifts).
+		# Filled by select(): per ion mode, the ascending m/z of the candidate pool (for mass_scale_shifts),
+		# and the number of features and of isolated ones (for the log).
 		self.pool: dict[MsiIonMode, np.ndarray] = {}
+		self.candidates: dict[MsiIonMode, tuple[int, int]] = {}
 
 	def add_sample(self, sample_mz: dict[MsiIonMode, list[np.ndarray]],
 				   sample_intensity: dict[MsiIonMode, list[np.ndarray]]) -> None:
@@ -2445,11 +2456,13 @@ class _CalibrationReferenceSelector:
 		for mode in MsiIonMode.list():
 			recalibration_reference[mode] = np.array([], dtype=np.float64)
 			self.pool[mode] = np.array([], dtype=np.float64)
+			self.candidates[mode] = (0, 0)
 			if mode not in self._bins or self._bins[mode].size == 0:
 				continue
 
 			bins, counts = self._bins[mode], self._counts[mode]
-			features = find_features(bins, counts, self._mz_sums[mode], self._spectra[mode], self._mass_tolerance)
+			features = find_features(bins, counts, self._mz_sums[mode], self._spectra[mode], self._mass_tolerance,
+									 self._KERNEL_FWHM)
 			if features.mz.size == 0:
 				continue
 
@@ -2459,29 +2472,35 @@ class _CalibrationReferenceSelector:
 			sum_prefix = np.concatenate(([0.0], np.cumsum(self._mz_sums[mode])))
 			first = np.searchsorted(bins, features.left, side='left')
 			last = np.searchsorted(bins, features.right, side='right')
-			in_range = count_prefix[last] - count_prefix[first]
-			isolated = (crowded_prefix[last] - crowded_prefix[first]) <= self._ISOLATION_MAX_CROWDED * in_range
+			crowded = (crowded_prefix[last] - crowded_prefix[first]) / np.maximum(count_prefix[last] - count_prefix[first], 1)
 
 			# Mean shift: the window moves to the mean m/z of its peaks until it settles, where peaks
-			# spread evenly about the centre (the background) no longer pull it.
+			# spread evenly about the centre (the background) no longer pull it. The window stops at the
+			# valleys toward the neighbouring features, so their peaks never enter it.
 			reach = int(np.ceil(np.log1p(window) / self._log_bin_width))
 			feature_mz = features.mz.copy()
 			for _ in range(self._MEAN_SHIFT_STEPS):
 				centre = np.floor(np.log(feature_mz) / self._log_bin_width).astype(np.int64)
-				first = np.searchsorted(bins, centre - reach, side='left')
-				last = np.searchsorted(bins, centre + reach, side='right')
+				start = np.maximum(centre - reach, features.low)
+				stop = np.minimum(centre + reach, features.high)
+				first = np.searchsorted(bins, start, side='left')
+				last = np.searchsorted(bins, stop, side='right')
 				in_window = count_prefix[last] - count_prefix[first]
-				feature_mz = (sum_prefix[last] - sum_prefix[first]) / np.maximum(in_window, 1)
-			excess = in_window - features.floor * (2 * reach + 1)
+				feature_mz = np.where(in_window > 0, (sum_prefix[last] - sum_prefix[first]) / np.maximum(in_window, 1),
+									  feature_mz)
+			excess = in_window - features.floor * (stop - start + 1)
 			scores = np.clip(excess / self._spectra[mode], 0.0, 1.0)
 
-			# No other frequent feature within the window, where matching could take it instead.
-			low = np.searchsorted(features.mz, features.mz * (1 - window), side='left')
-			high = np.searchsorted(features.mz, features.mz * (1 + window), side='right')
-			for k in np.flatnonzero(isolated):
-				others = np.r_[low[k]:k, k + 1:high[k]]
-				if others.size and features.presence[others].max() >= self._ISOLATION_INTENSITY_RATIO * features.presence[k]:
-					isolated[k] = False
+			# Expected share of a candidate's matches that go to another ion: a competitor wins where the
+			# candidate is present (crowded share), and the other features of its search window can be
+			# matched where it is absent (their presences, taken as independent of its own).
+			low = np.searchsorted(features.mz, feature_mz * (1 - window), side='left')
+			high = np.searchsorted(features.mz, feature_mz * (1 + window), side='right')
+			presence_prefix = np.concatenate(([0.0], np.cumsum(features.presence)))
+			others = np.minimum(presence_prefix[high] - presence_prefix[low] - features.presence, 1.0)
+			wrong = scores * crowded + (1 - scores) * others
+			isolated = (scores > 0) & (wrong <= self._ISOLATION_MAX_WRONG * (scores + (1 - scores) * others))
+			self.candidates[mode] = (int(features.mz.size), int(isolated.sum()))
 			order = np.lexsort((feature_mz, -scores))
 
 			def separated(candidate: tuple[int, float], others: list) -> bool:
@@ -2509,7 +2528,7 @@ class _CalibrationReferenceSelector:
 			for feature in order:
 				if len(pool) >= self._POOL_FACTOR * number_of_references or scores[feature] < self._POOL_MIN_RELATIVE_SCORE * best_score:
 					break
-				if isolated[feature] and scores[feature] > 0:
+				if isolated[feature]:
 					candidate = (int(feature), float(feature_mz[feature]))
 					if separated(candidate, chosen + pool):
 						pool.append(candidate)
@@ -3141,6 +3160,7 @@ class MsiDataset(BaseDataset):
 		# sample as is. Recalibration runs with or without a lipid DB.
 		selected: dict[str, dict[MsiIonMode, np.ndarray]] = {}
 		pools: dict[str, dict[MsiIonMode, np.ndarray]] = {}
+		candidates: dict[str, dict[MsiIonMode, tuple[int, int]]] = {}
 		for sample in reporter.tqdm(iter_samples, *_step(2), unit="sample"):
 			_, _, filtered_mz, filtered_intensity = sample.load_payload(annotation_db=self.lipid_annotation_db,
 																		mass_tolerance=mass_tolerance,
@@ -3151,6 +3171,7 @@ class MsiDataset(BaseDataset):
 				selected[sample.sample_id] = selector.select(number_of_references=_RECALIBRATION_REFERENCES,
 															 required_mz=internal_standard_mz)
 				pools[sample.sample_id] = selector.pool
+				candidates[sample.sample_id] = selector.candidates
 				del selector
 			del filtered_mz, filtered_intensity  # Free memory
 			gc.collect()
@@ -3182,7 +3203,9 @@ class MsiDataset(BaseDataset):
 					masses = selected[sample.sample_id].get(mode, np.array([]))
 					listed = ", ".join(f"{m:.4f}" for m in masses)
 					if len(masses) == 0:
-						reporter.warning(f"No recalibration reference found ({str(mode).upper()}); m/z values are not recalibrated")
+						found, isolated = candidates[sample.sample_id].get(mode, (0, 0))
+						reporter.warning(f"No recalibration reference found ({str(mode).upper()}): {found} m/z features, "
+										 f"{isolated} isolated in the search window; m/z values are not recalibrated")
 						continue
 					shift, connected = scale_shift[sample.sample_id].get(mode, (0.0, True))
 					scale = f"; mass scale shifted {shift:+.1f} ppm" if shift != 0.0 else ""
