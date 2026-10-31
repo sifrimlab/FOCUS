@@ -260,8 +260,9 @@ via `np.bincount` (a single linear pass, no sort), in blocks of at most \(2 \cdo
 Crowded peaks are defined in §4.1.2. The
 representative mass of a bin is the exact mean \(\sigma_b / n_b\) of the raw values that fell in it.
 The grid only indexes peaks; it never replaces a measured mass with a bin centre. Samples are folded
-in one at a time and their raw peaks released immediately; what persists per sample is one array of
-occupied bin indices. Retained memory is therefore \(O(\ln(m_{\max}/m_{\min})/w)\), i.e.
+in one at a time and their raw peaks released immediately; what persists per sample is its occupied
+bin indices with their counts \(n_{s,b}\), and its number of spectra \(N_s\). Retained memory is
+therefore \(O(\ln(m_{\max}/m_{\min})/w)\) per sample, i.e.
 bounded by the **mass span and tolerance**, and independent of the number of spectra.
 
 #### 4.1.2 Isolation
@@ -296,14 +297,24 @@ C_g = \sum_{h \in \mathcal{W}_g} \sum_{b \in h} n_b ,
 Q_g = \sum_{h \in \mathcal{W}_g} \sum_{b \in h} q_b ,
 \]
 
-and the coverage \(K_g\), the number of distinct samples with a peak in \(\mathcal{W}_g\). Presence
-is collapsed to (sample, group) pairs before counting, so \(K_g \le S\), with \(S\) the number of
-samples **having that ion mode**. A group is **isolated** when \(Q_g \le 0.1\, C_g\), and is scored
-by
+and, per sample \(s\), the detection
 
 \[
-\text{score}_g = C_g \cdot \frac{K_g}{S}.
+D_{s,g} = \min\Bigl(1,\ \frac{1}{N_s} \sum_{h \in \mathcal{W}_g} \sum_{b \in h} n_{s,b}\Bigr),
 \]
+
+the share of its spectra with a signal peak in \(\mathcal{W}_g\). An isolated group holds at most
+about one such peak per spectrum; the cap bounds the others. A group is **isolated** when
+\(Q_g \le 0.1\, C_g\), and is scored by its detection averaged over the \(S\) samples **having that
+ion mode**:
+
+\[
+\text{score}_g = \frac{1}{S} \sum_{s} D_{s,g}.
+\]
+
+FOCUS design choice: recalibration needs calibrants that each sample carries in most of its spectra
+(§4.2). Averaging detections weighs every sample alike whatever its number of spectra, and an ion
+that is frequent in a few spectra or a few samples scores low.
 
 Groups are ordered by descending score with **ascending \(\mu_g\) as tie-break** (a `lexsort`,
 giving a total order). Two chosen groups are always more than \(2W\) ppm apart, so their search
@@ -318,8 +329,16 @@ windows never overlap and no peak can match two references. Selection, with
 3. Spread: the pool's \(\ln m\) span is cut into \(N_\text{ref}\) equal segments and the best pool
    member of each segment is taken, so the references cover the mass range.
 4. Fill from the pool in score order until \(N_\text{ref}\) references are chosen.
-5. Coverage: while a sample has no chosen reference, add the best group (isolated groups first)
-   that covers it.
+5. Coverage: with the detections of the chosen references taken as independent, sample \(s\) is
+   expected to match at least 2 of them (the pixel-level minimum of §4.2) in a share \(P_s\) of
+   its spectra, the Poisson-binomial tail computed by the recursion of Barlow and
+   Heidtmann[^barlow1984] (`at_least_probability`). Samples with \(P_s < 0.5\), lowest first, add
+   their own groups in descending \(D_{s,g}\) (isolated groups first, then any), each detected in
+   at least 10 % of the sample's spectra, at most 3 per sample, until \(P_s \ge 0.5\). FOCUS design
+   choice: a reference frequent in the dataset can be nearly absent from one sample, which is then
+   left without calibrants and its scan lines without an estimate. \(P_s\) is reported per sample
+   in the log (`Reference coverage`, a warning below 0.5). The detections of one spectrum are
+   positively correlated (tissue against background), so \(P_s\) is an approximation.
 
 Every window that holds a calibrant scores alike, so a selected group \(g\) can sit anywhere around
 the calibrant, and the tie-break on ascending \(\mu_g\) favours groups below it. Each selected group
@@ -370,10 +389,18 @@ signal peaks within \(10\,W\) ppm (500 ppm at \(\tau = 10\)) are counted at ever
 \(c\) exceed, at Poisson tail probability below \(10^{-6}\), the count expected if its peaks were
 spread evenly over the search range. The sample offset \(c_0\) is the offset supported by the most
 references, ties going to the maximum of the summed per-reference histograms (each scaled to unit sum
-and smoothed with a Gaussian kernel of FWHM \(\tau\)). Fewer than 2 supporting references give
-\(c_0 = 0\). FOCUS design choice: the calibrants of a spectrum drift together, so their offsets
-agree, while other ions near each reference fall at unrelated offsets; requiring two references keeps
-noise and a single unrelated ion from moving the search.
+and smoothed with a Gaussian kernel of FWHM \(\tau\)). The best support is then tested against
+chance agreement. Other ions near each reference support offsets too, and over several references
+some of them line up by chance; samples that share this chemistry then line up at the same wrong
+offset. Reference \(j\) supports a share \(q_j\) of the offsets, so without a common offset the
+support at one offset follows a Poisson-binomial law with probabilities \(q_j\), computed by the
+recursion of Barlow and Heidtmann[^barlow1984]. Its upper tail at the best support, multiplied by
+the number of independent offsets in the search range, \((20W + 1)/(2\lceil\tau\rceil + 1)\) (a
+Bonferroni bound[^dunn1961]), must stay below \(10^{-3}\). Otherwise, or with fewer than 2
+supporting references, \(c_0 = 0\). FOCUS design choice: the calibrants of a spectrum drift
+together, so their offsets agree, while other ions near each reference fall at unrelated offsets.
+With sharp calibrants and no other ions near the references, 3 agreeing references pass; 2 agree by
+chance in about 2 % of samples over \(\pm 500\) ppm and do not.
 
 **Line tracking.** The line-level matches below are first searched in a window of \(W\) ppm around
 \(c_0\). Lines that do not reach an estimate are searched again around the drift of their estimated
@@ -662,6 +689,8 @@ the stored references and backbone, and only the remaining samples are processed
 [^gibb2012]: Gibb S, Strimmer K. MALDIquant: a versatile R package for the analysis of mass spectrometry data. *Bioinformatics* 28:2270-2271 (2012). [doi:10.1093/bioinformatics/bts447](https://doi.org/10.1093/bioinformatics/bts447). Peak detection, noise estimation, warping, binning and frequency filtering as described in the package documentation (`detectPeaks`, `estimateNoise`, `determineWarpingFunctions`, `binPeaks`, `filterPeaks`).
 [^smith2006]: Smith CA, Want EJ, O'Maille G, Abagyan R, Siuzdak G. XCMS: processing mass spectrometry data for metabolite profiling using nonlinear peak alignment, matching, and identification. *Anal Chem* 78:779-787 (2006). [doi:10.1021/ac051437y](https://doi.org/10.1021/ac051437y). Peak-density grouping as implemented in xcms (`do_groupChromPeaks_density`).
 [^wolski2005]: Wolski WE, Lalowski M, Jungblut P, Reinert K. Calibration of mass spectrometric peptide mass fingerprint data without specific external or internal calibrants. *BMC Bioinformatics* 6:203 (2005). [doi:10.1186/1471-2105-6-203](https://doi.org/10.1186/1471-2105-6-203)
+[^barlow1984]: Barlow RE, Heidtmann KD. Computing k-out-of-n system reliability. *IEEE Trans Reliab* R-33:322-323 (1984). [doi:10.1109/TR.1984.5221843](https://doi.org/10.1109/TR.1984.5221843)
+[^dunn1961]: Dunn OJ. Multiple comparisons among means. *J Am Stat Assoc* 56:52-64 (1961). [doi:10.1080/01621459.1961.10482090](https://doi.org/10.1080/01621459.1961.10482090)
 [^rousseeuw1993]: Rousseeuw PJ, Croux C. Alternatives to the median absolute deviation. *J Am Stat Assoc* 88:1273-1283 (1993). [doi:10.1080/01621459.1993.10476408](https://doi.org/10.1080/01621459.1993.10476408)
 [^tukey1977]: Tukey JW. *Exploratory Data Analysis*. Addison-Wesley, Reading, MA (1977).
 [^schramm2012]: Schramm T, Hester Z, Klinkert I, et al. imzML: a common data format for the flexible exchange and processing of mass spectrometry imaging data. *J Proteomics* 75:5106-5110 (2012). [doi:10.1016/j.jprot.2012.07.026](https://doi.org/10.1016/j.jprot.2012.07.026). Controlled-vocabulary terms from the imzML ontology (`imagingMS.obo`).

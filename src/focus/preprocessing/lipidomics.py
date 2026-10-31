@@ -51,7 +51,7 @@ def _step(index: int) -> tuple[int, int, str]:
 
 # Part of the preprocessing fingerprint: bump whenever the same input and settings produce a
 # different output, so cached results are rebuilt.
-METHOD_VERSION = "msi-6"
+METHOD_VERSION = "msi-7"
 
 
 def _parse_mz_by_mode(value, setting: str) -> dict[str, np.ndarray] | None:
@@ -298,10 +298,13 @@ _RECAL_WARN_MATCHED = 0.5
 # Half-width of the sample-level offset search, as a multiple of the line-level search window: how
 # far from the dataset-wide reference masses a sample's calibrants are looked for.
 _RECAL_COARSE_FACTOR = 10
-# An offset is accepted when at least this many references hold, within one mass tolerance of it,
-# more signal peaks than their background explains at Poisson tail probability _RECAL_OFFSET_ALPHA.
+# A reference supports an offset when, within one mass tolerance of it, it holds more signal peaks
+# than its background explains at Poisson tail probability _RECAL_OFFSET_ALPHA. The offset is accepted
+# when at least _RECAL_OFFSET_MIN_REFERENCES references support it and that many supporting
+# references arise by chance anywhere in the search range with probability below _RECAL_OFFSET_CHANCE.
 _RECAL_OFFSET_MIN_REFERENCES = 2
 _RECAL_OFFSET_ALPHA = 1e-6
+_RECAL_OFFSET_CHANCE = 1e-3
 
 
 def recalibration_search_ppm(mass_tolerance: float) -> float:
@@ -454,6 +457,22 @@ def offset_histogram(flat_mz, flat_intensity, offsets, reference_mz, half_width_
 	return counts
 
 
+def at_least_probability(probabilities: np.ndarray, k: int) -> np.ndarray:
+	"""
+	Per row of `probabilities` (independent events), the probability that at least `k` occur.
+
+	The Poisson-binomial count is built one event at a time, keeping P(count = 0 .. k - 1).
+	"""
+	probabilities = np.asarray(probabilities, dtype=np.float64)
+	below = np.zeros((probabilities.shape[0], max(k, 1)), dtype=np.float64)
+	below[:, 0] = 1.0
+	for column in range(probabilities.shape[1]):
+		p = probabilities[:, column:column + 1]
+		below[:, 1:] = below[:, 1:] * (1.0 - p) + below[:, :-1] * p
+		below[:, :1] *= 1.0 - p
+	return np.clip(1.0 - below.sum(axis=1), 0.0, 1.0) if k > 0 else np.ones(probabilities.shape[0])
+
+
 def sample_offset_ppm(mz_list, intensity_list, reference_mz, half_width_ppm, mass_tolerance) -> float:
 	"""
 	The ppm offset of a sample's calibrants from the reference masses, searched within `half_width_ppm`.
@@ -465,8 +484,16 @@ def sample_offset_ppm(mz_list, intensity_list, reference_mz, half_width_ppm, mas
 	that count is exceeded at Poisson tail probability below `_RECAL_OFFSET_ALPHA`. The offset is
 	the one supported by the most references; ties go to the maximum of the summed histograms, each
 	scaled to unit sum so every reference weighs alike and smoothed with a Gaussian kernel whose FWHM
-	is `mass_tolerance`. Fewer than `_RECAL_OFFSET_MIN_REFERENCES` supporting references (calibrants
-	absent, or a single unrelated ion near one reference) give 0.
+	is `mass_tolerance`.
+
+	Other ions near the references also support offsets, and with several references some of them
+	line up by chance; a sample sharing their chemistry then lines up at the same wrong offset. So
+	the best support is tested against chance agreement: reference j supports a random offset with
+	probability q_j, its share of supported offsets, the references independently, so the support
+	at one offset follows a Poisson-binomial law (:func:`at_least_probability`). Its tail at the best
+	support, times the number of independent offsets in the search range (range / (2 *
+	ceil(mass_tolerance) + 1)), must stay below `_RECAL_OFFSET_CHANCE`. Otherwise, or with fewer than
+	`_RECAL_OFFSET_MIN_REFERENCES` supporting references, the result is 0.
 	"""
 	counts = None
 	for start, stop in _peak_blocks(mz_list):
@@ -484,8 +511,12 @@ def sample_offset_ppm(mz_list, intensity_list, reference_mz, half_width_ppm, mas
 	totals = counts.sum(axis=1, keepdims=True)
 	expected = totals * (2 * reach + 1) / counts.shape[1]
 	critical = np.where(totals > 0, poisson_distribution.isf(_RECAL_OFFSET_ALPHA, np.maximum(expected, 1e-12)), np.inf)
-	support = (near > critical).sum(axis=0)
+	supports = near > critical
+	support = supports.sum(axis=0)
 	if support.max() < _RECAL_OFFSET_MIN_REFERENCES:
+		return 0.0
+	chance = at_least_probability(supports.mean(axis=1)[None, :], int(support.max()))[0]
+	if chance * counts.shape[1] / (2 * reach + 1) >= _RECAL_OFFSET_CHANCE:
 		return 0.0
 	density = gaussian_filter1d((counts / np.maximum(totals, 1)).sum(axis=0),
 								mass_tolerance / (2 * np.sqrt(2 * np.log(2))), mode='constant')
@@ -2182,7 +2213,7 @@ class _CalibrationReferenceSelector:
 	------------------
 	Each sample is reduced on arrival to an m/z *occurrence histogram* on a fixed logarithmic
 	grid, and only the histogram survives. Peak memory therefore never scales with the number of
-	spectra: what is retained per sample is one array of occupied bin indices, whose length
+	spectra: what is retained per sample is its occupied bin indices and their counts, whose length
 	is bounded by the sample's mass span divided by the bin width (a few hundred thousand entries
 	at the default 10 ppm), not by its peak count. This is what makes the pass safe on the
 	datasets that previously exhausted RAM while holding every sample's raw peaks at once.
@@ -2218,6 +2249,11 @@ class _CalibrationReferenceSelector:
 	# Pool members need at least this fraction of the best candidate's score, so the spread step
 	# cannot fill an empty m/z segment with a rare (noise) peak.
 	_POOL_MIN_RELATIVE_SCORE = 0.1
+	# Coverage: a sample with too few spectra expected to match _RECAL_MIN_PIXEL_MATCHES references
+	# adds at most this many of its own best-detected groups, each detected in at least this share of
+	# its spectra.
+	_COVERAGE_PER_SAMPLE = 3
+	_COVERAGE_MIN_DETECTION = 0.1
 
 	def __init__(self, mass_tolerance: int) -> None:
 		'''
@@ -2230,17 +2266,21 @@ class _CalibrationReferenceSelector:
 		self._log_bin_width = (mass_tolerance * 1e-6) / self._BIN_SUBDIVISION
 		self._search_ppm = recalibration_search_ppm(mass_tolerance)
 
-		# Dataset-wide histogram per ion mode, plus the bins each contributing sample occupies.
-		# Only samples that actually have a mode are tracked, so coverage is later measured against
-		# the samples that could contribute -- mixed single-/dual-mode datasets score correctly.
+		# Dataset-wide histogram per ion mode, plus each contributing sample's own histogram (occupied
+		# bins, their counts, its number of spectra, its name). Only samples that actually have a mode
+		# are tracked, so detection is later averaged over the samples that could contribute -- mixed
+		# single-/dual-mode datasets score correctly.
 		self._bins: dict[MsiIonMode, np.ndarray] = {}
 		self._counts: dict[MsiIonMode, np.ndarray] = {}
 		self._mz_sums: dict[MsiIonMode, np.ndarray] = {}
 		self._crowded: dict[MsiIonMode, np.ndarray] = {}
-		self._sample_bins: dict[MsiIonMode, list[np.ndarray]] = {}
+		self._sample_histograms: dict[MsiIonMode, list[tuple[np.ndarray, np.ndarray, int, str]]] = {}
+		# Filled by select(): per ion mode, (sample name, expected share of its spectra matching at
+		# least _RECAL_MIN_PIXEL_MATCHES references) for every sample.
+		self.coverage: dict[MsiIonMode, list[tuple[str, float]]] = {}
 
 	def add_sample(self, sample_mz: dict[MsiIonMode, list[np.ndarray]],
-				   sample_intensity: dict[MsiIonMode, list[np.ndarray]]) -> None:
+				   sample_intensity: dict[MsiIonMode, list[np.ndarray]], name: str = '') -> None:
 		'''
 		Fold one sample's M/Z payload into the running histogram.
 
@@ -2252,7 +2292,9 @@ class _CalibrationReferenceSelector:
 		sample_mz : dict[MsiIonMode, list[np.ndarray]]
 			One M/Z array per spectrum, per ion mode present in this sample.
 		sample_intensity : dict[MsiIonMode, list[np.ndarray]]
-			The matching intensity arrays, used by the isolation statistic.
+			The matching intensity arrays, used by the signal-peak filter and the isolation statistic.
+		name : str
+			Sample name for the coverage report; defaults to its position.
 		'''
 
 		for mode, spectra in sample_mz.items():
@@ -2262,14 +2304,15 @@ class _CalibrationReferenceSelector:
 			if bins.size == 0:
 				continue
 
+			own = (bins, counts.astype(np.int32), len(spectra), name or f"sample {len(self._sample_histograms.get(mode, []))}")
 			if mode not in self._bins:
 				self._bins[mode], self._counts[mode] = bins, counts
 				self._mz_sums[mode], self._crowded[mode] = mz_sums, crowded
-				self._sample_bins[mode] = [bins]
+				self._sample_histograms[mode] = [own]
 				continue
 
-			# Merge into the running histogram, then drop this sample's counts: only its
-			# occupied-bin index set is kept, for the distinct-sample coverage statistic.
+			# Merge into the running histogram; the sample's own occupied bins and counts are kept for
+			# the per-sample detection statistic.
 			union = np.union1d(self._bins[mode], bins)
 			previous = np.searchsorted(union, self._bins[mode])
 			current = np.searchsorted(union, bins)
@@ -2284,7 +2327,7 @@ class _CalibrationReferenceSelector:
 
 			self._bins[mode] = union
 			self._counts[mode], self._mz_sums[mode], self._crowded[mode] = merged
-			self._sample_bins[mode].append(bins)
+			self._sample_histograms[mode].append(own)
 
 	def select(self, number_of_references: int,
 			   required_mz: dict[MsiIonMode, np.ndarray] | None = None) -> dict[MsiIonMode, np.ndarray]:
@@ -2294,12 +2337,12 @@ class _CalibrationReferenceSelector:
 		Per ion mode the merged histogram bins are grouped within ``mass_tolerance`` ppm by the
 		same weighted sliding window used to build the m/z backbone (:func:`cluster_unique_mz_labels`).
 		Every group then gets statistics pooled over the calibrant search window around it
-		(±``recalibration_search_ppm``): occurrences, crowded occurrences, mass sum and sample
-		coverage. Pooling over the window gathers the copies of one calibrant that drift has spread
-		over several neighbouring groups. A group is a candidate when it is isolated (see the class
-		docstring) and is scored by
-
-		    score = windowed occurrences * (samples covered by the window / samples having this ion mode)
+		(±``recalibration_search_ppm``): occurrences, crowded occurrences, mass sum, and per sample
+		the detection, i.e. its windowed occurrences over its number of spectra (at most 1). Pooling
+		over the window gathers the copies of one calibrant that drift has spread over several
+		neighbouring groups. A group is a candidate when it is isolated (see the class docstring) and
+		is scored by its detection averaged over the samples having this ion mode, so every sample
+		weighs alike and an ion that is frequent in a few spectra or samples only scores low.
 
 		Selection, in order:
 
@@ -2312,8 +2355,12 @@ class _CalibrationReferenceSelector:
 		3. Spread: the pool's log-m/z span is cut into `number_of_references` equal segments and
 		   the best pool member of each segment is taken.
 		4. Fill from the pool by score until `number_of_references` are chosen.
-		5. Coverage: while a sample has no chosen reference, add the best group (isolated first)
-		   that covers it.
+		5. Coverage: a sample's expected share of spectra matching at least
+		   ``_RECAL_MIN_PIXEL_MATCHES`` chosen references is the Poisson-binomial tail of their
+		   detections in it (:func:`at_least_probability`). Samples below ``_RECAL_WARN_MATCHED``,
+		   worst first, add their own best-detected groups (isolated first), each detected in at least
+		   ``_COVERAGE_MIN_DETECTION`` of their spectra, at most ``_COVERAGE_PER_SAMPLE`` per sample.
+		   The final shares are stored in :attr:`coverage`.
 
 		Ties are broken by ascending m/z, giving a total order. Each reference is reported at the
 		windowed mean mass of its group, i.e. the mean of every occurrence within the search window.
@@ -2362,15 +2409,6 @@ class _CalibrationReferenceSelector:
 			group_crowded = np.bincount(labels, weights=self._crowded[mode].astype(np.float64), minlength=n_groups)
 			group_mz = group_mz_sum / group_weight
 
-			# Distinct-sample presence per group. Counting per bin and summing would double-count a
-			# sample whose measurement jitter spreads one peak over several bins of the same group,
-			# so presence is collapsed to (sample, group) pairs first.
-			rows = self._sample_bins[mode]
-			n_samples = len(rows)
-			present = np.zeros((n_samples, n_groups), dtype=bool)
-			for sample_idx, row in enumerate(rows):
-				present[sample_idx, labels[np.searchsorted(bins, row)]] = True
-
 			# Statistics pooled over the search window around each group (prefix sums).
 			low = np.searchsorted(group_mz, group_mz * (1 - window), side='left')
 			high = np.searchsorted(group_mz, group_mz * (1 + window), side='right')
@@ -2380,12 +2418,17 @@ class _CalibrationReferenceSelector:
 
 			window_weight = windowed(group_weight)
 			isolated = windowed(group_crowded) <= self._ISOLATION_MAX_CROWDED * window_weight
-			prefix_present = np.zeros((n_samples, n_groups + 1), dtype=np.int32)
-			np.cumsum(present, axis=1, out=prefix_present[:, 1:])
-			window_present = (prefix_present[:, high] - prefix_present[:, low]) > 0
-			del prefix_present
 
-			scores = window_weight * (window_present.sum(axis=0) / n_samples)
+			# Per sample, the share of its spectra with a signal peak in each group's window. Isolated
+			# groups hold at most about one such peak per spectrum; the cap bounds the others.
+			rows = self._sample_histograms[mode]
+			n_samples = len(rows)
+			detection = np.zeros((n_samples, n_groups), dtype=np.float32)
+			for sample_idx, (row_bins, row_counts, n_spectra, _) in enumerate(rows):
+				per_group = np.bincount(labels[np.searchsorted(bins, row_bins)], weights=row_counts, minlength=n_groups)
+				detection[sample_idx] = np.minimum(windowed(per_group) / max(n_spectra, 1), 1.0)
+
+			scores = detection.mean(axis=0, dtype=np.float64)
 			order = np.lexsort((group_mz, -scores))
 
 			def centred(group: int) -> tuple[int, float, float]:
@@ -2396,12 +2439,18 @@ class _CalibrationReferenceSelector:
 				centre = group_mz[heaviest]
 				lo = np.searchsorted(group_mz, centre * (1 - window), side='left')
 				hi = np.searchsorted(group_mz, centre * (1 + window), side='right')
-				return int(group), float(centre), float(group_mz_sum[lo:hi].sum() / group_weight[lo:hi].sum())
+				return heaviest, float(centre), float(group_mz_sum[lo:hi].sum() / group_weight[lo:hi].sum())
 
 			def separated(candidate: tuple[int, float, float], others: list) -> bool:
 				return all(abs(candidate[1] - other[1]) > 2 * window * other[1] for other in others)
 
-			chosen: list[tuple[int, float, float]] = []  # (seed group, centre m/z, reference m/z)
+			def matched_share(references: list) -> np.ndarray:
+				# Per sample, the expected share of spectra matching at least _RECAL_MIN_PIXEL_MATCHES
+				# of the references, their detections taken as independent.
+				return at_least_probability(detection[:, [reference[0] for reference in references]],
+											_RECAL_MIN_PIXEL_MATCHES)
+
+			chosen: list[tuple[int, float, float]] = []  # (centre group, centre m/z, reference m/z)
 
 			# 1. Required masses.
 			anchors: list[tuple[float, float]] = []  # (reference m/z, given m/z)
@@ -2445,19 +2494,25 @@ class _CalibrationReferenceSelector:
 				if separated(candidate, chosen):
 					chosen.append(candidate)
 
-			# 5. Coverage: isolated groups first, then any group.
-			covered = (window_present[:, [c[0] for c in chosen]].any(axis=1) if chosen
-					   else np.zeros(n_samples, dtype=bool))
-			for require_isolation in (True, False):
-				for group in order:
-					if covered.all():
-						break
-					if (require_isolation and not isolated[group]) or not (window_present[:, group] & ~covered).any():
-						continue
-					candidate = centred(group)
-					if separated(candidate, chosen):
-						chosen.append(candidate)
-						covered |= window_present[:, group]
+			# 5. Coverage: samples expected to match too few references take their own best-detected
+			# groups, worst sample first, isolated groups first.
+			share = matched_share(chosen)
+			for sample_idx in np.argsort(share, kind='stable'):
+				added = 0
+				ranked = np.lexsort((group_mz, -detection[sample_idx]))
+				for require_isolation in (True, False):
+					for group in ranked:
+						if (share[sample_idx] >= _RECAL_WARN_MATCHED or added >= self._COVERAGE_PER_SAMPLE
+								or detection[sample_idx, group] < self._COVERAGE_MIN_DETECTION):
+							break
+						if require_isolation and not isolated[group]:
+							continue
+						candidate = centred(group)
+						if separated(candidate, chosen):
+							chosen.append(candidate)
+							added += 1
+							share = matched_share(chosen)
+			self.coverage[mode] = [(row[3], float(s)) for row, s in zip(rows, share)]
 
 			references = np.array([candidate[2] for candidate in chosen], dtype=np.float64)
 			if anchors:
@@ -2996,7 +3051,7 @@ class MsiDataset(BaseDataset):
 																				 detect_background=detect_background)
 
 				# filtered_* holds the tissue spectra when background detection ran, all spectra otherwise
-				selector.add_sample(filtered_mz, filtered_intensity)
+				selector.add_sample(filtered_mz, filtered_intensity, name=sample.sample_id)
 
 				del raw_mz, filtered_mz, filtered_intensity  # Free memory
 				gc.collect()
@@ -3005,6 +3060,7 @@ class MsiDataset(BaseDataset):
 			reporter.step(*_step(3))
 			recalibration_reference = selector.select(number_of_references=_RECALIBRATION_REFERENCES,
 													  required_mz=internal_standard_mz)
+			coverage = selector.coverage
 			del selector  # Free memory
 			gc.collect()
 			sample_modes = {mode for sample in iter_samples for mode in sample.ion_modes}
@@ -3013,10 +3069,24 @@ class MsiDataset(BaseDataset):
 				listed = ", ".join(f"{m:.4f}" for m in masses)
 				if len(masses) == 0:
 					reporter.warning(f"No recalibration reference found ({str(mode).upper()}); m/z values are not recalibrated")
-				elif len(masses) < _RECALIBRATION_REFERENCES:
+					continue
+				if len(masses) < _RECALIBRATION_REFERENCES:
 					reporter.warning(f"Only {len(masses)} recalibration reference(s) found ({str(mode).upper()}): {listed}")
 				else:
 					reporter.detail(f"Recalibration references ({str(mode).upper()}): {listed}")
+				shares = coverage.get(mode, [])
+				if shares:
+					names, values = zip(*shares)
+					lowest = int(np.argmin(values))
+					low, high = f"{values[lowest]:.0%}", f"{max(values):.0%}"
+					span = low if low == high else f"{low} ({names[lowest]}) to {high}"
+					message = (f"Reference coverage ({str(mode).upper()}): {_RECAL_MIN_PIXEL_MATCHES} or more references "
+							   f"expected in {span} of each sample's spectra")
+					short = [f"{name} {value:.0%}" for name, value in shares if value < _RECAL_WARN_MATCHED]
+					if short:
+						reporter.warning(message + f"; below {_RECAL_WARN_MATCHED:.0%}: " + ", ".join(short))
+					else:
+						reporter.detail(message)
 		else:
 			# Dummy call to still filter the datapoints in each sample
 			for sample in reporter.tqdm(iter_samples, *_step(2), unit="sample"):

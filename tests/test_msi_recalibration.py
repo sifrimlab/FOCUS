@@ -120,7 +120,7 @@ class RecalibrationModelTests(unittest.TestCase):
             estimate = model.offset_ppm + model.slope_ppm_per_da * (CENTRE - model.centre_mz)
             self.assertLess(np.abs(estimate - truth).max(), 2.0, f"drift {drift}")
 
-    def test_sample_offset_needs_two_agreeing_calibrants(self):
+    def test_sample_offset_needs_agreement_beyond_chance(self):
         rng = np.random.default_rng(3)
 
         def spectra(present):
@@ -133,10 +133,37 @@ class RecalibrationModelTests(unittest.TestCase):
                 intensity_list.append(intensity[order].astype(np.float32))
             return mz_list, intensity_list
 
-        # Noise alone, or one ion near one reference, does not move the search; two calibrants do.
-        self.assertEqual(sample_offset_ppm(*spectra(0), CALIBRANTS, 500.0, 10), 0.0)
-        self.assertEqual(sample_offset_ppm(*spectra(1), CALIBRANTS, 500.0, 10), 0.0)
-        self.assertAlmostEqual(sample_offset_ppm(*spectra(2), CALIBRANTS, 500.0, 10), 70.0, delta=2.0)
+        # Noise alone, one ion near one reference, or two ions that may agree by chance (about 2% over
+        # +-500 ppm) do not move the search; four agreeing calibrants do.
+        for present in (0, 1, 2):
+            self.assertEqual(sample_offset_ppm(*spectra(present), CALIBRANTS, 500.0, 10), 0.0, f"{present} calibrants")
+        self.assertAlmostEqual(sample_offset_ppm(*spectra(4), CALIBRANTS, 500.0, 10), 70.0, delta=2.0)
+
+    def test_sample_offset_ignores_ions_lining_up_by_chance(self):
+        # The calibrants are in 1% of the spectra; one to four other ions sit within +-480 ppm of every
+        # reference, so some of them line up at a common offset by chance. With the calibrants in 60%
+        # of the spectra, 120 ppm off, the offset is found.
+        chemistry = np.random.default_rng(42)
+        others = [mass * (1 + chemistry.uniform(-480, 480, chemistry.integers(1, 5)) * 1e-6) for mass in CALIBRANTS]
+        rates = [chemistry.uniform(0.1, 0.6, ions.size) for ions in others]
+
+        def spectra(calibrant_rate, offset_ppm, seed):
+            rng = np.random.default_rng(seed)
+            mz_list, intensity_list = [], []
+            for _ in range(3000):
+                present = rng.random(CALIBRANTS.size) < calibrant_rate
+                parts = [rng.uniform(350, 1100, 1000), CALIBRANTS[present] * (1 + offset_ppm * 1e-6)]
+                parts += [ions[rng.random(ions.size) < rate] for ions, rate in zip(others, rates)]
+                mz = np.concatenate(parts)
+                intensity = np.concatenate([rng.exponential(50, 1000), np.full(mz.size - 1000, 900.0)])
+                order = np.argsort(mz)
+                mz_list.append(mz[order])
+                intensity_list.append(intensity[order].astype(np.float32))
+            return mz_list, intensity_list
+
+        for seed in range(3):
+            self.assertEqual(sample_offset_ppm(*spectra(0.01, 0.0, seed), CALIBRANTS, 500.0, 10), 0.0)
+        self.assertAlmostEqual(sample_offset_ppm(*spectra(0.6, 120.0, 0), CALIBRANTS, 500.0, 10), 120.0, delta=2.0)
 
     def test_zero_and_one_based_coordinates_agree(self):
         mz_list, intensity_list, coords = synthetic_sample(10, 12, dim_lines=(), missing_lines=())
@@ -329,6 +356,33 @@ class ReferenceSelectorTests(unittest.TestCase):
     def test_required_mass_is_always_selected(self):
         references = self.select(2, required={MsiIonMode.POSITIVE: np.array([700.0])})
         self.assertEqual(self.near(references, 700.0, ppm=30).size, 1)
+
+    def test_every_sample_gets_references_it_detects(self):
+        # A large sample holds the ten calibrants in 90% of its spectra; a small one holds them in 1%
+        # only, and has its own five ions in 80% of its spectra.
+        own = np.array([430.3, 590.4, 740.5, 860.6, 1000.7])
+
+        def sample(n_spectra, ions, rate, seed):
+            rng = np.random.default_rng(seed)
+            mz_list, intensity_list = [], []
+            for _ in range(n_spectra):
+                present = np.concatenate([CALIBRANTS[rng.random(CALIBRANTS.size) < rate[0]],
+                                          ions[rng.random(ions.size) < rate[1]]])
+                mz = np.concatenate([present, rng.uniform(350, 1100, 200)])
+                intensity = np.concatenate([np.full(present.size, 800.0), rng.exponential(50, 200)])
+                order = np.argsort(mz)
+                mz_list.append(mz[order])
+                intensity_list.append(intensity[order].astype(np.float32))
+            return {MsiIonMode.POSITIVE: mz_list}, {MsiIonMode.POSITIVE: intensity_list}
+
+        selector = _CalibrationReferenceSelector(mass_tolerance=10)
+        selector.add_sample(*sample(1500, own, (0.9, 0.0), 0), name="large")
+        selector.add_sample(*sample(300, own, (0.01, 0.8), 1), name="small")
+        references = selector.select(10)[MsiIonMode.POSITIVE]
+        self.assertGreaterEqual(sum(self.near(references, mass).size for mass in own), 2)
+        coverage = dict(selector.coverage[MsiIonMode.POSITIVE])
+        self.assertGreater(coverage["large"], 0.95)
+        self.assertGreater(coverage["small"], 0.5)
 
 
 class NormalizationTests(unittest.TestCase):
