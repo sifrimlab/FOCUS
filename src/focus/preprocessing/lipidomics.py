@@ -51,7 +51,7 @@ def _step(index: int) -> tuple[int, int, str]:
 
 # Part of the preprocessing fingerprint: bump whenever the same input and settings produce a
 # different output, so cached results are rebuilt.
-METHOD_VERSION = "msi-7"
+METHOD_VERSION = "msi-8"
 
 
 def _parse_mz_by_mode(value, setting: str) -> dict[str, np.ndarray] | None:
@@ -2202,21 +2202,18 @@ class _CalibrationReferenceSelector:
 	'''
 	Deterministic, streaming selection of the reference M/Z values used for m/z recalibration.
 
-	Every spectrum of every sample contributes -- there is no subsampling and no RNG, so repeated
-	runs on the same input return byte-identical references.
+	One selector serves one sample: the references are the ions that sample's own spectra hold
+	(see :meth:`select`). Every spectrum contributes -- there is no subsampling and no RNG, so
+	repeated runs on the same input return byte-identical references.
 
-	Usage: construct with the ppm tolerance, feed one sample's payload at a time with
-	:meth:`add_sample` (the payload can be released immediately afterwards), then call
-	:meth:`select`.
+	Usage: construct with the ppm tolerance, feed the sample's payload with :meth:`add_sample`
+	(the payload can be released immediately afterwards), then call :meth:`select`.
 
 	How it stays cheap
 	------------------
-	Each sample is reduced on arrival to an m/z *occurrence histogram* on a fixed logarithmic
-	grid, and only the histogram survives. Peak memory therefore never scales with the number of
-	spectra: what is retained per sample is its occupied bin indices and their counts, whose length
-	is bounded by the sample's mass span divided by the bin width (a few hundred thousand entries
-	at the default 10 ppm), not by its peak count. This is what makes the pass safe on the
-	datasets that previously exhausted RAM while holding every sample's raw peaks at once.
+	The payload is reduced on arrival to an m/z *occurrence histogram* on a fixed logarithmic
+	grid, and only the histogram survives. Its length is bounded by the mass span divided by the
+	bin width (a few hundred thousand entries at the default 10 ppm), not by the peak count.
 
 	Why a logarithmic grid
 	----------------------
@@ -2249,11 +2246,6 @@ class _CalibrationReferenceSelector:
 	# Pool members need at least this fraction of the best candidate's score, so the spread step
 	# cannot fill an empty m/z segment with a rare (noise) peak.
 	_POOL_MIN_RELATIVE_SCORE = 0.1
-	# Coverage: a sample with too few spectra expected to match _RECAL_MIN_PIXEL_MATCHES references
-	# adds at most this many of its own best-detected groups, each detected in at least this share of
-	# its spectra.
-	_COVERAGE_PER_SAMPLE = 3
-	_COVERAGE_MIN_DETECTION = 0.1
 
 	def __init__(self, mass_tolerance: int) -> None:
 		'''
@@ -2266,23 +2258,17 @@ class _CalibrationReferenceSelector:
 		self._log_bin_width = (mass_tolerance * 1e-6) / self._BIN_SUBDIVISION
 		self._search_ppm = recalibration_search_ppm(mass_tolerance)
 
-		# Dataset-wide histogram per ion mode, plus each contributing sample's own histogram (occupied
-		# bins, their counts, its number of spectra, its name). Only samples that actually have a mode
-		# are tracked, so detection is later averaged over the samples that could contribute -- mixed
-		# single-/dual-mode datasets score correctly.
+		# Histogram per ion mode, and the number of spectra it was built from.
 		self._bins: dict[MsiIonMode, np.ndarray] = {}
 		self._counts: dict[MsiIonMode, np.ndarray] = {}
 		self._mz_sums: dict[MsiIonMode, np.ndarray] = {}
 		self._crowded: dict[MsiIonMode, np.ndarray] = {}
-		self._sample_histograms: dict[MsiIonMode, list[tuple[np.ndarray, np.ndarray, int, str]]] = {}
-		# Filled by select(): per ion mode, (sample name, expected share of its spectra matching at
-		# least _RECAL_MIN_PIXEL_MATCHES references) for every sample.
-		self.coverage: dict[MsiIonMode, list[tuple[str, float]]] = {}
+		self._spectra: dict[MsiIonMode, int] = {}
 
 	def add_sample(self, sample_mz: dict[MsiIonMode, list[np.ndarray]],
-				   sample_intensity: dict[MsiIonMode, list[np.ndarray]], name: str = '') -> None:
+				   sample_intensity: dict[MsiIonMode, list[np.ndarray]]) -> None:
 		'''
-		Fold one sample's M/Z payload into the running histogram.
+		Fold an M/Z payload into the running histogram.
 
 		The payload is only read, never retained: the caller is free to release it as soon as this
 		returns.
@@ -2293,26 +2279,22 @@ class _CalibrationReferenceSelector:
 			One M/Z array per spectrum, per ion mode present in this sample.
 		sample_intensity : dict[MsiIonMode, list[np.ndarray]]
 			The matching intensity arrays, used by the signal-peak filter and the isolation statistic.
-		name : str
-			Sample name for the coverage report; defaults to its position.
 		'''
 
 		for mode, spectra in sample_mz.items():
 			bins, counts, mz_sums, crowded = peak_histogram(
 				spectra, self._log_bin_width, sample_intensity[mode], self._search_ppm,
 				self._ISOLATION_INTENSITY_RATIO)
+			self._spectra[mode] = self._spectra.get(mode, 0) + len(spectra)
 			if bins.size == 0:
 				continue
 
-			own = (bins, counts.astype(np.int32), len(spectra), name or f"sample {len(self._sample_histograms.get(mode, []))}")
 			if mode not in self._bins:
 				self._bins[mode], self._counts[mode] = bins, counts
 				self._mz_sums[mode], self._crowded[mode] = mz_sums, crowded
-				self._sample_histograms[mode] = [own]
 				continue
 
-			# Merge into the running histogram; the sample's own occupied bins and counts are kept for
-			# the per-sample detection statistic.
+			# Merge into the running histogram.
 			union = np.union1d(self._bins[mode], bins)
 			previous = np.searchsorted(union, self._bins[mode])
 			current = np.searchsorted(union, bins)
@@ -2327,7 +2309,6 @@ class _CalibrationReferenceSelector:
 
 			self._bins[mode] = union
 			self._counts[mode], self._mz_sums[mode], self._crowded[mode] = merged
-			self._sample_histograms[mode].append(own)
 
 	def select(self, number_of_references: int,
 			   required_mz: dict[MsiIonMode, np.ndarray] | None = None) -> dict[MsiIonMode, np.ndarray]:
@@ -2337,12 +2318,11 @@ class _CalibrationReferenceSelector:
 		Per ion mode the merged histogram bins are grouped within ``mass_tolerance`` ppm by the
 		same weighted sliding window used to build the m/z backbone (:func:`cluster_unique_mz_labels`).
 		Every group then gets statistics pooled over the calibrant search window around it
-		(±``recalibration_search_ppm``): occurrences, crowded occurrences, mass sum, and per sample
-		the detection, i.e. its windowed occurrences over its number of spectra (at most 1). Pooling
-		over the window gathers the copies of one calibrant that drift has spread over several
+		(±``recalibration_search_ppm``): occurrences, crowded occurrences and mass sum. Pooling over
+		the window gathers the copies of one calibrant that drift has spread over several
 		neighbouring groups. A group is a candidate when it is isolated (see the class docstring) and
-		is scored by its detection averaged over the samples having this ion mode, so every sample
-		weighs alike and an ion that is frequent in a few spectra or samples only scores low.
+		is scored by its detection: windowed occurrences over the number of spectra (at most 1), the
+		share of the spectra that can match it.
 
 		Selection, in order:
 
@@ -2355,16 +2335,10 @@ class _CalibrationReferenceSelector:
 		3. Spread: the pool's log-m/z span is cut into `number_of_references` equal segments and
 		   the best pool member of each segment is taken.
 		4. Fill from the pool by score until `number_of_references` are chosen.
-		5. Coverage: a sample's expected share of spectra matching at least
-		   ``_RECAL_MIN_PIXEL_MATCHES`` chosen references is the Poisson-binomial tail of their
-		   detections in it (:func:`at_least_probability`). Samples below ``_RECAL_WARN_MATCHED``,
-		   worst first, add their own best-detected groups (isolated first), each detected in at least
-		   ``_COVERAGE_MIN_DETECTION`` of their spectra, at most ``_COVERAGE_PER_SAMPLE`` per sample.
-		   The final shares are stored in :attr:`coverage`.
 
 		Ties are broken by ascending m/z, giving a total order. Each reference is reported at the
 		windowed mean mass of its group, i.e. the mean of every occurrence within the search window.
-		These means carry the dataset's average drift. When required masses (known standards) are
+		These means carry the sample's average drift. When required masses (known standards) are
 		observed, the references are moved onto the standards' mass scale: every reference m is
 		divided by (1 + d(m) * 1e-6), where d is the ppm offset of the observed standards from their
 		given masses. d is a least-squares line in m when at least two standards span
@@ -2374,15 +2348,14 @@ class _CalibrationReferenceSelector:
 		Parameters
 		----------
 		number_of_references : int
-			Minimum number of references per ion mode. More are added when needed for coverage.
+			Number of references per ion mode (plus the observed required masses).
 		required_mz : dict[MsiIonMode, np.ndarray] | None
 			Masses that must be references when observed.
 
 		Returns
 		-------
 		dict[MsiIonMode, np.ndarray]
-			Ascending reference M/Z values per ion mode; an empty array for a mode that no sample
-			contributed.
+			Ascending reference M/Z values per ion mode; an empty array for a mode without spectra.
 		'''
 
 		recalibration_reference: dict[MsiIonMode, np.ndarray] = {}
@@ -2393,7 +2366,6 @@ class _CalibrationReferenceSelector:
 				recalibration_reference[mode] = np.array([], dtype=np.float64)
 				continue
 
-			bins = self._bins[mode]
 			counts = self._counts[mode].astype(np.float64)
 			mz_sums = self._mz_sums[mode]
 
@@ -2418,17 +2390,8 @@ class _CalibrationReferenceSelector:
 
 			window_weight = windowed(group_weight)
 			isolated = windowed(group_crowded) <= self._ISOLATION_MAX_CROWDED * window_weight
-
-			# Per sample, the share of its spectra with a signal peak in each group's window. Isolated
-			# groups hold at most about one such peak per spectrum; the cap bounds the others.
-			rows = self._sample_histograms[mode]
-			n_samples = len(rows)
-			detection = np.zeros((n_samples, n_groups), dtype=np.float32)
-			for sample_idx, (row_bins, row_counts, n_spectra, _) in enumerate(rows):
-				per_group = np.bincount(labels[np.searchsorted(bins, row_bins)], weights=row_counts, minlength=n_groups)
-				detection[sample_idx] = np.minimum(windowed(per_group) / max(n_spectra, 1), 1.0)
-
-			scores = detection.mean(axis=0, dtype=np.float64)
+			# Isolated groups hold at most about one signal peak per spectrum; the cap bounds the others.
+			scores = np.minimum(window_weight / max(self._spectra[mode], 1), 1.0)
 			order = np.lexsort((group_mz, -scores))
 
 			def centred(group: int) -> tuple[int, float, float]:
@@ -2443,12 +2406,6 @@ class _CalibrationReferenceSelector:
 
 			def separated(candidate: tuple[int, float, float], others: list) -> bool:
 				return all(abs(candidate[1] - other[1]) > 2 * window * other[1] for other in others)
-
-			def matched_share(references: list) -> np.ndarray:
-				# Per sample, the expected share of spectra matching at least _RECAL_MIN_PIXEL_MATCHES
-				# of the references, their detections taken as independent.
-				return at_least_probability(detection[:, [reference[0] for reference in references]],
-											_RECAL_MIN_PIXEL_MATCHES)
 
 			chosen: list[tuple[int, float, float]] = []  # (centre group, centre m/z, reference m/z)
 
@@ -2494,26 +2451,6 @@ class _CalibrationReferenceSelector:
 				if separated(candidate, chosen):
 					chosen.append(candidate)
 
-			# 5. Coverage: samples expected to match too few references take their own best-detected
-			# groups, worst sample first, isolated groups first.
-			share = matched_share(chosen)
-			for sample_idx in np.argsort(share, kind='stable'):
-				added = 0
-				ranked = np.lexsort((group_mz, -detection[sample_idx]))
-				for require_isolation in (True, False):
-					for group in ranked:
-						if (share[sample_idx] >= _RECAL_WARN_MATCHED or added >= self._COVERAGE_PER_SAMPLE
-								or detection[sample_idx, group] < self._COVERAGE_MIN_DETECTION):
-							break
-						if require_isolation and not isolated[group]:
-							continue
-						candidate = centred(group)
-						if separated(candidate, chosen):
-							chosen.append(candidate)
-							added += 1
-							share = matched_share(chosen)
-			self.coverage[mode] = [(row[3], float(s)) for row, s in zip(rows, share)]
-
 			references = np.array([candidate[2] for candidate in chosen], dtype=np.float64)
 			if anchors:
 				masses = np.array([mass for _, mass in anchors])
@@ -2532,6 +2469,81 @@ class _CalibrationReferenceSelector:
 			recalibration_reference[mode] = np.sort(references)
 
 		return recalibration_reference
+
+
+# Two samples' mass scales are compared when they share at least this many references (one reference
+# of each within the calibrant search window).
+_SCALE_MIN_SHARED = 3
+
+
+def mass_scale_shifts(references: list[np.ndarray], window_ppm: float,
+					  fixed: np.ndarray | None = None) -> tuple[np.ndarray, np.ndarray]:
+	'''
+	Per sample, the constant ppm offset of its references from the samples' common mass scale.
+
+	Each sample's references sit at its own mean calibrant masses, so they carry its calibration
+	offset. For every pair of samples sharing at least `_SCALE_MIN_SHARED` references, the median ppm
+	difference of the shared ones estimates the difference of the two offsets. The offsets are the
+	least-squares solution of these pairwise differences, weighted by the number of shared references,
+	per group of samples connected by such pairs: offset 0 on the group's `fixed` samples when it holds
+	any (references already on the common scale), zero mean otherwise. A sample that shares references
+	with no other sample keeps offset 0.
+
+	Returns
+	-------
+	shifts : (n,) float64
+		ppm offset of each sample; its references divided by (1 + shift * 1e-6) are on the common scale.
+	connected : (n,) bool
+		False for a sample that shares references with no other sample.
+	'''
+	n = len(references)
+	fixed = np.zeros(n, dtype=bool) if fixed is None else np.asarray(fixed, dtype=bool)
+	references = [np.asarray(r, dtype=np.float64) for r in references]
+	pairs = []  # (s, t, ppm of s relative to t, shared references)
+	parent = list(range(n))
+
+	def root(k: int) -> int:
+		while parent[k] != k:
+			k = parent[k]
+		return k
+
+	for s in range(n):
+		for t in range(s + 1, n):
+			a, b = references[s], references[t]
+			if a.size == 0 or b.size == 0:
+				continue
+			nearest = b[np.abs(a[:, None] - b[None, :]).argmin(axis=1)]
+			ppm = (a - nearest) / nearest * 1e6
+			shared = np.abs(ppm) <= window_ppm
+			if shared.sum() >= _SCALE_MIN_SHARED:
+				pairs.append((s, t, float(np.median(ppm[shared])), int(shared.sum())))
+				parent[root(s)] = root(t)
+
+	shifts = np.zeros(n, dtype=np.float64)
+	group = np.array([root(k) for k in range(n)])
+	connected = np.array([np.sum(group == group[k]) > 1 for k in range(n)])
+	for label in np.unique(group[connected]):
+		members = np.flatnonzero(group == label)
+		free = members[~fixed[members]]
+		if free.size == 0:
+			continue
+		column = {int(k): j for j, k in enumerate(free)}
+		rows, rhs = [], []
+		for s, t, ppm, count in pairs:
+			if group[s] != label:
+				continue
+			row = np.zeros(free.size)
+			if s in column:
+				row[column[s]] = 1.0
+			if t in column:
+				row[column[t]] = -1.0
+			rows.append(np.sqrt(count) * row)
+			rhs.append(np.sqrt(count) * ppm)
+		if not fixed[members].any():
+			rows.append(np.ones(free.size))
+			rhs.append(0.0)
+		shifts[free] = np.linalg.lstsq(np.array(rows), np.array(rhs), rcond=None)[0]
+	return shifts, connected
 
 
 # --- m/z backbone (docs/scientific/msi_methods.md §4.3) ---
@@ -2818,7 +2830,7 @@ class MsiDataset(BaseDataset):
 		'''
 		Fingerprint of the whole dataset run: method version, settings, lipid database and every
 		sample's inputs (imzML SHA-256 and .ibd size; the .ibd itself is too large to hash). Every
-		sample's output depends on all samples (shared recalibration references and m/z backbone), so
+		sample's output depends on all samples (aligned mass scales and the m/z backbone), so
 		the same key is stored in every per-sample file and in the merged file.
 		'''
 		inputs = {}
@@ -2958,13 +2970,15 @@ class MsiDataset(BaseDataset):
 		# STEP 0b: Partial-resume cache discovery (an interrupted run with unchanged inputs and settings)
 		# Walk self.samples in order looking for per-sample h5ad files carrying the current dataset
 		# fingerprint. Take the first valid one as ground truth: its .var (mz/mz_mode/lipid_annotation)
-		# IS the global reference and its .uns['recalibration_reference'] the recalibration references of
-		# that run. Samples whose file is missing, stale OR whose var disagrees with the ground truth (and
-		# all subsequent samples) are queued for reprocessing. We then skip steps 3-6 entirely (we have
-		# the cached global reference and calibrants) and run steps 1-2, 7 only on the queued subset.
-		# Step 8 always runs to rebuild the merged dataset.
+		# IS the global reference. Samples whose file is missing, stale OR whose var disagrees with the
+		# ground truth (and all subsequent samples) are queued for reprocessing. We then skip steps 4-6
+		# entirely (we have the cached global reference) and run steps 1-3, 7 only on the queued subset;
+		# the cached samples' recalibration references (.uns['recalibration_reference'], already on the
+		# common mass scale) anchor the mass scales of the queued ones. Step 8 always runs to rebuild the
+		# merged dataset.
 		samples_to_process: list = list(self.samples)
 		spot_sizes: dict[str, list[float]] = {}
+		stored_references: dict[str, dict[str, np.ndarray]] = {}
 		processed_samples = {}
 		has_partial_cache = False
 
@@ -2989,7 +3003,6 @@ class MsiDataset(BaseDataset):
 				if ground_truth_var is None:
 					ground_truth_var = var_subset
 					gt_mz, gt_mode, gt_ann = this_mz, this_mode, this_ann
-					recalibration_reference = cached_reference
 				else:
 					if (not np.array_equal(this_mz, gt_mz)
 							or not np.array_equal(this_mode, gt_mode)
@@ -2999,6 +3012,7 @@ class MsiDataset(BaseDataset):
 
 				processed_samples[sample.sample_id] = sample_path
 				spot_sizes[sample.sample_id] = spot_size
+				stored_references[sample.sample_id] = cached_reference
 
 			has_partial_cache = ground_truth_var is not None
 
@@ -3010,6 +3024,7 @@ class MsiDataset(BaseDataset):
 					for s in samples_to_process:
 						processed_samples.pop(s.sample_id, None)
 						spot_sizes.pop(s.sample_id, None)
+						stored_references.pop(s.sample_id, None)
 
 				# Reconstruct the global reference m/z and lipid annotations from the cached var
 				mode_str_array = ground_truth_var['mz_mode'].astype(str).to_numpy()
@@ -3035,72 +3050,67 @@ class MsiDataset(BaseDataset):
 			sample.initialize_sample()
 			sample._sample_type = sample_type
 
-		# STEP 2: Determine the recalibration reference M/Z values. If one is provided (or recovered
-		# from a partial-resume cache) it is used directly; otherwise it is selected from the tissue
-		# spectra of the dataset (see _CalibrationReferenceSelector), always including the internal
-		# standards when configured. Recalibration runs with or without a lipid DB.
-		if recalibration_reference is None:
-			# Every spectrum contributes, but each sample is folded into a compact m/z histogram as
-			# soon as it is loaded and its peaks are released immediately. Accumulating all samples'
-			# raw spectra first is what used to be both slow and a source of OOM.
-			selector = _CalibrationReferenceSelector(mass_tolerance)
-
-			for sample in reporter.tqdm(iter_samples, *_step(2), unit="sample"):
-				raw_mz, _, filtered_mz, filtered_intensity = sample.load_payload(annotation_db=self.lipid_annotation_db,
-																				 mass_tolerance=mass_tolerance,
-																				 detect_background=detect_background)
-
-				# filtered_* holds the tissue spectra when background detection ran, all spectra otherwise
-				selector.add_sample(filtered_mz, filtered_intensity, name=sample.sample_id)
-
-				del raw_mz, filtered_mz, filtered_intensity  # Free memory
-				gc.collect()
-
-			# Compute the recalibration reference from the dataset
-			reporter.step(*_step(3))
-			recalibration_reference = selector.select(number_of_references=_RECALIBRATION_REFERENCES,
-													  required_mz=internal_standard_mz)
-			coverage = selector.coverage
-			del selector  # Free memory
+		# STEP 2-3: Recalibration references, one set per sample: the ions that sample's own spectra hold
+		# (see _CalibrationReferenceSelector; the tissue spectra when background detection ran, all
+		# spectra otherwise), always including the internal standards when configured. They are selected
+		# while the payload loaded for tissue detection is in hand; step 3 puts the samples' references
+		# on one mass scale (mass_scale_shifts) and reports them. A user-supplied reference serves every
+		# sample as is. Recalibration runs with or without a lipid DB.
+		selected: dict[str, dict[MsiIonMode, np.ndarray]] = {}
+		for sample in reporter.tqdm(iter_samples, *_step(2), unit="sample"):
+			_, _, filtered_mz, filtered_intensity = sample.load_payload(annotation_db=self.lipid_annotation_db,
+																		mass_tolerance=mass_tolerance,
+																		detect_background=detect_background)
+			if recalibration_reference is None:
+				selector = _CalibrationReferenceSelector(mass_tolerance)
+				selector.add_sample(filtered_mz, filtered_intensity)
+				selected[sample.sample_id] = selector.select(number_of_references=_RECALIBRATION_REFERENCES,
+															 required_mz=internal_standard_mz)
+				del selector
+			del filtered_mz, filtered_intensity  # Free memory
 			gc.collect()
-			sample_modes = {mode for sample in iter_samples for mode in sample.ion_modes}
-			for mode in sorted(sample_modes):
-				masses = recalibration_reference.get(mode, np.array([]))
-				listed = ", ".join(f"{m:.4f}" for m in masses)
-				if len(masses) == 0:
-					reporter.warning(f"No recalibration reference found ({str(mode).upper()}); m/z values are not recalibrated")
+
+		if recalibration_reference is None:
+			# Samples' own references carry their calibration offsets; one constant ppm shift per sample
+			# and ion mode puts them on a common scale, so one ion stays one backbone feature across
+			# samples. Internal standards already anchor every sample that observes them.
+			scale_shift: dict[str, dict[MsiIonMode, tuple[float, bool]]] = {s: {} for s in selected}
+			for mode in MsiIonMode.list():
+				names = [s for s in selected if selected[s].get(mode, np.array([])).size]
+				anchors = [s for s in stored_references if np.asarray(stored_references[s].get(str(mode), [])).size]
+				if not names or (internal_standard_mz is not None and mode in internal_standard_mz):
 					continue
-				if len(masses) < _RECALIBRATION_REFERENCES:
-					reporter.warning(f"Only {len(masses)} recalibration reference(s) found ({str(mode).upper()}): {listed}")
-				else:
-					reporter.detail(f"Recalibration references ({str(mode).upper()}): {listed}")
-				shares = coverage.get(mode, [])
-				if shares:
-					names, values = zip(*shares)
-					lowest = int(np.argmin(values))
-					low, high = f"{values[lowest]:.0%}", f"{max(values):.0%}"
-					span = low if low == high else f"{low} ({names[lowest]}) to {high}"
-					message = (f"Reference coverage ({str(mode).upper()}): {_RECAL_MIN_PIXEL_MATCHES} or more references "
-							   f"expected in {span} of each sample's spectra")
-					short = [f"{name} {value:.0%}" for name, value in shares if value < _RECAL_WARN_MATCHED]
-					if short:
-						reporter.warning(message + f"; below {_RECAL_WARN_MATCHED:.0%}: " + ", ".join(short))
+				shifts, connected = mass_scale_shifts(
+					[selected[s][mode] for s in names] + [stored_references[s][str(mode)] for s in anchors],
+					recalibration_search_ppm(mass_tolerance),
+					fixed=np.arange(len(names) + len(anchors)) >= len(names))
+				for k, s in enumerate(names):
+					scale_shift[s][mode] = (float(shifts[k]), bool(connected[k]) or len(names) + len(anchors) == 1)
+					selected[s][mode] = selected[s][mode] / (1 + shifts[k] * 1e-6)
+
+			for sample in reporter.tqdm(iter_samples, *_step(3), unit="sample"):
+				sample.recalibration_reference = selected[sample.sample_id]
+				for mode in sample.ion_modes:
+					masses = selected[sample.sample_id].get(mode, np.array([]))
+					listed = ", ".join(f"{m:.4f}" for m in masses)
+					if len(masses) == 0:
+						reporter.warning(f"No recalibration reference found ({str(mode).upper()}); m/z values are not recalibrated")
+						continue
+					shift, connected = scale_shift[sample.sample_id].get(mode, (0.0, True))
+					scale = f"; mass scale shifted {shift:+.1f} ppm" if shift != 0.0 else ""
+					if not connected:
+						reporter.warning(f"Recalibration references ({str(mode).upper()}): {listed}; fewer than "
+										 f"{_SCALE_MIN_SHARED} shared with any other sample, so its mass scale is not "
+										 f"aligned with theirs")
+					elif len(masses) < _RECALIBRATION_REFERENCES:
+						reporter.warning(f"Only {len(masses)} recalibration reference(s) found ({str(mode).upper()}): {listed}{scale}")
 					else:
-						reporter.detail(message)
+						reporter.detail(f"Recalibration references ({str(mode).upper()}): {listed}{scale}")
 		else:
-			# Dummy call to still filter the datapoints in each sample
-			for sample in reporter.tqdm(iter_samples, *_step(2), unit="sample"):
-				_, _, _, _ = sample.load_payload(annotation_db=self.lipid_annotation_db, mass_tolerance=mass_tolerance,
-												 detect_background=detect_background)
-				gc.collect()
-
-			reporter.step(*_step(3), cached=has_partial_cache)
-			if not has_partial_cache:
-				reporter.detail("Using the provided recalibration reference m/z values")
-
-		# Store the recalibration reference in each sample to reprocess
-		for sample in iter_samples:
-			sample.recalibration_reference = recalibration_reference
+			reporter.step(*_step(3))
+			reporter.detail("Using the provided recalibration reference m/z values")
+			for sample in iter_samples:
+				sample.recalibration_reference = recalibration_reference
 
 		if not has_partial_cache:
 			# STEP 4: Reduce the recalibrated signal peaks of every sample (tissue spectra when
@@ -3184,8 +3194,6 @@ class MsiDataset(BaseDataset):
 		# per-sample files share one obs schema for the on-disk merge.
 		qc_modes = [mode for mode in (MsiIonMode.POSITIVE, MsiIonMode.NEGATIVE)
 					if mode in self.reference_mz and self.reference_mz[mode].size > 0]
-		stored_reference = {str(mode): np.asarray(masses, dtype=np.float64)
-							for mode, masses in (recalibration_reference or {}).items()}
 
 		# STEP 6+7: Process one sample at a time — interpolate, normalize, build AnnData, write, free.
 		# This keeps peak RAM proportional to a single sample rather than all samples simultaneously.
@@ -3296,6 +3304,8 @@ class MsiDataset(BaseDataset):
 					obs_df[f'recalibration_matches_{mode}'] = (model.matches if model is not None
 															   else np.zeros(n_obs, dtype=np.int16))
 
+				stored_reference = {str(mode): np.asarray(masses, dtype=np.float64)
+									for mode, masses in (sample.recalibration_reference or {}).items()}
 				adata = ad.AnnData(
 					X=X_sparse,
 					layers={'raw': raw_sparse},
@@ -3331,6 +3341,7 @@ class MsiDataset(BaseDataset):
 				write_futures.clear()
 				write_futures.append(write_executor.submit(utils.write_h5ad_compat, adata, output_file, compression=self._H5AD_INTERMEDIATE_COMPRESSION))
 				processed_samples[sample.sample_id] = output_file
+				stored_references[sample.sample_id] = stored_reference
 
 			for f in write_futures:
 				f.result()
@@ -3359,7 +3370,7 @@ class MsiDataset(BaseDataset):
 			# Update the merged file's .uns["spot_size"] to be a per-sample dict
 			merged_adata = ad.read_h5ad(merged_file)
 			merged_adata.uns["spot_size"] = spot_sizes
-			merged_adata.uns["recalibration_reference"] = stored_reference
+			merged_adata.uns["recalibration_reference"] = {s: stored_references[s] for s in sample_files}
 			merged_adata.uns["focus_preprocessing_fingerprint"] = dataset_key
 			utils.write_h5ad_compat(merged_adata, merged_file, compression=self._H5AD_COMPRESSION)
 			del merged_adata

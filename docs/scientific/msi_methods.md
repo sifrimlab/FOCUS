@@ -205,11 +205,15 @@ backbone from the recalibrated spectra (§4.3).
 ### 4.1 Recalibration reference selection
 
 If no `recalibration_reference` is supplied, reference masses are selected automatically
-(`_CalibrationReferenceSelector`), independently per ion mode, from every spectrum of every sample:
-the tissue spectra when background detection ran (§3), all spectra otherwise. Selecting calibrants
-from the data, instead of from an a priori list, avoids false calibrant matches that degrade the
-recalibration[^larocca2021]. FOCUS design choice: the selection rules below (histogram, isolation,
-scoring, centring, spread and anchoring); none of them is taken from a published method.
+(`_CalibrationReferenceSelector`), per sample and independently per ion mode, from every spectrum of
+that sample: the tissue spectra when background detection ran (§3), all spectra otherwise. Selecting
+calibrants from the data, instead of from an a priori list, avoids false calibrant matches that
+degrade the recalibration[^larocca2021]. FOCUS design choice: one set of references per sample.
+Recalibration corrects the mass shift within a sample, so each sample uses the ions its own spectra
+hold; a set shared by the dataset can be nearly absent from a sample of different composition, whose
+spectra then match no reference. The samples' mass scales are aligned afterwards (§4.1.4). The
+selection rules below (histogram, isolation, scoring, centring, spread, anchoring and alignment) are
+FOCUS design choices; none of them is taken from a published method.
 
 **Signal peaks.** Selection and matching (§4.2) consider only the signal peaks of a spectrum: peaks
 whose intensity reaches \(\text{SNR} \cdot N_s\), with \(N_s = 1.4826 \cdot
@@ -259,10 +263,9 @@ q_b = \#\{\text{crowded signal peaks in bin } b\},
 via `np.bincount` (a single linear pass, no sort), in blocks of at most \(2 \cdot 10^7\) peaks.
 Crowded peaks are defined in §4.1.2. The
 representative mass of a bin is the exact mean \(\sigma_b / n_b\) of the raw values that fell in it.
-The grid only indexes peaks; it never replaces a measured mass with a bin centre. Samples are folded
-in one at a time and their raw peaks released immediately; what persists per sample is its occupied
-bin indices with their counts \(n_{s,b}\), and its number of spectra \(N_s\). Retained memory is
-therefore \(O(\ln(m_{\max}/m_{\min})/w)\) per sample, i.e.
+The grid only indexes peaks; it never replaces a measured mass with a bin centre. The raw peaks are
+released immediately; what persists is the occupied bins with their statistics, and the number of
+spectra \(M\) of the sample. Retained memory is therefore \(O(\ln(m_{\max}/m_{\min})/w)\), i.e.
 bounded by the **mass span and tolerance**, and independent of the number of spectra.
 
 #### 4.1.2 Isolation
@@ -282,7 +285,7 @@ alone never makes a calibrant crowded.
 
 #### 4.1.3 Grouping, scoring and selection
 
-The merged per-mode histogram is grouped within \(\tau\) ppm by a weighted sliding window
+The sample's per-mode histogram is grouped within \(\tau\) ppm by a weighted sliding window
 (`cluster_unique_mz_labels`): bins are visited in ascending mass and a bin joins the current group
 while it stays within \(\tau\) ppm of the group's running weighted centroid. A calibrant whose drift
 range exceeds \(\tau\) occupies several neighbouring groups, so every group \(g\), at mass
@@ -297,24 +300,16 @@ C_g = \sum_{h \in \mathcal{W}_g} \sum_{b \in h} n_b ,
 Q_g = \sum_{h \in \mathcal{W}_g} \sum_{b \in h} q_b ,
 \]
 
-and, per sample \(s\), the detection
+A group is **isolated** when \(Q_g \le 0.1\, C_g\), and is scored by its detection
 
 \[
-D_{s,g} = \min\Bigl(1,\ \frac{1}{N_s} \sum_{h \in \mathcal{W}_g} \sum_{b \in h} n_{s,b}\Bigr),
+\text{score}_g = \min\Bigl(1,\ \frac{C_g}{M}\Bigr),
 \]
 
-the share of its spectra with a signal peak in \(\mathcal{W}_g\). An isolated group holds at most
-about one such peak per spectrum; the cap bounds the others. A group is **isolated** when
-\(Q_g \le 0.1\, C_g\), and is scored by its detection averaged over the \(S\) samples **having that
-ion mode**:
-
-\[
-\text{score}_g = \frac{1}{S} \sum_{s} D_{s,g}.
-\]
-
-FOCUS design choice: recalibration needs calibrants that each sample carries in most of its spectra
-(§4.2). Averaging detections weighs every sample alike whatever its number of spectra, and an ion
-that is frequent in a few spectra or a few samples scores low.
+the share of the sample's spectra with a signal peak in \(\mathcal{W}_g\). An isolated group holds at
+most about one such peak per spectrum; the cap bounds the others. FOCUS design choice: the pixel-level
+pass (§4.2) needs calibrants in most spectra, and an ion that is frequent in a few spectra only
+scores low.
 
 Groups are ordered by descending score with **ascending \(\mu_g\) as tie-break** (a `lexsort`,
 giving a total order). Two chosen groups are always more than \(2W\) ppm apart, so their search
@@ -329,16 +324,6 @@ windows never overlap and no peak can match two references. Selection, with
 3. Spread: the pool's \(\ln m\) span is cut into \(N_\text{ref}\) equal segments and the best pool
    member of each segment is taken, so the references cover the mass range.
 4. Fill from the pool in score order until \(N_\text{ref}\) references are chosen.
-5. Coverage: with the detections of the chosen references taken as independent, sample \(s\) is
-   expected to match at least 2 of them (the pixel-level minimum of §4.2) in a share \(P_s\) of
-   its spectra, the Poisson-binomial tail computed by the recursion of Barlow and
-   Heidtmann[^barlow1984] (`at_least_probability`). Samples with \(P_s < 0.5\), lowest first, add
-   their own groups in descending \(D_{s,g}\) (isolated groups first, then any), each detected in
-   at least 10 % of the sample's spectra, at most 3 per sample, until \(P_s \ge 0.5\). FOCUS design
-   choice: a reference frequent in the dataset can be nearly absent from one sample, which is then
-   left without calibrants and its scan lines without an estimate. \(P_s\) is reported per sample
-   in the log (`Reference coverage`, a warning below 0.5). The detections of one spectrum are
-   positively correlated (tissue against background), so \(P_s\) is an approximation.
 
 Every window that holds a calibrant scores alike, so a selected group \(g\) can sit anywhere around
 the calibrant, and the tie-break on ascending \(\mu_g\) favours groups below it. Each selected group
@@ -346,7 +331,7 @@ is therefore centred first: its centre is the heaviest group \(c(g) = \arg\max_{
 \sum_{b \in h} n_b\), and the reference is reported at \(\hat\mu_{c(g)}\), the mean of every
 occurrence within the search window around that centre: a lower-variance estimate of the calibrant
 mass than any single observation. The \(2W\) separation is measured between centres. These means carry the
-dataset's average drift. When internal standards are observed, the references are moved onto the
+sample's average drift. When internal standards are observed, the references are moved onto the
 standards' mass scale. Internal calibration against known masses is the most effective correction of
 mass shift[^larocca2021], and sprayed standards cover the whole section[^vandenbosch2023]. With
 \(d_s = (\hat\mu_{g(s)} - m_s)/m_s \cdot 10^6\) the offset of standard \(s\) from its given mass
@@ -354,8 +339,32 @@ mass shift[^larocca2021], and sprayed standards cover the whole section[^vandenb
 least-squares line through the \((m_s, d_s)\) when at least two standards span 25 % of the reference
 m/z span, and \(\operatorname{median}_s d_s\) otherwise.
 
-The references are shared by the whole dataset: one set per ion mode, used by every sample, and
-stored in `.uns['recalibration_reference']`. The per-spectrum correction derived from them is §4.2.
+#### 4.1.4 Mass-scale alignment between samples
+
+A sample's references sit at its own mean calibrant masses, so they carry its calibration offset,
+and recalibration (§4.2) maps the sample onto that scale. Samples acquired at different calibrations
+would keep their offsets, and one ion more than about \(\tau\) ppm apart in two samples becomes two
+backbone features (§4.3) instead of one. One constant ppm shift per sample and ion mode puts the
+references on a common scale (`mass_scale_shifts`). For samples \(s\) and \(t\) sharing at least 3
+references (one reference of each within \(W\) ppm), \(\delta_{st}\) is the median ppm difference of
+the shared references. The shifts \(c_s\) minimize
+
+\[
+\sum_{(s,t)} k_{st}\,(c_s - c_t - \delta_{st})^2 ,
+\]
+
+with \(k_{st}\) the number of shared references, under \(\sum_s c_s = 0\) over each group of samples
+connected by such pairs, so the common scale is the samples' mean scale. Every reference \(\mu\) of
+sample \(s\) is then divided by \(1 + c_s \cdot 10^{-6}\). A sample sharing fewer than 3 references
+with every other sample keeps its own scale and is reported. When an interrupted run resumes, the
+cached samples' references are already on the common scale and hold \(c = 0\). When internal
+standards are configured, they anchor every sample that observes them and no alignment runs. FOCUS
+design choice: the median resists a reference matched to a different ion in the other sample, and
+the least-squares solution uses the agreement of all sample pairs at once.
+
+The references of each sample, after alignment, are stored in its `.uns['recalibration_reference']`
+(per sample, then per ion mode, in the merged file). The per-spectrum correction derived from them is
+§4.2.
 
 ### 4.2 Per-spectrum recalibration
 
@@ -650,10 +659,11 @@ Key fields:
 - `.obs['recalibration_matches_<mode>']` (`int16`): references matched at pixel level (§4.2)
 - `.var['mz']`, `.var['mz_mode']`, `.var['lipid_annotation']`
 - `.uns['spot_size']`: per-sample `[x,y]` (merged file stores per-sample dict)
-- `.uns['recalibration_reference']`: the reference m/z per ion mode (§4.1)
+- `.uns['recalibration_reference']`: the sample's reference m/z per ion mode, on the common mass
+  scale (§4.1); per sample, then per ion mode, in the merged file
 - `.uns['focus_preprocessing_fingerprint']`: SHA-256 over the method version, the settings, the
   lipid database and every sample's inputs (imzML SHA-256 and `.ibd` size). Every sample depends on
-  the whole dataset (shared references and backbone), so all files of one run carry the same key.
+  the whole dataset (aligned mass scales and backbone), so all files of one run carry the same key.
 
 **Caching.** A run is skipped when every per-sample file and the merged file carry the current
 fingerprint and the merged file holds the active samples. A changed input, setting or method

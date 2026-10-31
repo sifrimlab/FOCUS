@@ -9,7 +9,7 @@ import numpy as np
 from focus.constants import MsiIntensityNormalization, MsiIonMode, MsiMetadata
 from focus.preprocessing.lipidomics import (
     MsiDataset, MsiSample, _BackboneBuilder, _CalibrationReferenceSelector, _parse_mz_by_mode,
-    estimate_recalibration, interpolate_single, normalize_intensities, sample_offset_ppm,
+    estimate_recalibration, interpolate_single, mass_scale_shifts, normalize_intensities, sample_offset_ppm,
 )
 
 # Ten isolated calibrants spread over the mass range, plus one analyte that is never a reference.
@@ -357,32 +357,22 @@ class ReferenceSelectorTests(unittest.TestCase):
         references = self.select(2, required={MsiIonMode.POSITIVE: np.array([700.0])})
         self.assertEqual(self.near(references, 700.0, ppm=30).size, 1)
 
-    def test_every_sample_gets_references_it_detects(self):
-        # A large sample holds the ten calibrants in 90% of its spectra; a small one holds them in 1%
-        # only, and has its own five ions in 80% of its spectra.
-        own = np.array([430.3, 590.4, 740.5, 860.6, 1000.7])
+    def test_mass_scale_shifts_put_samples_on_one_scale(self):
+        # Three samples share the calibrants at -6, 0 and +12 ppm, each with ions of its own; a fourth
+        # shares nothing.
+        def references(offset, own):
+            return np.sort(np.concatenate([CALIBRANTS[:6] * (1 + offset * 1e-6), own]))
 
-        def sample(n_spectra, ions, rate, seed):
-            rng = np.random.default_rng(seed)
-            mz_list, intensity_list = [], []
-            for _ in range(n_spectra):
-                present = np.concatenate([CALIBRANTS[rng.random(CALIBRANTS.size) < rate[0]],
-                                          ions[rng.random(ions.size) < rate[1]]])
-                mz = np.concatenate([present, rng.uniform(350, 1100, 200)])
-                intensity = np.concatenate([np.full(present.size, 800.0), rng.exponential(50, 200)])
-                order = np.argsort(mz)
-                mz_list.append(mz[order])
-                intensity_list.append(intensity[order].astype(np.float32))
-            return {MsiIonMode.POSITIVE: mz_list}, {MsiIonMode.POSITIVE: intensity_list}
+        samples = [references(-6.0, [1200.0]), references(0.0, [1300.0, 1400.0]), references(12.0, []),
+                   np.array([1500.0, 1600.0, 1700.0])]
+        shifts, connected = mass_scale_shifts(samples, 50.0)
+        np.testing.assert_allclose(shifts[:3], [-8.0, -2.0, 10.0], atol=0.01)  # offsets about their mean (+2)
+        self.assertEqual(shifts[3], 0.0)
+        np.testing.assert_array_equal(connected, [True, True, True, False])
 
-        selector = _CalibrationReferenceSelector(mass_tolerance=10)
-        selector.add_sample(*sample(1500, own, (0.9, 0.0), 0), name="large")
-        selector.add_sample(*sample(300, own, (0.01, 0.8), 1), name="small")
-        references = selector.select(10)[MsiIonMode.POSITIVE]
-        self.assertGreaterEqual(sum(self.near(references, mass).size for mass in own), 2)
-        coverage = dict(selector.coverage[MsiIonMode.POSITIVE])
-        self.assertGreater(coverage["large"], 0.95)
-        self.assertGreater(coverage["small"], 0.5)
+        # A sample already on the common scale anchors the others.
+        shifts, _ = mass_scale_shifts(samples[:3], 50.0, fixed=np.array([False, True, False]))
+        np.testing.assert_allclose(shifts, [-6.0, 0.0, 12.0], atol=0.01)
 
 
 class NormalizationTests(unittest.TestCase):
@@ -562,8 +552,14 @@ class ProcessDatasetTests(unittest.TestCase):
             self.assertEqual(mz.size, species.size)
             for mass in species:
                 self.assertEqual(int(np.sum(np.abs(mz - mass) / mass * 1e6 <= 100)), 1, f"m/z {mass}")
-            for reference in merged.uns["recalibration_reference"]["pos"]:
-                self.assertLess(np.min(np.abs(species - reference) / species * 1e6), 50)
+            # Each sample has its own references, shifted onto the samples' common mass scale.
+            stored = merged.uns["recalibration_reference"]
+            self.assertEqual(sorted(stored), ["A", "B"])
+            for sample_id in stored:
+                for reference in stored[sample_id]["pos"]:
+                    self.assertLess(np.min(np.abs(species - reference) / species * 1e6), 50)
+            shared = [np.mean((stored[s]["pos"][:CALIBRANTS.size] - CALIBRANTS) / CALIBRANTS * 1e6) for s in "AB"]
+            self.assertLess(abs(shared[0] - shared[1]), 1.0)
 
             # The analyte lands in exactly one feature, in every spectrum of both samples.
             nearby = np.flatnonzero(np.abs(mz - ANALYTE) / ANALYTE * 1e6 <= 100)
