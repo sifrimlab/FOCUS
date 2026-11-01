@@ -9,11 +9,11 @@ from scipy.stats import spearmanr
 
 from focus.constants import SpotResolution
 from focus.preprocessing._utils import (
-    N_TOP_FEATURES, _SPATIAL_CAP, _bin_sum_matrix, clustering_preset, describe_units, label_coherence,
-    plan_spatial_units, smoothing_operator, spatial_embedding,
+    N_TOP_FEATURES, _MERGE_VALLEY_RATIO, _SPATIAL_CAP, _bin_sum_matrix, clustering_preset, describe_units,
+    label_coherence, merge_unsupported_clusters, plan_spatial_units, smoothing_operator, spatial_embedding,
 )
 
-METHOD_VERSION = "st-units-3"
+METHOD_VERSION = "st-units-4"
 # Shared by both resolution presets (CLUSTERING_PRESETS holds what differs). min_counts and
 # min_genes are per-unit display eligibility, not tissue QC.
 PARAMETERS = {
@@ -23,6 +23,7 @@ PARAMETERS = {
     "n_pcs": 50,
     "n_neighbors": 15,
     "leiden_resolution": 0.5,
+    "merge_valley_ratio": _MERGE_VALLEY_RATIO,
     "random_state": 0,
     "max_units": _SPATIAL_CAP,
 }
@@ -87,7 +88,9 @@ def native_cluster_labels(X, gene_names, params=None, reporter=None, units=None,
     ``units`` (the geometry of the rows, see :func:`spot_cluster_labels`) and ``rings > 0``, each
     eligible row's PCs are joined by the mean PCs of its spatial neighbourhood
     (:func:`focus.preprocessing._utils.spatial_embedding`) before the kNN graph, so labels follow
-    tissue domains instead of per-row noise. Expression is never smoothed.
+    tissue domains instead of per-row noise. Expression is never smoothed. Adjacent Leiden clusters
+    that no density valley separates are merged
+    (:func:`focus.preprocessing._utils.merge_unsupported_clusters`).
     """
     params = {**PARAMETERS, **(params or {})}
     X = sp.csr_matrix(X)
@@ -146,8 +149,11 @@ def native_cluster_labels(X, gene_names, params=None, reporter=None, units=None,
     except MemoryError as error:
         raise MemoryError("ST clustering exceeded available memory; use the sub-cellular resolution "
                           "preset for very large samples.") from error
-    labels[eligible] = sub.obs["cluster"].to_numpy(dtype=str)
-    info["n_clusters"] = int(sub.obs["cluster"].nunique())
+    merged, merge_info = merge_unsupported_clusters(sub.obsm["X_spatial"], sub.obs["cluster"].to_numpy(),
+                                                    sub.obsp["connectivities"], params["merge_valley_ratio"])
+    labels[eligible] = merged
+    info.update(merge_info)
+    info["n_clusters"] = int(np.unique(merged).size)
     info["status"] = "complete"
     info["n_pcs"] = n_pcs
     info["smoothing_rings"] = rings
@@ -164,6 +170,6 @@ def native_cluster_labels(X, gene_names, params=None, reporter=None, units=None,
     info["cluster_sizes"] = dict(zip(unique.tolist(), sizes.tolist()))
     if reporter:
         reporter.detail(f"Clustering: {sub.n_vars} HVGs, {n_pcs} PCs, smoothing {rings} rings, "
-                        f"{info['n_clusters']} clusters, coherence {'n/a' if coherence is None else f'{coherence:.2f}'}; "
+                        f"{info['n_leiden_clusters']} -> {info['n_clusters']} clusters, coherence {'n/a' if coherence is None else f'{coherence:.2f}'}; "
                         f"|PC1-UMI rho|={abs(correlations[0]):.3f}")
     return labels, eligible, info

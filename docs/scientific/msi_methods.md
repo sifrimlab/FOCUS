@@ -635,13 +635,15 @@ enter the PCA. They are the most variable ones by mean-binned normalized dispers
 `highly_variable_genes`, `flavor="cell_ranger"`)[^zheng2017]. Samples with 2,000 features or fewer
 keep them all. Then
 \(n_\text{pcs} = \min(50,\, n_\text{run}-1,\, n_\text{selected}-1)\),
-`n_neighbors = min(15, n_run - 1)`, and Leiden at `resolution=0.5`, `flavor="igraph"`,
-`n_iterations=2`, `directed=False`. Each unit's label then propagates back to every spot of the
-unit.
+`n_neighbors = min(15, n_run - 1)`, and Leiden[^traag2019] at `resolution=0.5`, `flavor="igraph"`,
+`n_iterations=2`, `directed=False`. Adjacent clusters that no density valley separates are then
+merged as in ST, with the same cutoff of 0.8
+([ST §3.6.3](st_methods.md#363-merging-splits-without-a-density-valley)). Each unit's label then
+propagates back to every spot of the unit.
 
 The summed matrix, PCA and neighbourhood embeddings and neighbour graph live on a throwaway `AnnData` and are never
 persisted; only the per-spot label array is. Samples with fewer than 2 run-rows or fewer than 2
-usable PCs, and samples resolving to a single cluster, receive the single label `'0'`. PCA and Leiden
+usable PCs, and samples resolving to a single cluster after merging, receive the single label `'0'`. PCA and Leiden
 run with `random_state=0`.
 
 ---
@@ -726,3 +728,4 @@ the stored references and backbone, and only the remaining samples are processed
 [^barry2019]: Barry JA, Ait-Belkacem R, Hardesty WM, et al. Multicenter validation study of quantitative imaging mass spectrometry. *Anal Chem* 91:6266-6274 (2019). [doi:10.1021/acs.analchem.9b01016](https://doi.org/10.1021/acs.analchem.9b01016)
 [^aitchison1982]: Aitchison J. The statistical analysis of compositional data. *J R Stat Soc B* 44:139-160 (1982). [doi:10.1111/j.2517-6161.1982.tb01195.x](https://doi.org/10.1111/j.2517-6161.1982.tb01195.x)
 [^zheng2017]: Zheng GXY, Terry JM, Belgrader P, et al. Massively parallel digital transcriptional profiling of single cells. *Nat Commun* 8:14049 (2017). [doi:10.1038/ncomms14049](https://doi.org/10.1038/ncomms14049). Dispersion normalization within mean bins as implemented in Scanpy (Wolf FA, Angerer P, Theis FJ. *Genome Biol* 19:15, 2018).
+[^traag2019]: Traag VA, Waltman L, van Eck NJ. From Louvain to Leiden: guaranteeing well-connected communities. *Sci Rep* 9:5233 (2019). [doi:10.1038/s41598-019-41695-z](https://doi.org/10.1038/s41598-019-41695-z)

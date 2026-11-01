@@ -60,10 +60,13 @@ class NativeClusteringTests(unittest.TestCase):
             seen.append(sub.n_obs)
             sub.obsm['X_pca'] = np.zeros((sub.n_obs, 2))
             sub.uns['pca'] = {'variance_ratio': np.array([.7, .3])}
+        def neighbors(sub, **kwargs):
+            sub.obsp['connectivities'] = sp.csr_matrix((sub.n_obs, sub.n_obs))
         def leiden(sub, **kwargs):
             sub.obs['cluster'] = np.where(np.arange(sub.n_obs) % 2, 'a', 'b')
         with patch('scanpy.pp.highly_variable_genes', side_effect=lambda sub, **kw: sub.var.__setitem__('highly_variable', True)), \
-             patch('scanpy.pp.pca', side_effect=pca), patch('scanpy.pp.neighbors'), patch('scanpy.tl.leiden', side_effect=leiden):
+             patch('scanpy.pp.pca', side_effect=pca), patch('scanpy.pp.neighbors', side_effect=neighbors), \
+             patch('scanpy.tl.leiden', side_effect=leiden):
             labels, _, _ = native_cluster_labels(X, list('abcdef'), {'min_counts': 1, 'min_genes': 1})
         self.assertEqual(seen, [n])
         self.assertEqual(len(labels), n)

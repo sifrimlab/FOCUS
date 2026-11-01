@@ -172,7 +172,7 @@ The MSI pipeline operates at the **dataset level**: all samples are processed to
     - Input: the raw binned matrix (`layers["raw"]`), whatever the `intensity_normalization`
     - Samples above 250,000 spots are coarsened first: spots are grouped into k x k blocks of the acquisition raster, inferred from the coordinates (Voronoi supercells when no raster is found), and all spots in a block are **summed** into one pseudo-spot. Smaller samples are clustered spot by spot
     - Each spot or pseudo-spot is divided by the median of its nonzero values (robust to a few intense ions, independent of the instrument's intensity scale), then `log1p`-transformed ([MSI methods §6b](../scientific/msi_methods.md#6b-per-sample-clustering))
-    - Feature selection (the 2,000 most variable features, as in ST; samples with fewer keep all) → PCA (up to 50 components) → each unit's PCs joined to the mean PCs of its spatial neighbourhood (1 ring for `resolution="standard"`, 2 rings for `"sub_cellular"`) → neighbor graph → Leiden (`resolution=0.5`, `flavor="igraph"`, `n_iterations=2`, `directed=False`) on that matrix; each block's label then propagates back to every spot it contains
+    - Feature selection (the 2,000 most variable features, as in ST; samples with fewer keep all) → PCA (up to 50 components) → each unit's PCs joined to the mean PCs of its spatial neighbourhood (1 ring for `resolution="standard"`, 2 rings for `"sub_cellular"`) → neighbor graph → Leiden (`resolution=0.5`, `flavor="igraph"`, `n_iterations=2`, `directed=False`) on that matrix → merging of adjacent clusters that no density valley separates; each block's label then propagates back to every spot it contains
     - Labels stored in `obs["cluster"]`. The summed matrix, PCA embedding and neighbor graph are all discarded (only `obs["cluster"]` is kept) to minimize file size
 
 11. **Save Per-Sample AnnData and Merge**
@@ -344,7 +344,7 @@ Supports any spot-based or cell-based spatial transcriptomics technology (Visium
    - `resolution` selects the preset: `"standard"` (default, multicellular spots) or `"sub_cellular"` (weak high-resolution spots)
    - Spots are clustered one by one when the sample has at most 250,000 spots and, for `"sub_cellular"`, its median spot holds at least 1,000 UMIs. Otherwise spots are grouped into k x k blocks of the acquisition lattice inferred from `.obsm['spatial']`, or Voronoi supercells without a lattice, and every spot takes its unit's label
    - 50 UMIs and 20 detected genes per unit determine clustering eligibility only. Spots of ineligible units remain in `.X` with label `unassigned`
-   - On an analytical copy: normalize to 10,000 counts → log1p → HVG selection (target 2,000) → sparse PCA (up to 50 PCs) → each unit's PCs joined to the mean PCs of its neighbourhood (1 ring for `"standard"`, 2 rings for `"sub_cellular"`) → neighbors (up to 15) → Leiden (resolution 0.5)
+   - On an analytical copy: normalize to 10,000 counts → log1p → HVG selection (target 2,000) → sparse PCA (up to 50 PCs) → each unit's PCs joined to the mean PCs of its neighbourhood (1 ring for `"standard"`, 2 rings for `"sub_cellular"`) → neighbors (up to 15) → Leiden (resolution 0.5) → merging of adjacent clusters that no density valley separates
    - Persist labels, eligibility, categorical colors, selected-feature and algorithm provenance, and count-depth diagnostics. Original expression and native coordinates remain intact
    - Input/settings/method/software fingerprints invalidate stale per-sample and merged ST caches
 

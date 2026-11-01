@@ -10,8 +10,8 @@ from sklearn.metrics import adjusted_rand_score, homogeneity_score
 
 from focus.constants import SpotResolution
 from focus.preprocessing._utils import (
-    _MIN_UNITS, _voronoi_units, clustering_preset, compute_cluster_labels, infer_lattice,
-    label_coherence, plan_spatial_units, smoothing_operator,
+    _MERGE_VALLEY_RATIO, _MIN_UNITS, _valley_ratio, _voronoi_units, clustering_preset, compute_cluster_labels,
+    infer_lattice, label_coherence, merge_unsupported_clusters, plan_spatial_units, smoothing_operator,
 )
 from focus.preprocessing.st_clustering import native_cluster_labels, spot_cluster_labels
 from focus.utils import parse_config
@@ -267,6 +267,102 @@ class PresetTests(unittest.TestCase):
         scaled = compute_cluster_labels(sp.csr_matrix(X * 1e-4), leiden_resolution=0.5, normalize_target_sum=None,
                                         coordinates=xy, smoothing_rings=1)
         self.assertGreater(homogeneity_score(ij[:, 0] < 20, scaled), 0.99)
+
+
+
+def knn(points, k=15):
+    from sklearn.neighbors import kneighbors_graph
+    graph = kneighbors_graph(points, k)
+    return (graph + graph.T).tocsr()
+
+
+def domains_under_a_field(n=120, seed=1):
+    """Three column domains under a smooth random field; Leiden at 0.5 cuts the field into an extra cluster."""
+    from scipy.ndimage import gaussian_filter
+    xy, ij = lattice(n, n, [16, 0], [0, 16])
+    domain = np.select([ij[:, 1] < n // 3, ij[:, 1] < 2 * n // 3], [0, 1], 2)
+    rng = np.random.default_rng(seed)
+    field = gaussian_filter(rng.normal(size=(n, n)), 10).ravel()
+    means = np.full((len(xy), 300), 0.4)
+    for d in range(3):
+        means[domain == d, 30 * d:30 * d + 30] += 0.5
+    means[:, 100:160] *= np.exp(0.35 * field / field.std())[:, None]
+    return xy, domain, rng.poisson(means).astype(np.float32)
+
+
+class MergeTests(unittest.TestCase):
+    def test_valley_ratio_separates_modes_from_cut_continua(self):
+        rng = np.random.default_rng(10)
+        gaussian = rng.normal(size=4000)
+        self.assertGreater(_valley_ratio(gaussian, gaussian < 0), 0.9)
+        flat = rng.uniform(0, 1, 4000)
+        self.assertGreater(_valley_ratio(flat, flat < 0.5), _MERGE_VALLEY_RATIO)
+        two = np.concatenate([rng.normal(0, 1, 2000), rng.normal(4, 1, 2000)])
+        self.assertLess(_valley_ratio(two, np.arange(4000) < 2000), 0.4)
+        small = np.concatenate([rng.normal(0, 1, 4000), rng.normal(6, 1, 80)])
+        self.assertLess(_valley_ratio(small, np.arange(4080) < 4000), 0.3)
+
+    def test_cut_blob_merges_and_a_separate_blob_stays(self):
+        rng = np.random.default_rng(11)
+        blob = rng.normal(size=(3000, 5))
+        other = rng.normal(size=(1000, 5)) + [8, 0, 0, 0, 0]
+        points = np.vstack([blob, other])
+        cut = np.concatenate([np.where(blob[:, 1] < 0, 'a', 'b'), np.full(1000, 'c')])
+        labels, info = merge_unsupported_clusters(points, cut, knn(points))
+        truth = np.arange(4000) >= 3000
+        self.assertTrue(same_partition(labels, truth))
+        self.assertEqual(labels[0], '0')                       # the larger group comes first
+        self.assertEqual((info['n_leiden_clusters'], info['n_merges']), (3, 1))
+        again, _ = merge_unsupported_clusters(points, cut, knn(points))
+        np.testing.assert_array_equal(labels, again)
+
+    def test_chain_of_bands_merges_through_the_union(self):
+        rng = np.random.default_rng(12)
+        points = np.column_stack([rng.uniform(0, 6, 6000), rng.normal(0, 0.5, (6000, 4))])
+        bands = (points[:, 0] // 2).astype(int)
+        labels, info = merge_unsupported_clusters(points, bands, knn(points))
+        self.assertEqual(set(labels), {'0'})
+        self.assertEqual(info['n_merges'], 2)
+
+    def test_no_merge_joins_input_clusters_separated_by_a_valley(self):
+        from sklearn.cluster import KMeans
+        rng = np.random.default_rng(13)
+        centres = np.array([[0, 0, 0], [3, 0, 0], [0, 3.5, 0], [2, 2, 3]])
+        points = np.vstack([rng.normal(c, [1, 1, 1], (1500, 3)) for c in centres])
+        cut = KMeans(12, n_init=1, random_state=0).fit_predict(points)
+        graph = knn(points)
+        labels, info = merge_unsupported_clusters(points, cut, graph)
+        self.assertGreater(info['n_merges'], 0)
+        onehot = sp.csr_matrix((np.ones(len(cut)), (np.arange(len(cut)), cut)))
+        adjacent = (onehot.T @ graph @ onehot).toarray() > 0
+        for i in range(12):
+            for j in range(i + 1, 12):
+                if not adjacent[i, j] or labels[cut == i][0] != labels[cut == j][0]:
+                    continue
+                a, b = points[cut == i], points[cut == j]
+                axis = b.mean(axis=0) - a.mean(axis=0)
+                projection = np.concatenate([a, b]) @ (axis / np.linalg.norm(axis))
+                self.assertGreaterEqual(_valley_ratio(projection, np.arange(len(projection)) < len(a)),
+                                        _MERGE_VALLEY_RATIO)
+
+    def test_st_and_msi_merge_the_split_of_a_continuous_field(self):
+        from unittest.mock import patch
+        import focus.preprocessing._utils as utils
+        xy, domain, X = domains_under_a_field()
+        genes = [f'g{i}' for i in range(X.shape[1])]
+        labels, eligible, info = spot_cluster_labels(sp.csr_matrix(X), genes, xy, SpotResolution.STANDARD)
+        self.assertGreater(info['n_leiden_clusters'], info['n_clusters'])
+        self.assertEqual(info['n_clusters'], 3)
+        self.assertGreater(adjusted_rand_score(domain[eligible], labels[eligible]), 0.95)
+        self.assertEqual(info['parameters']['merge_valley_ratio'], _MERGE_VALLEY_RATIO)
+        seen = []
+        merge = utils.merge_unsupported_clusters
+        with patch.object(utils, 'merge_unsupported_clusters', side_effect=lambda *a: seen.append(merge(*a)) or seen[-1]):
+            msi = compute_cluster_labels(sp.csr_matrix(X), leiden_resolution=0.5, normalize_target_sum=None,
+                                         coordinates=xy, smoothing_rings=1)
+        self.assertGreater(seen[0][1]['n_merges'], 0)
+        self.assertEqual(len(set(msi)), 3)
+        self.assertGreater(adjusted_rand_score(domain, msi), 0.95)
 
 
 if __name__ == '__main__': unittest.main()

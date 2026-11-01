@@ -28,6 +28,17 @@ _LLOYD_ITERATIONS = 5
 # with a 2-ring mean on a synthetic two-domain lattice: 15 to 17 patches instead of 2).
 _NEIGHBOURHOOD_WEIGHT = 0.8
 
+# Leiden at a fixed resolution also cuts continuous variation (gradients, smooth expression programs)
+# into bands, more of them the more units a sample has. merge_unsupported_clusters merges adjacent
+# clusters whose valley ratio (_valley_ratio) is at least this value. Calibrated on synthetic
+# lattices: at 102k units, 3 domains under a smooth field and a depth field went from 6 Leiden
+# clusters to 3 (adjusted Rand index 1.00) at 0.7 and 0.8, and to 4 at 0.9, and a gradient cut into
+# 3 bands merged into 1; at 22.5k units, a domain covering 1.9% of the sample stayed separate
+# (ratio 0.01).
+_MERGE_VALLEY_RATIO = 0.8
+# Histogram bins of the projected density in _valley_ratio.
+_VALLEY_BINS = 512
+
 # Clustering presets selected by a spot modality's `resolution` setting; only what differs is listed.
 # smoothing_rings: neighbourhood (in units) whose mean enters each unit's clustering embedding
 # (spatial_embedding). signal_target (ST only): grow units until the median unit holds this many
@@ -448,6 +459,104 @@ def label_coherence(labels: np.ndarray, units: SpatialUnits, keep: np.ndarray | 
 	return None if chance >= 1 else (observed - chance) / (1 - chance)
 
 
+def _valley_ratio(projection: np.ndarray, first: np.ndarray) -> float:
+	"""Density at the deepest point between two groups over the smaller of their peaks.
+
+	``projection`` holds the units of both groups on one axis and ``first`` marks the units of the
+	first group. The density is a histogram smoothed with a Gaussian kernel at Silverman's
+	normal-reference bandwidth ``0.9 * min(sd, IQR / 1.34) * n^(-1/5)``. The valley is the density
+	minimum between the two group medians. The result is 1 for any unimodal density and tends to 0
+	for a clean gap between the groups.
+	"""
+	from scipy.ndimage import gaussian_filter1d
+
+	n = len(projection)
+	lo, hi = float(projection.min()), float(projection.max())
+	if first.all() or not first.any() or hi <= lo:
+		return 1.0
+	q25, q75 = np.quantile(projection, [0.25, 0.75])
+	spread = float(projection.std())
+	if q75 > q25:
+		spread = min(spread, float(q75 - q25) / 1.34)
+	width = (hi - lo) / _VALLEY_BINS
+	counts = np.histogram(projection, _VALLEY_BINS, (lo, hi))[0].astype(np.float64)
+	density = gaussian_filter1d(counts, 0.9 * spread * n ** -0.2 / width, mode='constant')
+	a, b = sorted(min(_VALLEY_BINS - 1, int((np.median(projection[side]) - lo) / width)) for side in (first, ~first))
+	valley = a + int(np.argmin(density[a:b + 1]))
+	return float(density[valley] / min(density[:valley + 1].max(), density[valley:].max()))
+
+
+def merge_unsupported_clusters(
+	embedding: np.ndarray,
+	labels: np.ndarray,
+	connectivities: sp.spmatrix,
+	ratio: float = _MERGE_VALLEY_RATIO,
+) -> tuple[np.ndarray, dict]:
+	"""Merge adjacent clusters that no density valley separates.
+
+	Two clusters are adjacent when the kNN graph ``connectivities`` (built on ``embedding``) joins
+	them. The units of two groups are projected on the axis between the group centroids and their
+	:func:`_valley_ratio` is computed. The adjacent pair of groups with the highest ratio is merged
+	while that ratio is at least ``ratio``, and merged groups are tested on their union, as in
+	Hennig's merging of mixture components on the discriminant projection. A merge is refused when
+	an adjacent pair of the input clusters across the two groups had a ratio below ``ratio``, so a
+	valley seen between the input clusters is not hidden by later merges.
+
+	Returns
+	-------
+	tuple[np.ndarray, dict]
+		Labels ``'0'``, ``'1'``, ... by decreasing group size, and provenance: the number of input
+		clusters, the number of merges and the ratio of each merge.
+	"""
+	_, codes = np.unique(np.asarray(labels), return_inverse=True)
+	k = int(codes.max()) + 1
+	members = [np.flatnonzero(codes == c) for c in range(k)]
+	sizes = np.bincount(codes, minlength=k).astype(np.float64)
+	assignment = sp.csr_matrix((np.ones(len(codes)), (codes, np.arange(len(codes)))), shape=(k, len(codes)))
+	sums = np.asarray(assignment @ embedding, dtype=np.float64)
+	adjacent = (assignment @ sp.csr_matrix(connectivities) @ assignment.T).toarray() > 0
+	np.fill_diagonal(adjacent, False)
+
+	def union_ratio(x: list, y: list) -> float:
+		axis = sums[y].sum(axis=0) / sizes[y].sum() - sums[x].sum(axis=0) / sizes[x].sum()
+		norm = np.linalg.norm(axis)
+		if not norm > 0:
+			return 1.0
+		rows = np.concatenate([members[c] for c in x + y])
+		return _valley_ratio(embedding[rows] @ (axis / norm), np.arange(len(rows)) < sizes[x].sum())
+
+	pair = np.full((k, k), np.nan)
+	tested = {}
+	for i, j in zip(*np.nonzero(np.triu(adjacent))):
+		pair[i, j] = pair[j, i] = tested[frozenset(((i,), (j,)))] = union_ratio([i], [j])
+	groups = [[c] for c in range(k)]
+	merges = []
+	while True:
+		best = None
+		for a in range(len(groups)):
+			for b in range(a + 1, len(groups)):
+				x, y = groups[a], groups[b]
+				across = pair[np.ix_(x, y)]
+				if np.isnan(across).all() or np.nanmin(across) < ratio:
+					continue
+				key = frozenset((tuple(sorted(x)), tuple(sorted(y))))
+				if key not in tested:
+					tested[key] = union_ratio(x, y)
+				if tested[key] >= ratio and (best is None or tested[key] > best[0]):
+					best = (tested[key], a, b)
+		if best is None:
+			break
+		merges.append(round(best[0], 4))
+		groups[best[1]] = groups[best[1]] + groups.pop(best[2])
+
+	order = sorted(range(len(groups)), key=lambda g: (-sizes[groups[g]].sum(), min(groups[g])))
+	relabel = np.empty(k, dtype=np.int64)
+	for rank, g in enumerate(order):
+		relabel[groups[g]] = rank
+	info = {'n_leiden_clusters': k, 'n_merges': len(merges), 'merge_ratios': np.asarray(merges, dtype=np.float64)}
+	return relabel[codes].astype(str), info
+
+
 def describe_units(n_spots: int, info: dict) -> str:
 	"""One reporter line for a clustering unit plan."""
 	if info['method'] == 'native':
@@ -513,7 +622,9 @@ def compute_cluster_labels(
 	   ``N_TOP_FEATURES`` most variable features (as ST does), run PCA, append each unit's
 	   ``smoothing_rings`` neighbourhood mean to its PCs (:func:`spatial_embedding`), then
 	   ``neighbors -> leiden``, bounded by ``cap`` rows.
-	3. Propagate each unit's Leiden label back to every spot of the unit (identity when no
+	3. Merge adjacent clusters that no density valley separates
+	   (:func:`merge_unsupported_clusters`).
+	4. Propagate each unit's label back to every spot of the unit (identity when no
 	   coarsening happened). No per-spot projection.
 
 	``X`` is never mutated and the summed / normalized matrix lives only on a throwaway
@@ -593,17 +704,19 @@ def compute_cluster_labels(
 	sc.pp.neighbors(sub, n_neighbors=min(15, sub.n_obs - 1), use_rep='X_spatial')
 	sc.tl.leiden(sub, resolution=leiden_resolution, key_added='leiden',
 				 flavor='igraph', n_iterations=2, directed=False)
-	run_labels = sub.obs['leiden'].to_numpy()
+	# 3. Merge the splits of continuous variation.
+	run_labels, merged = merge_unsupported_clusters(
+		sub.obsm['X_spatial'], sub.obs['leiden'].to_numpy(), sub.obsp['connectivities'])
 	del sub
 	gc.collect()
 	if units is not None:
-		coherence = label_coherence(run_labels.astype(str), units)
-		get_reporter().detail(f"Clustering: {np.unique(run_labels).size} clusters, smoothing {smoothing_rings} rings, "
-			f"coherence {'n/a' if coherence is None else f'{coherence:.2f}'}")
+		coherence = label_coherence(run_labels, units)
+		get_reporter().detail(f"Clustering: {merged['n_leiden_clusters']} -> {np.unique(run_labels).size} clusters, "
+			f"smoothing {smoothing_rings} rings, coherence {'n/a' if coherence is None else f'{coherence:.2f}'}")
 
 	if np.unique(run_labels).shape[0] == 1:
 		return np.array(['0'] * n_obs, dtype=object)
 
-	# 3. Propagate: each spot inherits its unit's label (identity when no coarsening happened).
+	# 4. Propagate: each spot inherits its unit's label (identity when no coarsening happened).
 	labels = run_labels if bin_ids is None else run_labels[bin_ids]
 	return labels.astype(str).astype(object)

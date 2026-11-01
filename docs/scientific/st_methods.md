@@ -88,7 +88,7 @@ colouring. They are computed on `.X` at this point in the sequence: post-filter,
 post-removal, and still raw counts, since §3.7 has not yet run.
 
 ST uses `spot_cluster_labels`. It chooses the analytical units (§3.6.1), sums the raw counts
-of each unit, clusters the units with steps 1 to 5, and gives every spot the label and
+of each unit, clusters the units with steps 1 to 6, and gives every spot the label and
 eligibility of its unit. Only `.obsm['spatial']` defines the units and their neighbourhoods;
 no other metadata (such as `array_row` / `array_col`) is read.
 
@@ -100,8 +100,8 @@ The modality setting `resolution` selects one of two presets. Everything else is
 | `sub_cellular` | Weak sub-cellular spots (Visium HD, Xenium-derived bins) | 2 rings | Until the median unit holds 1,000 UMIs |
 
 Shared values: at most 250,000 units, eligibility of 50 UMIs and 20 detected genes per unit,
-2,000 HVGs, 50 PCs, 15 neighbours, Leiden resolution 0.5, seed 0. MSI uses the same feature
-budget ([MSI §6b](msi_methods.md#6b-per-sample-clustering)).
+2,000 HVGs, 50 PCs, 15 neighbours, Leiden resolution 0.5, merge cutoff 0.8, seed 0. MSI uses the
+same feature budget and merging ([MSI §6b](msi_methods.md#6b-per-sample-clustering)).
 
 1. **Clustering eligibility.** A unit needs at least 50 UMIs and 20 detected genes. These
    alignment-only thresholds are not universal biological QC cutoffs. Spots of ineligible
@@ -114,18 +114,20 @@ budget ([MSI §6b](msi_methods.md#6b-per-sample-clustering)).
    Dataset-level gene filters run later and do not redefine these per-sample alignment labels.
 3. **Spatial embedding.** Each eligible unit is represented by its own PCs joined to the mean
    PCs of its neighbourhood (§3.6.2).
-4. **Partition.** A neighbor graph (up to 15 neighbors) on the spatial embedding and Leiden
+4. **Partition.** A neighbor graph (up to 15 neighbors) on the spatial embedding and Leiden[^traag2019]
    (`resolution=0.5`, `flavor='igraph'`, `n_iterations=2`, `directed=False`) run on the
    eligible units. PCA, neighbor construction and Leiden receive seed 0. Scanpy uses
    approximate neighbor construction for large inputs.
-5. **Insufficient information.** Fewer than three eligible units or fewer than two usable PCs
+5. **Merging.** Adjacent Leiden clusters that no density valley separates are merged (§3.6.3).
+6. **Insufficient information.** Fewer than three eligible units or fewer than two usable PCs
    yields unassigned labels, with the reason recorded in provenance.
 
 `.obs['clustering_eligible']` records eligibility; `.uns['focus_clustering']` records the
 preset, method version, parameters, software versions, units, selected genes, cluster sizes,
-PCA variance, PC/count-depth correlations and `label_coherence`: the agreement of each unit's
-label with its 1-ring neighbours, corrected for chance (0 for labels placed at random, 1 when
-all neighbours agree). Intermediate expression, embeddings and graphs are discarded.
+the number of Leiden clusters (`n_leiden_clusters`), the number and ratios of merges
+(`n_merges`, `merge_ratios`), PCA variance, PC/count-depth correlations and `label_coherence`:
+the agreement of each unit's label with its 1-ring neighbours, corrected for chance (0 for
+labels placed at random, 1 when all neighbours agree). Intermediate expression, embeddings and graphs are discarded.
 Count-depth correlation is descriptive and is not automatically regressed out.
 
 #### 3.6.1 Clustering units
@@ -203,6 +205,51 @@ and on data derived from it. Neighbour coherence was:
 | Counts thinned 64 times, emulating 2 µm bins | Signal target of 1,000 UMIs | 0.71 |
 | 3 x 3 sums at 96 µm pitch, emulating standard Visium | No neighbourhood | 0.37 |
 | 3 x 3 sums at 96 µm pitch, emulating standard Visium | `standard` (1 ring) | 0.67 |
+
+#### 3.6.3 Merging splits without a density valley
+
+Leiden at a fixed resolution also divides continuous variation, such as a gradient or a smooth
+expression program, into bands, and the number of bands grows with the number of units.
+`merge_unsupported_clusters` merges these splits after the partition. It follows the
+hierarchical merging of Hennig[^hennig2010]: the pair of clusters whose union is closest to
+unimodal is merged, the criterion is recomputed for the merged cluster, and merging stops at a
+cutoff. The criterion is Hennig's ridgeline ratio: the density minimum between the two clusters
+divided by the smaller of the two density maxima on either side of it.
+
+FOCUS adaptation: Hennig computes the ratio along the ridgeline of two fitted Gaussian components.
+The clusters here are a hard Leiden partition, so the ratio is computed on the empirical density
+of the units:
+
+- **Adjacency.** Two groups are candidates only when the neighbor graph of step 4 joins them.
+- **Projection.** The units of both groups are projected on the axis between the two group
+  centroids in the clustering embedding.
+- **Density.** A 512-bin histogram of the projection is smoothed with a Gaussian kernel at the
+  normal-reference bandwidth 0.9 · min(sd, IQR / 1.34) · n^(-1/5)[^silverman1986]. The valley is
+  the density minimum between the two group medians; the ratio divides it by the smaller of the
+  density maxima on either side. The ratio is 1 for any unimodal density and tends to 0 for a
+  clean gap.
+- **Merge rule.** The candidate pair with the highest ratio is merged while that ratio is at
+  least 0.8. FOCUS design choice: a merge is refused when an adjacent pair of the Leiden
+  clusters across the two groups has a ratio below 0.8. Without this rule, a merged group that a
+  large mixed cluster dominates can absorb a cluster it was separated from, and the merges
+  cascade; on the weak-domain sample below, down to a single cluster.
+
+Groups are relabelled `0`, `1`, ... by decreasing size. Merging only removes clusters, so a sample
+never has more clusters than Leiden found. The cutoff 0.8 is a FOCUS design choice, calibrated on
+synthetic square lattices with Poisson counts and 1-ring smoothing (ARI: adjusted Rand index
+against the simulated domains):
+
+| Data | Units | Leiden clusters | After merging |
+|---|---|---|---|
+| 3 domains under a smooth expression field and a depth field | 102,400 | 6 (ARI 0.79) | 3 (ARI 1.00) |
+| One domain with a gradient | 102,400 | 3 | 1 |
+| 2 domains joined by a 12-unit mixed boundary | 102,400 | 3 (ARI 0.98) | 3 (ARI 0.98) |
+| 3 weak domains under a stronger continuous field | 102,400 | 5 (ARI 0.46) | 3 (ARI 0.18) |
+| A domain covering 1.9% of the sample | 22,500 | 2 | 2 (ratio 0.01) |
+
+Cutoffs of 0.7 and 0.8 gave the same result on the first sample; 0.9 left 4 clusters. In the
+weak-domain sample the domains are not separable in the embedding, and merging cannot recover them. Merging
+takes a fraction of a second on these samples, while the neighbor graph takes about 20 s.
 
 ### 3.7 Optional normalization and transform
 
@@ -370,3 +417,9 @@ merged gene-filter settings. Files without a key are recomputed. Changed ST inpu
 invalidate dependent alignment caches through the orchestrator, and registration caches through
 both the orchestrator and the registration fingerprint, which includes the target's preprocessing
 fingerprint.
+
+## References
+
+[^traag2019]: Traag VA, Waltman L, van Eck NJ. From Louvain to Leiden: guaranteeing well-connected communities. *Sci Rep* 9:5233 (2019). [doi:10.1038/s41598-019-41695-z](https://doi.org/10.1038/s41598-019-41695-z)
+[^hennig2010]: Hennig C. Methods for merging Gaussian mixture components. *Adv Data Anal Classif* 4:3-34 (2010). [doi:10.1007/s11634-010-0058-3](https://doi.org/10.1007/s11634-010-0058-3). Hierarchical merging and the ridgeline ratio, as implemented in the fpc package (`mergenormals`, method `ridge.ratio`).
+[^silverman1986]: Silverman BW. *Density Estimation for Statistics and Data Analysis*. Chapman and Hall, London (1986). [doi:10.1201/9781315140919](https://doi.org/10.1201/9781315140919). Normal-reference rule-of-thumb bandwidth.
