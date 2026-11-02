@@ -171,7 +171,7 @@ You can validate a config before running, using the same function the CLI uses:
 
 ```python
 import json
-from focus.utils import parse_config
+from focus.config.validation import parse_config
 
 with open("focus_config.json") as f:
     config = json.load(f)
@@ -183,7 +183,7 @@ except Exception as e:
     print(f"Configuration error: {e}")
 ```
 
-The pipeline can also be driven directly from Python via `focus.orchestrator.run`. See
+The pipeline can also be driven directly from Python via `focus.pipeline.runner.run`. See
 [Using FOCUS as a Python Library](../user_guide/cli_reference.md#using-focus-as-a-python-library)
 and the [API Reference](../api/index.md). The Python API is not yet stabilised; prefer
 the CLI or GUI for production use.

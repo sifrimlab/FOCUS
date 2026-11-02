@@ -1,13 +1,13 @@
 /**
  * The stages a run will go through for a configuration, and the modalities
- * each stage processes. Mirrors the stage gating in src/focus/orchestrator.py
+ * each stage processes. Mirrors the stage gating in src/focus/pipeline/stages.py
  * (run()); keep the two in sync.
  */
 import type { Config, Modality } from '../api/types';
 
 export type StageId = 'preprocessing' | 'alignment' | 'annotation_transfer' | 'registration' | 'compiling';
 
-/** Stage names; mirror STAGE_LABELS in src/focus/reporting.py. */
+/** Stage names; mirror STAGE_LABELS in src/focus/runtime/activity.py. */
 export const STAGE_LABELS: Record<StageId, string> = {
   preprocessing: 'Preprocessing',
   alignment: 'Alignment',

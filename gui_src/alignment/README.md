@@ -55,7 +55,7 @@ Then, from `gui_src/`:
 ```bash
 npm run dev -w alignment     # development server
 npm test -w alignment        # golden tests
-npm run build -w alignment   # design lint, type check, build into src/focus/GUI/alignment/
+npm run build -w alignment   # design lint, type check, build into src/focus/gui/alignment/
 ```
 
 ## Tests

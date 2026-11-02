@@ -1,6 +1,6 @@
 # MSI Preprocessing Methods
 
-Implementation reference for `focus/preprocessing/lipidomics.py`. `MsiDataset.process_dataset()`
+Implementation reference for `focus/preprocessing/msi/`. `MsiDataset.process_dataset()`
 iterates over samples, each represented by an `MsiSample`, applying the stages below in order.
 
 ---
@@ -128,7 +128,7 @@ The resulting physical coordinates are shared across modes for that sample.
 
 If `detect_background=true` **and** a `lipid_annotation_db` is configured, foreground (tissue/cell)
 spots are separated from background spots per spot from spectral-complexity features
-(`_detect_tissue_spots`). Tissue spectra are richer and more diverse than background, which is
+(`detect_tissue_spots`). Tissue spectra are richer and more diverse than background, which is
 dominated by uniformly sprayed matrix/standards.
 
 !!! warning "Gated on the annotation database"

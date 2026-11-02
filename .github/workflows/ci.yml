@@ -1,8 +1,6 @@
 name: CI
 
-# Installs FOCUS the way a user would and runs lightweight checks so that
-# packaging / import breakage is caught before release. Mirrors the CPU
-# container install path (deps + CPU PyTorch + editable install).
+# Verify behavior, strict typing, source style, and installed release contents.
 
 on:
   push:
@@ -44,16 +42,35 @@ jobs:
           # wheels here so the feature_extraction modules import.
           pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
           pip install timm huggingface-hub
-          pip install -e .
+          pip install -e '.[dev]'
 
-      - name: Lint (ruff, real-error subset)
+      - name: Python tests
+        env:
+          NUMBA_CACHE_DIR: ${{ runner.temp }}/numba-cache
+          MPLCONFIGDIR: ${{ runner.temp }}/matplotlib
+        run: python -m pytest
+
+      - name: Strict types, lint, and formatting
         run: |
-          pip install ruff
-          # Catch syntax errors and undefined names (genuine breakage), not style.
-          ruff check --select=E9,F63,F7,F82 src
+          python -m mypy
+          python -m ruff check src scripts tests tools typing
+          python -m ruff format --check src scripts tests tools typing
+          python scripts/check_structure.py
+
+      - name: Build and check release archives
+        run: |
+          python -m build
+          python scripts/check_dist.py dist
+
+      - name: Install wheel
+        run: |
+          pip uninstall -y focus
+          pip install --no-deps dist/*.whl
 
       - name: Import & CLI smoke test
+        working-directory: ${{ runner.temp }}
         run: |
           python -c "import focus; print('imported focus OK')"
-          python -c "import focus.registration.microscopy_image; print('torch stack OK')"
+          python -c "import focus.registration.encoder; print('torch stack OK')"
+          python -c "from importlib.resources import files; r = files('focus.gui'); assert all((r / p / 'index.html').is_file() for p in ('main', 'alignment'))"
           focus --help

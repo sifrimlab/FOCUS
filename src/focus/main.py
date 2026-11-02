@@ -1,54 +1,43 @@
-import os, sys, json, argparse, logging
+"""Command-line bootstrap for GUI and batch pipeline execution."""
+
+from focus.config.main_cli import build_main_parser
+
+import logging
 
 
-def main():
-	parser = argparse.ArgumentParser(
-		description='FOCUS: End-to-end preprocessing, alignment, and registration pipeline'
-	)
-	parser.add_argument('-c', '--config', type=str, required=False, default=None,
-						help='Absolute path of the JSON config file. If omitted, the GUI starts.')
-	parser.add_argument('--debug', action='store_true', default=False,
-						help='Enable debug logging (shows all log levels including HTTP request logs).')
-	args = parser.parse_args()
+def main() -> None:
+    """Parse command-line arguments and execute the requested workflow."""
+    parser = build_main_parser()
+    args = parser.parse_args()
 
-	if args.config:
-		# CLI mode: load config, validate, run pipeline
-		from focus.constants import ConfigParameters
-		from focus import utils, orchestrator
+    if args.config:
+        # CLI mode: load config, validate, run pipeline
+        from focus.config.keys import ConfigParameters
+        from focus.config.command_file import load_command_config
+        import focus.runtime.logging as runtime_logging
+        import focus.pipeline.runner as pipeline
 
-		# Phase 1: console-only logging so validation errors are formatted
-		utils.setup_logging(debug=args.debug)
-		logger = logging.getLogger("focus")
+        # Phase 1: console-only logging so validation errors are formatted
+        runtime_logging.setup_logging(debug=args.debug)
+        logger = logging.getLogger("focus")
 
-		config_path = args.config
-		if not os.path.exists(config_path):
-			logger.error(f"Config file not found: {config_path}")
-			sys.exit(1)
+        config_path = args.config
+        config = load_command_config(config_path, logger)
 
-		try:
-			with open(config_path, 'r') as f:
-				config = json.load(f)
-		except json.JSONDecodeError as e:
-			logger.error(f"Invalid JSON in config file '{config_path}': {e}")
-			sys.exit(1)
+        # Phase 2: full logging — adds the file handler now that dataset_path is known
+        runtime_logging.setup_logging(
+            config[ConfigParameters.DATASET_PATH], debug=args.debug
+        )
+        logger.info(f"Config loaded and validated: {config_path}")
 
-		try:
-			config = utils.parse_config(config)
-		except (TypeError, KeyError, ValueError, FileNotFoundError, PermissionError) as e:
-			logger.error(f"Config validation failed: {e}")
-			sys.exit(1)
+        pipeline.run(config)
+    else:
+        # GUI mode: start web interface
+        from focus.gui.server import MainGUI
 
-		# Phase 2: full logging — adds the file handler now that dataset_path is known
-		utils.setup_logging(config[ConfigParameters.DATASET_PATH], debug=args.debug)
-		logger.info(f"Config loaded and validated: {config_path}")
-
-		orchestrator.run(config)
-	else:
-		# GUI mode: start web interface
-		from focus.GUI.main_gui import MainGUI
-		gui = MainGUI(debug=args.debug)
-		gui.start()
+        gui = MainGUI(debug=args.debug)
+        gui.start()
 
 
 if __name__ == "__main__":
-	main()
+    main()

@@ -1,0 +1,1 @@
+"""Spatial regression scenarios."""

@@ -1,6 +1,6 @@
 # Microscopy Preprocessing Methods
 
-Implementation reference for `focus/preprocessing/microscopy_image.py`.
+Implementation reference for `focus/preprocessing/microscopy/`.
 `MicroscopyImageDataset.process_dataset()` iterates over samples and calls
 `MicroscopyImage.process_image()` on each, forwarding every parameter verbatim. Exceptions raised
 while processing a sample are caught, printed as `Error processing sample <id>: <error>`, and the

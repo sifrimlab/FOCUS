@@ -200,7 +200,7 @@ tools/BaSiCpy/basicpy.sif
 notebooks/gigapath
 
 # GUI: Node / build intermediates (exclude node_modules and Vite cache;
-# keep gui_src source files and the built artifacts under src/focus/GUI/)
+# keep gui_src source files and the built artifacts under src/focus/gui/)
 gui_src/**/node_modules/
 gui_src/**/.vite/
 gui_src/**/*.tsbuildinfo
@@ -218,3 +218,9 @@ CLAUDE.md
 # Test data
 *.h5ad
 *.h5mu
+
+# Local immutable refactoring baseline and private verification evidence.
+.refactor/
+
+# Small, public characterization output recorded from the immutable baseline.
+!tests/raman/spectra_expected.npy

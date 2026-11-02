@@ -1,10 +1,11 @@
 # Raman Preprocessing Methods
 
-Implementation reference for `focus/preprocessing/raman.py`. `RamanDataset.process_dataset()` iterates
-over samples and, for each one, calls `load_source()`, `basic_correct()`, `remove_background()`,
-`process_raw_tiles()` and `ashlar_stitch()` in that order, skipping the whole sample when its final
+Implementation reference for `focus/preprocessing/raman/`. `RamanDataset.process_dataset()` iterates
+over samples and, for each one, calls `sample.load_source()`, `sample.correction.basic_correct()`,
+`sample.correction.remove_background()`, `sample.tiles.process_raw_tiles()` and
+`sample.stitcher.ashlar_stitch()` in that order, skipping the whole sample when its final
 OME-TIFF already exists and `force_recomputing` is false. Exceptions raised while processing a sample
-are caught, printed as `Error processing sample <id>: <error>`, and the loop moves to the next sample.
+are reported as `Sample skipped: <error>`, and the loop moves to the next sample.
 
 ---
 
@@ -13,7 +14,7 @@ are caught, printed as `Error processing sample <id>: <error>`, and the loop mov
 `load_source()` scans `{dataset}/{sample_id}/{modality}/` and loads the first entry whose name ends in
 `.lif` (case-insensitive); with no such file it raises `FileNotFoundError`.
 
-`_parse_lif_metadata` walks the LIF XML (`readlif`'s `xml_root`) and returns one `RamanMetadata` per
+`parse_lif_metadata` walks the LIF XML (`readlif`'s `xml_root`) and returns one `RamanMetadata` per
 image element. Elements are collected from the `Children` container of each top-level `Element`, with
 fallbacks for LIF files whose header is a flat `LMSDataContainerHeader`; when nothing is found it
 raises `ValueError("No elements found in the LIF file or unexpected XML structure.")`.

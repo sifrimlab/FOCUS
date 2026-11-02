@@ -55,33 +55,30 @@ results = preprocess_modality(
 
 ---
 
-## `BaseSample`
+## `SampleSource`
 
 ```python
-class BaseSample(ABC):
+class SampleSource:
     def __init__(self, source_path: str, sample_id: str, modality_name: str) -> None: ...
 ```
 
-Abstract base class for all modality-specific sample processors. Handles path validation and output directory creation. Subclasses implement the modality-specific processing logic.
+Shared path initialization for modality-specific sample processors. Handles path validation and output directory creation. Subclasses implement the modality-specific processing logic.
 
-See [API index](index.md#basesample) for attribute descriptions.
+See [API index](index.md#samplesource) for attribute descriptions.
 
 ---
 
-## `BaseDataset`
+## `DatasetState`
 
 ```python
-class BaseDataset(ABC):
-    def __init__(self, path: str, samples: list) -> None: ...
-
-    @abstractmethod
-    def process_dataset(self, **kwargs) -> dict[str, str]: ...
+class DatasetState(Generic[SampleT]):
+    def __init__(self, path: str, samples: list[SampleT]) -> None: ...
 
     @staticmethod
     def _check_cache(output_path: str, force_recomputing: bool) -> bool: ...
 ```
 
-Abstract base class for all modality-specific dataset processors. Concrete subclasses iterate over `self.samples`, call per-sample methods, then merge outputs.
+Typed path and sample collection for modality-specific dataset processors. Concrete subclasses iterate over `self.samples`, call per-sample methods, then merge outputs.
 
 ---
 
@@ -92,7 +89,7 @@ Abstract base class for all modality-specific dataset processors. Concrete subcl
 Processes a single microscopy image to a uniform multi-resolution OME-TIFF ready for alignment.
 
 ```python
-class MicroscopyImage(BaseSample):
+class MicroscopyImage(SampleSource):
     def __init__(
         self,
         source_path: str,
@@ -157,7 +154,7 @@ Loads and returns the image as a float32 `(H, W, C)` array in `[0, 1]`, normalis
 ### `MicroscopyImageDataset`
 
 ```python
-class MicroscopyImageDataset(BaseDataset):
+class MicroscopyImageDataset(DatasetState):
     def __init__(self, path: str, samples: list[MicroscopyImage]) -> None: ...
 
     def process_dataset(
@@ -225,7 +222,7 @@ results = dataset.process_dataset(
 Processes a single Mass Spectrometry Imaging sample from paired `.imzML` / `.ibd` files.
 
 ```python
-class MsiSample(BaseSample):
+class MsiSample(SampleSource):
     def __init__(
         self,
         source_path: str,
@@ -258,7 +255,7 @@ When samples are built by the pipeline rather than constructed directly, these t
 ### `MsiDataset`
 
 ```python
-class MsiDataset(BaseDataset):
+class MsiDataset(DatasetState):
     def __init__(
         self,
         path: str,
@@ -301,7 +298,7 @@ Returns `dict[str, str]` with keys for each sample ID plus `"merged"`.
 
 ```python
 from focus.preprocessing import MsiSample, MsiDataset
-from focus.constants import MsiIonMode
+from focus.config.options import MsiIonMode
 
 samples = [
     MsiSample(
@@ -331,12 +328,14 @@ results = dataset.process_dataset(
 
 ## `RamanImage` / `RamanDataset`
 
+`RamanImage` owns source data and exposes three narrow components. Call illumination and background operations through `sample.correction`, spectral processing through `sample.tiles`, and stitching through `sample.stitcher`. The signatures below describe those component methods.
+
 ### `RamanImage`
 
 Processes a single Raman Spectroscopy Imaging sample from a Leica `.lif` file.
 
 ```python
-class RamanImage(BaseSample):
+class RamanImage(SampleSource):
     def __init__(
         self,
         source_path: str,
@@ -379,10 +378,10 @@ def ashlar_stitch(self, force_recomputing: bool = False) -> str: ...
 ```
 
 1. `load_source()` loads the first `.lif` file in the input directory (`FileNotFoundError` if there is none): tile pixel data, tile stage coordinates, pixel size, spectral axis, and the per-scan channel ranges. Not cached.
-2. `basic_correct()`: BaSiC illumination correction per spectral channel, in the `FOCUS_BaSiCpy` conda environment, followed by a global min-max normalization to `[0, 1]`. Cached as `basic_corrected_tiles.npy`. Raises `RuntimeError` when `conda` or the environment is missing.
-3. `remove_background()`: Otsu segmentation on a quick-stitched PCA mosaic, back-projected to zero background pixels in the tiles. Cached as `segmented_tiles.npy`. Raises `RuntimeError` when `basic_correct()` has not run in this session, even if the cache exists.
-4. `process_raw_tiles()`: RamanSPy pipeline (Whitaker-Hayes despike, Savitzky-Golay denoise, IASLS baseline, per-spectrum min-max) over one work unit per tile and per spectral scan. `wavenumbers=None` uses the axis read in step 1; `parallel=False` runs the same per-unit function sequentially. Cached as `raman_corrected_tiles.npy`.
-5. `ashlar_stitch()` writes one ASHLAR cycle file per spectral scan, runs `tools/ASHLAR/main.py` in the `FOCUS_ASHLAR` conda environment, and renames the result to the final output path, which it returns. Reuses an existing output file unless `force_recomputing=True`.
+2. `sample.correction.basic_correct()`: BaSiC illumination correction per spectral channel, in the `FOCUS_BaSiCpy` conda environment, followed by a global min-max normalization to `[0, 1]`. Cached as `basic_corrected_tiles.npy`. Raises `RuntimeError` when `conda` or the environment is missing.
+3. `sample.correction.remove_background()`: Otsu segmentation on a quick-stitched PCA mosaic, back-projected to zero background pixels in the tiles. Cached as `segmented_tiles.npy`. Raises `RuntimeError` when `basic_correct()` has not run in this session, even if the cache exists.
+4. `sample.tiles.process_raw_tiles()`: RamanSPy pipeline (Whitaker-Hayes despike, Savitzky-Golay denoise, IASLS baseline, per-spectrum min-max) over one work unit per tile and per spectral scan. `wavenumbers=None` uses the axis read in step 1; `parallel=False` runs the same per-unit function sequentially. Cached as `raman_corrected_tiles.npy`.
+5. `sample.stitcher.ashlar_stitch()` writes one ASHLAR cycle file per spectral scan, runs `tools/ASHLAR/main.py` in the `FOCUS_ASHLAR` conda environment, and renames the result to the final output path, which it returns. Reuses an existing output file unless `force_recomputing=True`.
 
 Each cached step loads its `.npy` instead of recomputing when the file exists and `force_recomputing` is `False`.
 
@@ -424,7 +423,7 @@ class RamanMetadata:
 ### `RamanDataset`
 
 ```python
-class RamanDataset(BaseDataset):
+class RamanDataset(DatasetState):
     def __init__(self, path: str, samples: list[RamanImage]) -> None: ...
 
     def process_dataset(
@@ -489,7 +488,7 @@ results = dataset.process_dataset(
 Preprocesses a single spatial transcriptomics sample. Accepts any technology (Visium, Xenium, MERFISH, Slide-seq, etc.) as long as the input is an `.h5ad` file with raw gene counts in `.X` and spatial coordinates in `.obsm["spatial"]`.
 
 ```python
-class SpatialTranscriptomic(BaseSample):
+class SpatialTranscriptomic(SampleSource):
     def __init__(
         self,
         source_path: str,
@@ -568,7 +567,7 @@ config extractor defaults, so direct calls and config-driven runs behave identic
 ### `SpatialTranscriptomicDataset`
 
 ```python
-class SpatialTranscriptomicDataset(BaseDataset):
+class SpatialTranscriptomicDataset(DatasetState):
     def __init__(self, path: str, samples: list[SpatialTranscriptomic]) -> None: ...
 
     def process_dataset(

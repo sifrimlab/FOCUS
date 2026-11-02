@@ -43,7 +43,7 @@ export function useRunProgress() {
   const offline = computed(() => connection.value !== 'online');
   const { elapsed } = useServerClock(computed(() => status.value.server_now), offline);
 
-  const finished = computed(() => status.value.state === 'completed' || status.value.state === 'error');
+  const finished = computed(() => ['completed', 'error', 'cancelled'].includes(status.value.state));
   const records = computed(() => new Map<string, StageRecord>(status.value.timeline.map(r => [r.stage, r])));
 
   const stateOf = (record: { ended_at: number | null } | undefined, failed = false): ProgressState => {

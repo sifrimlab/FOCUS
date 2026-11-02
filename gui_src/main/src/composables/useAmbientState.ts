@@ -22,7 +22,7 @@ export function useAmbientState() {
       case 'running': {
         const { state, stage } = store.pipelineStatus;
         if (state === 'error' || store.connection === 'run-lost') return 'err';
-        if (state === 'alignment_waiting') return 'wait';
+        if (state === 'alignment_waiting' || state === 'cancelling') return 'wait';
         return (stage && STAGE_AMBIENT[stage]) || 'run';
       }
       default:

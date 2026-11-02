@@ -1,14 +1,16 @@
-import sys
-import os
-import numpy as np
+"""Execute per-channel BaSiC correction in its separate JAX environment."""
+
+import sys  # noqa: E402 - import follows runtime setup
+import os  # noqa: E402 - import follows runtime setup
+import numpy as np  # noqa: E402 - import follows runtime setup
 
 # Redirect stdout and stderr to null to suppress all printed output
-sys.stdout = open(os.devnull, 'w')
-sys.stderr = open(os.devnull, 'w')
+sys.stdout = open(os.devnull, "w")
+sys.stderr = open(os.devnull, "w")
 
 os.environ["JAX_PLATFORM_NAME"] = "cpu"
 
-from basicpy.basicpy import BaSiC
+from basicpy.basicpy import BaSiC  # noqa: E402 - import follows runtime setup
 
 if __name__ == "__main__":
     if len(sys.argv) != 3:

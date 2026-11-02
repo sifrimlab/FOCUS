@@ -6,33 +6,42 @@ import cycles and robust to any import order, while
 ``from focus.registration import FeatureExtractorRegistration`` keeps working.
 """
 
-from importlib import import_module
+from focus.runtime.imports import resolve_export
 from typing import TYPE_CHECKING
 
 # Public name -> the submodule that defines it.
 _EXPORTS = {
-	"FeatureExtractorRegistration": "focus.registration.registration",
-	"SpotInterpolationRegistration": "focus.registration.registration",
-	"SpotAggregationRegistration": "focus.registration.spot_aggregation",
-	"RamanPixelInterpolationRegistration": "focus.registration.raman_pixel",
+    "FeatureExtractorRegistration": "focus.registration.feature_extraction",
+    "SpotInterpolationRegistration": "focus.registration.spot_interpolation",
+    "SpotAggregationRegistration": "focus.registration.spot_aggregation",
+    "RamanPixelInterpolationRegistration": "focus.registration.raman_pixel",
 }
 
 __all__ = list(_EXPORTS)
 
 
-def __getattr__(name: str):
-	try:
-		module = _EXPORTS[name]
-	except KeyError:
-		raise AttributeError(f"module {__name__!r} has no attribute {name!r}") from None
-	return getattr(import_module(module), name)
+def __getattr__(name: str) -> object:
+    """Resolve a declared public export lazily; raise AttributeError for unknown names."""
+    return resolve_export(__name__, _EXPORTS, name)
 
 
-def __dir__():
-	return sorted(__all__)
+def __dir__() -> list[str]:
+    """Return the sorted public names without loading optional dependencies."""
+    return sorted(__all__)
 
 
-if TYPE_CHECKING:  # eager imports for type checkers / IDEs only (not executed at runtime)
-	from focus.registration.registration import FeatureExtractorRegistration, SpotInterpolationRegistration
-	from focus.registration.spot_aggregation import SpotAggregationRegistration
-	from focus.registration.raman_pixel import RamanPixelInterpolationRegistration
+if (
+    TYPE_CHECKING
+):  # eager imports for type checkers / IDEs only (not executed at runtime)
+    from focus.registration.feature_extraction import (
+        FeatureExtractorRegistration as FeatureExtractorRegistration,
+    )
+    from focus.registration.spot_interpolation import (
+        SpotInterpolationRegistration as SpotInterpolationRegistration,
+    )
+    from focus.registration.spot_aggregation import (
+        SpotAggregationRegistration as SpotAggregationRegistration,
+    )
+    from focus.registration.raman_pixel import (
+        RamanPixelInterpolationRegistration as RamanPixelInterpolationRegistration,
+    )

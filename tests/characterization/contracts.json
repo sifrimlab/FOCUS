@@ -1,0 +1,1029 @@
+{
+  "schema": {
+    "modality_types": [
+      "microscopy_image",
+      "msi",
+      "raman",
+      "st"
+    ],
+    "registration_types": [
+      "none",
+      "feature_extraction",
+      "spot_interpolation",
+      "spot_aggregation",
+      "raman_pixel_interpolation"
+    ],
+    "registration_compatibility": {
+      "feature_extraction": [
+        "microscopy_image"
+      ],
+      "spot_interpolation": [
+        "msi",
+        "st"
+      ],
+      "spot_aggregation": [
+        "msi",
+        "st"
+      ],
+      "raman_pixel_interpolation": [
+        "raman"
+      ],
+      "none": null
+    },
+    "alignment_strategies": [
+      "manual",
+      "pre_aligned"
+    ],
+    "alignment_strategy_compatibility": {
+      "manual": null,
+      "pre_aligned": [
+        "msi",
+        "st"
+      ]
+    },
+    "intensity_normalization": [
+      "tic",
+      "log",
+      "clr",
+      "tic_mean_scaled",
+      "median",
+      "internal_standard",
+      "none"
+    ],
+    "background_color": [
+      "white",
+      "black"
+    ],
+    "processing_params": {
+      "microscopy_image": {
+        "color_enhancement": {
+          "type": "bool",
+          "default": true
+        },
+        "remove_background": {
+          "type": "bool",
+          "default": true
+        },
+        "crop_to_tissue": {
+          "type": "bool",
+          "default": true
+        },
+        "background_color": {
+          "type": "enum",
+          "options": [
+            "white",
+            "black"
+          ],
+          "default": "white"
+        },
+        "min_object_coverage": {
+          "type": "float",
+          "default": 0.01
+        },
+        "force_recomputing": {
+          "type": "bool",
+          "default": false
+        },
+        "clip_percentile": {
+          "type": "int",
+          "default": 99
+        },
+        "crop_margin": {
+          "type": "int",
+          "default": 250
+        },
+        "gamma": {
+          "type": "float",
+          "default": 0.45
+        },
+        "contrast_saturation": {
+          "type": "float",
+          "default": 0.35
+        }
+      },
+      "msi": {
+        "lipid_annotation_db": {
+          "type": "path",
+          "default": null,
+          "nullable": true
+        },
+        "mass_tolerance": {
+          "type": "float",
+          "default": 10
+        },
+        "frequency_threshold": {
+          "type": "float",
+          "default": 0.01
+        },
+        "intensity_normalization": {
+          "type": "enum",
+          "options": [
+            "tic",
+            "log",
+            "clr",
+            "tic_mean_scaled",
+            "median",
+            "internal_standard",
+            "none"
+          ],
+          "default": "none"
+        },
+        "recalibration_reference": {
+          "type": "string",
+          "default": null,
+          "nullable": true
+        },
+        "internal_standard_mz": {
+          "type": "string",
+          "default": null,
+          "nullable": true
+        },
+        "detect_background": {
+          "type": "bool",
+          "default": false
+        },
+        "sample_type": {
+          "type": "enum",
+          "options": [
+            "tissue",
+            "microgrid"
+          ],
+          "default": "tissue"
+        },
+        "resolution": {
+          "type": "enum",
+          "options": [
+            "standard",
+            "sub_cellular"
+          ],
+          "default": "standard"
+        },
+        "force_recomputing": {
+          "type": "bool",
+          "default": false
+        }
+      },
+      "raman": {
+        "force_recomputing": {
+          "type": "bool",
+          "default": false
+        },
+        "max_workers": {
+          "type": "int",
+          "default": 8
+        },
+        "savgol_window": {
+          "type": "int",
+          "default": 7
+        },
+        "savgol_polyorder": {
+          "type": "int",
+          "default": 3
+        },
+        "bg_min_area_fraction": {
+          "type": "float",
+          "default": 0.05
+        },
+        "otsu_threshold_factor": {
+          "type": "float",
+          "default": 0.7
+        },
+        "min_object_size": {
+          "type": "int",
+          "default": 500
+        }
+      },
+      "st": {
+        "resolution": {
+          "type": "enum",
+          "options": [
+            "standard",
+            "sub_cellular"
+          ],
+          "default": "standard"
+        },
+        "min_count_per_spot": {
+          "type": "int",
+          "default": null,
+          "nullable": true
+        },
+        "max_count_per_spot": {
+          "type": "int",
+          "default": null,
+          "nullable": true
+        },
+        "min_genes_per_spot": {
+          "type": "int",
+          "default": null,
+          "nullable": true
+        },
+        "max_genes_per_spot": {
+          "type": "int",
+          "default": null,
+          "nullable": true
+        },
+        "min_spots_per_gene": {
+          "type": "float",
+          "default": null,
+          "nullable": true
+        },
+        "min_count_spots_ratio_per_gene": {
+          "type": "float",
+          "default": null,
+          "nullable": true
+        },
+        "remove_mitochondrial_genes": {
+          "type": "bool",
+          "default": false
+        },
+        "total_counts_normalize": {
+          "type": "bool",
+          "default": false
+        },
+        "log1p_transform": {
+          "type": "bool",
+          "default": false
+        },
+        "force_recomputing": {
+          "type": "bool",
+          "default": false
+        }
+      }
+    },
+    "annotation_file_types": [
+      "geojson"
+    ],
+    "display_names": {
+      "microscopy_image": "Microscopy Image",
+      "msi": "MSI",
+      "raman": "Raman",
+      "st": "Spatial Transcriptomics",
+      "none": "None",
+      "feature_extraction": "Feature Extraction",
+      "spot_interpolation": "Spot Interpolation",
+      "spot_aggregation": "Spot Aggregation",
+      "raman_pixel_interpolation": "Raman Pixel Interpolation",
+      "manual": "Manual",
+      "pre_aligned": "Pre-Aligned",
+      "tic": "TIC",
+      "log": "Log",
+      "clr": "CLR",
+      "tic_mean_scaled": "TIC Mean Scaled",
+      "median": "Median",
+      "internal_standard": "Internal Standard",
+      "white": "White",
+      "black": "Black",
+      "tissue": "Tissue",
+      "microgrid": "Microgrid",
+      "standard": "Standard",
+      "sub_cellular": "Sub-cellular",
+      "geojson": "GeoJSON"
+    },
+    "registration_params": {
+      "feature_extraction": {
+        "force_recomputing": {
+          "type": "bool",
+          "default": false
+        },
+        "background_color": {
+          "type": "enum",
+          "options": [
+            "white",
+            "black"
+          ],
+          "default": "white"
+        }
+      },
+      "spot_interpolation": {
+        "force_recomputing": {
+          "type": "bool",
+          "default": false
+        }
+      },
+      "spot_aggregation": {
+        "force_recomputing": {
+          "type": "bool",
+          "default": false
+        }
+      },
+      "raman_pixel_interpolation": {
+        "force_recomputing": {
+          "type": "bool",
+          "default": false
+        }
+      },
+      "none": {}
+    }
+  },
+  "errors": [
+    [
+      "TypeError",
+      "Config must be a dictionary."
+    ],
+    [
+      "KeyError",
+      "\"Missing required key 'dataset_path' in config.\""
+    ],
+    [
+      "TypeError",
+      "'dataset_path' in config must be str, got int."
+    ],
+    [
+      "KeyError",
+      "\"Missing required key 'reference_modality' in config.\""
+    ]
+  ],
+  "same_config_object": true,
+  "force_flags": [
+    {},
+    {}
+  ],
+  "config": {
+    "dataset_path": "<dataset>",
+    "reference_modality": "rna",
+    "modalities": [
+      {
+        "name": "rna",
+        "type": "st",
+        "processing_settings": {},
+        "registration_type": "none",
+        "registration_settings": {},
+        "alignment_strategy": "manual",
+        "alignment_force_recomputing": false
+      }
+    ],
+    "perform_alignment": true,
+    "perform_registration": true,
+    "huggingface_token": null,
+    "ignore_samples": [],
+    "samples": [],
+    "last_edit": null,
+    "spatial_annotations": null
+  },
+  "annotations": [
+    null,
+    "outer",
+    "inner",
+    null
+  ],
+  "normalization": {
+    "tic": {
+      "values": [
+        [
+          0.0,
+          0.3333333432674408,
+          0.6666666865348816
+        ],
+        [
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          0.800000011920929,
+          0.20000000298023224,
+          0.0
+        ]
+      ],
+      "dtype": "<f4",
+      "digest": "c67bcb34469157398660e38e1d5c9c02709f9011bbfb603dd038aec482249e9e"
+    },
+    "log": {
+      "values": [
+        [
+          0.0,
+          1.0986123085021973,
+          1.6094379425048828
+        ],
+        [
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          2.1972246170043945,
+          1.0986123085021973,
+          0.0
+        ]
+      ],
+      "dtype": "<f4",
+      "digest": "d603bf582603cd2117fb7d9e975d2f6df1bc9756d5db974735c7bc647f4f15eb"
+    },
+    "clr": {
+      "values": [
+        [
+          0.0,
+          -0.3465735912322998,
+          0.3465735912322998
+        ],
+        [
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          0.6931471824645996,
+          -0.6931471824645996,
+          0.0
+        ]
+      ],
+      "dtype": "<f4",
+      "digest": "bbaa85bfb9ccd1d04fe0def60155037ebc012a2395794a35b04103ceeceddbce"
+    },
+    "tic_mean_scaled": {
+      "values": [
+        [
+          0.0,
+          1.7777777910232544,
+          3.555555582046509
+        ],
+        [
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          4.266666889190674,
+          1.0666667222976685,
+          0.0
+        ]
+      ],
+      "dtype": "<f4",
+      "digest": "02ee71d3aa4e31fd47b8e81b8bacf5fec794fb19a2d872ff689db4e0ae32da0e"
+    },
+    "median": {
+      "values": [
+        [
+          0.0,
+          0.6666666865348816,
+          1.3333333730697632
+        ],
+        [
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          1.600000023841858,
+          0.4000000059604645,
+          0.0
+        ]
+      ],
+      "dtype": "<f4",
+      "digest": "3209edb120ae2ccec90a9c2d337e5c67e2e7c0eb057bf15a514f663bf660be68"
+    },
+    "none": {
+      "values": [
+        [
+          0.0,
+          2.0,
+          4.0
+        ],
+        [
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          8.0,
+          2.0,
+          0.0
+        ]
+      ],
+      "dtype": "<f4",
+      "digest": "020e45ee0015d845b1d894159a7c90441e47709087c87b464eb38c15915b016d"
+    }
+  },
+  "mz_setting": {
+    "neg": [
+      700.0,
+      885.5
+    ],
+    "pos": [
+      500.0
+    ]
+  },
+  "fingerprint": "efbd0040190fb0871831e606c581f8a66db79d8e2bb836745a70051306956070",
+  "events": [
+    {
+      "stage": "preprocessing",
+      "stage_index": 1,
+      "total_stages": 1,
+      "current_modality": null,
+      "current_modality_index": 0,
+      "total_modalities": 0,
+      "current_sample": null,
+      "current_sample_index": 0,
+      "total_samples": 0,
+      "sub_step": null,
+      "sub_step_index": 0,
+      "sub_step_total": 0,
+      "sub_step_progress": 0,
+      "sub_step_items_total": 0,
+      "sub_step_unit": null,
+      "message": "",
+      "state": "running"
+    },
+    {
+      "stage": "preprocessing",
+      "stage_index": 1,
+      "total_stages": 1,
+      "current_modality": "rna",
+      "current_modality_index": 1,
+      "total_modalities": 1,
+      "current_sample": null,
+      "current_sample_index": 0,
+      "total_samples": 0,
+      "sub_step": null,
+      "sub_step_index": 0,
+      "sub_step_total": 0,
+      "sub_step_progress": 0,
+      "sub_step_items_total": 0,
+      "sub_step_unit": null,
+      "message": ""
+    },
+    {
+      "stage": "preprocessing",
+      "stage_index": 1,
+      "total_stages": 1,
+      "current_modality": "rna",
+      "current_modality_index": 1,
+      "total_modalities": 1,
+      "current_sample": null,
+      "current_sample_index": 0,
+      "total_samples": 0,
+      "sub_step": "1/1 - Read",
+      "sub_step_index": 1,
+      "sub_step_total": 1,
+      "sub_step_progress": 0,
+      "sub_step_items_total": 0,
+      "sub_step_unit": null,
+      "message": "Read",
+      "activity": [
+        {
+          "op": "add",
+          "id": 1,
+          "t": 10.0,
+          "kind": "step",
+          "stage": "preprocessing",
+          "modality": "rna",
+          "sample": null,
+          "step": "Read",
+          "step_index": 1,
+          "step_total": 1,
+          "cached": false
+        }
+      ]
+    },
+    {
+      "stage": "preprocessing",
+      "stage_index": 1,
+      "total_stages": 1,
+      "current_modality": "rna",
+      "current_modality_index": 1,
+      "total_modalities": 1,
+      "current_sample": null,
+      "current_sample_index": 0,
+      "total_samples": 0,
+      "sub_step": "1/1 - Read",
+      "sub_step_index": 1,
+      "sub_step_total": 1,
+      "sub_step_progress": 0,
+      "sub_step_items_total": 0,
+      "sub_step_unit": null,
+      "message": "input",
+      "activity": [
+        {
+          "op": "add",
+          "id": 2,
+          "t": 10.0,
+          "kind": "detail",
+          "stage": "preprocessing",
+          "modality": "rna",
+          "sample": null,
+          "step": "Read",
+          "step_index": 1,
+          "step_total": 1,
+          "cached": false,
+          "text": "input"
+        }
+      ]
+    },
+    {
+      "stage": "preprocessing",
+      "stage_index": 1,
+      "total_stages": 1,
+      "current_modality": "rna",
+      "current_modality_index": 1,
+      "total_modalities": 1,
+      "current_sample": null,
+      "current_sample_index": 0,
+      "total_samples": 0,
+      "sub_step": "1/1 - Read",
+      "sub_step_index": 1,
+      "sub_step_total": 1,
+      "sub_step_progress": 0,
+      "sub_step_items_total": 0,
+      "sub_step_unit": null,
+      "message": "input",
+      "activity": [
+        {
+          "op": "patch",
+          "id": 1,
+          "cached": true
+        }
+      ]
+    },
+    {
+      "stage": "preprocessing",
+      "stage_index": 1,
+      "total_stages": 1,
+      "current_modality": null,
+      "current_modality_index": 0,
+      "total_modalities": 0,
+      "current_sample": null,
+      "current_sample_index": 0,
+      "total_samples": 0,
+      "sub_step": null,
+      "sub_step_index": 0,
+      "sub_step_total": 0,
+      "sub_step_progress": 0,
+      "sub_step_items_total": 0,
+      "sub_step_unit": null,
+      "message": "input"
+    },
+    {
+      "stage": "preprocessing",
+      "stage_index": 1,
+      "total_stages": 1,
+      "current_modality": null,
+      "current_modality_index": 0,
+      "total_modalities": 0,
+      "current_sample": null,
+      "current_sample_index": 0,
+      "total_samples": 0,
+      "sub_step": null,
+      "sub_step_index": 0,
+      "sub_step_total": 0,
+      "sub_step_progress": 0,
+      "sub_step_items_total": 0,
+      "sub_step_unit": null,
+      "message": "input"
+    },
+    {
+      "stage": "preprocessing",
+      "stage_index": 1,
+      "total_stages": 1,
+      "current_modality": null,
+      "current_modality_index": 0,
+      "total_modalities": 0,
+      "current_sample": null,
+      "current_sample_index": 0,
+      "total_samples": 0,
+      "sub_step": null,
+      "sub_step_index": 0,
+      "sub_step_total": 0,
+      "sub_step_progress": 0,
+      "sub_step_items_total": 0,
+      "sub_step_unit": null,
+      "message": "input"
+    }
+  ],
+  "http": {
+    "GET /api/config": [
+      200,
+      {}
+    ],
+    "GET /api/samples": [
+      400,
+      {
+        "error": "Missing 'path' query parameter"
+      }
+    ],
+    "POST /api/cancel": [
+      409,
+      {
+        "error": "No pipeline is running"
+      }
+    ],
+    "GET /api/schema": [
+      200,
+      {
+        "alignment_strategies": [
+          "manual",
+          "pre_aligned"
+        ],
+        "alignment_strategy_compatibility": {
+          "manual": null,
+          "pre_aligned": [
+            "msi",
+            "st"
+          ]
+        },
+        "annotation_file_types": [
+          "geojson"
+        ],
+        "background_color": [
+          "white",
+          "black"
+        ],
+        "display_names": {
+          "black": "Black",
+          "clr": "CLR",
+          "feature_extraction": "Feature Extraction",
+          "geojson": "GeoJSON",
+          "internal_standard": "Internal Standard",
+          "log": "Log",
+          "manual": "Manual",
+          "median": "Median",
+          "microgrid": "Microgrid",
+          "microscopy_image": "Microscopy Image",
+          "msi": "MSI",
+          "none": "None",
+          "pre_aligned": "Pre-Aligned",
+          "raman": "Raman",
+          "raman_pixel_interpolation": "Raman Pixel Interpolation",
+          "spot_aggregation": "Spot Aggregation",
+          "spot_interpolation": "Spot Interpolation",
+          "st": "Spatial Transcriptomics",
+          "standard": "Standard",
+          "sub_cellular": "Sub-cellular",
+          "tic": "TIC",
+          "tic_mean_scaled": "TIC Mean Scaled",
+          "tissue": "Tissue",
+          "white": "White"
+        },
+        "intensity_normalization": [
+          "tic",
+          "log",
+          "clr",
+          "tic_mean_scaled",
+          "median",
+          "internal_standard",
+          "none"
+        ],
+        "modality_types": [
+          "microscopy_image",
+          "msi",
+          "raman",
+          "st"
+        ],
+        "processing_params": {
+          "microscopy_image": {
+            "background_color": {
+              "default": "white",
+              "options": [
+                "white",
+                "black"
+              ],
+              "type": "enum"
+            },
+            "clip_percentile": {
+              "default": 99,
+              "type": "int"
+            },
+            "color_enhancement": {
+              "default": true,
+              "type": "bool"
+            },
+            "contrast_saturation": {
+              "default": 0.35,
+              "type": "float"
+            },
+            "crop_margin": {
+              "default": 250,
+              "type": "int"
+            },
+            "crop_to_tissue": {
+              "default": true,
+              "type": "bool"
+            },
+            "force_recomputing": {
+              "default": false,
+              "type": "bool"
+            },
+            "gamma": {
+              "default": 0.45,
+              "type": "float"
+            },
+            "min_object_coverage": {
+              "default": 0.01,
+              "type": "float"
+            },
+            "remove_background": {
+              "default": true,
+              "type": "bool"
+            }
+          },
+          "msi": {
+            "detect_background": {
+              "default": false,
+              "type": "bool"
+            },
+            "force_recomputing": {
+              "default": false,
+              "type": "bool"
+            },
+            "frequency_threshold": {
+              "default": 0.01,
+              "type": "float"
+            },
+            "intensity_normalization": {
+              "default": "none",
+              "options": [
+                "tic",
+                "log",
+                "clr",
+                "tic_mean_scaled",
+                "median",
+                "internal_standard",
+                "none"
+              ],
+              "type": "enum"
+            },
+            "internal_standard_mz": {
+              "default": null,
+              "nullable": true,
+              "type": "string"
+            },
+            "lipid_annotation_db": {
+              "default": null,
+              "nullable": true,
+              "type": "path"
+            },
+            "mass_tolerance": {
+              "default": 10,
+              "type": "float"
+            },
+            "recalibration_reference": {
+              "default": null,
+              "nullable": true,
+              "type": "string"
+            },
+            "resolution": {
+              "default": "standard",
+              "options": [
+                "standard",
+                "sub_cellular"
+              ],
+              "type": "enum"
+            },
+            "sample_type": {
+              "default": "tissue",
+              "options": [
+                "tissue",
+                "microgrid"
+              ],
+              "type": "enum"
+            }
+          },
+          "raman": {
+            "bg_min_area_fraction": {
+              "default": 0.05,
+              "type": "float"
+            },
+            "force_recomputing": {
+              "default": false,
+              "type": "bool"
+            },
+            "max_workers": {
+              "default": 8,
+              "type": "int"
+            },
+            "min_object_size": {
+              "default": 500,
+              "type": "int"
+            },
+            "otsu_threshold_factor": {
+              "default": 0.7,
+              "type": "float"
+            },
+            "savgol_polyorder": {
+              "default": 3,
+              "type": "int"
+            },
+            "savgol_window": {
+              "default": 7,
+              "type": "int"
+            }
+          },
+          "st": {
+            "force_recomputing": {
+              "default": false,
+              "type": "bool"
+            },
+            "log1p_transform": {
+              "default": false,
+              "type": "bool"
+            },
+            "max_count_per_spot": {
+              "default": null,
+              "nullable": true,
+              "type": "int"
+            },
+            "max_genes_per_spot": {
+              "default": null,
+              "nullable": true,
+              "type": "int"
+            },
+            "min_count_per_spot": {
+              "default": null,
+              "nullable": true,
+              "type": "int"
+            },
+            "min_count_spots_ratio_per_gene": {
+              "default": null,
+              "nullable": true,
+              "type": "float"
+            },
+            "min_genes_per_spot": {
+              "default": null,
+              "nullable": true,
+              "type": "int"
+            },
+            "min_spots_per_gene": {
+              "default": null,
+              "nullable": true,
+              "type": "float"
+            },
+            "remove_mitochondrial_genes": {
+              "default": false,
+              "type": "bool"
+            },
+            "resolution": {
+              "default": "standard",
+              "options": [
+                "standard",
+                "sub_cellular"
+              ],
+              "type": "enum"
+            },
+            "total_counts_normalize": {
+              "default": false,
+              "type": "bool"
+            }
+          }
+        },
+        "registration_compatibility": {
+          "feature_extraction": [
+            "microscopy_image"
+          ],
+          "none": null,
+          "raman_pixel_interpolation": [
+            "raman"
+          ],
+          "spot_aggregation": [
+            "msi",
+            "st"
+          ],
+          "spot_interpolation": [
+            "msi",
+            "st"
+          ]
+        },
+        "registration_params": {
+          "feature_extraction": {
+            "background_color": {
+              "default": "white",
+              "options": [
+                "white",
+                "black"
+              ],
+              "type": "enum"
+            },
+            "force_recomputing": {
+              "default": false,
+              "type": "bool"
+            }
+          },
+          "none": {},
+          "raman_pixel_interpolation": {
+            "force_recomputing": {
+              "default": false,
+              "type": "bool"
+            }
+          },
+          "spot_aggregation": {
+            "force_recomputing": {
+              "default": false,
+              "type": "bool"
+            }
+          },
+          "spot_interpolation": {
+            "force_recomputing": {
+              "default": false,
+              "type": "bool"
+            }
+          }
+        },
+        "registration_types": [
+          "none",
+          "feature_extraction",
+          "spot_interpolation",
+          "spot_aggregation",
+          "raman_pixel_interpolation"
+        ]
+      }
+    ]
+  }
+}

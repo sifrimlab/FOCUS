@@ -19,7 +19,7 @@ on:
       - 'MANIFEST.in'
       - 'pyproject.toml'
       - 'gui_src/**'
-      - 'src/focus/GUI/**'
+      - 'src/focus/gui/**'
       - 'scripts/check_dist.py'
       - '.github/workflows/release-build.yml'
   workflow_dispatch:

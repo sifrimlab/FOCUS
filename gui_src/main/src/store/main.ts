@@ -143,7 +143,7 @@ export const useMainStore = defineStore('main', {
         this.pipelineStatus = state.status;
         this.resetConnection();
         const s = state.status.state;
-        if (s === 'running' || s === 'alignment_waiting') {
+        if (s === 'running' || s === 'alignment_waiting' || s === 'cancelling') {
           this.currentView = 'running';
           this.startStatusPolling();
         } else if (s === 'completed') {
@@ -398,8 +398,20 @@ export const useMainStore = defineStore('main', {
       if (next.state === 'completed') {
         this.currentView = 'complete';
         this.stopStatusPolling();
+      } else if (next.state === 'cancelled') {
+        this.goToConfig();
       } else if (next.state === 'error') {
         this.stopStatusPolling();
+      }
+    },
+
+    /** Interrupt the run. Polling continues until the backend reports `cancelled`, then the config opens. */
+    async cancelRun() {
+      try {
+        await api.cancel();
+        this.pipelineStatus = { ...this.pipelineStatus, state: 'cancelling' };
+      } catch {
+        // The run ended in the meantime (409) or the server is unreachable: polling shows which.
       }
     },
 

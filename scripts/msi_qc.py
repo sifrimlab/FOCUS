@@ -27,6 +27,10 @@ Usage
 -----
     python scripts/msi_qc.py merged/preprocessing/MSI_merged_processed.h5ad qc_out
 """
+
+from numpy.typing import ArrayLike
+from typing import cast
+
 import argparse
 import csv
 import os
@@ -44,7 +48,9 @@ import matplotlib.pyplot as plt  # noqa: E402
 STRIPE_WINDOW = 5
 
 
-def raster_indices(spatial: np.ndarray, spot_size) -> tuple[np.ndarray, np.ndarray]:
+def raster_indices(
+    spatial: np.ndarray, spot_size: ArrayLike
+) -> tuple[np.ndarray, np.ndarray]:
     """(row, col) raster indices from physical coordinates and the [x, y] spot size in µm."""
     size = np.asarray(spot_size, dtype=np.float64)
     col = np.rint((spatial[:, 0] - spatial[:, 0].min()) / size[0]).astype(np.int64)
@@ -52,7 +58,10 @@ def raster_indices(spatial: np.ndarray, spot_size) -> tuple[np.ndarray, np.ndarr
     return row, col
 
 
-def as_dense_columns(matrix, columns) -> np.ndarray:
+def as_dense_columns(
+    matrix: np.ndarray | sp.csr_matrix, columns: np.ndarray
+) -> np.ndarray:
+    """Read selected feature columns into a dense array for diagnostics."""
     block = matrix[:, columns]
     return block.toarray() if sp.issparse(block) else np.asarray(block)
 
@@ -69,10 +78,11 @@ def line_deviation(x: np.ndarray, line: np.ndarray) -> np.ndarray:
     np.add.at(sums, position, x[:, keep])
     means = sums / np.bincount(position, minlength=lines.size)[:, None]
     trend = median_filter(means, size=(STRIPE_WINDOW, 1), mode="nearest")
-    return np.median(np.abs(means - trend) / scale[keep], axis=1)
+    return cast(np.ndarray, np.median(np.abs(means - trend) / scale[keep], axis=1))
 
 
 def striped_lines(deviation: np.ndarray) -> int:
+    """Identify line membership used by the stripe diagnostic."""
     if deviation.size == 0:
         return 0
     centre = np.median(deviation)
@@ -80,44 +90,91 @@ def striped_lines(deviation: np.ndarray) -> int:
     return int(np.sum(deviation > centre + 5 * spread)) if spread > 0 else 0
 
 
-def raster_image(row, col, values) -> np.ndarray:
+def raster_image(row: np.ndarray, col: np.ndarray, values: np.ndarray) -> np.ndarray:
+    """Place spectrum values into the diagnostic acquisition raster."""
     image = np.full((row.max() + 1, col.max() + 1), np.nan)
     image[row, col] = values
     return image
 
 
-def line_statistics(x, tic, line) -> dict:
+def line_statistics(
+    x: np.ndarray, tic: np.ndarray, line: np.ndarray
+) -> dict[str, float | int]:
+    """Calculate per-acquisition-line diagnostic statistics."""
     deviation = line_deviation(x, line)
     lines = np.unique(line)
     line_tic = [tic[line == value].mean() for value in lines]
-    return {"stripe_index": float(np.percentile(deviation, 95)) if deviation.size else float("nan"),
-            "striped_lines": striped_lines(deviation),
-            "line_trend": float(spearmanr(lines, line_tic).statistic) if lines.size > 2 else float("nan")}
+    return {
+        "stripe_index": float(np.percentile(deviation, 95))
+        if deviation.size
+        else float("nan"),
+        "striped_lines": striped_lines(deviation),
+        "line_trend": float(spearmanr(lines, line_tic).statistic)
+        if lines.size > 2
+        else float("nan"),
+    }
 
 
-def report_sample(adata, sample_id, spot_size, top, out_dir) -> dict:
-    row, col = raster_indices(np.asarray(adata.obsm["spatial"], dtype=np.float64), spot_size)
-    foreground = adata.obs["foreground"].astype(str).to_numpy() == "True" if "foreground" in adata.obs else np.ones(adata.n_obs, bool)
+def report_sample(
+    adata: ad.AnnData, sample_id: str, spot_size: ArrayLike, top: int, out_dir: str
+) -> dict[str, str | float | int]:
+    """Write the MSI quality-control report for one processed sample."""
+    row, col = raster_indices(
+        np.asarray(adata.obsm["spatial"], dtype=np.float64), spot_size
+    )
+    foreground = (
+        adata.obs["foreground"].astype(str).to_numpy() == "True"
+        if "foreground" in adata.obs
+        else np.ones(adata.n_obs, bool)
+    )
 
     raw = adata.layers["raw"] if "raw" in adata.layers else adata.X
     tic = np.asarray(raw.sum(axis=1)).ravel()
     mean_intensity = np.asarray(adata.X[foreground].mean(axis=0)).ravel()
     x = as_dense_columns(adata.X[foreground], np.argsort(mean_intensity)[::-1][:top])
 
-    result = {"sample_id": sample_id, "spots": adata.n_obs, "foreground": int(foreground.sum())}
+    result = {
+        "sample_id": sample_id,
+        "spots": adata.n_obs,
+        "foreground": int(foreground.sum()),
+    }
     for axis, line in (("y", row), ("x", col)):
         for key, value in line_statistics(x, tic[foreground], line[foreground]).items():
             result[f"{key}_{axis}"] = value
 
+    plot_sample(adata, sample_id, row, col, tic, out_dir, result)
+    return result
+
+
+def plot_sample(
+    adata: ad.AnnData,
+    sample_id: str,
+    row: np.ndarray,
+    col: np.ndarray,
+    tic: np.ndarray,
+    out_dir: str,
+    result: dict[str, str | float | int],
+) -> None:
+    """Write TIC and available recalibration maps without modifying the AnnData input."""
     panels = [("TIC (raw)", tic, "viridis")]
     for name in sorted(adata.obs.columns):
         if name.startswith("recalibration_ppm_"):
-            panels.append((f"{name} (ppm)", adata.obs[name].to_numpy(dtype=np.float64), "coolwarm"))
+            panels.append(
+                (
+                    f"{name} (ppm)",
+                    adata.obs[name].to_numpy(dtype=np.float64),
+                    "coolwarm",
+                )
+            )
         elif name.startswith("recalibration_matches_"):
             panels.append((name, adata.obs[name].to_numpy(dtype=np.float64), "magma"))
-    figure, axes = plt.subplots(1, len(panels), figsize=(5 * len(panels), 4.5), squeeze=False)
+    figure, axes = plt.subplots(
+        1, len(panels), figsize=(5 * len(panels), 4.5), squeeze=False
+    )
     for axis, (title, values, cmap) in zip(axes[0], panels):
-        image = axis.imshow(raster_image(row, col, values), cmap=cmap, interpolation="nearest")
+        image = axis.imshow(
+            raster_image(row, col, values), cmap=cmap, interpolation="nearest"
+        )
         axis.set_title(title)
         axis.set_axis_off()
         figure.colorbar(image, ax=axis, fraction=0.046)
@@ -125,20 +182,30 @@ def report_sample(adata, sample_id, spot_size, top, out_dir) -> dict:
     figure.tight_layout()
     figure.savefig(os.path.join(out_dir, f"{sample_id}_qc.png"), dpi=150)
     plt.close(figure)
-    return result
 
 
-def summary(result: dict) -> str:
-    return "; ".join(f"lines of constant {axis}: stripe index {result[f'stripe_index_{axis}']:.4f}, "
-                     f"{result[f'striped_lines_{axis}']} striped, trend {result[f'line_trend_{axis}']:+.2f}"
-                     for axis in ("y", "x"))
+def summary(result: dict[str, str | float | int]) -> str:
+    """Summarize the sample diagnostics for the quality-control report."""
+    return "; ".join(
+        f"lines of constant {axis}: stripe index {result[f'stripe_index_{axis}']:.4f}, "
+        f"{result[f'striped_lines_{axis}']} striped, trend {result[f'line_trend_{axis}']:+.2f}"
+        for axis in ("y", "x")
+    )
 
 
 def main() -> None:
+    """Parse command-line arguments and execute the requested workflow."""
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("h5ad", help="merged or per-sample MSI preprocessing h5ad")
-    parser.add_argument("out_dir", help="output directory for the PNG maps and msi_qc.csv")
-    parser.add_argument("--top", type=int, default=100, help="features used by the stripe index (default 100)")
+    parser.add_argument(
+        "out_dir", help="output directory for the PNG maps and msi_qc.csv"
+    )
+    parser.add_argument(
+        "--top",
+        type=int,
+        default=100,
+        help="features used by the stripe index (default 100)",
+    )
     args = parser.parse_args()
 
     os.makedirs(args.out_dir, exist_ok=True)
@@ -147,7 +214,9 @@ def main() -> None:
     rows = []
     for sample_id in adata.obs["sample_id"].astype(str).unique():
         subset = adata[adata.obs["sample_id"].astype(str).to_numpy() == sample_id]
-        spot_size = spot_sizes[sample_id] if isinstance(spot_sizes, dict) else spot_sizes
+        spot_size = (
+            spot_sizes[sample_id] if isinstance(spot_sizes, dict) else spot_sizes
+        )
         rows.append(report_sample(subset, sample_id, spot_size, args.top, args.out_dir))
         print(f"{sample_id}: {summary(rows[-1])}")
 

@@ -254,18 +254,19 @@ The FOCUS preprocessing and registration components can be imported and used dir
 
 ```python
 # Preprocessing
-from focus.preprocessing.transcriptomic import SpatialTranscriptomic
-from focus.preprocessing.lipidomics import MsiSample
-from focus.preprocessing.microscopy_image import MicroscopyImage
+from focus.preprocessing.transcriptomics.sample import SpatialTranscriptomic
+from focus.preprocessing.msi.sample import MsiSample
+from focus.preprocessing.microscopy.sample import MicroscopyImage
 
 # Alignment
-from focus.alignment.alignment import DirectMappingAligner
+from focus.alignment.coordinator import DirectMappingAligner
 
 # Registration
-from focus.registration.registration import RegistrationPipeline
+from focus.registration import FeatureExtractorRegistration, SpotInterpolationRegistration, SpotAggregationRegistration, RamanPixelInterpolationRegistration
 
 # Utilities
-from focus.utils import parse_config, setup_logging
+from focus.config.validation import parse_config
+from focus.runtime.logging import setup_logging
 ```
 
 !!! note "API stability"

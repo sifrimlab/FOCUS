@@ -61,7 +61,7 @@ export interface OutputFiles {
 }
 
 export interface PipelineStatus {
-  state: 'idle' | 'running' | 'alignment_waiting' | 'completed' | 'error';
+  state: 'idle' | 'running' | 'alignment_waiting' | 'cancelling' | 'cancelled' | 'completed' | 'error';
   stage: string | null;
   stage_index: number;
   total_stages: number;
@@ -108,7 +108,7 @@ export interface StageRecord {
 }
 
 /**
- * One activity line built by the backend reporter (src/focus/reporting.py):
+ * One activity line built by the backend reporter (src/focus/runtime/reporting.py):
  * [step] [sample] [modality] [stage]. 'step' marks a progress change, 'done'
  * a finished step with its duration; detail, warning and error carry text
  * attached to the line before them.

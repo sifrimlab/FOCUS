@@ -1,6 +1,6 @@
 # Spatial Transcriptomics Preprocessing Methods
 
-Implementation reference for `focus/preprocessing/transcriptomic.py`.
+Implementation reference for `focus/preprocessing/transcriptomics/`.
 `SpatialTranscriptomicDataset.process_dataset()` preprocesses every sample through
 `SpatialTranscriptomic` (§3) and then builds the merged dataset (§4).
 

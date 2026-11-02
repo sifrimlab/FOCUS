@@ -1,0 +1,1202 @@
+[
+  {
+    "events": [
+      1,
+      1,
+      0,
+      1
+    ],
+    "files": {
+      "merged/registration/he_merged_processed_aligned_registered.h5ad": {
+        "shape": [
+          4,
+          3
+        ],
+        "dtype": "<f4",
+        "X": {
+          "dtype": "<f4",
+          "shape": [
+            4,
+            3
+          ],
+          "values": [
+            [
+              112.0,
+              112.0,
+              0.0
+            ],
+            [
+              336.0,
+              112.0,
+              1.0
+            ],
+            [
+              112.0,
+              336.0,
+              2.0
+            ],
+            [
+              336.0,
+              336.0,
+              3.0
+            ]
+          ]
+        },
+        "spatial": {
+          "dtype": "<f4",
+          "shape": [
+            4,
+            2
+          ],
+          "values": [
+            [
+              112.0,
+              112.0
+            ],
+            [
+              336.0,
+              112.0
+            ],
+            [
+              112.0,
+              336.0
+            ],
+            [
+              336.0,
+              336.0
+            ]
+          ]
+        },
+        "obs_names": [
+          "s_0",
+          "s_1",
+          "s_2",
+          "s_3"
+        ],
+        "var_names": [
+          "0",
+          "1",
+          "2"
+        ],
+        "sample_id": [
+          "s",
+          "s",
+          "s",
+          "s"
+        ],
+        "uns": {
+          "focus_registration_fingerprint": "072cd0f64d7cb18ca5e9bf4ef8440d93a758e29fe7dcad5c3baf7d4c80f31b24",
+          "focus_registration_geometry": {},
+          "registration_type": "feature_extraction"
+        }
+      },
+      "s/registration/he_s_processed_aligned_registered.h5ad": {
+        "shape": [
+          4,
+          3
+        ],
+        "dtype": "<f4",
+        "X": {
+          "dtype": "<f4",
+          "shape": [
+            4,
+            3
+          ],
+          "values": [
+            [
+              112.0,
+              112.0,
+              0.0
+            ],
+            [
+              336.0,
+              112.0,
+              1.0
+            ],
+            [
+              112.0,
+              336.0,
+              2.0
+            ],
+            [
+              336.0,
+              336.0,
+              3.0
+            ]
+          ]
+        },
+        "spatial": {
+          "dtype": "<f4",
+          "shape": [
+            4,
+            2
+          ],
+          "values": [
+            [
+              112.0,
+              112.0
+            ],
+            [
+              336.0,
+              112.0
+            ],
+            [
+              112.0,
+              336.0
+            ],
+            [
+              336.0,
+              336.0
+            ]
+          ]
+        },
+        "obs_names": [
+          "0",
+          "1",
+          "2",
+          "3"
+        ],
+        "var_names": [
+          "0",
+          "1",
+          "2"
+        ],
+        "sample_id": [
+          "s",
+          "s",
+          "s",
+          "s"
+        ],
+        "uns": {
+          "background_color": "white",
+          "patch_mode": "free_form",
+          "patch_size": 224,
+          "registration_type": "feature_extraction"
+        }
+      }
+    }
+  },
+  {
+    "events": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "files": {
+      "merged/registration/he_merged_processed_aligned_registered.h5ad": {
+        "shape": [
+          4,
+          3
+        ],
+        "dtype": "<f4",
+        "X": {
+          "dtype": "<f4",
+          "shape": [
+            4,
+            3
+          ],
+          "values": [
+            [
+              112.0,
+              112.0,
+              0.0
+            ],
+            [
+              336.0,
+              112.0,
+              1.0
+            ],
+            [
+              112.0,
+              336.0,
+              2.0
+            ],
+            [
+              336.0,
+              336.0,
+              3.0
+            ]
+          ]
+        },
+        "spatial": {
+          "dtype": "<f4",
+          "shape": [
+            4,
+            2
+          ],
+          "values": [
+            [
+              112.0,
+              112.0
+            ],
+            [
+              336.0,
+              112.0
+            ],
+            [
+              112.0,
+              336.0
+            ],
+            [
+              336.0,
+              336.0
+            ]
+          ]
+        },
+        "obs_names": [
+          "s_0",
+          "s_1",
+          "s_2",
+          "s_3"
+        ],
+        "var_names": [
+          "0",
+          "1",
+          "2"
+        ],
+        "sample_id": [
+          "s",
+          "s",
+          "s",
+          "s"
+        ],
+        "uns": {
+          "focus_registration_fingerprint": "072cd0f64d7cb18ca5e9bf4ef8440d93a758e29fe7dcad5c3baf7d4c80f31b24",
+          "focus_registration_geometry": {},
+          "registration_type": "feature_extraction"
+        }
+      },
+      "s/registration/he_s_processed_aligned_registered.h5ad": {
+        "shape": [
+          4,
+          3
+        ],
+        "dtype": "<f4",
+        "X": {
+          "dtype": "<f4",
+          "shape": [
+            4,
+            3
+          ],
+          "values": [
+            [
+              112.0,
+              112.0,
+              0.0
+            ],
+            [
+              336.0,
+              112.0,
+              1.0
+            ],
+            [
+              112.0,
+              336.0,
+              2.0
+            ],
+            [
+              336.0,
+              336.0,
+              3.0
+            ]
+          ]
+        },
+        "spatial": {
+          "dtype": "<f4",
+          "shape": [
+            4,
+            2
+          ],
+          "values": [
+            [
+              112.0,
+              112.0
+            ],
+            [
+              336.0,
+              112.0
+            ],
+            [
+              112.0,
+              336.0
+            ],
+            [
+              336.0,
+              336.0
+            ]
+          ]
+        },
+        "obs_names": [
+          "0",
+          "1",
+          "2",
+          "3"
+        ],
+        "var_names": [
+          "0",
+          "1",
+          "2"
+        ],
+        "sample_id": [
+          "s",
+          "s",
+          "s",
+          "s"
+        ],
+        "uns": {
+          "background_color": "white",
+          "patch_mode": "free_form",
+          "patch_size": 224,
+          "registration_type": "feature_extraction"
+        }
+      }
+    }
+  },
+  {
+    "events": [
+      1,
+      1,
+      1,
+      1
+    ],
+    "files": {
+      "merged/registration/he_merged_processed_aligned_registered.h5ad": {
+        "shape": [
+          4,
+          3
+        ],
+        "dtype": "<f4",
+        "X": {
+          "dtype": "<f4",
+          "shape": [
+            4,
+            3
+          ],
+          "values": [
+            [
+              112.0,
+              112.0,
+              0.0
+            ],
+            [
+              336.0,
+              112.0,
+              1.0
+            ],
+            [
+              112.0,
+              336.0,
+              2.0
+            ],
+            [
+              336.0,
+              336.0,
+              3.0
+            ]
+          ]
+        },
+        "spatial": {
+          "dtype": "<f4",
+          "shape": [
+            4,
+            2
+          ],
+          "values": [
+            [
+              112.0,
+              112.0
+            ],
+            [
+              336.0,
+              112.0
+            ],
+            [
+              112.0,
+              336.0
+            ],
+            [
+              336.0,
+              336.0
+            ]
+          ]
+        },
+        "obs_names": [
+          "s_0",
+          "s_1",
+          "s_2",
+          "s_3"
+        ],
+        "var_names": [
+          "0",
+          "1",
+          "2"
+        ],
+        "sample_id": [
+          "s",
+          "s",
+          "s",
+          "s"
+        ],
+        "uns": {
+          "focus_registration_fingerprint": "072cd0f64d7cb18ca5e9bf4ef8440d93a758e29fe7dcad5c3baf7d4c80f31b24",
+          "focus_registration_geometry": {},
+          "registration_type": "feature_extraction"
+        }
+      },
+      "merged/registration/he_merged_processed_aligned_registered_res1.h5ad": {
+        "shape": [
+          1,
+          3
+        ],
+        "dtype": "<f4",
+        "X": {
+          "dtype": "<f4",
+          "shape": [
+            1,
+            3
+          ],
+          "values": [
+            [
+              112.0,
+              112.0,
+              0.0
+            ]
+          ]
+        },
+        "spatial": {
+          "dtype": "<f4",
+          "shape": [
+            1,
+            2
+          ],
+          "values": [
+            [
+              224.0,
+              224.0
+            ]
+          ]
+        },
+        "obs_names": [
+          "s_0"
+        ],
+        "var_names": [
+          "0",
+          "1",
+          "2"
+        ],
+        "sample_id": [
+          "s"
+        ],
+        "uns": {
+          "downsample_factor": 2.0,
+          "focus_registration_fingerprint": "d7767769d4cf6bb316e809baf29b587ee8ca20a5d5861589b06d9342f609ade9",
+          "focus_registration_geometry": {},
+          "registration_type": "feature_extraction",
+          "res_level": 1
+        }
+      },
+      "s/registration/he_s_processed_aligned_registered.h5ad": {
+        "shape": [
+          4,
+          3
+        ],
+        "dtype": "<f4",
+        "X": {
+          "dtype": "<f4",
+          "shape": [
+            4,
+            3
+          ],
+          "values": [
+            [
+              112.0,
+              112.0,
+              0.0
+            ],
+            [
+              336.0,
+              112.0,
+              1.0
+            ],
+            [
+              112.0,
+              336.0,
+              2.0
+            ],
+            [
+              336.0,
+              336.0,
+              3.0
+            ]
+          ]
+        },
+        "spatial": {
+          "dtype": "<f4",
+          "shape": [
+            4,
+            2
+          ],
+          "values": [
+            [
+              112.0,
+              112.0
+            ],
+            [
+              336.0,
+              112.0
+            ],
+            [
+              112.0,
+              336.0
+            ],
+            [
+              336.0,
+              336.0
+            ]
+          ]
+        },
+        "obs_names": [
+          "0",
+          "1",
+          "2",
+          "3"
+        ],
+        "var_names": [
+          "0",
+          "1",
+          "2"
+        ],
+        "sample_id": [
+          "s",
+          "s",
+          "s",
+          "s"
+        ],
+        "uns": {
+          "background_color": "white",
+          "patch_mode": "free_form",
+          "patch_size": 224,
+          "registration_type": "feature_extraction"
+        }
+      },
+      "s/registration/he_s_processed_aligned_registered_res1.h5ad": {
+        "shape": [
+          1,
+          3
+        ],
+        "dtype": "<f4",
+        "X": {
+          "dtype": "<f4",
+          "shape": [
+            1,
+            3
+          ],
+          "values": [
+            [
+              112.0,
+              112.0,
+              0.0
+            ]
+          ]
+        },
+        "spatial": {
+          "dtype": "<f4",
+          "shape": [
+            1,
+            2
+          ],
+          "values": [
+            [
+              224.0,
+              224.0
+            ]
+          ]
+        },
+        "obs_names": [
+          "0"
+        ],
+        "var_names": [
+          "0",
+          "1",
+          "2"
+        ],
+        "sample_id": [
+          "s"
+        ],
+        "uns": {
+          "background_color": "white",
+          "downsample_factor": 2.0,
+          "patch_mode": "free_form",
+          "patch_size": 224,
+          "registration_type": "feature_extraction",
+          "res_level": 1
+        }
+      }
+    }
+  },
+  {
+    "events": [
+      1,
+      2,
+      1,
+      2
+    ],
+    "files": {
+      "merged/registration/he_merged_processed_aligned_registered.h5ad": {
+        "shape": [
+          4,
+          3
+        ],
+        "dtype": "<f4",
+        "X": {
+          "dtype": "<f4",
+          "shape": [
+            4,
+            3
+          ],
+          "values": [
+            [
+              112.0,
+              112.0,
+              0.0
+            ],
+            [
+              336.0,
+              112.0,
+              1.0
+            ],
+            [
+              112.0,
+              336.0,
+              2.0
+            ],
+            [
+              336.0,
+              336.0,
+              3.0
+            ]
+          ]
+        },
+        "spatial": {
+          "dtype": "<f4",
+          "shape": [
+            4,
+            2
+          ],
+          "values": [
+            [
+              112.0,
+              112.0
+            ],
+            [
+              336.0,
+              112.0
+            ],
+            [
+              112.0,
+              336.0
+            ],
+            [
+              336.0,
+              336.0
+            ]
+          ]
+        },
+        "obs_names": [
+          "s_0",
+          "s_1",
+          "s_2",
+          "s_3"
+        ],
+        "var_names": [
+          "0",
+          "1",
+          "2"
+        ],
+        "sample_id": [
+          "s",
+          "s",
+          "s",
+          "s"
+        ],
+        "uns": {
+          "focus_registration_fingerprint": "db9946f3278c4afa21ec4ca467109b1aab14b4a31e087ca55f4c018f71eba669",
+          "focus_registration_geometry": {},
+          "registration_type": "feature_extraction"
+        }
+      },
+      "merged/registration/he_merged_processed_aligned_registered_res1.h5ad": {
+        "shape": [
+          1,
+          3
+        ],
+        "dtype": "<f4",
+        "X": {
+          "dtype": "<f4",
+          "shape": [
+            1,
+            3
+          ],
+          "values": [
+            [
+              112.0,
+              112.0,
+              0.0
+            ]
+          ]
+        },
+        "spatial": {
+          "dtype": "<f4",
+          "shape": [
+            1,
+            2
+          ],
+          "values": [
+            [
+              224.0,
+              224.0
+            ]
+          ]
+        },
+        "obs_names": [
+          "s_0"
+        ],
+        "var_names": [
+          "0",
+          "1",
+          "2"
+        ],
+        "sample_id": [
+          "s"
+        ],
+        "uns": {
+          "downsample_factor": 2.0,
+          "focus_registration_fingerprint": "9edff1fd0fa8abacc2befc7095f2f836b9c1eb75c7f5cc5d9faf1405c2832216",
+          "focus_registration_geometry": {},
+          "registration_type": "feature_extraction",
+          "res_level": 1
+        }
+      },
+      "s/registration/he_s_processed_aligned_registered.h5ad": {
+        "shape": [
+          4,
+          3
+        ],
+        "dtype": "<f4",
+        "X": {
+          "dtype": "<f4",
+          "shape": [
+            4,
+            3
+          ],
+          "values": [
+            [
+              112.0,
+              112.0,
+              0.0
+            ],
+            [
+              336.0,
+              112.0,
+              1.0
+            ],
+            [
+              112.0,
+              336.0,
+              2.0
+            ],
+            [
+              336.0,
+              336.0,
+              3.0
+            ]
+          ]
+        },
+        "spatial": {
+          "dtype": "<f4",
+          "shape": [
+            4,
+            2
+          ],
+          "values": [
+            [
+              112.0,
+              112.0
+            ],
+            [
+              336.0,
+              112.0
+            ],
+            [
+              112.0,
+              336.0
+            ],
+            [
+              336.0,
+              336.0
+            ]
+          ]
+        },
+        "obs_names": [
+          "0",
+          "1",
+          "2",
+          "3"
+        ],
+        "var_names": [
+          "0",
+          "1",
+          "2"
+        ],
+        "sample_id": [
+          "s",
+          "s",
+          "s",
+          "s"
+        ],
+        "uns": {
+          "background_color": "white",
+          "patch_mode": "free_form",
+          "patch_size": 224,
+          "registration_type": "feature_extraction"
+        }
+      },
+      "s/registration/he_s_processed_aligned_registered_res1.h5ad": {
+        "shape": [
+          1,
+          3
+        ],
+        "dtype": "<f4",
+        "X": {
+          "dtype": "<f4",
+          "shape": [
+            1,
+            3
+          ],
+          "values": [
+            [
+              112.0,
+              112.0,
+              0.0
+            ]
+          ]
+        },
+        "spatial": {
+          "dtype": "<f4",
+          "shape": [
+            1,
+            2
+          ],
+          "values": [
+            [
+              224.0,
+              224.0
+            ]
+          ]
+        },
+        "obs_names": [
+          "0"
+        ],
+        "var_names": [
+          "0",
+          "1",
+          "2"
+        ],
+        "sample_id": [
+          "s"
+        ],
+        "uns": {
+          "background_color": "white",
+          "downsample_factor": 2.0,
+          "patch_mode": "free_form",
+          "patch_size": 224,
+          "registration_type": "feature_extraction",
+          "res_level": 1
+        }
+      }
+    }
+  },
+  {
+    "events": [
+      1,
+      2,
+      1,
+      2
+    ],
+    "files": {
+      "merged/registration/he_merged_processed_aligned_registered.h5ad": {
+        "shape": [
+          4,
+          3
+        ],
+        "dtype": "<f4",
+        "X": {
+          "dtype": "<f4",
+          "shape": [
+            4,
+            3
+          ],
+          "values": [
+            [
+              112.0,
+              112.0,
+              0.0
+            ],
+            [
+              336.0,
+              112.0,
+              1.0
+            ],
+            [
+              112.0,
+              336.0,
+              2.0
+            ],
+            [
+              336.0,
+              336.0,
+              3.0
+            ]
+          ]
+        },
+        "spatial": {
+          "dtype": "<f4",
+          "shape": [
+            4,
+            2
+          ],
+          "values": [
+            [
+              112.0,
+              112.0
+            ],
+            [
+              336.0,
+              112.0
+            ],
+            [
+              112.0,
+              336.0
+            ],
+            [
+              336.0,
+              336.0
+            ]
+          ]
+        },
+        "obs_names": [
+          "s_0",
+          "s_1",
+          "s_2",
+          "s_3"
+        ],
+        "var_names": [
+          "0",
+          "1",
+          "2"
+        ],
+        "sample_id": [
+          "s",
+          "s",
+          "s",
+          "s"
+        ],
+        "uns": {
+          "focus_registration_fingerprint": "3b5e169347f53844a5ae1a58aa9264e96bc678585d17a850a12d606f8a449191",
+          "focus_registration_geometry": {},
+          "registration_type": "feature_extraction"
+        }
+      },
+      "merged/registration/he_merged_processed_aligned_registered_res1.h5ad": {
+        "shape": [
+          1,
+          3
+        ],
+        "dtype": "<f4",
+        "X": {
+          "dtype": "<f4",
+          "shape": [
+            1,
+            3
+          ],
+          "values": [
+            [
+              112.0,
+              112.0,
+              0.0
+            ]
+          ]
+        },
+        "spatial": {
+          "dtype": "<f4",
+          "shape": [
+            1,
+            2
+          ],
+          "values": [
+            [
+              224.0,
+              224.0
+            ]
+          ]
+        },
+        "obs_names": [
+          "s_0"
+        ],
+        "var_names": [
+          "0",
+          "1",
+          "2"
+        ],
+        "sample_id": [
+          "s"
+        ],
+        "uns": {
+          "downsample_factor": 2.0,
+          "focus_registration_fingerprint": "2fec2faa837b4acc337247d65a5d62226c51326a0743df4b2f4cc42630265a35",
+          "focus_registration_geometry": {},
+          "registration_type": "feature_extraction",
+          "res_level": 1
+        }
+      },
+      "s/registration/he_s_processed_aligned_registered.h5ad": {
+        "shape": [
+          4,
+          3
+        ],
+        "dtype": "<f4",
+        "X": {
+          "dtype": "<f4",
+          "shape": [
+            4,
+            3
+          ],
+          "values": [
+            [
+              112.0,
+              112.0,
+              0.0
+            ],
+            [
+              336.0,
+              112.0,
+              1.0
+            ],
+            [
+              112.0,
+              336.0,
+              2.0
+            ],
+            [
+              336.0,
+              336.0,
+              3.0
+            ]
+          ]
+        },
+        "spatial": {
+          "dtype": "<f4",
+          "shape": [
+            4,
+            2
+          ],
+          "values": [
+            [
+              112.0,
+              112.0
+            ],
+            [
+              336.0,
+              112.0
+            ],
+            [
+              112.0,
+              336.0
+            ],
+            [
+              336.0,
+              336.0
+            ]
+          ]
+        },
+        "obs_names": [
+          "0",
+          "1",
+          "2",
+          "3"
+        ],
+        "var_names": [
+          "0",
+          "1",
+          "2"
+        ],
+        "sample_id": [
+          "s",
+          "s",
+          "s",
+          "s"
+        ],
+        "uns": {
+          "background_color": "black",
+          "patch_mode": "free_form",
+          "patch_size": 224,
+          "registration_type": "feature_extraction"
+        }
+      },
+      "s/registration/he_s_processed_aligned_registered_res1.h5ad": {
+        "shape": [
+          1,
+          3
+        ],
+        "dtype": "<f4",
+        "X": {
+          "dtype": "<f4",
+          "shape": [
+            1,
+            3
+          ],
+          "values": [
+            [
+              112.0,
+              112.0,
+              0.0
+            ]
+          ]
+        },
+        "spatial": {
+          "dtype": "<f4",
+          "shape": [
+            1,
+            2
+          ],
+          "values": [
+            [
+              224.0,
+              224.0
+            ]
+          ]
+        },
+        "obs_names": [
+          "0"
+        ],
+        "var_names": [
+          "0",
+          "1",
+          "2"
+        ],
+        "sample_id": [
+          "s"
+        ],
+        "uns": {
+          "background_color": "black",
+          "downsample_factor": 2.0,
+          "patch_mode": "free_form",
+          "patch_size": 224,
+          "registration_type": "feature_extraction",
+          "res_level": 1
+        }
+      }
+    }
+  }
+]

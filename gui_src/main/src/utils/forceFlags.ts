@@ -1,7 +1,7 @@
 /**
  * Force-recompute flags as the pipeline will actually apply them.
  *
- * Mirrors `_compute_effective_force_flags` in src/focus/orchestrator.py:
+ * Mirrors `_compute_effective_force_flags` in src/focus/pipeline/invalidation.py:
  * - reference preprocessing forced: every alignment and registration re-runs
  * - target preprocessing forced: that modality's alignment and registration re-run
  * - alignment forced (for any reason): that modality's registration re-runs

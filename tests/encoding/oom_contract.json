@@ -1,0 +1,124 @@
+[
+  {
+    "masked": false,
+    "calls": [
+      {
+        "ids": [
+          0.0,
+          1.0,
+          2.0,
+          3.0,
+          4.0
+        ],
+        "member": null
+      },
+      {
+        "ids": [
+          0.0,
+          1.0
+        ],
+        "member": null
+      },
+      {
+        "ids": [
+          2.0,
+          3.0
+        ],
+        "member": null
+      },
+      {
+        "ids": [
+          4.0
+        ],
+        "member": null
+      }
+    ],
+    "result": [
+      [
+        0.0
+      ],
+      [
+        1.0
+      ],
+      [
+        2.0
+      ],
+      [
+        3.0
+      ],
+      [
+        4.0
+      ]
+    ],
+    "batch_size": 2,
+    "dtype": "float32"
+  },
+  {
+    "masked": true,
+    "calls": [
+      {
+        "ids": [
+          0.0,
+          1.0,
+          2.0,
+          3.0,
+          4.0
+        ],
+        "member": [
+          false,
+          true,
+          true,
+          true,
+          true
+        ]
+      },
+      {
+        "ids": [
+          0.0,
+          1.0
+        ],
+        "member": [
+          false,
+          true
+        ]
+      },
+      {
+        "ids": [
+          2.0,
+          3.0
+        ],
+        "member": [
+          true,
+          true
+        ]
+      },
+      {
+        "ids": [
+          4.0
+        ],
+        "member": [
+          true
+        ]
+      }
+    ],
+    "result": [
+      [
+        0.0
+      ],
+      [
+        1.0
+      ],
+      [
+        2.0
+      ],
+      [
+        3.0
+      ],
+      [
+        4.0
+      ]
+    ],
+    "batch_size": 2,
+    "dtype": "float32"
+  }
+]

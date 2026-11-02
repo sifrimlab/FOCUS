@@ -45,7 +45,7 @@ Interactive browser-based direct mapping (`DirectMappingAligner` + `DirectMappin
 
   which maps moving-layer coordinates into the fixed layer's frame
   (`gui_src/alignment/src/utils/export.ts`).
-- `DirectMappingAligner._parse_alignment_result` reshapes it column-first, applies it to the full
+- `focus.alignment.result.parse_alignment_result` reshapes it column-first, applies it to the full
   \(N_R\times2\) coordinate array in homogeneous coordinates and divides by \(w\), so the persisted
   mapping is projective and covers every spot, not only the ones drawn in the browser. The per-spot
   `spots` list in the same payload is a fallback used only when no matrix is present; the

@@ -118,5 +118,8 @@ nav:
     - Preprocessing: api/preprocessing.md
     - Data Types: api/data_types.md
 
+  - Development:
+    - Architecture and Verification: development/refactoring.md
+
   - Troubleshooting: troubleshooting.md
   - FAQ: faq.md

@@ -12,8 +12,8 @@ This page reflects the current implementation in `src/focus`.
 # Preprocessing
 from focus.preprocessing import (
     preprocess_modality,
-    BaseSample,
-    BaseDataset,
+    SampleSource,
+    DatasetState,
     MicroscopyImage,
     MicroscopyImageDataset,
     MsiSample,
@@ -38,27 +38,27 @@ from focus.registration import (
 
 # Annotations
 from focus.annotations import transfer_annotations
-from focus.annotations.annotations import load_geojson
+from focus.annotations.geojson import load_geojson
 
 # Config + orchestration
-from focus.utils import parse_config
-from focus.orchestrator import run
+from focus.config.validation import parse_config
+from focus.pipeline.runner import run
 ```
 
 Notes:
 
 - `focus.annotations` exports `transfer_annotations` only.
-- `load_geojson` is implemented in `focus.annotations.annotations`.
+- `load_geojson` is implemented in `focus.annotations.geojson`.
 - Orchestrator entry point is `run(config: dict, progress_callback=None)`.
 
 ---
 
 ## Core preprocessing abstractions
 
-### `BaseSample`
+### `SampleSource`
 
 ```python
-BaseSample(source_path: str, sample_id: str, modality_name: str)
+SampleSource(source_path: str, sample_id: str, modality_name: str)
 ```
 
 Behavior:
@@ -68,29 +68,25 @@ Behavior:
 - creates output directory:
   - `<source_path>/<sample_id>/preprocessing/<modality_name>/`
 
-### `BaseDataset`
+### `DatasetState`
 
 ```python
-BaseDataset(path: str, samples: list)
+DatasetState[SampleT](path: str, samples: list[SampleT])
 ```
 
-Defines abstract interface:
-
-```python
-process_dataset(**kwargs) -> dict[str, str]
-```
+Stores `dataset_source_path` and the typed sample collection. Each modality defines its own processing signature; the dispatcher uses the narrow `Preprocessor` protocol.
 
 Includes helper:
 
 ```python
-BaseDataset._check_cache(output_path: str, force_recomputing: bool) -> bool
+DatasetState._check_cache(output_path: str, force_recomputing: bool) -> bool
 ```
 
 ---
 
 ## Progress reporting utility
 
-`StepReporter` lives in `focus.reporting` (re-exported by `focus.preprocessing._utils`). It is the single reporting interface of the pipeline. Every progress change becomes one activity line with the same structure on the console, in `focus.log` and in the GUI:
+`StepReporter` lives in `focus.runtime.reporting`; `get_reporter` lives in `focus.runtime.reporter_context`. It is the single reporting interface of the pipeline. Every progress change becomes one activity line with the same structure on the console, in `focus.log` and in the GUI:
 
 ```
 [step] [sample] [modality] [stage]
@@ -99,7 +95,8 @@ BaseDataset._check_cache(output_path: str, force_recomputing: bool) -> bool
 For example `[4/8 - Collecting per-sample m/z peaks] [S01] [MSI] [Preprocessing]`. A finished step adds a line with its duration (`... done in 12.4s`), except when the step was served from cache. Detail lines start with `-`, warnings with `!`.
 
 ```python
-from focus.reporting import StepReporter, get_reporter
+from focus.runtime.reporting import StepReporter
+from focus.runtime.reporter_context import get_reporter
 ```
 
 Context, opened by the orchestrator:
@@ -128,8 +125,8 @@ Code without a reporter handle uses `get_reporter()`, which returns the reporter
 
 ```python
 import json
-from focus.utils import parse_config
-from focus.orchestrator import run
+from focus.config.validation import parse_config
+from focus.pipeline.runner import run
 
 with open("focus_config.json", "r") as f:
     config = json.load(f)

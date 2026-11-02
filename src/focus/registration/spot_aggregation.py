@@ -1,18 +1,28 @@
+"""Sum target-spot features within transformed anchor footprints."""
+
+from functools import partial
+
+from focus.registration.types import RegistrationJob
+
+from focus.registration.anchor import AnchorArrays
+from focus.spatial.footprint import AnchorGeometry
+from anndata import AnnData
+from focus.runtime.reporting import StepReporter
 import logging
 
 import anndata
 import numpy as np
 import scipy.sparse
 
-from focus.constants import RegistrationType
-from focus.registration._cache import register_samples, merge_registered_samples
-from focus.registration._footprint import footprint_membership
-from focus.reporting import get_reporter
+from focus.config.options import RegistrationType
+from focus.registration.execution import register_target
+from focus.spatial.membership import footprint_membership
+from focus.runtime.reporter_context import get_reporter
 
 logger = logging.getLogger(__name__)
 
 
-def _as_csr(matrix):
+def _as_csr(matrix: np.ndarray | scipy.sparse.csr_matrix) -> scipy.sparse.csr_matrix:
     """Return ``matrix`` as a CSR sparse matrix (no-op when already sparse)."""
     if scipy.sparse.issparse(matrix):
         return matrix.tocsr()
@@ -47,7 +57,45 @@ class SpotAggregationRegistration:
     _REGISTRATION_TYPE = RegistrationType.SPOT_AGGREGATION
 
     def __init__(self, path: str) -> None:
+        """Retain the dataset root; registration reads source files when requested.
+
+        Parameters
+        ----------
+        path : str
+            Dataset root for sample and merged registration outputs."""
         self._path = path
+
+    def _compute_sample(
+        self,
+        target_files: dict[str, str],
+        sample_id: str,
+        anchor: AnchorArrays,
+        geom: AnchorGeometry,
+    ) -> tuple[AnnData | None, dict[str, object]]:
+        """Compute one sample's registered features and geometry metadata."""
+        target_adata = anndata.read_h5ad(target_files[sample_id])
+        target_coords = np.asarray(target_adata.obsm["spatial"], dtype=np.float64)
+        logger.debug(
+            f"Anchor: {anchor.n_obs} spots, spot_size={anchor.spot_size}. "
+            f"Target: {target_coords.shape[0]} spots, {target_adata.n_vars} features."
+        )
+        # A @ payload sums the rows of every target spot inside each anchor footprint
+        # (sparse-preserving); empty footprints become all-zero rows, dropped downstream by
+        # the coverage mask. The same operator is applied to .X and every layer.
+        membership = footprint_membership(geom, target_coords, weights="ones")
+        adata = anndata.AnnData(
+            X=_as_csr(membership @ _as_csr(target_adata.X)),
+            obsm={"spatial": anchor.mapped.copy()},
+            obs={"sample_id": [sample_id] * anchor.n_obs},
+            layers={
+                k: _as_csr(membership @ _as_csr(v))
+                for k, v in target_adata.layers.items()
+            }
+            or None,
+        )
+        # Carry over var metadata from target (gene names, m/z values, etc.)
+        adata.var = target_adata.var.copy()
+        return adata, {}
 
     def register_dataset(
         self,
@@ -56,7 +104,7 @@ class SpotAggregationRegistration:
         anchor_name: str,
         target_name: str,
         force_recomputing: bool = False,
-        step_reporter=None,
+        step_reporter: StepReporter | None = None,
     ) -> dict[str, str]:
         """
         Register a spot-based target modality to the anchor by summing per footprint.
@@ -84,39 +132,30 @@ class SpotAggregationRegistration:
         dict[str, str]
             {sample_id: registered_h5ad_path, "merged": merged_h5ad_path}
         """
-        common_samples = sorted(set(anchor_files.keys()) & set(target_files.keys()) - {"merged"})
+        common_samples = sorted(
+            set(anchor_files.keys()) & set(target_files.keys()) - {"merged"}
+        )
         reporter = step_reporter or get_reporter()
 
-        def compute(sample_id, anchor, geom):
-            target_adata = anndata.read_h5ad(target_files[sample_id])
-            target_coords = np.asarray(target_adata.obsm['spatial'], dtype=np.float64)
-            logger.debug(
-                f"Anchor: {anchor.n_obs} spots, spot_size={anchor.spot_size}. "
-                f"Target: {target_coords.shape[0]} spots, {target_adata.n_vars} features."
-            )
-            # A @ payload sums the rows of every target spot inside each anchor footprint
-            # (sparse-preserving); empty footprints become all-zero rows, dropped downstream by
-            # the coverage mask. The same operator is applied to .X and every layer.
-            membership = footprint_membership(geom, target_coords, weights="ones")
-            adata = anndata.AnnData(
-                X=_as_csr(membership @ _as_csr(target_adata.X)),
-                obsm={'spatial': anchor.mapped.copy()},
-                obs={'sample_id': [sample_id] * anchor.n_obs},
-                layers={k: _as_csr(membership @ _as_csr(v)) for k, v in target_adata.layers.items()} or None,
-            )
-            # Carry over var metadata from target (gene names, m/z values, etc.)
-            adata.var = target_adata.var.copy()
-            return adata, {}
-
-        registered_files = register_samples(
-            path=self._path,
-            samples=reporter.tqdm(common_samples, 1, 2, "Aggregating target spots per anchor footprint", unit="sample"),
-            anchor_files=anchor_files, target_files=target_files,
-            anchor_name=anchor_name, target_name=target_name,
-            registration_type=self._REGISTRATION_TYPE, settings={}, compute=compute,
-            force_recomputing=force_recomputing, reporter=reporter,
-        )
-        reporter.step(2, 2, "Merging samples")
-        return merge_registered_samples(
-            self._path, registered_files, target_name, self._REGISTRATION_TYPE, force_recomputing=force_recomputing,
+        return register_target(
+            RegistrationJob(
+                path=self._path,
+                samples=reporter.tqdm(
+                    common_samples,
+                    1,
+                    2,
+                    "Aggregating target spots per anchor footprint",
+                    unit="sample",
+                ),
+                anchor_files=anchor_files,
+                target_files=target_files,
+                anchor_name=anchor_name,
+                target_name=target_name,
+                registration_type=self._REGISTRATION_TYPE,
+                settings={},
+                compute=partial(self._compute_sample, target_files),
+                force_recomputing=force_recomputing,
+                reporter=reporter,
+            ),
+            reporter,
         )

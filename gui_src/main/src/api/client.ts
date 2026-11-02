@@ -60,6 +60,11 @@ export const api = {
     return r.data;
   },
 
+  /** Ask the running pipeline to stop; it reports `cancelled` once it has. */
+  async cancel(): Promise<void> {
+    await apiClient.post('/api/cancel');
+  },
+
   async getStatus(): Promise<PipelineStatus> {
     const r = await apiClient.get<PipelineStatus>('/api/status', { timeout: STATUS_TIMEOUT_MS });
     return r.data;

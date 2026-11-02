@@ -51,13 +51,61 @@ dependencies = [
 [project.scripts]
 focus = "focus.main:main"
 
-# The compiled Vue/Vite front-ends under focus/GUI/{main,alignment} are data
+[project.optional-dependencies]
+dev = [
+    "pytest==9.2.0",
+    "mypy==2.4.1",
+    "ruff==0.15.16",
+    "build",
+    "types-tqdm",
+    "types-psutil",
+    "pandas-stubs",
+    "scipy-stubs",
+    "types-shapely",
+    "types-Pillow",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+markers = ["local_data: comparisons requiring untracked local scientific data"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 88
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "D100", "D101", "D102", "D103", "D104", "D105", "D106", "D107"]
+
+[tool.ruff.lint.per-file-ignores]
+"**/__init__.py" = ["F401"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "numpy"
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+namespace_packages = true
+explicit_package_bases = true
+mypy_path = ["src", "typing"]
+files = ["src/focus", "scripts", "tests", "tools"]
+show_error_codes = true
+
+# These external scientific packages do not publish complete PEP 561 typing.
+# Owned modules remain checked; their library boundaries are annotated locally.
+[[tool.mypy.overrides]]
+module = ["numba.*", "joblib.*", "sklearn.*", "h5py.*", "anndata.*", "mudata.*", "scanpy.*", "ramanspy.*", "readlif.*", "czifile.*", "basicpy.*", "ashlar.*", "cv2.*", "igraph.*", "leidenalg.*"]
+ignore_missing_imports = true
+
+# The compiled Vue/Vite front-ends under focus/gui/{main,alignment} are data
 # files, not Python modules, so setuptools would otherwise leave them out of the
 # wheel and both GUIs would 404 on a non-editable install. Globbing the whole
 # directory (rather than listing extensions) keeps this correct if a future build
 # emits fonts or images; the exclude below stops macOS junk from shipping.
 [tool.setuptools.package-data]
-"focus.GUI" = ["main/*", "alignment/*"]
+"focus.gui" = ["main/*", "alignment/*"]
+"focus" = ["py.typed"]
 
 [tool.setuptools.exclude-package-data]
-"focus.GUI" = ["**/.DS_Store"]
+"focus.gui" = ["**/.DS_Store"]

@@ -1,19 +1,28 @@
 """Deterministic categorical data colors shared by AnnData and the alignment API."""
+
+from collections.abc import Iterable
 import colorsys
 
 UNASSIGNED_COLOR = "#92979f"
 
 
-def label_order(labels):
-    def key(label):
+def label_order(labels: Iterable[object]) -> list[str]:
+    """Order numeric labels numerically, then other labels lexically."""
+
+    def key(label: str) -> tuple[int, int, str]:
+        """Build the numeric-first sorting key of a cluster label."""
         try:
             return (0, int(label), label)
         except ValueError:
             return (1, 0, label)
-    return sorted(set(map(str, labels)) - {"unassigned"}, key=key) + (["unassigned"] if "unassigned" in labels else [])
+
+    return sorted(set(map(str, labels)) - {"unassigned"}, key=key) + (
+        ["unassigned"] if "unassigned" in labels else []
+    )
 
 
-def cluster_colors(labels):
+def cluster_colors(labels: Iterable[object]) -> dict[str, str]:
+    """Assign a deterministic, distinct display color to each label."""
     result = {}
     used = {UNASSIGNED_COLOR}
     for i, label in enumerate(label_order(labels)):
@@ -23,7 +32,9 @@ def cluster_colors(labels):
         # Golden-angle hues with alternating lightness. Never cycle a fixed palette.
         j = i
         while True:
-            rgb = colorsys.hls_to_rgb((j * 0.618033988749895) % 1, (0.46, 0.63, 0.38)[j % 3], 0.65)
+            rgb = colorsys.hls_to_rgb(
+                (j * 0.618033988749895) % 1, (0.46, 0.63, 0.38)[j % 3], 0.65
+            )
             color = "#" + "".join(f"{round(255 * c):02x}" for c in rgb)
             if color not in used:
                 break

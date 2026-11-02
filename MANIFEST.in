@@ -1,6 +1,6 @@
 # Source distribution contents.
 #
-# focus/GUI ships the *compiled* Vue bundles as package data (see
+# focus/gui ships the *compiled* Vue bundles as package data (see
 # [tool.setuptools.package-data] in pyproject.toml). Under GNU GPL v3 section 1
 # the Corresponding Source for a minified bundle is the Vue/TypeScript source
 # plus the build configuration, so gui_src must travel with the release. It
@@ -11,6 +11,14 @@
 # wheel in the same release satisfies section 6, and Vue sources in every
 # install would be dead weight.
 graft gui_src
+
+# Owned Python entrypoints, test contracts and development type boundaries travel
+# with the source archive so its verification can be reproduced after extraction.
+graft scripts
+graft tests
+graft typing
+graft docs/development
+recursive-include tools *.py Dockerfile requirements.txt
 
 # Build intermediates: never shippable, and node_modules would dwarf the rest.
 # gui_src/ is an npm workspace, so dependencies are hoisted to gui_src/node_modules.

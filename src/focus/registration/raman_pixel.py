@@ -1,4 +1,13 @@
-import os
+"""Gaussian footprint readout from stitched Raman pixel intensities."""
+
+from functools import partial
+
+from focus.registration.types import RegistrationJob
+
+from focus.registration.anchor import AnchorArrays
+from focus.spatial.footprint import AnchorGeometry
+from anndata import AnnData
+from focus.runtime.reporting import StepReporter
 import logging
 import xml.etree.ElementTree as ET
 
@@ -7,11 +16,11 @@ import numpy as np
 import pandas as pd
 import tifffile
 
-from focus.constants import RegistrationType
-from focus.utils import hw_from_axes
-from focus.registration._cache import register_samples, merge_registered_samples
-from focus.registration._footprint import pixel_footprint_membership, row_normalize
-from focus.reporting import get_reporter
+from focus.config.options import RegistrationType
+from focus.io.ome import hw_from_axes
+from focus.registration.execution import register_target
+from focus.spatial.membership import pixel_footprint_membership, row_normalize
+from focus.runtime.reporter_context import get_reporter
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +52,12 @@ class RamanPixelInterpolationRegistration:
     _REGISTRATION_TYPE = RegistrationType.RAMAN_PIXEL_INTERPOLATION
 
     def __init__(self, path: str) -> None:
+        """Retain the dataset root; registration reads source files when requested.
+
+        Parameters
+        ----------
+        path : str
+            Dataset root for sample and merged registration outputs."""
         self._path = path
 
     @staticmethod
@@ -78,28 +93,30 @@ class RamanPixelInterpolationRegistration:
             if tif.is_ome and tif.ome_metadata:
                 try:
                     root = ET.fromstring(tif.ome_metadata)
-                    tag_prefix = root.tag.split('}')[0] + '}' if '}' in root.tag else ''
-                    ch_elements = root.findall(f'.//{tag_prefix}Channel')
-                    names = [c.get('Name', '') for c in ch_elements]
+                    tag_prefix = root.tag.split("}")[0] + "}" if "}" in root.tag else ""
+                    ch_elements = root.findall(f".//{tag_prefix}Channel")
+                    names = [c.get("Name", "") for c in ch_elements]
                     if any(n for n in names):
-                        channel_names = [n if n else f'Channel_{i}' for i, n in enumerate(names)]
+                        channel_names = [
+                            n if n else f"Channel_{i}" for i, n in enumerate(names)
+                        ]
                 except Exception:
                     pass
 
             image = full_level.asarray()
 
         # Squeeze leading singleton OME dims (T=1, Z=1 in TZCYX → CYX)
-        axes_trimmed = axes[-len(image.shape):]
+        axes_trimmed = axes[-len(image.shape) :]
         while image.ndim > 3 and image.shape[0] == 1:
             image = image[0]
             axes_trimmed = axes_trimmed[1:]
 
         # Normalize to (C, Y, X)
         axes_3 = axes_trimmed[-3:] if len(axes_trimmed) >= 3 else axes_trimmed
-        if len(set(axes_3) & {'C', 'Y', 'X'}) == 3:
-            c_idx = axes_3.index('C')
-            y_idx = axes_3.index('Y')
-            x_idx = axes_3.index('X')
+        if len(set(axes_3) & {"C", "Y", "X"}) == 3:
+            c_idx = axes_3.index("C")
+            y_idx = axes_3.index("Y")
+            x_idx = axes_3.index("X")
             image = np.transpose(image, (c_idx, y_idx, x_idx))
         elif image.ndim == 3:
             # Fallback: first dim is channels when it is the smallest, i.e., CHW layout
@@ -111,7 +128,7 @@ class RamanPixelInterpolationRegistration:
             image = image[np.newaxis]
 
         if channel_names is None:
-            channel_names = [f'Channel_{i}' for i in range(image.shape[0])]
+            channel_names = [f"Channel_{i}" for i in range(image.shape[0])]
 
         c0, r0, c1, r1 = crop
         return np.asarray(image[:, r0:r1, c0:c1], dtype=np.float32), channel_names
@@ -123,12 +140,59 @@ class RamanPixelInterpolationRegistration:
             series = tif.series[0]
             if len(series.levels) > 1:
                 shape = series.levels[0].shape
-                axes = getattr(series.levels[0], "axes", "") or getattr(series, "axes", "")
+                axes = getattr(series.levels[0], "axes", "") or getattr(
+                    series, "axes", ""
+                )
             else:
                 shape = series.shape
                 axes = getattr(series, "axes", "")
         # Identify (Y, X) from OME axes metadata (shared with the alignment image loader).
         return hw_from_axes(shape, axes)
+
+    def _compute_sample(
+        self,
+        target_files: dict[str, str],
+        reporter: StepReporter,
+        sample_id: str,
+        anchor: AnchorArrays,
+        geom: AnchorGeometry,
+    ) -> tuple[AnnData | None, dict[str, object]]:
+        """Compute one sample's registered features and geometry metadata."""
+        height, width = self._image_dims(target_files[sample_id])
+        # Load only the pixels that some footprint can reach.
+        boxes = geom.pixel_bboxes(height, width)
+        reach = boxes[(boxes[:, 2] > boxes[:, 0]) & (boxes[:, 3] > boxes[:, 1])]
+        if len(reach) == 0:
+            # The anchor spots fall entirely outside the Raman image: there is no tissue
+            # overlap, so every row is a zero spectral vector.
+            reporter.warning(
+                f"All {anchor.n_obs} anchor spots fall outside the Raman image: "
+                f"zero spectral vectors assigned (no overlap)"
+            )
+            crop = (0, 0, 0, 0)
+        else:
+            crop = (
+                int(reach[:, 0].min()),
+                int(reach[:, 1].min()),
+                int(reach[:, 2].max()),
+                int(reach[:, 3].max()),
+            )
+        pixels, channel_names = self._load_raman_crop(target_files[sample_id], crop)
+        weights = row_normalize(
+            pixel_footprint_membership(geom, crop, weights="gaussian")
+        )
+        features = pixels.reshape(pixels.shape[0], -1).T  # (crop pixels, C)
+        logger.debug(
+            f"Anchor: {anchor.n_obs} spots, spot_size={anchor.spot_size}. "
+            f"Raman crop {crop}: {features.shape[0]} pixels, {features.shape[1]} channels."
+        )
+        adata = anndata.AnnData(
+            X=np.asarray(weights @ features, dtype=np.float32),
+            obsm={"spatial": anchor.mapped.copy()},
+            obs={"sample_id": [sample_id] * anchor.n_obs},
+            var=pd.DataFrame(index=channel_names),
+        )
+        return adata, {}
 
     def register_dataset(
         self,
@@ -137,7 +201,7 @@ class RamanPixelInterpolationRegistration:
         anchor_name: str,
         target_name: str,
         force_recomputing: bool = False,
-        step_reporter=None,
+        step_reporter: StepReporter | None = None,
     ) -> dict[str, str]:
         """
         Register a Raman OME-TIFF to the anchor grid using Gaussian pixel interpolation.
@@ -168,48 +232,30 @@ class RamanPixelInterpolationRegistration:
         dict[str, str]
             {sample_id: registered_h5ad_path, "merged": merged_h5ad_path}
         """
-        common_samples = sorted(set(anchor_files.keys()) & set(target_files.keys()) - {"merged"})
+        common_samples = sorted(
+            set(anchor_files.keys()) & set(target_files.keys()) - {"merged"}
+        )
         reporter = step_reporter or get_reporter()
 
-        def compute(sample_id, anchor, geom):
-            height, width = self._image_dims(target_files[sample_id])
-            # Load only the pixels that some footprint can reach.
-            boxes = geom.pixel_bboxes(height, width)
-            reach = boxes[(boxes[:, 2] > boxes[:, 0]) & (boxes[:, 3] > boxes[:, 1])]
-            if len(reach) == 0:
-                # The anchor spots fall entirely outside the Raman image: there is no tissue
-                # overlap, so every row is a zero spectral vector.
-                reporter.warning(
-                    f"All {anchor.n_obs} anchor spots fall outside the Raman image: "
-                    f"zero spectral vectors assigned (no overlap)"
-                )
-                crop = (0, 0, 0, 0)
-            else:
-                crop = (int(reach[:, 0].min()), int(reach[:, 1].min()), int(reach[:, 2].max()), int(reach[:, 3].max()))
-            pixels, channel_names = self._load_raman_crop(target_files[sample_id], crop)
-            weights = row_normalize(pixel_footprint_membership(geom, crop, weights="gaussian"))
-            features = pixels.reshape(pixels.shape[0], -1).T                 # (crop pixels, C)
-            logger.debug(
-                f"Anchor: {anchor.n_obs} spots, spot_size={anchor.spot_size}. "
-                f"Raman crop {crop}: {features.shape[0]} pixels, {features.shape[1]} channels."
-            )
-            adata = anndata.AnnData(
-                X=np.asarray(weights @ features, dtype=np.float32),
-                obsm={'spatial': anchor.mapped.copy()},
-                obs={'sample_id': [sample_id] * anchor.n_obs},
-                var=pd.DataFrame(index=channel_names),
-            )
-            return adata, {}
-
-        registered_files = register_samples(
-            path=self._path,
-            samples=reporter.tqdm(common_samples, 1, 2, "Interpolating Raman pixels onto anchor spots", unit="sample"),
-            anchor_files=anchor_files, target_files=target_files,
-            anchor_name=anchor_name, target_name=target_name,
-            registration_type=self._REGISTRATION_TYPE, settings={}, compute=compute,
-            force_recomputing=force_recomputing, reporter=reporter,
-        )
-        reporter.step(2, 2, "Merging samples")
-        return merge_registered_samples(
-            self._path, registered_files, target_name, self._REGISTRATION_TYPE, force_recomputing=force_recomputing,
+        return register_target(
+            RegistrationJob(
+                path=self._path,
+                samples=reporter.tqdm(
+                    common_samples,
+                    1,
+                    2,
+                    "Interpolating Raman pixels onto anchor spots",
+                    unit="sample",
+                ),
+                anchor_files=anchor_files,
+                target_files=target_files,
+                anchor_name=anchor_name,
+                target_name=target_name,
+                registration_type=self._REGISTRATION_TYPE,
+                settings={},
+                compute=partial(self._compute_sample, target_files, reporter),
+                force_recomputing=force_recomputing,
+                reporter=reporter,
+            ),
+            reporter,
         )
