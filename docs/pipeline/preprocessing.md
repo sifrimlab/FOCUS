@@ -93,95 +93,90 @@ The MSI pipeline operates at the **dataset level**: all samples are processed to
    - Normalize physical coordinates to origin; shift to raster center
    - Compute raster bounding-box coordinates for each spot (in µm)
 
-2. **Background Detection** (optional, `detect_background=True` **and** `lipid_annotation_db` set). Without a database the step is silently skipped and every spot is marked foreground
-   - **Tissue sections** (`sample_type="tissue"`):
-     - For each spot, compute three spectral complexity features: Shannon entropy of the normalized intensity distribution, number of detected peaks, and log(1 + TIC)
-     - Add a 4th feature from the database (fraction of peaks matching the DB at the configured mass tolerance)
-     - Min-max normalize each feature and average into a composite score
-     - Fit a 1-component and a 2-component Gaussian Mixture Model; use BIC to select between them. If the 2-component model wins, classify spots with posterior ≥ 0.5 on the higher-mean component as tissue. Apply morphological cleanup (hole filling + binary opening) on the pixel grid.
-   - **Microgrid samples** (`sample_type="microgrid"`): the acquisition covers the whole slide, so background is the large majority and each cell covers one or a few spots. Cells are detected as sparse local outliers against a background model.
-     - Background ions: m/z bins on a log-ppm grid one `mass_tolerance` wide present in ≥ 50% of spots, dilated by one bin (matrix, sprayed standards, slide coating)
-     - Per-spot features: log(1 + cell-ion intensity), where cell ions are all peaks outside the background ion set; cell-ion fraction of the TIC; with a database, log(1 + intensity of DB-matched cell ions). TIC is excluded because on a microgrid it tracks matrix ions and ion suppression can lower it on cells
-     - Local background correction: rasterise each feature on the pixel grid, subtract a 9 × 9 spot median filter (removes deposition gradients and row drift), convert the residual to a robust z-score (median, 1.4826 × MAD). Skipped when pixel coordinates are missing or the raster is smaller than the window
-     - Hysteresis threshold on the mean z-score: seeds at z ≥ max(4, Gaussian quantile for 0.01 expected noise seeds per slide); spots with z ≥ 2 that are 8-connected to a seed join its component
-     - No morphological cleanup. Components above 25 spots are logged as possible debris or matrix crystals and kept. When no cell is detected, every spot is marked foreground and a warning is printed
-   - The foreground classification is stored as `obs["foreground"]`; all spots (including background) are included in the output and can be filtered downstream.
-
-3. **Recalibration Reference Selection** (method and references: [MSI methods §4.1](../scientific/msi_methods.md#41-recalibration-reference-selection))
-   - Per sample: every spectrum of that sample contributes, the tissue spectra when background detection ran, all spectra otherwise. Every peak is counted, whatever its intensity, on a logarithmic m/z grid with bins one tenth of `mass_tolerance` wide; the raw peaks are then released, so memory stays bounded by the mass range and tolerance rather than the spectrum count
+2. **Recalibration Reference Selection** (method and references: [MSI methods §4.1](../scientific/msi_methods.md#41-recalibration-reference-selection))
+   - Per sample: every spectrum of that sample contributes, before any foreground is known, so matrix and background ions present on the whole slide are eligible calibrants. Every peak is counted, whatever its intensity, on a logarithmic m/z grid with bins one tenth of `mass_tolerance` wide; the raw peaks are then released, so memory stays bounded by the mass range and tolerance rather than the spectrum count
    - The sample's m/z features are the maxima of its smoothed peak density that rise above the local background: a running median of the density, or the col toward a larger neighbouring maximum, tested with a Poisson test. An ion that recurs is a feature however weak it is; noise is not, however many centroids a spectrum holds
    - Candidates come from a feature detection with a kernel half as wide as the backbone's, so ions half a tolerance apart are separate candidates
-   - The calibrant matching of step 4 is replayed on the sample with each of the 1,000 most frequent candidates as a reference, in the calibrant search window (max(5 × `mass_tolerance`, 50) ppm): a match within the candidate's own feature is a hit, one elsewhere in the window took another ion
+   - The calibrant matching of step 3 is replayed on the sample with each of the 1,000 most frequent candidates as a reference, in the calibrant search window (max(5 × `mass_tolerance`, 50) ppm): a match within the candidate's own feature is a hit, one elsewhere in the window took another ion
    - A candidate is isolated when at most 10% of its matches took another ion; its score is its hits per spectrum and its reference mass the mean m/z of its hits. When a sample has no isolated candidate, the log gives its feature and isolated counts
    - For each ion mode, select at least 10 references: sprayed internal standards from `internal_standard_mz` first, then the best candidate (ties broken by ascending m/z) in each of 10 equal log-m/z segments, then by score. References are more than twice the search window apart
    - When internal standards are observed, the references are moved onto the standards' mass scale. Otherwise one constant ppm shift per sample, from the calibrant candidates samples share, puts all samples on a common mass scale, so one ion stays one feature across samples; the shift is logged with the sample's references
    - Alternatively, a user-supplied `recalibration_reference` can be passed directly, which skips this step entirely
 
-4. **Per-Spectrum m/z Recalibration** (per sample; [MSI methods §4.2](../scientific/msi_methods.md#42-per-spectrum-recalibration))
+3. **Per-Spectrum m/z Recalibration** (per sample; [MSI methods §4.2](../scientific/msi_methods.md#42-per-spectrum-recalibration))
    - Scan lines follow the imzML scan type (horizontal by default)
-   - Noise gate: a calibrant match must reach 5 times its spectrum's noise, 1.4826 × MAD of the intensities of its peaks outside the sample's features (widened by the search window); a spectrum with fewer than 10 such peaks has no gate, so clean spectra keep every calibrant
+   - Noise gate: a calibrant match must reach its spectrum's noise median plus 5 × 1.4826 × MAD, over the intensities of its peaks outside the sample's features (widened by the search window); a spectrum with fewer than 10 such peaks has no gate, so clean spectra keep every calibrant
    - Sample offset: locate the calibrants within ±10 times the search window, where more references show significantly more peaks than their background than chance agreement explains; the search then starts there (at 0 when no offset is supported)
    - Line level: match every reference within the search window, take the median ppm error per line and reference; lines without an estimate are searched again around the drift of their estimated neighbours until no further line is estimated; fit an offset (and a slope in m/z when at least 3 references spanning 25% of their m/z range are matched), smooth over 5 lines and interpolate lines without calibrants
    - Pixel level: match again within the search window centred on the line prediction; a spectrum's residual is the median of its residuals within `mass_tolerance` of their median, used when at least 3 agree; smooth over the 3 x 3 pixel neighbourhood
-   - Correct every m/z as m / (1 + e(m) × 1e-6), with e(m) the spectrum's ppm error model; the same model serves the backbone and the intensity matrix
+   - Correct every m/z as m / (1 + e(m) × 1e-6), with e(m) the spectrum's ppm error model; the same model serves foreground detection, the sample features and the intensity matrix
    - Runs with or without a lipid annotation database; the applied correction is stored in `obs["recalibration_ppm_<mode>"]`
 
-5. **Per-Sample m/z Features** ([MSI methods §4.3](../scientific/msi_methods.md#43-consensus-backbone-construction))
-   - Find the m/z features of the recalibrated spectra as in step 3, restricted to foreground spots when background detection ran (see step 2), otherwise all spots
-   - Keep a feature when its presence (share of spectra holding it above the background) is ≥ `frequency_threshold` times that of the sample's most present feature. The log reports, per sample, the features found and kept. Only the kept features' m/z and presence are retained
+4. **Foreground Detection** (per sample, on the recalibrated spectra; [MSI methods §5](../scientific/msi_methods.md#5-foreground-detection)). Always runs; no lipid database is needed
+   - Recurrent ions: the sample's m/z features over all its spectra (as in step 2)
+   - `sample_type` = `"tissue"`, `"tissue_noisy"`, `"cell_culture"`: score = log(1 + number of recurrent ions a spectrum holds above its median noise + 3 × 1.4826 MAD). Noise centroids never recur, so a noisy background scores low
+     - A 1- and a 2-component Gaussian mixture are compared by BIC. A background is separated only when two components win, Ashman's D ≥ 2 and the lower component holds at most half the recurrent ions of the higher one; otherwise every spectrum is foreground
+     - Cleanup: `tissue` fills holes and applies a 3 × 3 opening; `tissue_noisy` median-filters the score over 3 × 3 pixels first, applies a 5 × 5 opening and removes components below 10% of the largest; `cell_culture` applies a 3 × 3 majority vote, which keeps gaps between cells
+   - `sample_type="microgrid"`: background ions are the recurrent ions present in at least 50% of the spectra, over their whole feature range (matrix, sprayed standards, slide coating)
+     - Per-spot features: log(1 + intensity of the peaks outside the background ions) and its fraction of the TIC. TIC is excluded because on a microgrid it tracks matrix ions and ion suppression can lower it on cells
+     - Local background correction: rasterise each feature on the pixel grid, subtract a 9 × 9 spot median filter, convert the residual to a robust z-score (median, 1.4826 × MAD)
+     - Hysteresis threshold on the mean z-score: seeds at z ≥ max(4, Gaussian quantile for 0.01 expected noise seeds per slide); spots with z ≥ 2 that are 8-connected to a seed join its component. No morphological cleanup; components above 25 spots are logged and kept
+   - Dual ion mode: the union of the per-mode foregrounds. When no foreground is found, every spectrum is foreground and a warning is printed
+   - Stored as `obs["foreground"]` and `obs["foreground_score"]`; all spots are included in the output
 
-6. **Global Reference m/z Backbone**
-   - Place the kept features of all samples on the logarithmic grid, each weighted by its presence, and smooth with a Gaussian kernel whose full width at half maximum is `mass_tolerance`
-   - Every maximum of this density is one backbone feature: it collects the sample features up to the density minimum on either side, at most `mass_tolerance` ppm away, and its m/z is their presence-weighted mean. A feature kept in one sample is enough
+5. **Per-Sample Feature Selection** (foreground spectra; [MSI methods §6](../scientific/msi_methods.md#6-per-sample-feature-selection))
+   - Frequency: the m/z features of the recalibrated foreground spectra (as in step 2) present in at least 0.01 times the spectra of the sample's most present feature. No intensity is used
+   - Annotation (with `lipid_annotation_db`): features matched within `mass_tolerance` ppm; the log gives the number of annotations expected by chance from decoy masses
+   - S/N filter: a feature is kept when its median S/N over the foreground spectra holding it is ≥ 3, the noise being the median and 1.4826 MAD of the non-recurrent peaks of the **background** spectra around its m/z. Annotated features are always kept. Skipped (every feature kept) without at least max(100, 1%) background spectra and 50 noise peaks around a feature
+   - Width: the spread of each feature's peaks (interquartile range / 1.349, ppm)
+
+6. **Global Reference m/z Backbone** ([MSI methods §7](../scientific/msi_methods.md#7-backbone-construction))
+   - Pool the kept features of all samples per ion mode and split them at their largest gaps until every group spans at most `mass_tolerance` ppm; every feature lands in one group
+   - Each group is one backbone feature: presence-weighted mean m/z, and a Gaussian width from its members' widths and offsets, between `mass_tolerance`/10 and a FWHM of `mass_tolerance`
    - This single reference grid is used to align all samples
 
 7. **Lipid Annotation** (optional, requires `lipid_annotation_db`)
-   - Match each reference m/z to the database within `mass_tolerance` ppm
+   - Match each backbone m/z to the database within `mass_tolerance` ppm
    - Store semicolon-separated matching `db_name` entries in `var["lipid_annotation"]` (or `"Unannotated"`)
 
-8. **Intensity Binning** (per sample, parallel; [MSI methods §5](../scientific/msi_methods.md#5-intensity-binning-to-backbone))
-   - Bin all spectra (including background spots) onto the global reference m/z grid
-   - Each peak adds its whole intensity to the nearest reference feature within `mass_tolerance` ppm; peaks with no feature in reach are dropped
-   - Produces a dense (N_spots × N_features) float32 matrix
+8. **Intensity Binning** (per sample, parallel; [MSI methods §8](../scientific/msi_methods.md#8-intensity-binning))
+   - Bin all spectra (including background spots) onto the backbone
+   - Each peak is split over the features within `mass_tolerance` ppm by their Gaussian weights (the feature's width), normalized to sum to 1: a feature alone in reach takes the whole peak, close features share it smoothly, and intensity is conserved
+   - Produces a sparse (N_spots × N_features) float32 CSR matrix directly
 
-9. **Intensity Normalization** (applied independently per sample and per ion mode; [MSI methods §6](../scientific/msi_methods.md#6-intensity-normalization))
-   - `"tic"`: divide each spectrum by its total ion count (each spectrum sums to 1)
-   - `"log"`: apply log(1 + x) transform
-   - `"clr"`: sparsity-preserving centered log-ratio. Log-centers each spectrum over its nonzero entries only, leaving structural zeros at 0
-   - `"tic_mean_scaled"`: rescale each spectrum to the mean total ion count over that sample's spots for that ion mode (each spectrum's total becomes the mean TIC). This is similar to `"tic"`, but it preserves an interpretable absolute intensity scale instead of forcing a sum of 1. The mean is per sample, so values are not comparable across samples
+9. **Intensity Normalization** (applied independently per sample and per ion mode, at a fixed scale; [MSI methods §9](../scientific/msi_methods.md#9-intensity-normalization))
+   - `"tic"`: divide each spectrum by its total ion count over the number of features (each spectrum sums to the number of features)
    - `"median"`: divide each spectrum by the median of its nonzero features
+   - `"rms"`: divide each spectrum by its root mean square over the features
    - `"internal_standard"`: divide each spectrum by the summed intensity of the internal standard features (`internal_standard_mz`)
    - `"none"`: keep raw binned intensities
 
 10. **Per-Sample Cluster Labels** (used only to colour spots during alignment)
     - Input: the raw binned matrix (`layers["raw"]`), whatever the `intensity_normalization`
     - Samples above 250,000 spots are coarsened first: spots are grouped into k x k blocks of the acquisition raster, inferred from the coordinates (Voronoi supercells when no raster is found), and all spots in a block are **summed** into one pseudo-spot. Smaller samples are clustered spot by spot
-    - Each spot or pseudo-spot is divided by the median of its nonzero values (robust to a few intense ions, independent of the instrument's intensity scale), then `log1p`-transformed ([MSI methods §6b](../scientific/msi_methods.md#6b-per-sample-clustering))
-    - Feature selection (the 2,000 most variable features, as in ST; samples with fewer keep all) → PCA (up to 50 components) → each unit's PCs joined to the mean PCs of its spatial neighbourhood (1 ring for `resolution="standard"`, 2 rings for `"sub_cellular"`) → neighbor graph → Leiden (`resolution=0.5`, `flavor="igraph"`, `n_iterations=2`, `directed=False`) on that matrix → merging of adjacent clusters that no density valley separates; each block's label then propagates back to every spot it contains
+    - Each spot or pseudo-spot is divided by the median of its nonzero values (robust to a few intense ions, independent of the instrument's intensity scale), then `log1p`-transformed ([MSI methods §10](../scientific/msi_methods.md#10-per-sample-clustering))
+    - Feature selection (the 2,000 most variable features, as in ST; samples with fewer keep all) → PCA (up to 50 components) → each unit's PCs joined to the mean PCs of its spatial neighbourhood (1 ring for `resolution="standard"`, 2 rings for `"sub_cellular"`, none for `sample_type="microgrid"`) → neighbor graph → Leiden (`resolution=0.5`, `flavor="igraph"`, `n_iterations=2`, `directed=False`) on that matrix → merging of adjacent clusters that no density valley separates; each block's label then propagates back to every spot it contains
     - Labels stored in `obs["cluster"]`. The summed matrix, PCA embedding and neighbor graph are all discarded (only `obs["cluster"]` is kept) to minimize file size
 
 11. **Save Per-Sample AnnData and Merge**
-    - Each sample is saved separately (gzip compression)
-    - All samples are concatenated on disk into a single merged h5ad (inner join on features, gzip compression)
-    - Merged file's `uns["spot_size"]` updated to a per-sample dict
-    - Every file carries `uns["focus_preprocessing_fingerprint"]` (method version, settings, lipid database, inputs). A changed fingerprint rebuilds the dataset and re-runs alignment and registration of the modality
+    - Each sample is saved separately (gzip compression), written to a temporary file and renamed
+    - All samples are concatenated on disk into a single merged h5ad (inner join on features); its per-sample `uns["spot_size"]`, `uns["recalibration_reference"]` and `uns["recalibration_pool"]` dicts are written into the file in place
+    - Every file carries `uns["focus_preprocessing_fingerprint"]` (method version, settings, fixed calibration, lipid database, inputs). A changed fingerprint rebuilds the dataset and re-runs alignment and registration of the modality
 
 **Parameters**:
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `mass_tolerance` | `10` | Mass tolerance in ppm for m/z clustering, recalibration, and annotation |
-| `frequency_threshold` | `0.01` | Minimum presence of a backbone feature (share of spectra holding it above the background), as a fraction of a sample's most present feature; a feature passing in one sample is kept |
-| `intensity_normalization` | `"none"` | Normalization method (per ion mode): `"tic"`, `"log"`, `"clr"`, `"tic_mean_scaled"`, `"median"`, `"internal_standard"`, or `"none"` |
+| `mass_tolerance` | `10` | Mass tolerance in ppm (int or float) for feature detection, backbone merge, binning, recalibration and annotation |
+| `sample_type` | `"tissue"` | Experiment type, which calibrates foreground detection: `"tissue"`, `"tissue_noisy"`, `"cell_culture"` or `"microgrid"` |
+| `intensity_normalization` | `"none"` | Normalization method (per ion mode, fixed scale): `"none"`, `"tic"`, `"median"`, `"rms"` or `"internal_standard"` |
 | `recalibration_reference` | `null` | User-supplied reference m/z per ion mode (`{"pos": [...]}` or `"pos: 760.585, 798.541; neg: 885.550"`); selected from the data if null |
 | `internal_standard_mz` | `null` | m/z of the sprayed internal standards per ion mode (same forms); always recalibration references, required by `"internal_standard"` normalization |
-| `detect_background` | `false` | Run background detection to classify tissue vs background spots. Requires `lipid_annotation_db`; without it the step is skipped |
-| `sample_type` | `"tissue"` | Sample type for background detection: `"tissue"` (GMM + BIC, morphological cleanup) or `"microgrid"` (local-outlier detection of sparse cells) |
 | `resolution` | `"standard"` | Clustering preset for the alignment colours: `"standard"` (multicellular pixels) or `"sub_cellular"` (weak high-resolution pixels, wider spatial neighbourhood) |
 | `lipid_annotation_db` | `null` | Path to lipid annotation database (CSV or JSON with `db_name`, `ionized_mass`, `ion_mode` columns) |
 | `force_recomputing` | `false` | Reprocess even if output already exists |
 
-The defaults above are applied both by the pipeline's settings extractor (`_extract_msi_settings`) and by the `MsiDataset.process_dataset()` signature, so config runs and direct Python calls agree. `mass_tolerance` must be an `int`; a float raises `ValueError`.
+The defaults above are applied both by the pipeline's settings extractor (`_extract_msi_settings`) and by the `MsiDataset.process_dataset()` signature, so config runs and direct Python calls agree. The settings `detect_background`, `frequency_threshold` and `min_intensity_threshold`, and the normalizations `"log"`, `"clr"` and `"tic_mean_scaled"`, were removed in `msi-13` and fail validation with the reason.
 
 **Output Files**:
 ```
@@ -199,7 +194,7 @@ The defaults above are applied both by the pipeline's settings extractor (`_extr
 | `.X` | Normalized interpolated intensities (sparse CSR, spots × m/z features) |
 | `.layers["raw"]` | Raw interpolated intensities before normalization (sparse CSR) |
 | `.obs["sample_id"]` | Categorical sample identifier |
-| `.obs["foreground"]` | Categorical boolean: tissue or cell (True) vs background (False). Always present; all True when background detection did not run |
+| `.obs["foreground"]` | Categorical boolean: tissue or cell (True) vs background (False). Always present; all True when no background was separated |
 | `.obs["cluster"]` | Categorical per-sample cluster labels (alignment colouring) |
 | `.obsm["spatial"]` | Physical spot center coordinates in µm, shape (N, 2), float32 |
 | `.obsm["raster_coordinates"]` | Raster bounding boxes in µm, shape (N, 2, 2): [[x1,y1],[x2,y2]] |

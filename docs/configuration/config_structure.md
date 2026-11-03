@@ -125,9 +125,7 @@ This page documents the **canonical structure** and the set of config fields tha
 ```json
 {
   "mass_tolerance": 10,
-  "frequency_threshold": 0.01,
   "intensity_normalization": "tic",
-  "detect_background": true,
   "sample_type": "tissue",
   "recalibration_reference": null,
   "lipid_annotation_db": null,
@@ -236,9 +234,7 @@ This page documents the **canonical structure** and the set of config fields tha
       "registration_type": "spot_interpolation",
       "processing_settings": {
         "mass_tolerance": 10,
-        "frequency_threshold": 0.01,
         "intensity_normalization": "tic",
-        "detect_background": true,
         "sample_type": "tissue",
         "recalibration_reference": null,
         "lipid_annotation_db": "resources/lipid_db.csv",

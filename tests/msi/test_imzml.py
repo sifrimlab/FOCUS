@@ -87,3 +87,84 @@ def test_identity_marks_pixel_grid_files_only(tmp_path: Path) -> None:
         digest, pixel_grid = _imzml_identity(str(path))
         assert digest == file_digest(path)
         assert pixel_grid is not stage
+
+
+def test_arrays_are_identified_by_their_cv_terms(tmp_path: Path) -> None:
+    """Parameter groups with exporter-specific ids are recognised by 'm/z array' and 'intensity array'."""
+    path = write(tmp_path, stage=True)
+    text = (
+        path.read_text()
+        .replace(
+            'id="mzArray"><cvParam',
+            'id="g_mz"><cvParam name="m/z array" value=""/><cvParam',
+        )
+        .replace(
+            'id="intensities"><cvParam',
+            'id="g_int"><cvParam name="intensity array" value=""/><cvParam',
+        )
+        .replace('ref="mzArray"', 'ref="g_mz"')
+        .replace('ref="intensities"', 'ref="g_int"')
+    )
+    path.write_text(text)
+    metadata = parse(path)
+    assert metadata["mz_dtype"] is np.float64
+    assert metadata["intensities_binary_metadata"].shape == (_LINES * _COLUMNS, 3)
+
+
+def test_decimal_pixel_size_is_kept_fractional(tmp_path: Path) -> None:
+    """A pixel size written as '12.5' is read as 12.5 µm, not truncated."""
+    path = write(tmp_path, stage=False)
+    text = (
+        path.read_text()
+        .replace('"pixel size x" value="20"', '"pixel size x" value="12.5"')
+        .replace('"pixel size y" value="40"', '"pixel size y" value="12.5"')
+    )
+    path.write_text(text)
+    np.testing.assert_allclose(parse(path)["raster_size"], [12.5, 12.5])
+
+
+def test_missing_pixel_size_is_inferred_from_stage_positions(tmp_path: Path) -> None:
+    """Without a declared pixel size the stage pitch of each axis is used."""
+    path = write(tmp_path, stage=True)
+    text = path.read_text()
+    for axis in ("x", "y"):
+        start = text.index(f'<cvParam name="pixel size {axis}"')
+        text = text[:start] + text[text.index("/>", start) + 2 :]
+    path.write_text(text)
+    np.testing.assert_allclose(parse(path)["raster_size"], [20.0, 40.0], rtol=1e-5)
+
+
+def test_missing_pixel_size_without_stage_positions_raises(tmp_path: Path) -> None:
+    """Neither a pixel size nor stage positions: the µm scale is unknown, so preprocessing stops."""
+    path = write(tmp_path, stage=False)
+    text = path.read_text()
+    for axis in ("x", "y"):
+        start = text.index(f'<cvParam name="pixel size {axis}"')
+        text = text[:start] + text[text.index("/>", start) + 2 :]
+    path.write_text(text)
+    with pytest.raises(ValueError, match="pixel size"):
+        parse(path)
+
+
+def test_integer_intensities_and_zero_mz_peaks_are_read(tmp_path: Path) -> None:
+    """Integer intensity arrays become float32; peaks at m/z 0 are dropped."""
+    from focus.config.options import MsiIonMode
+    from focus.preprocessing.msi.sample import MsiSample
+
+    coords = np.array([(0, k) for k in range(4)], np.int32)
+    mz = [np.array([0.0, 500.0, 600.0]) for _ in coords]
+    intensity = [np.array([3, 7, 9]) for _ in coords]
+    write_imzml(
+        str(tmp_path / "S" / "MSI" / "pos"),
+        mz,
+        intensity,
+        coords,
+        intensity_dtype="<i4",
+    )
+    sample = MsiSample(str(tmp_path), "S", "MSI", ion_mode=MsiIonMode.POSITIVE)
+    sample.initialize_sample()
+    mz_vectors, intensity_vectors = sample.load_payload()
+    for values, peaks in zip(intensity_vectors["pos"], mz_vectors["pos"]):
+        assert values.dtype == np.float32
+        np.testing.assert_array_equal(peaks, [500.0, 600.0])
+        np.testing.assert_array_equal(values, [7.0, 9.0])

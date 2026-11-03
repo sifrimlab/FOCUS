@@ -272,36 +272,31 @@ Example:
 
 | Field | Type | Default |
 |---|---|---|
-| `mass_tolerance` | int | `10` |
-| `frequency_threshold` | float | `0.01` |
-| `intensity_normalization` | string | `"none"` |
-| `detect_background` | bool | `false` |
+| `mass_tolerance` | number | `10` |
 | `sample_type` | string | `"tissue"` |
+| `intensity_normalization` | string | `"none"` |
 | `resolution` | string | `"standard"` |
 | `recalibration_reference` | dict, string or null | `null` |
 | `internal_standard_mz` | dict, string or null | `null` |
 | `lipid_annotation_db` | string or null | `null` |
 | `force_recomputing` | bool | `false` |
 
-- `intensity_normalization` allowed values: `"none"`, `"tic"`, `"log"`, `"clr"`, `"tic_mean_scaled"`, `"median"`, `"internal_standard"` (all applied per sample and per ion mode). `"tic"` makes each spectrum sum to 1; `"tic_mean_scaled"` rescales each spectrum to the mean total ion current over that sample's spots for that ion mode, preserving absolute intensity scale (values are therefore not comparable across samples); `"median"` divides each spectrum by the median of its nonzero features; `"internal_standard"` divides each spectrum by the summed intensity of the internal standards and requires `internal_standard_mz`.
+- `intensity_normalization` allowed values: `"none"`, `"tic"`, `"median"`, `"rms"`, `"internal_standard"`, applied per sample and per ion mode at a fixed scale shared by every sample. `"tic"` makes each spectrum sum to its number of features; `"median"` sets the median of its nonzero features to 1; `"rms"` sets its root mean square to 1; `"internal_standard"` sets the summed intensity of the internal standards to 1 and requires `internal_standard_mz`.
 - `recalibration_reference` and `internal_standard_mz`: per-ion-mode m/z values, as a mapping (`{"pos": [760.585, 798.541], "neg": [885.550]}`) or as the string `"pos: 760.585, 798.541; neg: 885.550"`. `recalibration_reference` replaces the automatic reference selection; `internal_standard_mz` lists sprayed internal standards, which are always used as recalibration references.
-- `sample_type` allowed values: `"tissue"`, `"microgrid"`. `"tissue"` separates a contiguous section from background with a GMM + BIC model and morphological cleanup. `"microgrid"` treats the slide as a dominant background with sparse cells of one or a few spots, and detects cells as local outliers against a background ion model.
+- `sample_type` allowed values: `"tissue"` (section on a clean or empty background), `"tissue_noisy"` (section on a background rich in noise centroids), `"cell_culture"` (uniform culture, domains along gradients), `"microgrid"` (isolated cells of about one pixel in matrix). It sets the foreground detector and its spatial cleanup ([MSI methods §5](../scientific/msi_methods.md#5-foreground-detection)); foreground detection always runs.
 - `resolution` allowed values: `"standard"` (default, multicellular pixels), `"sub_cellular"` (weak high-resolution pixels). It sets the spatial neighbourhood of the alignment clustering (1 or 2 rings).
 - `lipid_annotation_db`: path to a CSV or JSON file with columns `db_name`, `ionized_mass`, `ion_mode`.
-- `detect_background` only takes effect when `lipid_annotation_db` is also set. Without a database the detection step is skipped and every spot is flagged foreground.
-- `mass_tolerance` must be an integer; a float value raises `ValueError` during processing.
-- `frequency_threshold`: minimum presence of an m/z backbone feature (the share of spectra holding it above the background noise), as a fraction of the most present feature of a sample. A feature passing in one sample is kept. It controls the number of features.
+- `mass_tolerance`: positive number of ppm (integer or decimal). It sets the feature detection, the backbone merge span, the binning reach and the annotation window.
+- Removed in `msi-13` and rejected by validation with the reason: `detect_background`, `frequency_threshold`, `min_intensity_threshold`, and the normalizations `"log"`, `"clr"` (use `"none"`) and `"tic_mean_scaled"` (use `"tic"`).
 
-The example below enables TIC normalization and background detection explicitly; these are not the defaults.
+The example below enables TIC normalization explicitly; it is not the default.
 
 Example:
 
 ```json
 "processing_settings": {
   "mass_tolerance": 10,
-  "frequency_threshold": 0.01,
   "intensity_normalization": "tic",
-  "detect_background": true,
   "sample_type": "tissue",
   "recalibration_reference": null,
   "lipid_annotation_db": null,
@@ -491,9 +486,7 @@ Example:
       "registration_type": "spot_interpolation",
       "processing_settings": {
         "mass_tolerance": 10,
-        "frequency_threshold": 0.01,
         "intensity_normalization": "tic",
-        "detect_background": true,
         "sample_type": "tissue",
         "recalibration_reference": null,
         "lipid_annotation_db": "resources/lipid_db.csv",

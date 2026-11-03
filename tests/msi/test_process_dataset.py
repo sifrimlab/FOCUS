@@ -144,3 +144,94 @@ class TestProcessDataset:
             np.testing.assert_allclose(
                 merged.X[:, columns].toarray().sum(axis=1), 1.0, rtol=1e-5
             )
+
+    def test_resumed_run_equals_a_fresh_run(self) -> None:
+        """An interrupted run resumes the remaining samples with the outputs of a fresh run."""
+        with tempfile.TemporaryDirectory() as root:
+            self.write_dataset(root)
+            outputs = self.process(
+                root, intensity_normalization=MsiIntensityNormalization.TIC
+            )
+            fresh = ad.read_h5ad(outputs["B"])
+            os.remove(outputs["B"])
+            os.remove(outputs["merged"])
+            outputs = self.process(
+                root, intensity_normalization=MsiIntensityNormalization.TIC
+            )
+            resumed = ad.read_h5ad(outputs["B"])
+            np.testing.assert_array_equal(
+                resumed.obs["recalibration_ppm_pos"], fresh.obs["recalibration_ppm_pos"]
+            )
+            np.testing.assert_array_equal(
+                resumed.obs["foreground"], fresh.obs["foreground"]
+            )
+            np.testing.assert_array_equal(resumed.X.toarray(), fresh.X.toarray())
+            np.testing.assert_array_equal(
+                resumed.uns["recalibration_reference"]["pos"],
+                fresh.uns["recalibration_reference"]["pos"],
+            )
+
+
+class TestMicrogridDataset:
+    """End to end on a microgrid with drift: recalibration on the matrix ions, then the cells."""
+
+    CELLS = {(8, 8), (8, 30), (20, 18), (31, 5), (33, 33), (14, 36)}
+    CELL_IONS = np.array([705.5011, 750.6022, 780.7033])
+
+    def write(self, root: str) -> None:
+        """A 40 x 40 slide of matrix ions drifting 0 to 30 ppm down the lines, with one-pixel cells."""
+        rng = np.random.default_rng(0)
+        n = 40
+        mz_list, intensity_list, coords = [], [], []
+        for line in range(n):
+            for col in range(n):
+                drift = 30.0 * line / (n - 1)
+                masses = CALIBRANTS.copy()
+                values = rng.lognormal(np.log(1e4), 0.2, masses.size)
+                if (line, col) in self.CELLS:
+                    masses = np.concatenate([masses, self.CELL_IONS])
+                    values = np.concatenate([values, np.full(3, 4e4)])
+                peaks = masses * (1 + (drift + rng.normal(0, 0.5, masses.size)) * 1e-6)
+                noise = rng.uniform(350, 1000, 40)
+                mz = np.concatenate([peaks, noise])
+                order = np.argsort(mz)
+                mz_list.append(mz[order])
+                intensity_list.append(
+                    np.concatenate([values, rng.exponential(100, noise.size)])[
+                        order
+                    ].astype(np.float32)
+                )
+                coords.append((line, col))
+        write_imzml(
+            os.path.join(root, "G", "MSI", "pos"),
+            mz_list,
+            intensity_list,
+            np.array(coords, dtype=np.int32),
+        )
+
+    def test_one_pixel_cells_are_found_after_recalibration(self) -> None:
+        """Every cell is foreground, nothing else is, and the cell ions form backbone features."""
+        with tempfile.TemporaryDirectory() as root:
+            self.write(root)
+            sample = MsiSample(root, "G", "MSI", ion_mode=MsiIonMode.POSITIVE)
+            outputs = MsiDataset(root, [sample]).process_dataset(
+                mass_tolerance=10, sample_type="microgrid"
+            )
+            adata = ad.read_h5ad(outputs["G"])
+            # Pixel (line, col) is spectrum line * 40 + col.
+            foreground = np.flatnonzero(adata.obs["foreground"].astype(bool).to_numpy())
+            assert {(int(i) // 40, int(i) % 40) for i in foreground} == self.CELLS
+            # Without internal standards the sample keeps its own mass scale (its mean drift): the
+            # cell ions sit where the calibrants do.
+            mz = adata.var["mz"].to_numpy(dtype=np.float64)
+
+            def offset(mass: float) -> float:
+                """ppm offset of the backbone feature nearest `mass`."""
+                nearest = mz[np.argmin(np.abs(mz - mass))]
+                return float((nearest - mass) / mass * 1e6)
+
+            scale = np.median([offset(mass) for mass in CALIBRANTS])
+            for mass in self.CELL_IONS:
+                assert abs(offset(mass) - scale) < 3.0, mass
+            # Recalibrated on the matrix ions: the drift is removed from every line.
+            assert np.ptp(adata.obs["recalibration_ppm_pos"]) > 25

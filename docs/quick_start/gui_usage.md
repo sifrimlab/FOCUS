@@ -92,8 +92,9 @@ field.
     The output stores the source pixels losslessly; contrast is automatic and applied only for display. The number of OME-TIFF pyramid levels follows from the image size and is not a GUI setting.
 
 **MSI (Mass Spectrometry Imaging):**
-- **Intensity Normalization**: None/TIC/Log/CLR/TIC Mean Scaled/Median/Internal Standard
-- **Background Detection**: Enable/disable GMM-based detection
+- **Mass Tolerance**: ppm tolerance of the instrument (integer or decimal)
+- **Sample Type**: Tissue (clean background), Tissue (noisy background), Cell culture (gradient domains) or Microgrid (isolated single cells); sets the foreground detection, which always runs
+- **Intensity Normalization**: None/TIC/Median/RMS/Internal Standard
 - **Recalibration Reference**: optional reference m/z per ion mode (`pos: 760.585, 798.541; neg: 885.550`); m/z recalibration always runs, and references are selected from the data when this is empty
 - **Internal Standard m/z**: optional m/z of sprayed internal standards per ion mode (same form), required by Internal Standard normalization
 - **Lipid Annotation**: Enable/disable lipid database matching
@@ -344,7 +345,6 @@ The JSON configuration file contains:
       "processing_settings": {
         "mass_tolerance": 10,
         "intensity_normalization": "tic",
-        "detect_background": true,
         "force_recomputing": false
       },
       "registration_settings": {},

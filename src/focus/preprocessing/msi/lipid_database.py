@@ -42,46 +42,99 @@ def read_lipid_database(lipid_annotation_db: str | None) -> pd.DataFrame | None:
     return database
 
 
+def _mode_masses(
+    database: pd.DataFrame, ion_mode: str
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Database masses of one ion mode in ascending order, their row positions and names."""
+    subset = database[database["ion_mode"] == ion_mode]
+    masses = subset["ionized_mass"].to_numpy(dtype=np.float64)
+    order = np.argsort(masses, kind="stable")
+    return masses[order], order, subset["db_name"].astype(str).to_numpy()
+
+
+def _match_ranges(
+    masses: np.ndarray, mz: np.ndarray, mass_tolerance: float
+) -> tuple[np.ndarray, np.ndarray]:
+    """[start, stop) of the sorted database masses within `mass_tolerance` ppm of each m/z."""
+    tolerance_da = mz * mass_tolerance / 1e6
+    return (
+        np.searchsorted(masses, mz - tolerance_da, side="left"),
+        np.searchsorted(masses, mz + tolerance_da, side="right"),
+    )
+
+
 def annotate_masses(
     database: pd.DataFrame | None,
-    mz_vector: NDArray[np.float32],
+    mz_vector: NDArray[np.floating],
     ion_mode: str,
-    mass_tolerance: int,
+    mass_tolerance: float,
 ) -> NDArray[np.str_]:
     """
-    Annotate the reference M/Z vector using the lipid annotation database.
+    Annotate m/z values with the database entries of the same ion mode within `mass_tolerance` ppm.
 
     Parameters
     ----------
     database : pd.DataFrame or None
-            Lipid names, masses and ion modes. None raises the original ValueError.
-    mz_vector : np.ndarray[np.float32]
-            The reference M/Z vector to annotate.
+            Lipid names, masses and ion modes. None raises ValueError.
+    mz_vector : np.ndarray
+            The m/z values to annotate.
     ion_mode : MsiIonMode
-            The ion mode of the M/Z vector.
-    mass_tolerance : int
-            The mass tolerance in ppm for matching the M/Z values.
+            The ion mode of the m/z values.
+    mass_tolerance : float
+            The mass tolerance in ppm for matching the m/z values.
 
     Returns
     -------
     np.ndarray
-            Unicode annotation strings, one per reference mass, in the input order.
+            Unicode annotation strings, one per m/z, in the input order: the matching names joined by
+            "; " in database row order, or "Unannotated".
     """
     if database is None:
         raise ValueError("Lipid annotation database is not provided.")
-    annotations = []
-    for mz in mz_vector:
-        # Compute the mass tolerance in Da
-        tolerance_da = mz * mass_tolerance / 1e6
-        # Filter the lipid DB for matching entries
-        matches = database[
-            (database["ionized_mass"] >= mz - tolerance_da)
-            & (database["ionized_mass"] <= mz + tolerance_da)
-            & (database["ion_mode"] == ion_mode)
-        ]
-        if matches.shape[0] > 0:
-            annotation_str = "; ".join(matches["db_name"].tolist())
-        else:
-            annotation_str = "Unannotated"
-        annotations.append(annotation_str)
+    masses, order, names = _mode_masses(database, ion_mode)
+    mz = np.asarray(mz_vector, dtype=np.float64)
+    start, stop = _match_ranges(masses, mz, mass_tolerance)
+    annotations = [
+        "; ".join(names[np.sort(order[a:b])]) if b > a else "Unannotated"
+        for a, b in zip(start, stop)
+    ]
     return np.array(annotations, dtype=str)
+
+
+def chance_annotations(
+    database: pd.DataFrame,
+    mz_vector: NDArray[np.floating],
+    ion_mode: str,
+    mass_tolerance: float,
+    offsets: tuple[int, ...],
+) -> float:
+    """
+    Number of m/z values expected to be annotated by chance: the mean number annotated at masses
+    shifted by each of `offsets` window widths (2 x `mass_tolerance` ppm), a target-decoy estimate.
+    """
+    masses, _, _ = _mode_masses(database, ion_mode)
+    mz = np.asarray(mz_vector, dtype=np.float64)
+    if mz.size == 0 or masses.size == 0 or not offsets:
+        return 0.0
+    hits = []
+    for k in offsets:
+        start, stop = _match_ranges(
+            masses, mz * (1 + 2 * k * mass_tolerance * 1e-6), mass_tolerance
+        )
+        hits.append(int(np.count_nonzero(stop > start)))
+    return float(np.mean(hits))
+
+
+def annotated_mask(
+    database: pd.DataFrame | None,
+    mz_vector: NDArray[np.floating],
+    ion_mode: str,
+    mass_tolerance: float,
+) -> np.ndarray:
+    """Whether each m/z matches a database entry of `ion_mode`; all False without a database."""
+    mz = np.asarray(mz_vector, dtype=np.float64)
+    if database is None:
+        return np.zeros(mz.size, dtype=bool)
+    masses, _, _ = _mode_masses(database, ion_mode)
+    start, stop = _match_ranges(masses, mz, mass_tolerance)
+    return stop > start

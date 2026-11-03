@@ -8,6 +8,7 @@ import hashlib
 
 from focus.io.provenance import fingerprint, file_digest
 from focus.preprocessing.msi.settings import METHOD_VERSION
+from focus.preprocessing.msi.technology import calibration
 from focus.preprocessing.msi.run_state import MsiRunSettings
 import numpy as np
 from typing import TYPE_CHECKING
@@ -32,14 +33,13 @@ def settings_fingerprint(dataset: MsiDataset, settings: MsiRunSettings) -> str:
     dataset_key = dataset_fingerprint(
         dataset,
         {
-            "mass_tolerance": settings.mass_tolerance,
-            "frequency_threshold": settings.frequency_threshold,
+            "mass_tolerance": float(settings.mass_tolerance),
             "intensity_normalization": settings.normalization,
             "recalibration_reference": as_lists(settings.references),
             "internal_standard_mz": as_lists(settings.standards),
-            "detect_background": settings.detect_background,
             "sample_type": settings.sample_type,
             "resolution": settings.resolution,
+            "calibration": calibration(),
         },
     )
     return dataset_key

@@ -2,9 +2,8 @@
 
 import numpy as np
 
-from focus.config.options import MsiIonMode
-from focus.config.keys import MsiMetadata
-from focus.preprocessing.msi.sample import MsiSample
+from focus.preprocessing.msi.microgrid import detect_microgrid_spots
+from focus.preprocessing.msi.tissue import spectra_context
 
 
 class TestMicrogrid:
@@ -25,11 +24,8 @@ class TestMicrogrid:
             intensity = list(rng.lognormal(np.log(1e4), 0.1, 3)) + [5e4] * (len(mz) - 3)
             mz_list.append(np.array(mz))
             intensity_list.append(np.array(intensity))
-        sample = MsiSample.__new__(MsiSample)
-        sample._metadata = {
-            MsiIonMode.POSITIVE: {MsiMetadata.PIXEL_COORDINATES: coords}
-        }
-        found = sample.foreground._detect_microgrid_spots(
-            mz_list, intensity_list, MsiIonMode.POSITIVE, mass_tolerance=10
+        result = detect_microgrid_spots(
+            mz_list, intensity_list, coords, spectra_context(mz_list, 10)
         )
+        found = np.flatnonzero(result.mask)
         assert {tuple(int(v) for v in coords[i]) for i in found} == cells

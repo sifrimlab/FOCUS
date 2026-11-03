@@ -46,7 +46,7 @@ In both cases the full-resolution level is at index `0` and higher indices are p
 | `.obsm['spatial']` | float32 ndarray | $(n_\text{spots},\ 2)$ | Physical coordinates in µm $(x, y)$ |
 | `.obsm['raster_coordinates']` | int32 ndarray | $(n_\text{spots},\ 2,\ 2)$ | Raster-cell bounding boxes $[[x_\text{tl}, y_\text{tl}], [x_\text{br}, y_\text{br}]]$ in µm |
 | `.obs['sample_id']` | categorical | $(n_\text{spots},)$ | Sample identifier (directory name) |
-| `.obs['foreground']` | categorical | $(n_\text{spots},)$ | Tissue/background mask stored as categorical boolean values. Always present; all `True` when background detection did not run |
+| `.obs['foreground']` | categorical | $(n_\text{spots},)$ | Tissue/background mask stored as categorical boolean values. Always present; all `True` when no background was separated |
 | `.obs['cluster']` | categorical | $(n_\text{spots},)$ | Per-sample cluster label, used only for spot colouring in the alignment GUI |
 | `.var['mz']` | float32 ndarray | $(n_\text{mz},)$ | Consensus m/z values |
 | `.var['mz_mode']` | categorical | $(n_\text{mz},)$ | Ion mode for each m/z (`'pos'` or `'neg'`) |

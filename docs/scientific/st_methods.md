@@ -155,7 +155,7 @@ The `unit` setting selects one of two presets (`spot`: `standard`; `bin` and `ce
 
 Shared values: at most 250,000 units, eligibility of 50 UMIs and 20 detected genes per unit,
 2,000 HVGs, 50 PCs, 15 neighbours, Leiden resolution 0.5, merge cutoff 0.8, seed 0. MSI uses the
-same feature budget and merging ([MSI §6b](msi_methods.md#6b-per-sample-clustering)).
+same feature budget and merging ([MSI §10](msi_methods.md#10-per-sample-clustering)).
 
 1. **Clustering eligibility.** A unit needs at least 50 UMIs and 20 detected genes. These
    alignment-only thresholds are not universal biological QC cutoffs. Spots of ineligible

@@ -1,124 +1,100 @@
-"""Interpolation for MSI preprocessing."""
+"""Parallel Gaussian binning of one sample and ion mode onto the backbone, as a CSR matrix."""
 
 from __future__ import annotations
 
-import numpy as np
-
-
-from focus.preprocessing.msi.binning import interpolate_single
-
-
-from joblib import Parallel, delayed
 from functools import partial
 
+import numpy as np
+import scipy.sparse as sp
+from joblib import Parallel, delayed
+
 import focus.runtime.resources as resources
+from focus.preprocessing.msi.binning import bin_spectra_csr
+from focus.preprocessing.msi.matching import _flatten_spectra
+
+
+def empty_csr(rows: int, cols: int) -> sp.csr_matrix:
+    """An all-zero float32 CSR matrix of the given shape."""
+    return sp.csr_matrix(
+        (
+            np.zeros(0, dtype=np.float32),
+            np.zeros(0, dtype=np.int32),
+            np.zeros(rows + 1, dtype=np.int64),
+        ),
+        shape=(rows, cols),
+    )
 
 
 def interpolate_spectra(
     original_mzs_list: list[np.ndarray],
     original_intensities_list: list[np.ndarray],
     reference_mz: np.ndarray,
+    sigma_ppm: np.ndarray,
     mass_tolerance: float,
-) -> np.ndarray:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
-    Rebin intensities to reference M/Z vector. This method processes a chunk of spectra.
-    Each original peak adds its whole intensity to the nearest reference M/Z bin within the mass tolerance
-    (see interpolate_single). If a peak does not fall within the mass tolerance of any reference bin, it is ignored.
+    Bin a chunk of spectra onto the reference m/z features (:func:`bin_spectra_csr`).
 
-    Parameters
-    ----------
-    original_mzs_list : list of np.ndarray
-            List of original M/Z arrays for each spectrum in the chunk.
-    original_intensities_list : list of np.ndarray
-            List of original intensity arrays for each spectrum in the chunk.
-    reference_mz : np.ndarray
-            The reference M/Z vector to interpolate to.
-    mass_tolerance : float
-            Mass tolerance in ppm for matching peaks to reference bins.
-
-    Returns
-    -------
-    np.ndarray
-            A 2D array of shape (n_datapoints, n_ref) containing the interpolated intensities.
+    Returns the chunk's CSR arrays (indptr, indices, float32 data), one row per spectrum.
     """
-    n_datapoints = len(original_mzs_list)
-    n_ref = len(reference_mz)
-
-    if n_datapoints == 0 or n_ref == 0:
-        fallback_dtype = (
-            original_intensities_list[0].dtype
-            if original_intensities_list
-            else np.float32
-        )
-        return np.zeros((n_datapoints, n_ref), dtype=fallback_dtype)
-
-    out_dtype = original_intensities_list[0].dtype
-    result_matrix = np.zeros((n_datapoints, n_ref), dtype=out_dtype)
-
-    for idx, (original_mz, original_intensity) in enumerate(
-        zip(original_mzs_list, original_intensities_list)
-    ):
-        if original_mz.size == 0:
-            continue
-
-        mz = original_mz.astype(reference_mz.dtype, copy=False)
-        intens = original_intensity
-
-        if mz.size != intens.size:
-            raise ValueError("mz and intensity must have same length")
-
-        # Sort once (your existing logic)
-        if not np.all(mz[:-1] <= mz[1:]):
-            order = np.argsort(mz)
-            mz = mz[order]
-            intens = intens[order]
-
-        # THE KEY CHANGE: Use searchsorted version
-        result_matrix[idx] = interpolate_single(
-            mz, intens, reference_mz, mass_tolerance
-        )
-
-    return result_matrix
+    flat_mz, flat_intensity, offsets = _flatten_spectra(
+        original_mzs_list, original_intensities_list
+    )
+    return bin_spectra_csr(
+        flat_mz,
+        flat_intensity,
+        offsets,
+        np.asarray(reference_mz, dtype=np.float64),
+        np.asarray(sigma_ppm, dtype=np.float64),
+        float(mass_tolerance),
+    )
 
 
 def interpolate_mode(
     original_mzs: list[np.ndarray],
     intensities: list[np.ndarray],
     reference_mz: np.ndarray,
-    dtype: type[np.float32] | type[np.float64],
-    mass_tolerance: int,
-) -> np.ndarray:
-    """Bin one polarity using the unchanged ordered loky chunks."""
-    merged_intensities = np.zeros((len(intensities), len(reference_mz)), dtype=dtype)
-
-    intensities_mode = intensities
-    original_mzs_mode = original_mzs
-    datapoints = len(intensities_mode)
+    sigma_ppm: np.ndarray,
+    mass_tolerance: float,
+) -> sp.csr_matrix:
+    """Bin one polarity in ordered loky chunks; float32 CSR (n_spectra, n_features)."""
+    datapoints = len(intensities)
+    n_ref = len(reference_mz)
+    if datapoints == 0 or n_ref == 0:
+        return empty_csr(datapoints, n_ref)
 
     num_workers = min(resources.available_cpus() or 1, datapoints)
     chunk_size = (datapoints + num_workers - 1) // num_workers  # ceil division
-
-    chunks = [
-        (original_mzs_mode[start:end], intensities_mode[start:end])
-        for start, end in [
-            (i * chunk_size, min((i + 1) * chunk_size, datapoints))
-            for i in range(num_workers)
-        ]
+    bounds = [
+        (i * chunk_size, min((i + 1) * chunk_size, datapoints))
+        for i in range(num_workers)
+        if i * chunk_size < datapoints
     ]
 
-    # Reference via the class (not self) so joblib does not pickle the entire dataset.
+    # Module-level worker so joblib does not pickle the dataset.
     worker_func = partial(
-        interpolate_spectra, reference_mz=reference_mz, mass_tolerance=mass_tolerance
+        interpolate_spectra,
+        reference_mz=reference_mz,
+        sigma_ppm=sigma_ppm,
+        mass_tolerance=mass_tolerance,
+    )
+    results = Parallel(n_jobs=len(bounds), backend="loky", verbose=0)(
+        delayed(worker_func)(original_mzs[start:end], intensities[start:end])
+        for start, end in bounds
     )
 
-    results = Parallel(n_jobs=num_workers, backend="loky", verbose=0)(
-        delayed(worker_func)(orig_chunk, intens_chunk)
-        for orig_chunk, intens_chunk in chunks
+    indptr_parts, index_parts, data_parts = [np.zeros(1, dtype=np.int64)], [], []
+    nnz = 0
+    for chunk_indptr, chunk_indices, chunk_data in results:
+        indptr_parts.append(chunk_indptr[1:] + nnz)
+        index_parts.append(chunk_indices)
+        data_parts.append(chunk_data)
+        nnz += int(chunk_indptr[-1])
+    return sp.csr_matrix(
+        (
+            np.concatenate(data_parts),
+            np.concatenate(index_parts),
+            np.concatenate(indptr_parts),
+        ),
+        shape=(datapoints, n_ref),
     )
-
-    current_idx = 0
-    for chunk_result in results:
-        chunk_len = chunk_result.shape[0]
-        merged_intensities[current_idx : current_idx + chunk_len, :] = chunk_result
-        current_idx += chunk_len
-    return merged_intensities

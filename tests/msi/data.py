@@ -229,11 +229,20 @@ def write_imzml(
     coords: np.ndarray,
     pixel_size: int = 20,
     stage: Sequence[tuple[float, float]] | np.ndarray | None = None,
+    intensity_dtype: str = "<f4",
 ) -> None:
     """Minimal processed-mode imzML + IBD (positions are written 1-based, as the spec requires).
 
     `stage`, when given, holds each spectrum's stage position (x, y) in micrometres (3DPositionX/Y).
+    `intensity_dtype` is "<f4", "<f8", "<i4" or "<i8".
     """
+    intensity_type = {
+        "<f4": "32-bit float",
+        "<f8": "64-bit float",
+        "<i4": "32-bit integer",
+        "<i8": "64-bit integer",
+    }[intensity_dtype]
+    intensity_size = np.dtype(intensity_dtype).itemsize
     os.makedirs(directory, exist_ok=True)
     entries = []
     with open(os.path.join(directory, "data.ibd"), "wb") as ibd:
@@ -242,7 +251,7 @@ def write_imzml(
             mz_offset = ibd.tell()
             ibd.write(mz.astype("<f8").tobytes())
             intensity_offset = ibd.tell()
-            ibd.write(intensity.astype("<f4").tobytes())
+            ibd.write(intensity.astype(intensity_dtype).tobytes())
             entries.append((mz.size, mz_offset, intensity_offset))
 
     def array(ref: str, n: int, size: int, offset: int) -> str:
@@ -268,14 +277,14 @@ def write_imzml(
             f'<spectrum id="s{k}" index="{k}" defaultArrayLength="0"><scanList count="1"><scan>'
             f'<cvParam name="position x" value="{col + 1}"/><cvParam name="position y" value="{line + 1}"/>'
             f'{position}</scan></scanList><binaryDataArrayList count="2">'
-            f"{array('mzArray', n, 8, mz_offset)}{array('intensities', n, 4, intensity_offset)}"
+            f"{array('mzArray', n, 8, mz_offset)}{array('intensities', n, intensity_size, intensity_offset)}"
             f"</binaryDataArrayList></spectrum>"
         )
     xml = (
         '<?xml version="1.0" encoding="utf-8"?><mzML xmlns="http://psi.hupo.org/ms/mzml" version="1.1">'
         '<referenceableParamGroupList count="2">'
         '<referenceableParamGroup id="mzArray"><cvParam name="64-bit float" value=""/></referenceableParamGroup>'
-        '<referenceableParamGroup id="intensities"><cvParam name="32-bit float" value=""/></referenceableParamGroup>'
+        f'<referenceableParamGroup id="intensities"><cvParam name="{intensity_type}" value=""/></referenceableParamGroup>'
         '</referenceableParamGroupList><scanSettingsList count="1"><scanSettings id="ss">'
         f'<cvParam name="pixel size x" value="{pixel_size}"/><cvParam name="pixel size y" value="{pixel_size}"/>'
         '<cvParam name="horizontal line scan" value=""/></scanSettings></scanSettingsList>'

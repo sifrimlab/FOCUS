@@ -56,7 +56,6 @@ The example below covers all three supported modality types and uses every avail
       "processing_settings": {
         "mass_tolerance": 10,
         "intensity_normalization": "tic",
-        "detect_background": true,
         "force_recomputing": false
       },
       "registration_settings": {},
@@ -222,15 +221,15 @@ Additional settings for the chosen registration method. May be an empty object w
 
     | Parameter | Type | Description |
     |-----------|------|-------------|
-    | `mass_tolerance` | int | m/z clustering tolerance in ppm. Must be an integer. A float raises `ValueError`. Default `10`. |
-    | `frequency_threshold` | float | Minimum presence of an m/z backbone feature (share of spectra holding it above the background), as a fraction of the most present feature of a sample; a feature passing in one sample is kept. Controls the number of features. Default `0.01`. |
-    | `intensity_normalization` | string | Normalization method (per sample and per ion mode): `"none"` (default), `"tic"`, `"log"`, `"clr"`, `"tic_mean_scaled"` (rescales each spectrum to the mean total ion current over that sample's spots for that ion mode, preserving absolute scale; not comparable across samples), `"median"` (divides each spectrum by the median of its nonzero features), or `"internal_standard"` (divides each spectrum by the summed intensity of the internal standards; requires `internal_standard_mz`). |
-    | `detect_background` | bool | Detect and flag off-tissue background spots in `obs["foreground"]` (all spots are still written). Only effective when `lipid_annotation_db` is also set. Default `false`. |
-    | `sample_type` | string | Background-detection strategy: `"tissue"` (GMM + BIC, default) or `"microgrid"` (sparse cells on a background-dominated slide, detected as local outliers against a background ion model with median-filter background correction and a hysteresis threshold). |
+    | `mass_tolerance` | number | Mass tolerance in ppm (integer or decimal): feature detection, backbone merge span, binning reach and annotation window. Default `10`. |
+    | `sample_type` | string | Experiment type, which calibrates foreground detection: `"tissue"` (clean background, default), `"tissue_noisy"` (noisy background), `"cell_culture"` (gradient domains) or `"microgrid"` (isolated single cells). |
+    | `intensity_normalization` | string | Row normalization at a fixed scale shared by every sample (per sample and per ion mode): `"none"` (default), `"tic"` (rows sum to the number of features), `"median"` (median of the nonzero features is 1), `"rms"` (root mean square is 1) or `"internal_standard"` (standard intensity is 1; requires `internal_standard_mz`). |
     | `recalibration_reference` | dict, string or null | Per-ion-mode reference m/z values, as `{"pos": [760.585, 798.541]}` or `"pos: 760.585, 798.541; neg: 885.550"`. Selected from the dataset when `null`. Default `null`. |
     | `internal_standard_mz` | dict, string or null | m/z of internal standards sprayed over the sections, per ion mode (same forms as `recalibration_reference`). Always used as recalibration references and required by `"internal_standard"` normalization. Default `null`. |
     | `lipid_annotation_db` | string or null | Path to a CSV or JSON lipid database with columns `db_name`, `ionized_mass`, `ion_mode`. Default `null`. |
     | `force_recomputing` | bool | Reprocess even if output already exists. Default `false`. |
+
+    The settings `detect_background`, `frequency_threshold` and `min_intensity_threshold`, and the normalizations `"log"`, `"clr"` and `"tic_mean_scaled"`, were removed and fail validation with the reason. See [MSI](../modalities/msi.md#processing-parameters).
 
 === "Microscopy Image (`microscopy_image`)"
 

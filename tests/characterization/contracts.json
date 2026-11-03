@@ -42,13 +42,11 @@
       ]
     },
     "intensity_normalization": [
+      "none",
       "tic",
-      "log",
-      "clr",
-      "tic_mean_scaled",
       "median",
-      "internal_standard",
-      "none"
+      "rms",
+      "internal_standard"
     ],
     "background_color": [
       "white",
@@ -103,20 +101,14 @@
           "type": "float",
           "default": 10
         },
-        "frequency_threshold": {
-          "type": "float",
-          "default": 0.01
-        },
         "intensity_normalization": {
           "type": "enum",
           "options": [
+            "none",
             "tic",
-            "log",
-            "clr",
-            "tic_mean_scaled",
             "median",
-            "internal_standard",
-            "none"
+            "rms",
+            "internal_standard"
           ],
           "default": "none"
         },
@@ -130,14 +122,12 @@
           "default": null,
           "nullable": true
         },
-        "detect_background": {
-          "type": "bool",
-          "default": false
-        },
         "sample_type": {
           "type": "enum",
           "options": [
             "tissue",
+            "tissue_noisy",
+            "cell_culture",
             "microgrid"
           ],
           "default": "tissue"
@@ -245,15 +235,15 @@
       "manual": "Manual",
       "pre_aligned": "Pre-Aligned",
       "tic": "TIC",
-      "log": "Log",
-      "clr": "CLR",
-      "tic_mean_scaled": "TIC Mean Scaled",
       "median": "Median",
+      "rms": "RMS",
       "internal_standard": "Internal Standard",
       "white": "White",
       "black": "Black",
-      "tissue": "Tissue",
-      "microgrid": "Microgrid",
+      "tissue": "Tissue (clean background)",
+      "tissue_noisy": "Tissue (noisy background)",
+      "cell_culture": "Cell culture (gradient domains)",
+      "microgrid": "Microgrid (isolated single cells)",
       "standard": "Standard",
       "sub_cellular": "Sub-cellular",
       "sequencing": "Sequencing (Visium, Visium HD, Stereo-seq, Slide-seq)",
@@ -361,12 +351,33 @@
     null
   ],
   "normalization": {
+    "none": {
+      "values": [
+        [
+          0.0,
+          2.0,
+          4.0
+        ],
+        [
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          8.0,
+          2.0,
+          0.0
+        ]
+      ],
+      "dtype": "<f4",
+      "digest": "020e45ee0015d845b1d894159a7c90441e47709087c87b464eb38c15915b016d"
+    },
     "tic": {
       "values": [
         [
           0.0,
-          0.3333333432674408,
-          0.6666666865348816
+          1.0,
+          2.0
         ],
         [
           0.0,
@@ -374,76 +385,13 @@
           0.0
         ],
         [
-          0.800000011920929,
-          0.20000000298023224,
-          0.0
-        ]
-      ],
-      "dtype": "<f4",
-      "digest": "c67bcb34469157398660e38e1d5c9c02709f9011bbfb603dd038aec482249e9e"
-    },
-    "log": {
-      "values": [
-        [
-          0.0,
-          1.0986123085021973,
-          1.6094379425048828
-        ],
-        [
-          0.0,
-          0.0,
-          0.0
-        ],
-        [
-          2.1972246170043945,
-          1.0986123085021973,
+          2.4000000953674316,
+          0.6000000238418579,
           0.0
         ]
       ],
       "dtype": "<f4",
-      "digest": "d603bf582603cd2117fb7d9e975d2f6df1bc9756d5db974735c7bc647f4f15eb"
-    },
-    "clr": {
-      "values": [
-        [
-          0.0,
-          -0.3465735912322998,
-          0.3465735912322998
-        ],
-        [
-          0.0,
-          0.0,
-          0.0
-        ],
-        [
-          0.6931471824645996,
-          -0.6931471824645996,
-          0.0
-        ]
-      ],
-      "dtype": "<f4",
-      "digest": "bbaa85bfb9ccd1d04fe0def60155037ebc012a2395794a35b04103ceeceddbce"
-    },
-    "tic_mean_scaled": {
-      "values": [
-        [
-          0.0,
-          1.7777777910232544,
-          3.555555582046509
-        ],
-        [
-          0.0,
-          0.0,
-          0.0
-        ],
-        [
-          4.266666889190674,
-          1.0666667222976685,
-          0.0
-        ]
-      ],
-      "dtype": "<f4",
-      "digest": "02ee71d3aa4e31fd47b8e81b8bacf5fec794fb19a2d872ff689db4e0ae32da0e"
+      "digest": "a2511c7c4e13f2d2fe788f36f00af3acb039b373d7f337ed34d42f5706f1eca0"
     },
     "median": {
       "values": [
@@ -466,12 +414,12 @@
       "dtype": "<f4",
       "digest": "3209edb120ae2ccec90a9c2d337e5c67e2e7c0eb057bf15a514f663bf660be68"
     },
-    "none": {
+    "rms": {
       "values": [
         [
           0.0,
-          2.0,
-          4.0
+          0.7745966911315918,
+          1.5491933822631836
         ],
         [
           0.0,
@@ -479,13 +427,13 @@
           0.0
         ],
         [
-          8.0,
-          2.0,
+          1.6803359985351562,
+          0.42008399963378906,
           0.0
         ]
       ],
       "dtype": "<f4",
-      "digest": "020e45ee0015d845b1d894159a7c90441e47709087c87b464eb38c15915b016d"
+      "digest": "f8cea7c1711fd0042ae32205c678eb82aad91281fdf61c098c2e2d8e44902cc5"
     }
   },
   "mz_setting": {
@@ -729,19 +677,18 @@
           "black": "Black",
           "brightfield": "Brightfield (H&E, IHC, special stains)",
           "cell": "Segmented cells",
-          "clr": "CLR",
+          "cell_culture": "Cell culture (gradient domains)",
           "cp10k_log": "Log-normalize (10,000 counts)",
           "feature_extraction": "Feature Extraction",
           "fluorescence": "Fluorescence (IF, confocal, multiplexed)",
           "geojson": "GeoJSON",
           "imaging": "Imaging (Xenium, MERFISH, CosMx)",
           "internal_standard": "Internal Standard",
-          "log": "Log",
           "log_normalize": "Log-normalize (median depth)",
           "manual": "Manual",
           "max": "Maximum-intensity projection",
           "median": "Median",
-          "microgrid": "Microgrid",
+          "microgrid": "Microgrid (isolated single cells)",
           "microscopy_image": "Microscopy Image",
           "middle": "Middle plane",
           "msi": "MSI",
@@ -749,6 +696,7 @@
           "pre_aligned": "Pre-Aligned",
           "raman": "Raman",
           "raman_pixel_interpolation": "Raman Pixel Interpolation",
+          "rms": "RMS",
           "sequencing": "Sequencing (Visium, Visium HD, Stereo-seq, Slide-seq)",
           "size_factors": "Size factors (median depth, linear)",
           "spot": "Multicellular spots",
@@ -758,18 +706,16 @@
           "standard": "Standard",
           "sub_cellular": "Sub-cellular",
           "tic": "TIC",
-          "tic_mean_scaled": "TIC Mean Scaled",
-          "tissue": "Tissue",
+          "tissue": "Tissue (clean background)",
+          "tissue_noisy": "Tissue (noisy background)",
           "white": "White"
         },
         "intensity_normalization": [
+          "none",
           "tic",
-          "log",
-          "clr",
-          "tic_mean_scaled",
           "median",
-          "internal_standard",
-          "none"
+          "rms",
+          "internal_standard"
         ],
         "modality_types": [
           "microscopy_image",
@@ -817,28 +763,18 @@
             }
           },
           "msi": {
-            "detect_background": {
-              "default": false,
-              "type": "bool"
-            },
             "force_recomputing": {
               "default": false,
               "type": "bool"
             },
-            "frequency_threshold": {
-              "default": 0.01,
-              "type": "float"
-            },
             "intensity_normalization": {
               "default": "none",
               "options": [
+                "none",
                 "tic",
-                "log",
-                "clr",
-                "tic_mean_scaled",
                 "median",
-                "internal_standard",
-                "none"
+                "rms",
+                "internal_standard"
               ],
               "type": "enum"
             },
@@ -873,6 +809,8 @@
               "default": "tissue",
               "options": [
                 "tissue",
+                "tissue_noisy",
+                "cell_culture",
                 "microgrid"
               ],
               "type": "enum"

@@ -1,82 +1,53 @@
-"""Apply the original per-sample, per-ion-mode binned-intensity normalizations."""
+"""Row normalizations of the binned MSI intensities, each at a fixed scale shared by every sample."""
 
-from typing import cast
+from typing import cast, overload
 
 import numpy as np
-from focus.runtime.reporter_context import get_reporter
-import warnings
+import scipy.sparse as sp
 
 from focus.config.options import MsiIntensityNormalization
 from focus.preprocessing.msi.recalibration import neighbourhood_nanmedian
+from focus.runtime.reporter_context import get_reporter
 
 
-def normalize_intensities(
-    raw: np.ndarray,
+def _row_median_nonzero(raw: np.ndarray | sp.csr_matrix) -> np.ndarray:
+    """Median of each row's nonzero entries; NaN for a row without any."""
+    median = np.full(raw.shape[0], np.nan, dtype=np.float64)
+    if sp.issparse(raw):
+        csr = sp.csr_matrix(raw)
+        for i in range(csr.shape[0]):
+            values = csr.data[csr.indptr[i] : csr.indptr[i + 1]]
+            values = values[values != 0]
+            if values.size:
+                median[i] = np.median(values)
+        return median
+    for i, row in enumerate(raw):
+        values = row[row != 0]
+        if values.size:
+            median[i] = np.median(values)
+    return median
+
+
+def _divisor(
+    raw: np.ndarray | sp.csr_matrix,
     method: str,
-    pixel_coordinates: np.ndarray | None = None,
-    standard_columns: np.ndarray | None = None,
+    pixel_coordinates: np.ndarray | None,
+    standard_columns: np.ndarray | None,
 ) -> np.ndarray:
-    """
-    Normalize the binned intensities of one sample and ion mode (rows = spectra).
-
-    Parameters
-    ----------
-    raw : np.ndarray
-            (n_spectra, n_features) binned intensities; not modified.
-    method : str
-            One of MsiIntensityNormalization.list().
-    pixel_coordinates : np.ndarray | None
-            (n_spectra, 2) raster coordinates; required by 'internal_standard' to fill empty divisors.
-    standard_columns : np.ndarray | None
-            Feature columns of the internal standards; required by 'internal_standard'.
-
-    Every method returns the dtype of `raw`: the per-spectrum divisors are cast to it, so a float32
-    matrix is never promoted to a float64 copy.
-    """
-    if method == MsiIntensityNormalization.NONE or raw.size == 0:
-        return raw
+    """Per-spectrum divisor of `method`; 1 for a spectrum without signal."""
+    n_features = raw.shape[1]
     if method == MsiIntensityNormalization.TIC:
-        tic = raw.sum(axis=1, keepdims=True)
-        tic[tic == 0] = 1
-        return cast(np.ndarray, raw / tic)
-    if method == MsiIntensityNormalization.LOG:
-        return cast(np.ndarray, np.log1p(raw))
-    if method == MsiIntensityNormalization.CLR:
-        # Sparsity-preserving CLR: center the log-intensities over each row's nonzero (observed)
-        # support only, leaving structural zeros at exactly 0 so the matrix stays sparse.
-        nz = raw > 0
-        log_x = np.log(raw, where=nz, out=np.zeros_like(raw))
-        counts = nz.sum(axis=1, keepdims=True)
-        counts[counts == 0] = 1
-        row_mean = (log_x.sum(axis=1, keepdims=True) / counts).astype(
-            raw.dtype, copy=False
+        divisor = np.asarray(raw.sum(axis=1), dtype=np.float64).ravel() / n_features
+    elif method == MsiIntensityNormalization.MEDIAN:
+        divisor = _row_median_nonzero(raw)
+    elif method == MsiIntensityNormalization.RMS:
+        squares = (
+            raw.multiply(raw).sum(axis=1)
+            if sp.issparse(raw)
+            else (raw.astype(np.float64) ** 2).sum(axis=1)
         )
-        return np.where(nz, log_x - row_mean, 0.0)
-    if method == MsiIntensityNormalization.TIC_MEAN_SCALED:
-        # Rescale every spectrum so its total ion current equals the mean TIC over this sample's
-        # spots (this ion mode): TIC normalization multiplied by a per-sample constant. The mean is
-        # taken within this sample and ion mode only, so it does not harmonise samples.
-        tic = raw.sum(axis=1, keepdims=True)
-        mean_tic = tic.mean()
-        if mean_tic == 0:
-            mean_tic = 1.0
-        scaling = tic / mean_tic
-        scaling[scaling == 0] = 1.0  # empty spots stay all-zero
-        return cast(np.ndarray, raw / scaling)
-    if method == MsiIntensityNormalization.MEDIAN:
-        # Median over each spectrum's nonzero features: binned centroid spectra are sparse, so the
-        # median over all features would be 0. Spectra without signal use divisor 1.
-        median = np.ones((raw.shape[0], 1), dtype=raw.dtype)
-        for start in range(0, raw.shape[0], 10_000):
-            block = raw[start : start + 10_000]
-            with warnings.catch_warnings():
-                warnings.simplefilter("ignore", RuntimeWarning)  # all-zero spectra
-                block_median = np.nanmedian(np.where(block > 0, block, np.nan), axis=1)
-            median[start : start + block.shape[0], 0] = np.where(
-                np.isfinite(block_median), block_median, 1.0
-            )
-        return raw / median
-    if method == MsiIntensityNormalization.INTERNAL_STANDARD:
+        divisor = np.sqrt(np.asarray(squares, dtype=np.float64).ravel() / n_features)
+    elif method == MsiIntensityNormalization.INTERNAL_STANDARD:
         if (
             standard_columns is None
             or len(standard_columns) == 0
@@ -85,7 +56,9 @@ def normalize_intensities(
             raise ValueError(
                 "internal_standard normalization needs the internal standard columns and pixel coordinates."
             )
-        divisor = raw[:, standard_columns].sum(axis=1).astype(np.float64)
+        divisor = np.asarray(
+            raw[:, standard_columns].sum(axis=1), dtype=np.float64
+        ).ravel()
         missing = divisor <= 0
         if missing.all():
             raise ValueError(
@@ -104,7 +77,82 @@ def normalize_intensities(
                 f"{int((missing & ~still_missing).sum()):,} filled from neighbours, "
                 f"{int(still_missing.sum()):,} from the sample median"
             )
-        return cast(np.ndarray, raw / divisor[:, None].astype(raw.dtype))
-    raise ValueError(
-        f"Invalid intensity normalization method '{method}'. Expected one of {MsiIntensityNormalization.list()}."
+        return divisor
+    else:
+        raise ValueError(
+            f"Invalid intensity normalization method '{method}'. Expected one of {MsiIntensityNormalization.list()}."
+        )
+    return np.where(np.isfinite(divisor) & (divisor > 0), divisor, 1.0)
+
+
+@overload
+def normalize_intensities(
+    raw: np.ndarray,
+    method: str,
+    pixel_coordinates: np.ndarray | None = None,
+    standard_columns: np.ndarray | None = None,
+) -> np.ndarray: ...
+
+
+@overload
+def normalize_intensities(
+    raw: sp.csr_matrix,
+    method: str,
+    pixel_coordinates: np.ndarray | None = None,
+    standard_columns: np.ndarray | None = None,
+) -> sp.csr_matrix: ...
+
+
+def normalize_intensities(
+    raw: np.ndarray | sp.csr_matrix,
+    method: str,
+    pixel_coordinates: np.ndarray | None = None,
+    standard_columns: np.ndarray | None = None,
+) -> np.ndarray | sp.csr_matrix:
+    """
+    Normalize the binned intensities of one sample and ion mode (rows = spectra).
+
+    Every method divides each spectrum by one divisor, at a fixed scale, so samples share it without
+    a pass over the whole dataset:
+
+    - 'tic': total ion current over the features divided by their number (a row sums to the number
+      of features, its mean feature is 1).
+    - 'median': median of the nonzero features (a typical peak is 1).
+    - 'rms': root mean square over the features.
+    - 'internal_standard': summed intensity of the internal standard columns; spectra without it take
+      the 3 x 3 neighbourhood median of the divisors, then the sample median.
+
+    Parameters
+    ----------
+    raw : np.ndarray | scipy.sparse.csr_matrix
+            (n_spectra, n_features) binned intensities; not modified.
+    method : str
+            One of MsiIntensityNormalization.list().
+    pixel_coordinates : np.ndarray | None
+            (n_spectra, 2) raster coordinates; required by 'internal_standard' to fill empty divisors.
+    standard_columns : np.ndarray | None
+            Feature columns of the internal standards; required by 'internal_standard'.
+
+    Returns the type and dtype of `raw`.
+    """
+    if (
+        method == MsiIntensityNormalization.NONE
+        or raw.shape[0] == 0
+        or raw.shape[1] == 0
+    ):
+        if method not in MsiIntensityNormalization.list():
+            raise ValueError(
+                f"Invalid intensity normalization method '{method}'. Expected one of {MsiIntensityNormalization.list()}."
+            )
+        return raw
+    divisor = _divisor(raw, method, pixel_coordinates, standard_columns)
+    if sp.issparse(raw):
+        out = sp.csr_matrix(raw, copy=True)
+        out.data = (
+            out.data / np.repeat(divisor, np.diff(out.indptr)).astype(out.dtype)
+        ).astype(out.dtype, copy=False)
+        return out
+    return cast(
+        np.ndarray,
+        (raw / divisor[:, None].astype(raw.dtype)).astype(raw.dtype, copy=False),
     )

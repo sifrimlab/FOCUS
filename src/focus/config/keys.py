@@ -108,14 +108,27 @@ class MsiPreprocessingParams(_AbstractEnum):
 
     LIPID_ANNOTATION_DB: Final = "lipid_annotation_db"
     MASS_TOLERANCE: Final = "mass_tolerance"
-    FREQUENCY_THRESHOLD: Final = "frequency_threshold"
     INTENSITY_NORMALIZATION: Final = "intensity_normalization"
     RECALIBRATION_REFERENCE: Final = "recalibration_reference"
     INTERNAL_STANDARD_MZ: Final = "internal_standard_mz"
-    DETECT_BACKGROUND: Final = "detect_background"
     SAMPLE_TYPE: Final = "sample_type"
     RESOLUTION: Final = "resolution"
     FORCE_RECOMPUTING: Final = "force_recomputing"
+
+
+# MSI settings removed in msi-13, with the reason (config validation rejects them).
+MSI_REMOVED_SETTINGS: dict[str, str] = {
+    "detect_background": "foreground detection always runs; 'sample_type' calibrates it",
+    "frequency_threshold": "fixed; noise is removed by the recurrence test and the S/N filter",
+    "min_intensity_threshold": "replaced by the automatic S/N filter",
+}
+
+# MSI normalizations removed in msi-13, with the value that replaces each one.
+MSI_REMOVED_NORMALIZATIONS: dict[str, str] = {
+    "tic_mean_scaled": "tic",
+    "log": "none",
+    "clr": "none",
+}
 
 
 class RamanPreprocessingParams(_AbstractEnum):

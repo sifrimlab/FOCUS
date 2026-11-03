@@ -1,207 +1,201 @@
-"""Detect MSI tissue from spectral-complexity features and spatial mask cleanup."""
+"""Detect MSI foreground spectra from their recurrent ions, with a preset-specific spatial cleanup."""
 
 from __future__ import annotations
-from typing import cast
-from typing import TYPE_CHECKING
 
-if TYPE_CHECKING:
-    from focus.preprocessing.msi.sample import MsiSample
+from dataclasses import dataclass
 
 import numpy as np
-from focus.runtime.reporter_context import get_reporter
-from sklearn.mixture import GaussianMixture
-import pandas as pd
 from scipy.ndimage import (
     binary_fill_holes,
     binary_opening,
+    label as label_components,
+    median_filter,
+    uniform_filter,
+)
+from sklearn.mixture import GaussianMixture
+
+from focus.preprocessing.msi.feature_stats import (
+    detections_per_spectrum,
+    feature_lookup,
+)
+from focus.preprocessing.msi.features import (
+    MzFeatures,
+    feature_bin_width,
+    find_features,
+    peak_histogram,
+    recurrence_map,
+)
+from focus.preprocessing.msi.matching import _flatten_spectra, recalibration_search_ppm
+from focus.preprocessing.msi.technology import (
+    COMPONENT_MIN_FRACTION,
+    MAX_BACKGROUND_RATIO,
+    MIN_SEPARATION,
+    SIGNAL_TO_NOISE,
+    SampleProfile,
 )
 
-from focus.config.keys import MsiMetadata
-from focus.config.options import MsiSampleType
+
+@dataclass
+class SpectraContext:
+    """The recurrent ions of one sample and ion mode, found over all its spectra."""
+
+    features: MzFeatures
+    recurrence: tuple[int, np.ndarray, float]  # recurrence_map of the features
+    log_bin_width: float
 
 
-def detect_tissue_spots(
-    sample: MsiSample,
-    mz_vectors: list[np.ndarray],
-    intensity_vectors: list[np.ndarray],
-    ion_mode: str,
-    database: pd.DataFrame | None = None,
-    mass_tolerance: int | None = None,
-) -> list[int]:
+@dataclass
+class ForegroundResult:
+    """Foreground of one sample and ion mode."""
+
+    mask: np.ndarray  # (n,) bool
+    score: np.ndarray  # (n,) float32
+    background: bool  # the detector separated a background from the foreground
+    summary: str
+
+
+def spectra_context(mz_list: list[np.ndarray], mass_tolerance: float) -> SpectraContext:
+    """Find the recurrent ions over every spectrum (:func:`find_features`) and their recurrence map."""
+    log_bin_width = feature_bin_width(mass_tolerance)
+    features = find_features(
+        *peak_histogram(mz_list, log_bin_width), len(mz_list), mass_tolerance
+    )
+    recurrence = recurrence_map(
+        features, log_bin_width, recalibration_search_ppm(mass_tolerance)
+    )
+    return SpectraContext(features, recurrence, log_bin_width)
+
+
+def recurrent_detections(
+    mz_list: list[np.ndarray], intensity_list: list[np.ndarray], context: SpectraContext
+) -> np.ndarray:
+    """Per spectrum, the number of recurrent ions it holds above its own noise gate (S/N 3)."""
+    lookup_lo, lookup = feature_lookup(context.features.left, context.features.right)
+    flat_mz, flat_intensity, offsets = _flatten_spectra(mz_list, intensity_list)
+    recurrent_lo, recurrent, _ = context.recurrence
+    return detections_per_spectrum(
+        flat_mz,
+        flat_intensity,
+        offsets,
+        context.log_bin_width,
+        lookup_lo,
+        lookup,
+        context.features.mz.size,
+        recurrent_lo,
+        recurrent,
+        SIGNAL_TO_NOISE,
+    )
+
+
+def _raster(pixel_coordinates: np.ndarray) -> tuple[np.ndarray, tuple[int, int]]:
+    """(y, x) raster indices from the origin of the pixel grid, and the raster shape."""
+    grid = np.asarray(pixel_coordinates, dtype=np.int64)
+    grid = grid - grid.min(axis=0)
+    return grid, (int(grid[:, 0].max()) + 1, int(grid[:, 1].max()) + 1)
+
+
+def _cleanup(
+    mask: np.ndarray, grid: np.ndarray, shape: tuple[int, int], profile: SampleProfile
+) -> np.ndarray:
+    """Apply the preset's spatial cleanup to a spectrum mask on the raster."""
+    if profile.cleanup == "none":
+        return mask
+    raster = np.zeros(shape, dtype=bool)
+    raster[grid[:, 0], grid[:, 1]] = mask
+    structure = np.ones((profile.cleanup_size, profile.cleanup_size), dtype=bool)
+    if profile.cleanup == "majority":
+        # A pixel takes the class of the majority of its neighbourhood, itself included.
+        raster = uniform_filter(raster.astype(np.float64), profile.cleanup_size) > 0.5
+    else:
+        raster = binary_opening(binary_fill_holes(raster), structure=structure)
+        if profile.cleanup == "fill_open_components":
+            components, n = label_components(raster, structure=np.ones((3, 3)))
+            if n > 1:
+                sizes = np.bincount(components.ravel())[1:]
+                keep = np.flatnonzero(sizes >= COMPONENT_MIN_FRACTION * sizes.max()) + 1
+                raster = np.isin(components, keep)
+    return np.asarray(raster[grid[:, 0], grid[:, 1]], dtype=bool)
+
+
+def detect_foreground(
+    mz_list: list[np.ndarray],
+    intensity_list: list[np.ndarray],
+    pixel_coordinates: np.ndarray,
+    context: SpectraContext,
+    profile: SampleProfile,
+) -> ForegroundResult:
     """
-    Identify tissue/cell spots from background using spectral complexity features.
+    Foreground spectra of a tissue section or a cell culture.
 
-    Tissue spots have richer, more diverse spectra than background spots (which are
-    dominated by uniformly sprayed standards and slide coating). Three parameter-free
-    features capture this: Shannon entropy, number of detected peaks, and log(TIC).
-    An optional annotation DB hit ratio is added as a 4th feature when a database and
-    mass_tolerance are provided.
-
-    Behavior adapts based on self._sample_type:
-      "tissue"   -- contiguous tissue section. A 2-component GMM is fit; BIC selects
-                               between 1-component (unimodal → keep all) and 2-component (bimodal →
-                               classify by posterior). This handles class-imbalanced distributions
-                               (e.g. 95 % tissue / 5 % background) where Otsu splits the dominant
-                               tissue mode instead of separating it from background. Morphological
-                               cleanup (hole filling + opening) is applied afterwards.
-      "microgrid" -- isolated single cells on a mostly empty slide. Delegated to
-                               _detect_microgrid_spots, which models the background explicitly and
-                               detects cells as sparse local outliers.
-
-    Returns
-    -------
-    list[int]
-            Indices of spots classified as foreground (tissue/cell).
+    Score: log(1 + the number of recurrent ions of the sample a spectrum holds above its noise gate,
+    :func:`recurrent_detections`). Noise centroids never recur, so a background of noise scores low;
+    a background of matrix ions holds only those, below the tissue that holds them and its own ions.
+    With ``profile.score_median`` the score is median-filtered on the raster first. A 1- and a
+    2-component Gaussian mixture are fitted to the scores of the spectra with peaks; when BIC
+    prefers one component, when the two overlap (Ashman's D below `MIN_SEPARATION`) or when the lower
+    one holds more than `MAX_BACKGROUND_RATIO` of the recurrent ions of the higher one (two tissue
+    regions), every such spectrum is foreground; otherwise the spectra whose posterior of the
+    higher-mean component is at least 0.5. The preset's spatial cleanup follows.
     """
-    n_spots = len(mz_vectors)
-    if len(intensity_vectors) != n_spots:
-        raise ValueError("intensity_vectors must have same length as mz_vectors")
-    if n_spots == 0:
-        return []
-
-    if sample._sample_type == MsiSampleType.MICROGRID:
-        return sample.foreground._detect_microgrid_spots(
-            mz_vectors=mz_vectors,
-            intensity_vectors=intensity_vectors,
-            ion_mode=ion_mode,
-            database=database,
-            mass_tolerance=mass_tolerance,
-        )
-
-    # ------------------------------------------------------------------
-    # 1. Per-spot spectral complexity features
-    # ------------------------------------------------------------------
-    n_peaks = np.array([len(mz) for mz in mz_vectors], dtype=np.int32)
-    tic = np.zeros(n_spots, dtype=np.float64)
-    entropy = np.zeros(n_spots, dtype=np.float64)
-
-    for i in range(n_spots):
-        if n_peaks[i] == 0:
-            continue
-        iv = np.asarray(intensity_vectors[i], dtype=np.float64)
-        tic[i] = iv.sum()
-        if n_peaks[i] < 2 or tic[i] <= 0:
-            continue
-        p = iv / tic[i]
-
-        p = p[p > 0]
-        entropy[i] = -np.sum(p * np.log2(p))
-
+    n_spectra = len(mz_list)
+    n_peaks = np.fromiter((mz.size for mz in mz_list), dtype=np.int64, count=n_spectra)
     valid = n_peaks > 0
-    if not np.any(valid):
-        return []
-
-    # ------------------------------------------------------------------
-    # 2. Optional annotation DB hit-ratio feature
-    # ------------------------------------------------------------------
-    features: list[np.ndarray] = [
-        entropy,
-        n_peaks.astype(np.float64),
-        np.log1p(tic),
-    ]
-
-    if database is not None and mass_tolerance is not None:
-        db_subset = database[database["ion_mode"] == ion_mode]
-        if not db_subset.empty:
-            masses = np.sort(db_subset["ionized_mass"].to_numpy(dtype=np.float64))
-            hit_ratio = np.zeros(n_spots, dtype=np.float64)
-            for i in range(n_spots):
-                if n_peaks[i] == 0:
-                    continue
-                mz = np.asarray(mz_vectors[i], dtype=np.float64)
-                idx = np.searchsorted(masses, mz)
-                left = np.clip(idx - 1, 0, masses.size - 1)
-                right = np.clip(idx, 0, masses.size - 1)
-                tol_l = masses[left] * mass_tolerance * 1e-6
-                tol_r = masses[right] * mass_tolerance * 1e-6
-                within_l = np.abs(mz - masses[left]) <= tol_l
-                within_r = np.abs(mz - masses[right]) <= tol_r
-                within = within_l | within_r
-                if np.any(within):
-                    w = np.where(within)[0]
-                    chosen = np.where(within_l[w], left[w], right[w])
-                    hit_ratio[i] = len(np.unique(chosen)) / n_peaks[i]
-            features.append(hit_ratio)
-
-    # ------------------------------------------------------------------
-    # 3. Min-max normalise each feature and average into a single score
-    # ------------------------------------------------------------------
-    score = np.zeros(n_spots, dtype=np.float64)
-    for feat in features:
-        vals = feat[valid]
-        lo, hi = vals.min(), vals.max()
-        if hi - lo > 1e-12:
-            norm = np.zeros(n_spots, dtype=np.float64)
-            norm[valid] = (feat[valid] - lo) / (hi - lo)
-            score += norm
-    score /= len(features)
-
-    # ------------------------------------------------------------------
-    # 4. Threshold: GMM + BIC model selection
-    # ------------------------------------------------------------------
-    valid_scores = score[valid]
-    lo, hi = valid_scores.min(), valid_scores.max()
-
-    tissue_mask = np.zeros(n_spots, dtype=bool)
-
-    # Tissue section: use GMM + BIC to decide between unimodal (all tissue)
-    # and bimodal (tissue + background).  This handles imbalanced distributions
-    # (e.g. 95 % tissue / 5 % background) where Otsu tends to split the
-    # dominant tissue mode rather than separating it from background.
-    n_valid = valid_scores.shape[0]
-    if n_valid < 4 or hi - lo < 1e-12:
-        get_reporter().detail(
-            f"Tissue detection (tissue): degenerate score distribution -- treating all {n_spots} spots as foreground."
-        )
-        return cast(list[int], np.where(valid)[0].tolist())
-
-    vs2d = valid_scores.reshape(-1, 1)
-    gmm1 = GaussianMixture(n_components=1, random_state=0).fit(vs2d)
-    gmm2 = GaussianMixture(n_components=2, random_state=0, n_init=3).fit(vs2d)
-    bic1, bic2 = gmm1.bic(vs2d), gmm2.bic(vs2d)
-
-    if bic1 <= bic2:
-        # BIC prefers unimodal model -- keep all valid spots as tissue
-        get_reporter().detail(
-            f"Tissue detection (tissue): GMM BIC prefers 1-component "
-            f"(BIC1={bic1:.1f} <= BIC2={bic2:.1f}) -- treating all {n_spots} spots as foreground, "
-            f"n_features={len(features)}, ion_mode={ion_mode}"
-        )
-        return cast(list[int], np.where(valid)[0].tolist())
-
-    # 2-component model wins: classify by posterior on the higher-mean component
-    tissue_comp = int(np.argmax(gmm2.means_.ravel()))
-    posteriors = gmm2.predict_proba(vs2d)[:, tissue_comp]
-    tissue_mask[valid] = posteriors >= 0.5
-    mu0, mu1 = gmm2.means_.ravel()
-    pi0, pi1 = gmm2.weights_
-    _log_info = (
-        f"GMM 2-comp (BIC1={bic1:.1f}, BIC2={bic2:.1f}), "
-        f"means=[{mu0:.3f},{mu1:.3f}], weights=[{pi0:.2f},{pi1:.2f}]"
+    score = np.log1p(recurrent_detections(mz_list, intensity_list, context)).astype(
+        np.float64
     )
-
-    # ------------------------------------------------------------------
-    # 5. Spatial morphological cleanup (tissue section only)
-    # ------------------------------------------------------------------
-    if sample._sample_type == MsiSampleType.TISSUE:
-        pixel_coords = sample._metadata[ion_mode][
-            MsiMetadata.PIXEL_COORDINATES
-        ]  # (N, 2): (y, x)
-        if pixel_coords is not None and len(pixel_coords) == n_spots:
-            grid_h = int(pixel_coords[:, 0].max()) + 1
-            grid_w = int(pixel_coords[:, 1].max()) + 1
-            raster = np.zeros((grid_h, grid_w), dtype=bool)
-            for i in range(n_spots):
-                if tissue_mask[i]:
-                    raster[pixel_coords[i, 0], pixel_coords[i, 1]] = True
-            raster = binary_fill_holes(raster)
-            raster = binary_opening(raster, structure=np.ones((3, 3), dtype=bool))
-            for i in range(n_spots):
-                tissue_mask[i] = raster[pixel_coords[i, 0], pixel_coords[i, 1]]
-
-    kept = np.where(tissue_mask)[0]
-    get_reporter().detail(
-        f"Tissue detection ({sample._sample_type}): kept {kept.size} / {n_spots} spots "
-        f"({_log_info}, n_features={len(features)}, ion_mode={ion_mode})"
+    grid, shape = _raster(pixel_coordinates)
+    if profile.score_median > 1:
+        raster = np.zeros(shape, dtype=np.float64)
+        raster[grid[:, 0], grid[:, 1]] = score
+        score = median_filter(raster, size=profile.score_median, mode="nearest")[
+            grid[:, 0], grid[:, 1]
+        ]
+    values = score[valid]
+    if values.size < 4 or np.ptp(values) < 1e-12:
+        return ForegroundResult(
+            valid,
+            score.astype(np.float32),
+            False,
+            "degenerate score, every spectrum kept",
+        )
+    column = values.reshape(-1, 1)
+    one = GaussianMixture(n_components=1, random_state=0).fit(column)
+    two = GaussianMixture(n_components=2, random_state=0, n_init=3).fit(column)
+    bic_one, bic_two = one.bic(column), two.bic(column)
+    if bic_one <= bic_two:
+        return ForegroundResult(
+            valid,
+            score.astype(np.float32),
+            False,
+            f"unimodal score (BIC {bic_one:.0f} <= {bic_two:.0f}), every spectrum kept",
+        )
+    means, variances = two.means_.ravel(), two.covariances_.ravel()
+    separation = float(np.sqrt(2) * abs(means[0] - means[1]) / np.sqrt(variances.sum()))
+    ions = np.sort(np.expm1(means))
+    if separation < MIN_SEPARATION:
+        return ForegroundResult(
+            valid,
+            score.astype(np.float32),
+            False,
+            f"overlapping score modes (Ashman's D {separation:.2f} < {MIN_SEPARATION:g}), "
+            "every spectrum kept",
+        )
+    if ions[0] > MAX_BACKGROUND_RATIO * ions[1]:
+        return ForegroundResult(
+            valid,
+            score.astype(np.float32),
+            False,
+            f"two tissue-like score modes (about {ions[0]:.0f} and {ions[1]:.0f} recurrent ions "
+            "per spectrum), every spectrum kept",
+        )
+    high = int(np.argmax(means))
+    mask = np.zeros(n_spectra, dtype=bool)
+    mask[valid] = two.predict_proba(column)[:, high] >= 0.5
+    mask = _cleanup(mask, grid, shape, profile) & valid
+    return ForegroundResult(
+        mask,
+        score.astype(np.float32),
+        bool((valid & ~mask).any()),
+        f"bimodal score (BIC {bic_one:.0f} > {bic_two:.0f}, Ashman's D {separation:.2f}), "
+        f"about {ions[0]:.0f} and {ions[1]:.0f} recurrent ions per spectrum",
     )
-    return cast(list[int], kept.tolist())

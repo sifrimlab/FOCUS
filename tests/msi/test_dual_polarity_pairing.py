@@ -41,7 +41,7 @@ class TestDualPolarityPairing:
         """Load paired MSI payloads and decode the embedded pixel identifiers from each polarity."""
         sample = MsiSample(root, "S", "MSI", double_ion_mode=True)
         sample.initialize_sample()
-        mz, _, _, _ = sample.load_payload()
+        mz, _ = sample.load_payload()
         return {
             mode: np.array(
                 [(round(m[0] - 310.0), round(m[1] - 700.0)) for m in mz[mode]]

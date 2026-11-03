@@ -42,9 +42,9 @@ class SpectrumRecord(TypedDict):
 class SampleMetadata(TypedDict, total=False):
     """Sample arrays keyed exactly as in the original imzML reader."""
 
-    intensities_dtype: type[np.float32] | type[np.float64]
-    mz_dtype: type[np.float32] | type[np.float64]
-    raster_size: NDArray[np.int16]
+    intensities_dtype: type[np.generic]
+    mz_dtype: type[np.floating]
+    raster_size: NDArray[np.float32]
     line_axis: int
     stage_coordinates: bool
     pixel_coordinates: NDArray[np.int32]

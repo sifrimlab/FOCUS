@@ -18,6 +18,7 @@ from focus.preprocessing.msi.settings import (
     _SCALE_MIN_SHARED,
     _step,
 )
+from focus.preprocessing.msi.payload import read_vectors
 from focus.preprocessing.msi.sample import MsiSample
 from focus.preprocessing.msi.backbone import mass_scale_shifts
 from focus.preprocessing.msi.references import _CalibrationReferenceSelector
@@ -28,8 +29,8 @@ def select_references(
     dataset: MsiDataset,
     iter_samples: list[MsiSample],
     stored_references: dict[str, dict[str, np.ndarray]],
-    mass_tolerance: int,
-    detect_background: bool,
+    stored_pools: dict[str, dict[str, dict[str, np.ndarray | float]]],
+    mass_tolerance: float,
     recalibration_reference: dict[str, np.ndarray] | None,
     internal_standard_mz: dict[str, np.ndarray] | None,
     reporter: StepReporter,
@@ -37,25 +38,23 @@ def select_references(
     """Select sample references and align their mass scales."""
 
     # STEP 2-3: Recalibration references, one set per sample: the ions that sample's own spectra hold
-    # (see _CalibrationReferenceSelector; the tissue spectra when background detection ran, all
-    # spectra otherwise), always including the internal standards when configured. They are selected
-    # while the payload loaded for tissue detection is in hand; step 3 puts the samples' references
-    # on one mass scale (mass_scale_shifts) and reports them. A user-supplied reference serves every
-    # sample as is. Recalibration runs with or without a lipid DB.
+    # (see _CalibrationReferenceSelector), selected from every spectrum before any foreground is
+    # known, so matrix and background ions present everywhere are eligible calibrants. They always
+    # include the internal standards when configured. Step 3 puts the samples' references on one mass
+    # scale (mass_scale_shifts) and reports them. A user-supplied reference serves every sample as is.
     state = ReferenceSelection({}, {}, {})
     _collect_references(
         dataset,
         iter_samples,
         state,
         mass_tolerance,
-        detect_background,
         recalibration_reference,
         internal_standard_mz,
         reporter,
     )
     if recalibration_reference is None:
         scale_shift = _align_references(
-            state, stored_references, mass_tolerance, internal_standard_mz
+            state, stored_references, stored_pools, mass_tolerance, internal_standard_mz
         )
         _report_references(iter_samples, state, scale_shift, reporter)
 
@@ -70,8 +69,7 @@ def _collect_references(
     dataset: MsiDataset,
     iter_samples: list[MsiSample],
     state: ReferenceSelection,
-    mass_tolerance: int,
-    detect_background: bool,
+    mass_tolerance: float,
     recalibration_reference: dict[str, np.ndarray] | None,
     internal_standard_mz: dict[str, np.ndarray] | None,
     reporter: StepReporter,
@@ -79,32 +77,33 @@ def _collect_references(
     """Load queued payloads and retain sample-selected references and candidate pools."""
     selected, pools, candidates = state.selected, state.pools, state.candidates
     for sample in reporter.tqdm(iter_samples, *_step(2), unit="sample"):
-        _, _, filtered_mz, filtered_intensity = sample.load_payload(
-            annotation_db=dataset.lipid_annotation_db,
-            mass_tolerance=mass_tolerance,
-            detect_background=detect_background,
-        )
         if recalibration_reference is None:
+            mz_vectors, intensity_vectors = read_vectors(sample)
             selector = _CalibrationReferenceSelector(mass_tolerance)
-            selector.add_sample(filtered_mz, filtered_intensity)
+            selector.add_sample(mz_vectors, intensity_vectors)
             selected[sample.sample_id] = selector.select(
                 number_of_references=_RECALIBRATION_REFERENCES,
                 required_mz=internal_standard_mz,
             )
             pools[sample.sample_id] = selector.pool
             candidates[sample.sample_id] = selector.candidates
-            del selector
-        del filtered_mz, filtered_intensity  # Free memory
-        gc.collect()
+            del selector, mz_vectors, intensity_vectors  # Free memory
+            gc.collect()
 
 
 def _align_references(
     state: ReferenceSelection,
     stored_references: dict[str, dict[str, np.ndarray]],
-    mass_tolerance: int,
+    stored_pools: dict[str, dict[str, dict[str, np.ndarray | float]]],
+    mass_tolerance: float,
     internal_standard_mz: dict[str, np.ndarray] | None,
 ) -> dict[str, dict[str, tuple[float, bool]]]:
-    """Align selected sample references to a shared mass scale in place, using cached anchors."""
+    """
+    Align selected sample references and pools to a shared mass scale in place, using cached anchors.
+
+    A cached sample anchors the alignment with its stored pool (its references when the file holds
+    none), the same ions a fresh run compares, so a resumed run reaches the shifts of a fresh one.
+    """
     selected, pools = state.selected, state.pools
     scale_shift: dict[str, dict[str, tuple[float, bool]]] = {s: {} for s in selected}
     for mode in MsiIonMode.list():
@@ -118,18 +117,24 @@ def _align_references(
             internal_standard_mz is not None and mode in internal_standard_mz
         ):
             continue
+        # Cached samples are a prefix of the dataset order, so anchors first gives every pair the
+        # orientation of a fresh run.
+        stored = [
+            _anchor(stored_references, stored_pools, s, str(mode)) for s in anchors
+        ]
         shifts, connected = mass_scale_shifts(
-            [
+            [pool for pool, _ in stored]
+            + [
                 pools[s][mode]
                 if pools[s].get(mode, np.array([])).size
                 else selected[s][mode]
                 for s in names
-            ]
-            + [stored_references[s][str(mode)] for s in anchors],
+            ],
             recalibration_search_ppm(mass_tolerance),
-            fixed=np.arange(len(names) + len(anchors)) >= len(names),
+            fixed=np.arange(len(anchors) + len(names)) < len(anchors),
+            fixed_shifts=np.array([shift for _, shift in stored] + [0.0] * len(names)),
         )
-        for k, s in enumerate(names):
+        for k, s in enumerate(names, start=len(anchors)):
             scale_shift[s][mode] = (
                 float(shifts[k]),
                 bool(connected[k]) or len(names) + len(anchors) == 1,
@@ -137,6 +142,22 @@ def _align_references(
             selected[s][mode] = selected[s][mode] / (1 + shifts[k] * 1e-6)
 
     return scale_shift
+
+
+def _anchor(
+    stored_references: dict[str, dict[str, np.ndarray]],
+    stored_pools: dict[str, dict[str, dict[str, np.ndarray | float]]],
+    sample_id: str,
+    mode: str,
+) -> tuple[np.ndarray, float]:
+    """
+    A cached sample's calibrant pool on its own scale and its mass-scale shift, as a fresh run uses
+    them; its stored references (already on the common scale, shift 0) when no pool was stored.
+    """
+    stored = stored_pools.get(sample_id, {}).get(mode)
+    if stored is not None and np.asarray(stored["pool"]).size:
+        return np.asarray(stored["pool"], dtype=np.float64), float(stored["shift_ppm"])
+    return np.asarray(stored_references[sample_id][mode], dtype=np.float64), 0.0
 
 
 def _report_references(
@@ -149,6 +170,14 @@ def _report_references(
     selected, candidates = state.selected, state.candidates
     for sample in reporter.tqdm(iter_samples, *_step(3), unit="sample"):
         sample.recalibration_reference = selected[sample.sample_id]
+        sample.recalibration_pool = {
+            str(mode): {
+                "pool": np.asarray(pool, dtype=np.float64),
+                "shift_ppm": scale_shift[sample.sample_id].get(mode, (0.0, True))[0],
+            }
+            for mode, pool in state.pools[sample.sample_id].items()
+            if np.asarray(pool).size
+        }
         for mode in sample.ion_modes:
             masses = selected[sample.sample_id].get(mode, np.array([]))
             listed = ", ".join(f"{m:.4f}" for m in masses)

@@ -277,7 +277,7 @@ class MsiCoordinates:
 
 
 def compute_raster_coordinates(
-    physical_coords: np.ndarray, raster_size: NDArray[np.int16]
+    physical_coords: np.ndarray, raster_size: NDArray[np.floating]
 ) -> NDArray[np.int32]:
     """
     Convert physical coordinates (in microns) to raster pixel coordinates. This method assumes a raster pixel size of 1 micron.
@@ -286,8 +286,8 @@ def compute_raster_coordinates(
     ----------
     physical_coords : np.ndarray
             An (N, 2) array of physical coordinates in microns.
-    raster_size : np.ndarray[np.int16]
-            A (2,) array specifying the size of the raster in pixels (width, height).
+    raster_size : np.ndarray[np.floating]
+            A (2,) array with the pixel size (x, y) in microns.
 
     Returns
     -------

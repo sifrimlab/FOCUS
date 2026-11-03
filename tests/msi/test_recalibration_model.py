@@ -5,7 +5,7 @@ from tests.assertions import assert_close
 import numpy as np
 
 from focus.preprocessing.msi.recalibration import estimate_recalibration
-from focus.preprocessing.msi.binning import interpolate_single
+from focus.preprocessing.msi.binning import bin_spectrum
 from focus.preprocessing.msi.matching import sample_offset_ppm
 from tests.msi.data import CALIBRANTS, ANALYTE, CENTRE, true_error_ppm, synthetic_sample
 
@@ -270,7 +270,7 @@ class TestRecalibrationModel:
             """Interpolate each supplied spectrum onto the single-analyte backbone and return its intensities."""
             return np.array(
                 [
-                    interpolate_single(mz, inten, backbone, 10)[0]
+                    bin_spectrum(mz, inten, backbone, 10 / 2.3548, 10)[0]
                     for mz, inten in zip(spectra, intensity_list)
                 ]
             )
@@ -286,9 +286,8 @@ class TestRecalibrationModel:
                 for mz, inten in zip(mz_list, intensity_list)
             ]
         )
-        np.testing.assert_allclose(
-            after, expected
-        )  # no line drops or splits the analyte
+        # No line drops the analyte: an isolated feature takes every peak in reach whole.
+        np.testing.assert_allclose(after, expected, rtol=1e-6)
 
     def test_no_references_is_identity(self) -> None:
         """Verify no references is identity."""

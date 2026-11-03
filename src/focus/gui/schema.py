@@ -81,10 +81,6 @@ def _build_schema() -> dict[str, object]:
                     "nullable": True,
                 },
                 MsiPreprocessingParams.MASS_TOLERANCE: {"type": "float", "default": 10},
-                MsiPreprocessingParams.FREQUENCY_THRESHOLD: {
-                    "type": "float",
-                    "default": 0.01,
-                },
                 MsiPreprocessingParams.INTENSITY_NORMALIZATION: {
                     "type": "enum",
                     "options": MsiIntensityNormalization.list(),
@@ -99,10 +95,6 @@ def _build_schema() -> dict[str, object]:
                     "type": "string",
                     "default": None,
                     "nullable": True,
-                },
-                MsiPreprocessingParams.DETECT_BACKGROUND: {
-                    "type": "bool",
-                    "default": False,
                 },
                 MsiPreprocessingParams.SAMPLE_TYPE: {
                     "type": "enum",

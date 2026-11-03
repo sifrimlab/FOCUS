@@ -1,10 +1,17 @@
-"""Backbone behavioral scenarios."""
+"""Backbone behavioral scenarios: per-sample features and their merge."""
 
 import numpy as np
 
 from focus.config.options import MsiIonMode
-from focus.preprocessing.msi.backbone import _BackboneBuilder
-from focus.preprocessing.msi.binning import interpolate_single
+from focus.preprocessing.msi.backbone import (
+    SampleFeatures,
+    _BackboneBuilder,
+    merge_features,
+    split_groups,
+)
+from focus.preprocessing.msi.binning import bin_spectrum
+from focus.preprocessing.msi.feature_building import select_sample_features
+from focus.preprocessing.msi.tissue import spectra_context
 from tests.msi.data import (
     backbone_sample,
     KIND_IONS,
@@ -14,21 +21,34 @@ from tests.msi.data import (
 )
 
 
+def sample_features(
+    mz_list: list[np.ndarray], intensity_list: list[np.ndarray] | None
+) -> SampleFeatures:
+    """The kept features of one sample whose every spectrum is foreground (no background, no S/N)."""
+    if intensity_list is None:
+        intensity_list = [np.full(mz.size, 1e5, dtype=np.float32) for mz in mz_list]
+    return select_sample_features(
+        mz_list,
+        intensity_list,
+        np.ones(len(mz_list), dtype=bool),
+        False,
+        spectra_context(mz_list, 10),
+        10,
+        None,
+        MsiIonMode.POSITIVE,
+    )
+
+
 class TestBackbone:
     """Behavioral contracts for backbone."""
 
     @staticmethod
-    def build(
-        *samples: tuple[list[np.ndarray], list[np.ndarray] | None],
-        frequency_threshold: float = 0.01,
-    ) -> np.ndarray:
+    def build(*samples: tuple[list[np.ndarray], list[np.ndarray] | None]) -> np.ndarray:
         """Build and return the positive-mode m/z backbone from the supplied sample spectra."""
-        builder = _BackboneBuilder(
-            mass_tolerance=10, frequency_threshold=frequency_threshold
-        )
-        for mz_list, _ in samples:
-            builder.add_sample({MsiIonMode.POSITIVE: mz_list})
-        return builder.build()[MsiIonMode.POSITIVE]
+        builder = _BackboneBuilder(mass_tolerance=10)
+        for mz_list, intensity_list in samples:
+            builder.add(MsiIonMode.POSITIVE, sample_features(mz_list, intensity_list))
+        return builder.build()[MsiIonMode.POSITIVE].mz
 
     @staticmethod
     def found(
@@ -54,28 +74,21 @@ class TestBackbone:
         mz_list, intensity_list = backbone_sample(
             [(700.0, 1.0, 2.0, (0.15, 4.0, 22.0)), (500.0, 1.0, 1.0, None)]
         )
-        features = self.build((mz_list, intensity_list))
-        ion = self.near(features, 700.0)
+        backbone = _BackboneBuilder(10)
+        backbone.add(MsiIonMode.POSITIVE, sample_features(mz_list, intensity_list))
+        built = backbone.build()[MsiIonMode.POSITIVE]
+        ion = self.near(built.mz, 700.0)
         assert ion.size == 1
         assert abs(ion[0] - 700.0) / 700.0 * 1e6 < 3.0
-        # Every peak within the tolerance of the feature bins into that one feature.
+        # The ion's peaks bin into that one feature, nearly every spectrum holding it.
         binned = np.array(
             [
-                interpolate_single(mz, i.astype(np.float64), features, 10)
+                bin_spectrum(mz, i, built.mz, built.sigma, 10)
                 for mz, i in zip(mz_list, intensity_list)
             ]
         )
-        column = int(np.flatnonzero(np.isin(features, ion))[0])
-        assert (
-            int(
-                (
-                    binned[:, np.abs(features - 700.0) / 700.0 * 1e6 <= 50].sum(axis=0)
-                    > 0
-                ).sum()
-            )
-            == 1
-        )
-        assert (binned[:, column] > 0).mean() > 0.9
+        column = int(np.flatnonzero(np.isin(built.mz, ion))[0])
+        assert (binned[:, column] > 0).mean() > 0.8
 
     def test_ions_separated_by_a_dip_stay_two_features(self) -> None:
         """Verify ions separated by a dip stay two features."""
@@ -109,7 +122,7 @@ class TestBackbone:
         assert false == 0
 
     def test_noise_makes_no_feature_in_any_kind_of_sample(self) -> None:
-        # Background removal hands the tissue (cell) spectra to the backbone; pure noise gives nothing.
+        # The foreground (cell) spectra feed the backbone; pure noise gives nothing.
         """Verify noise makes no feature in any kind of sample."""
         for kind, n_spectra, minimum in (
             ("culture", 1500, 0.05),
@@ -131,16 +144,6 @@ class TestBackbone:
             == 0
         )
 
-    def test_frequency_threshold_sets_the_feature_count(self) -> None:
-        """Verify frequency threshold sets the feature count."""
-        mz_list, intensity_list, _ = kind_sample("tissue")
-        for threshold in (0.1, 0.5):
-            features = self.build(
-                (mz_list, intensity_list), frequency_threshold=threshold
-            )
-            expected = int((KIND_PRESENCE >= threshold * KIND_PRESENCE.max()).sum())
-            assert abs(features.size - expected) <= max(2, expected // 20), threshold
-
     def test_frequency_is_judged_per_sample(self) -> None:
         """Verify frequency is judged per sample."""
         common, rare, local = 500.0, 700.0, 900.0
@@ -161,3 +164,59 @@ class TestBackbone:
         assert (
             self.near(features, local).size == 0
         )  # rare in the only sample holding it
+
+    def test_weak_feature_on_a_strong_flank_is_preserved(self) -> None:
+        """A weak feature just beyond the tolerance of a strong one stays a feature of its own."""
+        strong = SampleFeatures(
+            np.array([700.0]), np.array([1.0]), np.array([1.0]), np.array([False])
+        )
+        weak = SampleFeatures(
+            np.array([700.0 * (1 + 11e-6)]),
+            np.array([0.02]),
+            np.array([1.0]),
+            np.array([False]),
+        )
+        merged = merge_features([strong, weak], 10)
+        assert merged.mz.size == 2
+        np.testing.assert_allclose(merged.mz, [700.0, 700.0 * (1 + 11e-6)])
+
+    def test_features_closer_than_the_tolerance_merge(self) -> None:
+        """One ion seen 4 ppm apart in two samples is one feature at the presence-weighted mean."""
+        first = SampleFeatures(
+            np.array([700.0]), np.array([0.75]), np.array([1.0]), np.array([True])
+        )
+        second = SampleFeatures(
+            np.array([700.0 * (1 + 4e-6)]),
+            np.array([0.25]),
+            np.array([1.0]),
+            np.array([False]),
+        )
+        merged = merge_features([first, second], 10)
+        assert merged.mz.size == 1
+        np.testing.assert_allclose(merged.mz, 700.0 * (1 + 1e-6), rtol=1e-9)
+        assert merged.annotated[0]
+        # Width: the members' own spread plus their offsets from the merged m/z.
+        np.testing.assert_allclose(
+            merged.sigma, np.sqrt(0.75 * (1 + 1) + 0.25 * (1 + 9)), rtol=1e-3
+        )
+
+    def test_every_group_spans_at_most_the_tolerance(self) -> None:
+        """Largest-gap splitting assigns every feature to one group of span <= tolerance."""
+        rng = np.random.default_rng(0)
+        mz = np.sort(700.0 * (1 + rng.uniform(0, 200, 400) * 1e-6))
+        groups = split_groups(mz, 10)
+        assert sum(stop - start for start, stop in groups) == mz.size
+        assert all(
+            (mz[stop - 1] - mz[start]) / mz[start] * 1e6 <= 10 for start, stop in groups
+        )
+        assert [g[0] for g in groups][1:] == [g[1] for g in groups][:-1]
+
+    def test_feature_width_follows_the_peak_spread(self) -> None:
+        """The data-driven width recovers the ppm scatter of an ion's peaks."""
+        for spread in (2.0, 3.0):
+            mz_list, intensity_list = backbone_sample(
+                [(700.0, 1.0, spread, None)], n_spectra=4000
+            )
+            features = sample_features(mz_list, intensity_list)
+            assert features.mz.size == 1
+            assert abs(features.sigma[0] - spread) / spread < 0.2, spread

@@ -4,6 +4,7 @@ import pytest
 from tests.assertions import assert_close
 
 import numpy as np
+import scipy.sparse as sp
 
 from focus.config.options import MsiIntensityNormalization
 from focus.preprocessing.msi.normalization import normalize_intensities
@@ -21,6 +22,31 @@ class TestNormalization:
         np.testing.assert_allclose(
             out, [[0.0, 2 / 3, 4 / 3, 0.0], [0.0, 0.0, 0.0, 0.0]]
         )
+
+    def test_fixed_scales_are_shared_by_every_sample(self) -> None:
+        """TIC rows sum to the number of features, RMS is 1, the nonzero median is 1."""
+        raw = np.random.default_rng(0).uniform(0, 10, (5, 4))
+        raw[raw < 3] = 0
+        tic = normalize_intensities(raw, MsiIntensityNormalization.TIC)
+        np.testing.assert_allclose(tic.sum(axis=1), 4.0)
+        rms = normalize_intensities(raw, MsiIntensityNormalization.RMS)
+        np.testing.assert_allclose(np.sqrt((rms**2).mean(axis=1)), 1.0)
+        median = normalize_intensities(raw, MsiIntensityNormalization.MEDIAN)
+        np.testing.assert_allclose([np.median(row[row > 0]) for row in median], 1.0)
+
+    def test_sparse_input_gives_the_dense_result(self) -> None:
+        """Every method returns CSR for CSR input, equal to the dense result."""
+        raw = np.random.default_rng(1).uniform(0, 10, (4, 3)).astype(np.float32)
+        raw[raw < 4] = 0
+        raw[:, 1] = np.maximum(raw[:, 1], 1.0)
+        for method in MsiIntensityNormalization.list():
+            dense = normalize_intensities(raw, method, self.coords, np.array([1]))
+            sparse = normalize_intensities(
+                sp.csr_matrix(raw), method, self.coords, np.array([1])
+            )
+            assert sp.issparse(sparse), method
+            assert sparse.dtype == np.float32, method
+            np.testing.assert_allclose(sparse.toarray(), dense, rtol=1e-6)
 
     def test_internal_standard_ratio_and_neighbour_fill(self) -> None:
         """Verify internal standard ratio and neighbour fill."""

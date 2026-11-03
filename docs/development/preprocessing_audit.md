@@ -207,6 +207,7 @@ Verification labels: **R** reproduced by a controlled run, **A** reproduced by a
 | 2.1 defects 1 to 9 | Fixed, see section 6 |
 | ST items of 2.2, 2.3, 3.2 and 4 | Fixed, see section 7 |
 | Microscopy items of 2.2, 3.1, 3.6 and 4 | Fixed, see section 8 |
+| MSI items of 1.2, 2.2, 2.3, 3.4 and 4 | Fixed, see section 9 |
 | Other items of 2.2, 2.3, 3, 4 | Open |
 
 Not verified: Raman on real `.lif` files, the real LAS X LIF tree layout, and the physically correct
@@ -293,6 +294,71 @@ Out of scope, still open:
 
 - No registration type for fluorescence images (per-channel intensity in the anchor footprint).
 - Pen-mark detection; flat-field correction of stitched mosaics.
+
+## 9. MSI preprocessing redesign
+
+The MSI pipeline was rebuilt around one experiment setting, `sample_type` (`tissue`, `tissue_noisy`,
+`cell_culture`, `microgrid`), and one numeric setting, `mass_tolerance`. The steps run in a new order:
+calibrants from every spectrum, recalibration, foreground on recalibrated m/z, then per-sample
+features selected by frequency, annotation and S/N against the background, merged into the backbone
+and binned by Gaussian responsibilities. `detect_background`, `frequency_threshold` and
+`min_intensity_threshold`, and the normalizations `log`, `clr` and `tic_mean_scaled`, fail validation
+with the reason. Method version `msi-13`: every MSI output is rebuilt once and every MSI alignment pair
+is re-aligned once. See `docs/scientific/msi_methods.md`.
+
+| Audit item | Resolution |
+|---|---|
+| `min_intensity_threshold` ignored silently (1.2) | Rejected by validation; replaced by the S/N filter. |
+| Logger `focus.preprocessing.lipidomics` (1.2) | `focus.preprocessing.msi`. |
+| imzML: literal group ids, integer intensities, `"20.0"` pixel size, `int16` size, silent 1 µm (2.2) | Arrays by `m/z array` / `intensity array` terms; integer intensities read as float32; decimal float32 pixel size; missing size inferred from stage positions, otherwise `ValueError`. |
+| "All foreground" logged but no spectra used (2.2) | Every spectrum with peaks is foreground, with a warning, and feeds the features. |
+| m/z 0 raises `ZeroDivisionError` (2.2) | Peaks at m/z 0 or below are dropped at read. |
+| `mass_tolerance=10.0` rejected (2.3) | Int or float accepted. |
+| Resumed run differs by about 1e-3 ppm (2.3) | Cause: a resume aligned the queued samples against the cached samples' 10 references, a fresh run against their pools of up to 200 ions, and in the other pair orientation. Pools and shifts are stored (`uns['recalibration_pool']`), held fixed in dataset order, and the backbone is binned from its stored float32 values: a resumed run equals a fresh one bit for bit (test). |
+| Background detection before recalibration (3.4) | Recalibration first; calibrants from every spectrum (matrix ions are eligible, which a microgrid needs). |
+| Detection gated on the lipid DB | Always runs, without the database. |
+| Stale docs: microgrid Otsu, "most intense peak" credited to MALDIquant (3.4) | Methods page rewritten; the most-intense rule is a labelled FOCUS adaptation. |
+| Noise gate without a location term (3.4) | Median + k x 1.4826 MAD. |
+| CLR over nonzero values only (3.4) | Removed; normalizations divide by one divisor at a fixed scale (`tic`, `median`, `rms`, `internal_standard`). |
+| Annotation without FDR control (3.4) | Decoy-shift estimate of chance annotations, with a warning above half. Isotope and adduct logic remain out of scope. |
+| Dense n x F matrices; merge reloads the merged file (4) | The numba kernel writes CSR; the merged `uns` entries are written in place; writes are atomic. |
+
+Foreground detection was rebuilt. The old score (entropy, peak count, log TIC) rises on a background of
+noise centroids. The new score counts the recurrent ions a spectrum holds above its noise. A background
+is separated only when BIC prefers two components, Ashman's D is at least 2 and the lower component
+holds at most half the ions of the higher one. The last two rules were added after the real data below:
+BIC split two tissue regions of about 350 and 390 ions per spectrum (D 0.85 on a 100 x 100 window).
+
+Gaussian binning: an overlap-capped kernel that also attenuates isolated features was implemented
+first and rejected on the real data. Its centroids sit on a 5 ppm sampling grid, and the per-line
+recalibration offsets moved them against the Gaussian. Against nearest-feature binning, intensities
+dropped 3 % to 19 %, scan lines differed by up to 20 % and the PE 38:4 image roughness rose from 0.23
+to 0.52. With responsibilities, isolated features equal nearest-feature binning exactly (ratio 1.000
+for PC 34:1, PC 32:0, PI 38:4, PE 38:4) and only features closer than the tolerance share peaks.
+
+Verified on the dual-mode tissue acquisition in `test_data/MSI` (Bruker TOF, SCiLS export, 182,865
+spectra per mode, 10 x 20 µm, `tissue`, `tic`, 10 ppm), against `5177d8a` (`msi-12`) on the
+same machine:
+
+| | `msi-12` | `msi-13` |
+|---|---|---|
+| Wall time | 305 s | 253 s |
+| Peak RSS | 13.2 GB | 11.2 GB |
+| Features (pos / neg) | 1,730 / 4,028 | 1,729 / 4,033 |
+| Non-zero entries | 191.86 M | 191.94 M |
+| Per-sample file | 1.34 GB | 1.34 GB |
+
+The acquisition covers the section only (no off-tissue spectra). Every spectrum is foreground in both
+modes (D 0.17 and 0.49), and the S/N filter is skipped for lack of a background, as designed. The
+background, noisy-background, culture and microgrid cases are covered by synthetic tests
+(`tests/msi/test_foreground.py`, `test_intensity_filter.py`, `test_process_dataset.py`). The suite
+passes with 241 tests.
+
+Out of scope, still open:
+
+- Isotope, adduct and FDR-controlled annotation.
+- Peak memory is dominated by the spectra held per sample (about 4.7 GB of IBD here) and their
+  recalibrated copies; streaming the binning per block of spectra would bound it.
 
 [^xu2024]: Xu H. et al. A whole-slide foundation model for digital pathology from real-world data. *Nature* 630, 181-188 (2024). [doi:10.1038/s41586-024-07441-w](https://doi.org/10.1038/s41586-024-07441-w)
 [^singhal2024]: Singhal V. et al. BANKSY unifies cell typing and tissue domain segmentation for scalable spatial omics data analysis. *Nature Genetics* 56, 431-441 (2024). [doi:10.1038/s41588-024-01664-3](https://doi.org/10.1038/s41588-024-01664-3)

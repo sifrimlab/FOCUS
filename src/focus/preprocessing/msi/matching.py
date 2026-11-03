@@ -42,21 +42,20 @@ def _peak_blocks(
 
 
 @njit(cache=True)
-def noise_threshold(
+def spectrum_noise(
     mz: np.ndarray,
     intensity: np.ndarray,
     recurrent_lo: int,
     recurrent: np.ndarray,
     log_bin_width: float,
-    signal_to_noise: float,
-) -> float:
+) -> tuple[float, float]:
     """
-    `signal_to_noise` x 1.4826 x MAD of the intensities of one spectrum's noise peaks.
+    Location and scale of one spectrum's noise: median and 1.4826 x MAD of its noise peaks.
 
     Noise peaks are the peaks outside the recurrent m/z ranges of the sample: `recurrent` is a bool
     mask over the log bins ``floor(ln(m) / log_bin_width)`` starting at `recurrent_lo`
     (:func:`recurrence_map`); with an empty mask every peak counts. Fewer than `_NOISE_MIN_PEAKS`
-    noise peaks give 0, no gate.
+    noise peaks give (0, 0), no estimate.
     """
     values = np.empty(intensity.size, dtype=np.float64)
     n = 0
@@ -68,10 +67,31 @@ def noise_threshold(
         values[n] = intensity[k]
         n += 1
     if n < _NOISE_MIN_PEAKS:
-        return 0.0
+        return 0.0, 0.0
     noise = values[:n]
     median = np.median(noise)
-    return signal_to_noise * 1.4826 * np.median(np.abs(noise - median))  # type: ignore[no-any-return]  # NumPy median in a Numba kernel.
+    return median, 1.4826 * np.median(np.abs(noise - median))
+
+
+@njit(cache=True)
+def noise_threshold(
+    mz: np.ndarray,
+    intensity: np.ndarray,
+    recurrent_lo: int,
+    recurrent: np.ndarray,
+    log_bin_width: float,
+    signal_to_noise: float,
+) -> float:
+    """
+    Median + `signal_to_noise` x 1.4826 x MAD of the intensities of one spectrum's noise peaks
+    (:func:`spectrum_noise`); 0, no gate, without a noise estimate.
+    """
+    median, sigma = spectrum_noise(
+        mz, intensity, recurrent_lo, recurrent, log_bin_width
+    )
+    if sigma <= 0.0 and median <= 0.0:
+        return 0.0
+    return median + signal_to_noise * sigma
 
 
 def _flatten_spectra(

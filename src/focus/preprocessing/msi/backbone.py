@@ -1,25 +1,22 @@
-"""Align sample mass scales and build the shared density-based m/z feature backbone."""
+"""Align sample mass scales and merge the samples' m/z features into the shared backbone."""
+
+from dataclasses import dataclass
 
 import numpy as np
 
-from scipy.ndimage import gaussian_filter1d
-
 from focus.config.options import MsiIonMode
-from focus.preprocessing.msi.settings import (
-    _FEATURE_BINS_PER_TOLERANCE,
-    _FEATURE_KERNEL_FWHM,
-    _SCALE_MIN_SHARED,
+from focus.preprocessing.msi.settings import _SCALE_MIN_SHARED
+from focus.preprocessing.msi.technology import (
+    SIGMA_MAX_TOLERANCES,
+    SIGMA_MIN_TOLERANCES,
 )
-from focus.preprocessing.msi.features import (
-    feature_bin_width,
-    find_features,
-    peak_histogram,
-)
-from focus.preprocessing.msi.density import density_feature_ranges
 
 
 def mass_scale_shifts(
-    references: list[np.ndarray], window_ppm: float, fixed: np.ndarray | None = None
+    references: list[np.ndarray],
+    window_ppm: float,
+    fixed: np.ndarray | None = None,
+    fixed_shifts: np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """
     Per sample, the constant ppm offset of its references from the samples' common mass scale.
@@ -41,6 +38,11 @@ def mass_scale_shifts(
     """
     n = len(references)
     fixed = np.zeros(n, dtype=bool) if fixed is None else np.asarray(fixed, dtype=bool)
+    known = (
+        np.zeros(n, dtype=np.float64)
+        if fixed_shifts is None
+        else np.where(fixed, np.asarray(fixed_shifts, dtype=np.float64), 0.0)
+    )
     references = [np.asarray(r, dtype=np.float64) for r in references]
     pairs = []  # (s, t, ppm of s relative to t, shared references)
     parent = list(range(n))
@@ -63,7 +65,7 @@ def mass_scale_shifts(
                 pairs.append((s, t, float(np.median(ppm[shared])), int(shared.sum())))
                 parent[root(s)] = root(t)
 
-    shifts = np.zeros(n, dtype=np.float64)
+    shifts = known.copy()
     group = np.array([root(k) for k in range(n)])
     connected = np.array([np.sum(group == group[k]) > 1 for k in range(n)])
     for label in np.unique(group[connected]):
@@ -81,8 +83,11 @@ def mass_scale_shifts(
                 row[column[s]] = 1.0
             if t in column:
                 row[column[t]] = -1.0
+            # c_s - c_t = ppm, with the shifts of fixed samples moved to the right-hand side.
             rows.append(np.sqrt(count) * row)
-            rhs.append(np.sqrt(count) * ppm)
+            rhs.append(
+                np.sqrt(count) * (ppm - known[s] * fixed[s] + known[t] * fixed[t])
+            )
         if not fixed[members].any():
             rows.append(np.ones(free.size))
             rhs.append(0.0)
@@ -90,103 +95,120 @@ def mass_scale_shifts(
     return shifts, connected
 
 
+@dataclass
+class SampleFeatures:
+    """The kept m/z features of one sample and ion mode, in ascending m/z."""
+
+    mz: np.ndarray  # float64
+    presence: np.ndarray  # share of the sample's foreground spectra holding the feature
+    sigma: np.ndarray  # robust peak spread, ppm (features.feature_widths)
+    annotated: np.ndarray  # bool, matched by the lipid database
+
+
+@dataclass
+class Backbone:
+    """The shared m/z features of one ion mode, in ascending m/z."""
+
+    mz: np.ndarray  # float64
+    sigma: np.ndarray  # Gaussian width of each feature, ppm
+    annotated: np.ndarray  # bool, some sample feature of the group was annotated
+
+    @classmethod
+    def empty(cls) -> "Backbone":
+        """A backbone without features."""
+        return cls(
+            np.array([], dtype=np.float64),
+            np.array([], dtype=np.float64),
+            np.array([], dtype=bool),
+        )
+
+
+def split_groups(mz: np.ndarray, tolerance_ppm: float) -> list[tuple[int, int]]:
+    """
+    [start, stop) groups of ascending `mz` that each span at most `tolerance_ppm`.
+
+    A group spanning more is split at its largest gap between consecutive values, recursively, until
+    every group fits (MALDIquant `binPeaks`, with a span instead of a deviation from the mean). Every
+    value lands in exactly one group.
+    """
+    groups: list[tuple[int, int]] = []
+    stack = [(0, mz.size)] if mz.size else []
+    while stack:
+        start, stop = stack.pop()
+        if (
+            stop - start == 1
+            or (mz[stop - 1] - mz[start]) / mz[start] * 1e6 <= tolerance_ppm
+        ):
+            groups.append((start, stop))
+            continue
+        split = start + 1 + int(np.argmax(np.diff(mz[start:stop])))
+        stack.extend([(split, stop), (start, split)])
+    return sorted(groups)
+
+
+def merge_features(samples: list[SampleFeatures], mass_tolerance: float) -> Backbone:
+    """
+    Union of the samples' features with the features closer than the tolerance merged.
+
+    The features are grouped by :func:`split_groups` at `mass_tolerance`. A group's m/z is the
+    presence-weighted mean of its members, so every sample weighs alike whatever its number of
+    spectra; its width is the presence-weighted root mean square of the members' widths and of their
+    offsets from that mean, clipped to [SIGMA_MIN_TOLERANCES, SIGMA_MAX_TOLERANCES] tolerances; it is
+    annotated when any member was.
+    """
+    if not samples:
+        return Backbone.empty()
+    mz = np.concatenate([s.mz for s in samples]).astype(np.float64)
+    if mz.size == 0:
+        return Backbone.empty()
+    order = np.argsort(mz, kind="stable")
+    mz = mz[order]
+    weight = np.maximum(np.concatenate([s.presence for s in samples]), 1e-12)[order]
+    sigma = np.concatenate([s.sigma for s in samples]).astype(np.float64)[order]
+    annotated = np.concatenate([s.annotated for s in samples]).astype(bool)[order]
+    groups = split_groups(mz, mass_tolerance)
+    out_mz = np.empty(len(groups), dtype=np.float64)
+    out_sigma = np.empty(len(groups), dtype=np.float64)
+    out_annotated = np.empty(len(groups), dtype=bool)
+    for g, (start, stop) in enumerate(groups):
+        w = weight[start:stop]
+        centre = float(np.sum(w * mz[start:stop]) / w.sum())
+        offset = (mz[start:stop] - centre) / centre * 1e6
+        out_mz[g] = centre
+        out_sigma[g] = np.sqrt(
+            np.sum(w * (sigma[start:stop] ** 2 + offset**2)) / w.sum()
+        )
+        out_annotated[g] = annotated[start:stop].any()
+    out_sigma = np.clip(
+        out_sigma,
+        SIGMA_MIN_TOLERANCES * mass_tolerance,
+        SIGMA_MAX_TOLERANCES * mass_tolerance,
+    )
+    return Backbone(out_mz, out_sigma, out_annotated)
+
+
 class _BackboneBuilder:
     """
-    m/z backbone of a dataset: the ions found in its samples, grouped across samples.
+    m/z backbone of a dataset: the union of its samples' features, merged within the tolerance.
 
-    Usage: construct with the ppm tolerance and the frequency threshold, feed one sample's
-    (recalibrated) payload at a time with :meth:`add_sample`, then call :meth:`build`.
-
-    Per sample (:meth:`add_sample`), every peak is counted on the feature grid (:func:`peak_histogram`)
-    and the sample's features are found (:func:`find_features`): the maxima of its peak density that
-    rise above the local background, so noise makes no feature and every recurring ion does, whatever
-    its intensity. A feature is kept when its presence is at least `frequency_threshold` times that of
-    the sample's most present feature. Only the kept features' m/z and presence are retained.
-
-    :meth:`build` groups the samples' features: their presences are summed on the feature grid (every
-    sample weighs alike, a presence being a share of that sample's spectra) and smoothed with the
-    feature kernel. Each maximum of this density is one backbone feature; it collects the sample
-    features up to the lowest point between it and each neighbouring maximum, and at most one tolerance
-    from it. Its m/z is the presence-weighted mean m/z of those sample features.
+    Usage: construct with the ppm tolerance, hand over each sample's kept features per ion mode with
+    :meth:`add`, then call :meth:`build`. Only the features' m/z, presence, width and annotation flag
+    are retained, never a payload.
     """
 
-    def __init__(self, mass_tolerance: int, frequency_threshold: float) -> None:
-        """Set the ppm feature grid and sample-frequency threshold before adding payloads.
-
-        Parameters
-        ----------
-        mass_tolerance : int
-            Grouping/matching tolerance in ppm, used to compute the logarithmic bin width.
-        frequency_threshold : float
-            Minimum presence relative to a sample's most frequent feature."""
+    def __init__(self, mass_tolerance: float) -> None:
+        """Set the ppm tolerance of the merge."""
         self._mass_tolerance = mass_tolerance
-        self._frequency_threshold = frequency_threshold
-        self._log_bin_width = feature_bin_width(mass_tolerance)
-        # Per ion mode, one (m/z, presence) entry per contributing sample.
-        self._samples: dict[str, list[tuple[np.ndarray, np.ndarray]]] = {}
+        self._samples: dict[str, list[SampleFeatures]] = {}
 
-    def add_sample(
-        self, sample_mz: dict[str, list[np.ndarray]]
-    ) -> dict[str, tuple[int, int]]:
-        """
-        Find one sample's features and keep the frequent ones; the payload is only read, never retained.
-        Returns, per ion mode, the number of features found and kept.
-        """
-        summary = {}
-        for mode, spectra in sample_mz.items():
-            bins, counts, mz_sums = peak_histogram(spectra, self._log_bin_width)
-            features = find_features(
-                bins, counts, mz_sums, len(spectra), self._mass_tolerance
-            )
-            kept = (
-                features.presence >= self._frequency_threshold * features.presence.max()
-                if features.mz.size
-                else np.zeros(0, dtype=bool)
-            )
-            summary[mode] = (int(features.mz.size), int(kept.sum()))
-            if kept.any():
-                self._samples.setdefault(mode, []).append(
-                    (features.mz[kept], features.presence[kept])
-                )
-        return summary
+    def add(self, mode: str, features: SampleFeatures) -> None:
+        """Retain one sample's kept features of one ion mode."""
+        if features.mz.size:
+            self._samples.setdefault(mode, []).append(features)
 
-    def build(self) -> dict[str, np.ndarray]:
-        """Ascending feature m/z per ion mode; an empty array for a mode without features."""
-        backbone = {}
-        for mode in MsiIonMode.list():
-            samples = self._samples.get(mode, [])
-            backbone[mode] = (
-                self._group(samples) if samples else np.array([], dtype=np.float64)
-            )
-        return backbone
-
-    def _group(self, samples: list[tuple[np.ndarray, np.ndarray]]) -> np.ndarray:
-        """Return the feature group matching the requested mass and its tolerance."""
-        mz = np.concatenate([m for m, _ in samples])
-        weight = np.maximum(np.concatenate([w for _, w in samples]), 1e-12)
-        if mz.size == 0:
-            return np.array([], dtype=np.float64)
-        position = np.floor(np.log(mz) / self._log_bin_width).astype(np.int64)
-        position -= position.min()
-        reach = _FEATURE_BINS_PER_TOLERANCE
-        density = gaussian_filter1d(
-            np.bincount(position, weights=weight).astype(np.float64),
-            _FEATURE_KERNEL_FWHM * reach / (2 * np.sqrt(2 * np.log(2))),
-            mode="constant",
-            cval=0.0,
-            truncate=4.0,
-        )
-        padded = np.concatenate(([0.0], density, [0.0]))
-        maxima = np.flatnonzero(
-            (padded[1:-1] > padded[:-2]) & (padded[1:-1] >= padded[2:]) & (density > 0)
-        )
-        left, right = density_feature_ranges(density, maxima, reach)
-        feature = np.searchsorted(left, position, side="right") - 1
-        inside = (feature >= 0) & (position <= right[np.maximum(feature, 0)])
-        total = np.bincount(
-            feature[inside], weights=weight[inside], minlength=maxima.size
-        )
-        total_mz = np.bincount(
-            feature[inside], weights=(weight * mz)[inside], minlength=maxima.size
-        )
-        return np.sort(total_mz[total > 0] / total[total > 0])
+    def build(self) -> dict[str, Backbone]:
+        """The backbone of every ion mode; empty for a mode without features."""
+        return {
+            mode: merge_features(self._samples.get(mode, []), self._mass_tolerance)
+            for mode in MsiIonMode.list()
+        }

@@ -1,7 +1,8 @@
 # MSI Preprocessing Methods
 
 Implementation reference for `focus/preprocessing/msi/`. `MsiDataset.process_dataset()`
-iterates over samples, each represented by an `MsiSample`, applying the stages below in order.
+processes the samples of one MSI modality in the order of §3, each sample represented by an
+`MsiSample`.
 
 ---
 
@@ -13,14 +14,16 @@ For each spectrum, metadata parsing (`_spectra_to_dict`, `_parse_imzml`) extract
 
 - raster (pixel) coordinates from the `position x` / `position y` cvParams;
 - physical coordinates from the `3DPositionX` / `3DPositionY` userParams;
-- binary offsets and lengths for the m/z and intensity arrays;
+- binary offsets and lengths for the m/z and intensity arrays, identified by their `m/z array` and
+  `intensity array` cvParams (in the array or in its referenceable parameter group), then by the
+  usual group ids `mzArray` and `intensities`;
 - the scan type, `horizontal line scan` or `vertical line scan`, which sets the scan-line axis used by
   recalibration (§4.2). These are imzML controlled-vocabulary terms[^schramm2012].
 
 **Physical-coordinate fallback.** True physical coordinates are not always present. Let
 \(\mathbf{p}_i=(p_{i,x},p_{i,y})\) be the pixel index of spectrum \(i\) and
 \(\mathbf{s}=(s_x,s_y)\) the per-axis raster size in micrometers (read from the `pixel size x/y`
-scan settings, defaulting to \((1,1)\) when absent). Spectra missing `3DPosition*` have their
+scan settings, read as decimal numbers). Spectra missing `3DPosition*` have their
 physical coordinate reconstructed from the pixel grid scaled to micrometers,
 
 \[
@@ -32,17 +35,22 @@ affected spectra (mixed case). This keeps the inter-spot spacing physically cons
 half-raster centering applied later (§2.2). The pixel index is stored as \((p_y, p_x)\) and is
 reordered to \((p_x, p_y)\) before the product, so each axis takes its own raster size.
 
-**Encoding check.** The IBD arrays are read as uncompressed floats and every (m/z, intensity) pair is
-taken as a peak. A file whose file description, referenceable parameter groups or first spectrum
+**Pixel size.** A file that declares one axis only uses it for both. A file that declares none takes,
+per axis, the least-squares slope of the stage position on the pixel index, and reports it; without
+a pixel size and without stage positions for every spectrum, preprocessing stops with `ValueError`,
+because the micrometre scale of the sample is unknown. FOCUS design choice: the pixel size is
+`uns['spot_size']` and sets every downstream footprint, so it is never assumed.
+
+**Encoding check.** The IBD arrays are read uncompressed (m/z as 32- or 64-bit floats, intensities as 32- or
+64-bit floats or integers, integers cast to float32) and every (m/z, intensity) pair is taken as a
+peak. A file whose file description, referenceable parameter groups or first spectrum
 declare a binary compression other than `no compression` (zlib, MS-Numpress), or `profile spectrum`
 without `centroid spectrum`, raises `ValueError`[^schramm2012].
 
 Prior to any processing the IBD payload is validated:
 a truncated file (smaller than the largest `offset + length × itemsize`) raises `ValueError`, and
-spectra containing non-finite m/z or intensity values are dropped.
-
-Supported intensity normalization options are `none`, `tic`, `log`, `clr`, `tic_mean_scaled`,
-`median` and `internal_standard` (§6).
+spectra containing non-finite m/z or intensity values are dropped. Peaks at m/z 0 or below are
+dropped at read: the logarithmic m/z grid (§4.1.1) and the ppm tolerance are undefined there.
 
 ---
 
@@ -132,95 +140,48 @@ The resulting physical coordinates are shared across modes for that sample.
 
 ---
 
-## 3. Tissue/background detection
+## 3. Processing order
 
-If `detect_background=true` **and** a `lipid_annotation_db` is configured, foreground (tissue/cell)
-spots are separated from background spots per spot from spectral-complexity features
-(`detect_tissue_spots`). Tissue spectra are richer and more diverse than background, which is
-dominated by uniformly sprayed matrix/standards.
+| Step | Spectra | Output |
+|---|---|---|
+| 1. Loading MSI data | all | coordinates, ion mode pairing (§1, §2) |
+| 2. Selecting recalibration references | all | per-sample calibrants (§4.1) |
+| 3. Aligning sample mass scales | - | calibrants on a common mass scale (§4.1.4) |
+| 4. Recalibrating spectra and selecting features | all, then foreground | per-spectrum recalibration (§4.2), foreground (§5), per-sample features (§6) |
+| 5. Building global m/z backbone | - | shared features (§7) |
+| 6. Annotating features | - | `var['lipid_annotation']` (§6.2) |
+| 7. Binning intensities | all | binned and normalized matrices (§8, §9), cluster labels (§10) |
+| 8. Merging samples | - | merged file (§11) |
 
-!!! warning "Gated on the annotation database"
-    The detector is invoked from `load_payload` only when `annotation_db is not None`. With
-    `detect_background=true` and no database, detection is skipped, `filtered_idx` stays `None`, and
-    `foreground_mask` marks every spot as foreground.
-
-**Per-spot features.** For spot \(i\) with raw centroided intensities \(I_i=(I_{i,1},\dots,I_{i,k_i})\):
-
-- **Peak count** \(n_i = k_i\), the number of detected peaks.
-- **Total ion current** \(\mathrm{TIC}_i = \sum_{m} I_{i,m}\) (sum over the spot's *raw* peaks). This
-  is the raw-peak TIC, distinct from the on-grid TIC used for normalization in §6.
-- **Shannon entropy** of the intensity distribution \(p_{i,m}=I_{i,m}/\mathrm{TIC}_i\), restricted to
-  \(p_{i,m}>0\):
-
-\[
-H_i = -\sum_{m:\,p_{i,m}>0} p_{i,m}\,\log_2 p_{i,m}.
-\]
-
-- **Optional annotation-hit ratio** (when a lipid DB and `mass_tolerance` are supplied): the
-  fraction of the spot's peaks that match a database ionized mass within ppm tolerance,
-  \(\#\{\text{unique matched peaks}\}/n_i\).
-
-The feature set is \(\{H_i,\ n_i,\ \log(1+\mathrm{TIC}_i),\ (\text{hit ratio})_i\}\). Each feature is
-min-max normalized over valid spots (\(n_i>0\)) to \([0,1]\), and the composite score is their mean:
-
-\[
-\text{score}_i = \frac{1}{F}\sum_{f=1}^{F} \frac{x^{(f)}_i - \min_j x^{(f)}_j}{\max_j x^{(f)}_j - \min_j x^{(f)}_j}.
-\]
-
-### `sample_type: tissue`
-
-A contiguous section is typically class-imbalanced (e.g. 95 % tissue / 5 % background), which
-defeats Otsu. The scores are modeled with Gaussian mixtures and selected by BIC:
-
-- Fit a 1-component and a 2-component GMM (\(n_\text{init}=3\)) to \(\{\text{score}_i\}\).
-- If \(\mathrm{BIC}_1 \le \mathrm{BIC}_2\) (unimodal preferred): keep **all** valid spots.
-- Otherwise classify by posterior on the higher-mean component \(c^\*=\arg\max_c \mu_c\): spot \(i\)
-  is foreground iff \(P(c^\* \mid \text{score}_i) \ge 0.5\).
-- **Spatial cleanup**: rasterize the mask on the pixel grid, then apply `binary_fill_holes`
-  followed by `binary_opening` with a \(3\times3\) structuring element.
-
-### `sample_type: microgrid`
-
-Isolated single cells on a mostly-background grid; spatial cleanup is disabled (it would erase
-real cells). A 1D Otsu threshold maximizes between-class variance over the 256-bin score histogram.
-This is the same criterion used for image segmentation in
-[microscopy §5.2](microscopy_methods.md#52-segmentation), applied here to the
-composite score instead of to pixel intensities:
-
-\[
-t^\* = \arg\max_{t}\ \sigma_b^2(t),\qquad
-\sigma_b^2(t)=\omega_\text{bg}(t)\,\omega_\text{fg}(t)\,\bigl(\mu_\text{bg}(t)-\mu_\text{fg}(t)\bigr)^2,
-\]
-
-with \(\omega\) the class weights (mass fractions) and \(\mu\) the class means below/above \(t\). To
-avoid discarding weak single-cell signals, the applied threshold is floored at the 25th percentile:
-\(\;t_\text{eff} = \min(t^\*,\ Q_{25})\). A spot is foreground iff \(\text{score}_i \ge t_\text{eff}\).
-
-Degenerate cases (all features constant, or too few valid spots) fall back to keeping all spots.
-The foreground mask is stored in `.obs['foreground']`; **all** spots remain in the matrix.
+Steps 2, 4 and 7 each read the sample's IBD once. Step 4 is one pass: the spectra are recalibrated,
+the foreground is detected on the recalibrated m/z, and the sample's features are selected from its
+foreground spectra. FOCUS design choice, for this order: calibrants are selected from every spectrum
+before any foreground is known, so matrix and background ions present on the whole slide are eligible
+calibrants (on a microgrid the cells cover a few percent of the spectra), and foreground detection
+compares ions at their recalibrated m/z, so a drifting ion is one ion.
 
 ---
 
-## 4. Recalibration and m/z backbone
+## 4. Recalibration
 
 The mass measured for one ion varies from pixel to pixel. Local composition, section thickness and
 matrix deposition are sources of this mass shift, and recalibrating every spectrum against internal
 calibrants reduces it[^mccann2021][^larocca2021]. Spectral alignment and recalibration are part of
 published MSI processing tools[^rafols2020][^bemis2023]. FOCUS selects calibrants
-from the data (§4.1), estimates one correction per spectrum (§4.2) and then builds a shared m/z
-backbone from the recalibrated spectra (§4.3).
+from the data (§4.1) and estimates one correction per spectrum (§4.2); the shared m/z backbone is
+built from the recalibrated spectra (§6, §7).
 
 ### 4.1 Recalibration reference selection
 
 If no `recalibration_reference` is supplied, reference masses are selected automatically
 (`_CalibrationReferenceSelector`), per sample and independently per ion mode, from every spectrum of
-that sample: the tissue spectra when background detection ran (§3), all spectra otherwise. Selecting
+that sample, before its foreground is detected (§3). Selecting
 calibrants from the data, instead of from an a priori list, avoids false calibrant matches that
 degrade the recalibration[^larocca2021]. FOCUS design choice: one set of references per sample.
 Recalibration corrects the mass shift within a sample, so each sample uses the ions its own spectra
 hold; a set shared by the dataset can be nearly absent from a sample of different composition, whose
 spectra then match no reference. The candidates are the sample's m/z features (§4.1.2), found by the
-same detection that builds the backbone (§4.3) with a kernel half as wide (FWHM \(\tau/2\)), so that
+same detection that selects the sample features (§6.1) with a kernel half as wide (FWHM \(\tau/2\)), so that
 two ions about half a tolerance apart are two candidates; the samples' mass scales are aligned
 afterwards (§4.1.4). The selection rules (isolation, scoring, spread, anchoring and alignment) are FOCUS design
 choices; none of them is taken from a published method.
@@ -300,7 +261,7 @@ of \(5\tau\) hold enough noise peaks for their median not to fall below the mean
 small Poisson counts does. The col keeps a small maximum on the flank of a large ion (a noise
 fluctuation, a drift tail) from becoming a feature, while the larger ion is measured against the
 floor, and two ions separated by a significant dip stay two features. Without noise the floor is 0
-and every ion recurring in at least 5 spectra is a feature; the frequency threshold (§4.3) decides
+and every ion recurring in at least 5 spectra is a feature; the frequency threshold (§6.1) and the S/N filter (§6.3) decide
 which are kept.
 
 #### 4.1.3 Isolation, scoring and selection
@@ -354,10 +315,10 @@ m/z span, and \(\operatorname{median}_s d_s\) otherwise.
 A sample's references sit at its own mean calibrant masses, so they carry its calibration offset,
 and recalibration (§4.2) maps the sample onto that scale. Samples acquired at different calibrations
 would keep their offsets, and one ion more than about \(\tau\) ppm apart in two samples becomes two
-backbone features (§4.3) instead of one. One constant ppm shift per sample and ion mode puts the
+backbone features (§7) instead of one. One constant ppm shift per sample and ion mode puts the
 references on a common scale (`mass_scale_shifts`). It is estimated from the samples' candidate
 pools (§4.1.3, up to 200 isolated ions each), which share more ions between samples than the 10
-references do. For samples \(s\) and \(t\) whose pools share at least 3 ions (one ion of each within
+references do; the samples are compared in dataset order. For samples \(s\) and \(t\) whose pools share at least 3 ions (one ion of each within
 \(W\) ppm), \(\delta_{st}\) is the median ppm difference of the shared ions. The shifts \(c_s\)
 minimize
 
@@ -368,8 +329,11 @@ minimize
 with \(k_{st}\) the number of shared ions, under \(\sum_s c_s = 0\) over each group of samples
 connected by such pairs, so the common scale is the samples' mean scale. Every reference \(\mu\) of
 sample \(s\) is then divided by \(1 + c_s \cdot 10^{-6}\). A sample sharing fewer than 3 ions with
-every other sample keeps its own scale and is reported. When an interrupted run resumes, the cached
-samples' references are already on the common scale and hold \(c = 0\). When internal standards are
+every other sample keeps its own scale and is reported. Every sample stores its pool on its own scale
+and its shift \(c_s\) (`uns['recalibration_pool']`). When an interrupted run resumes, the cached
+samples enter the least squares with their stored pools and their shifts held fixed, in dataset
+order, so the remaining samples receive the shifts of a fresh run: the fresh solution minimizes the
+same sum, and holding part of it at that solution leaves the rest optimal. When internal standards are
 configured, they anchor every sample that observes them and no alignment runs. FOCUS design choice:
 the median resists an ion paired with a different ion in the other sample, and the least-squares
 solution uses the agreement of all sample pairs at once.
@@ -383,9 +347,11 @@ The references of each sample, after alignment, are stored in its `.uns['recalib
 Recalibration (`estimate_recalibration`) gives every spectrum its own m/z correction, as recommended
 for MSI[^mccann2021][^larocca2021]. Each spectrum is aligned to the same reference peaks by a
 per-spectrum warping function, the approach of MALDIquant `determineWarpingFunctions`[^gibb2012].
-The matching rule is MALDIquant's as well: a reference matches the most intense peak inside a window
-proportional to the reference mass[^gibb2012]; FOCUS also requires that peak to pass the noise gate
-below. FOCUS adaptation: the error model is linear in m/z, in ppm, and is estimated in two levels,
+Matching a reference within a window proportional to the reference mass is MALDIquant's rule as
+well[^gibb2012]. FOCUS adaptation: the match is the most intense peak of the window that passes the
+noise gate below, instead of the closest peak; the references are isolated within the window
+(§4.1.3), so the most intense peak is the calibrant, and a noise peak closer to the reference mass is
+not taken. FOCUS adaptation: the error model is linear in m/z, in ppm, and is estimated in two levels,
 scan line then pixel. FOCUS design choice, for this split: pooling a whole scan line gives many
 matches per estimate, so the line estimate is robust to the occasional false match, and the pixel
 pass, centred on the line prediction, then follows the drift where it changes along the line.
@@ -397,12 +363,14 @@ spectrum \(i\), the ppm error of a match is
 e_{ij} = \frac{m_{ij} - \mu_j}{\mu_j} \cdot 10^{6}.
 \]
 
-**Noise gate** (`noise_threshold`, `recurrence_map`). A match must reach \(5 \cdot N_i\), with
+**Noise gate** (`spectrum_noise`, `noise_threshold`, `recurrence_map`). A match must reach
+\(\tilde N_i + 5 \cdot N_i\), with \(\tilde N_i\) the median and
 \(N_i = 1.4826 \cdot \operatorname{MAD}\) of the intensities of the noise peaks of spectrum \(i\): its
 peaks outside the sample's recurrent m/z ranges, the ranges of the sample's own features (§4.1.2)
 widened by \(W\) on either side so drift does not move an ion out of them. A spectrum with fewer than
 10 noise peaks has no gate. A noise estimate from the MAD of the signal is MALDIquant
-`estimateNoise`, and peaks are kept above a multiple of it[^gibb2012]. FOCUS adaptation: the noise is
+`estimateNoise`, and peaks are kept above a multiple of it[^gibb2012]; the median is the location of
+the robust estimate[^rousseeuw1993]. FOCUS adaptation: the noise is
 estimated from the centroids that do not recur instead of from the profile signal, and the multiple
 is 5 instead of MALDIquant's default 2, because the centroids of noise are already local maxima of
 it. FOCUS design choice: in a spectrum of mostly real ions, the MAD of all its peaks measures the
@@ -489,114 +457,274 @@ m' = \frac{m}{1 + e_i(m)\cdot 10^{-6}} .
 \]
 
 The model is estimated once per sample and ion mode from **all** spectra and applied to all of them.
-The backbone (§4.3, built from the tissue spectra) and the intensity matrix (§5, built from all
-spectra) therefore see the same correction. The applied correction at \(\bar\mu\) and the number of
+Foreground detection (§5), the sample features (§6) and the intensity matrix (§8) therefore see the
+same correction. The applied correction at \(\bar\mu\) and the number of
 pixel-level matches are written to `.obs` (§7).
 
 A sample and ion mode in which fewer than half of the spectra have their own residual (3 agreeing
 matches), and an ion mode with fewer than \(N_\text{ref}\) selected references, are reported as
 warnings, with the recalibration summary and the selected masses.
 
-### 4.3 Consensus backbone construction
+## 5. Foreground detection
 
-The backbone holds one m/z feature per ion and is shared by every sample (`_BackboneBuilder`). It is
-built in two stages from the recalibrated spectra: the tissue spectra when background detection ran
-(§3), all spectra otherwise. Detecting the peaks of each sample, binning them across samples and
-keeping the bins whose peaks occur in a minimum fraction of the spectra is the MALDIquant workflow
-(`detectPeaks`, `binPeaks`, `filterPeaks` with `minFrequency`)[^gibb2012]. FOCUS adaptation: the
-peaks of a sample are its m/z features (§4.1.2), found by recurrence above the local background
-instead of by intensity; the frequency is measured against the sample's most present feature instead
-of the number of spectra; and the binning is the density grouping below.
+Foreground detection (`MsiForeground.detect`) runs on the recalibrated spectra of every ion mode
+and keeps the union of the per-mode foregrounds. It always runs and needs no lipid database;
+`sample_type` sets the detector and its spatial cleanup (`focus.preprocessing.msi.technology`). The
+foreground is stored in `.obs['foreground']` and the score in `.obs['foreground_score']`; **all**
+spectra remain in the matrix. A sample in which no foreground is found keeps every spectrum with
+peaks as foreground, with a warning.
 
-1. **Sample features.** Per sample and ion mode, the features of the recalibrated spectra
-   (§4.1.1, §4.1.2), each with its m/z \(m_{s,j}\) and presence \(p_{s,j}\).
-2. **Frequency filter.** A feature of sample \(s\) is kept when
-   \(p_{s,j} \ge \texttt{frequency\_threshold} \cdot \max_{j'} p_{s,j'}\). Only the kept features'
-   m/z and presence are retained.
-3. **Grouping.** The kept features of all samples are placed on the grid of §4.1.1, each weighted by
-   its presence, so every sample weighs alike whatever its number of spectra, and smoothed with the
-   kernel of §4.1.2. Every maximum of this density is one backbone feature. It collects the sample
-   features up to the lowest point of the density before each neighbouring maximum, and at most
-   \(\tau\) ppm from its maximum; its m/z is their presence-weighted mean m/z. Grouping at the maxima
-   of a kernel density estimate, each group extending down to the density minima on either side of
-   its maximum, is the peak-density grouping of XCMS, which applies it to retention times within m/z
-   slices[^smith2006]. FOCUS adaptation: the density runs along log m/z with a bandwidth set by
-   \(\tau\), a group is also capped at \(\tau\) from its maximum, and every maximum becomes a
-   feature; the frequency filter of step 2 replaces XCMS's minimum fraction of samples.
+| `sample_type` | Experiment | Score | Classifier | Cleanup |
+|---|---|---|---|---|
+| `tissue` | section on a clean or empty background | recurrent ions (§5.1) | mixture (§5.2) | fill holes, 3 x 3 opening |
+| `tissue_noisy` | section on a background rich in noise centroids | recurrent ions, 3 x 3 median on the raster | mixture | fill holes, 5 x 5 opening, components below 10 % of the largest removed |
+| `cell_culture` | uniform culture, domains along gradients | recurrent ions | mixture | 3 x 3 majority vote |
+| `microgrid` | isolated cells of about one pixel in matrix | local outliers (§5.4) | hysteresis | none |
 
-FOCUS design choice: noise is removed in each sample by the test of §4.1.2, before any frequency
-filter, so `frequency_threshold` decides which real ions are kept and is the setting that controls
-the number of features: an ion is kept when, in at least one sample, its presence is at least that
-fraction of the sample's most present ion. A boundary between two features requires a dip in the
-peak density, so one ion whose peaks spread wider than \(\tau\) keeps a single feature. In a microgrid
-the cell ions recur only in the few cell spectra, and among all spectra they do not rise above the
-background noise; their features come from the cell spectra kept by background detection (§3). Every
-peak is binned into the features (§5).
+### 5.1 Recurrent-ion score
 
-Retained memory is, per sample and ion mode, the kept features' m/z and presence. The density of one
-sample spans its mass range at \(\tau / 10\) ppm per bin while its features are found: about 2 million
-bins (16 MB) for m/z 300 to 2,000 at \(\tau = 10\).
-
----
-
-## 5. Intensity binning to backbone
-
-Each spectrum is binned onto the backbone (`interpolate_single`, numba, parallelized across spectra
-via `joblib`): every peak adds its whole intensity to the single nearest backbone feature, provided
-that feature lies within \(\tau\) ppm of the peak,
+The recurrent ions of a sample and ion mode are its m/z features over every spectrum (§4.1.2). For
+spectrum \(i\), with \(\tilde N_i\) and \(N_i\) the median and 1.4826 MAD of its noise peaks (§4.2),
 
 \[
-j^\*(i) = \arg\min_j \delta_{ppm}(m_i, \hat m_j),
-\qquad
-\tilde I_{j^\*} \mathrel{+}= I_i \quad\text{if } \delta_{ppm}(m_i, \hat m_{j^\*}) \le \tau ,
+\text{score}_i = \ln\bigl(1 + \#\{j : \text{spectrum } i \text{ holds a peak of feature } j
+\text{ with intensity} \ge \tilde N_i + 3 N_i\}\bigr)
 \]
 
-and peaks with no feature in reach are dropped. Assigning each peak to one bin follows MALDIquant
-`binPeaks`[^gibb2012] and Cardinal peak alignment, which matches each detected peak to at most one
-reference peak within a tolerance[^bemis2023]. FOCUS adaptation: the bin is the nearest backbone
-feature within \(\tau\) (lower feature on an exact tie), and several peaks of one spectrum that reach
-the same feature are summed. A peak is never split between features, so a residual m/z error smaller
-than the distance to the next feature does not change any feature's intensity.
+(`detections_per_spectrum`); a spectrum without a noise estimate counts every feature peak. The
+threshold is the 3-sigma detection limit[^long1983]. FOCUS design choice: noise centroids never recur,
+so they add nothing to the score however many a spectrum holds, and a background of matrix ions holds
+only those ions, below the tissue that holds them and its own. Entropy, peak count and TIC, the
+features of the previous detector, rise on a background of noise centroids, which holds more peaks
+and a flatter intensity distribution than tissue.
+
+### 5.2 Mixture classification
+
+A 1- and a 2-component Gaussian mixture are fitted to the scores of the spectra with peaks
+(\(n_\text{init} = 3\) for two components) and compared by BIC[^schwarz1978]. Every such spectrum is
+foreground when
+
+- BIC prefers one component;
+- the two components overlap: Ashman's \(D = \sqrt{2}\,|\mu_1-\mu_2| / \sqrt{s_1^2+s_2^2} < 2\), the
+  criterion for a clean separation of two Gaussians[^ashman1994];
+- the lower component holds more than half of the recurrent ions of the higher one, \(e^{\mu_1}-1 >
+  0.5\,(e^{\mu_2}-1)\).
+
+Otherwise a spectrum is foreground when its posterior of the higher-mean component is at least 0.5.
+FOCUS design choice, for the last two rules: BIC also prefers two components when two tissue regions
+differ in their number of ions (about 350 and 390 ions per spectrum in two regions of the section
+of [preprocessing audit §9](../development/preprocessing_audit.md#9-msi-preprocessing-redesign)), and a
+background holds a small subset of the tissue ions. A background is separated only when the score
+modes are clean and far apart.
+
+### 5.3 Spatial cleanup
+
+The mask is rasterized on the pixel grid. Hole filling and opening with a square structuring
+element are morphological operators[^soille2004]; a majority vote is a rank filter[^soille2004]. FOCUS
+design choice, per preset:
+
+- `tissue`: holes are filled and a 3 x 3 opening removes isolated pixels, because a section is one
+  contiguous object.
+- `tissue_noisy`: the score is median-filtered over 3 x 3 pixels before classification, the opening
+  is 5 x 5 and connected components below 10 % of the largest one are removed, because isolated
+  background spectra with a few chance detections are frequent.
+- `cell_culture`: a 3 x 3 majority vote (a pixel takes the class of at least 5 of the 9 pixels of
+  its neighbourhood) without hole filling. A gap between cells wider than about two pixels stays
+  background, and a single misclassified pixel takes the class of its neighbours.
+
+### 5.4 Microgrid cells
+
+A microgrid acquisition covers the whole slide, so background spectra are the large majority and a
+cell covers one or a few spectra (`detect_microgrid_spots`). The detection models the background and
+flags the spectra that depart from it.
+
+1. **Background ions**: the recurrent ions (§5.1) present in at least half of the spectra, over their
+   whole feature range: matrix, sprayed standards, slide coating. They are found on recalibrated
+   m/z, so drift does not spread a background ion over several m/z ranges.
+2. **Spot features**: \(\ln(1 + \text{cell intensity})\) and the cell fraction of the TIC, the cell
+   intensity being the summed intensity of the peaks outside the background ions. TIC is left out:
+   on a microgrid it is dominated by matrix ions, and ion suppression can make it lower on cells.
+3. **Local background**: each spot feature is rasterized and the median over a 9 x 9 window is
+   subtracted, removing deposition gradients and line drift; the residuals are converted to robust
+   z-scores (median and 1.4826 MAD[^rousseeuw1993]) and averaged.
+4. **Hysteresis**[^canny1986]: seeds need \(z \ge \max(4,\ \Phi^{-1}(1 - 0.01/n))\), so pure noise
+   gives 0.01 expected seeds over the \(n\) spectra; spectra at \(z \ge 2\) that are 8-connected to a
+   seed join it. Components above 25 spectra are reported (debris, matrix crystals) and kept.
+
+FOCUS design choice: the background model, the local median and the thresholds. A cell is foreground
+without spatial cleanup, which would remove one-pixel cells.
 
 ---
 
-## 6. Intensity normalization
+## 6. Per-sample feature selection
 
-All methods are applied after binning, **independently per sample and ion mode** (each mode's matrix
-is normalized before the positive/negative blocks are concatenated), by `normalize_intensities`:
+The features of each sample and ion mode are selected from its foreground spectra
+(`select_sample_features`) in the order frequency, annotation, intensity, so intensity never decides
+which ions are candidates and an annotated ion is never removed by the intensity filter. Detecting
+the peaks of each sample, filtering them by frequency and binning them across samples is the
+MALDIquant workflow (`detectPeaks`, `filterPeaks` with `minFrequency`, `binPeaks`)[^gibb2012]. FOCUS
+adaptation: the peaks of a sample are its m/z features (§4.1.2), found by recurrence above the local
+background instead of by intensity; the frequency is measured against the sample's most present
+feature instead of the number of spectra; the intensity filter follows the frequency filter.
 
-- `none`: unchanged.
-- `tic`: divide each spectrum by its total ion current (rows with TIC = 0 use divisor 1), so each
-  spectrum sums to 1. TIC normalization can create artifacts when a few intense signals are confined
-  to part of the section[^deininger2011].
-- `log`: `log1p`. FOCUS design choice: \(\log(1+x)\) keeps zeros at zero.
-- `clr`: centered log-ratio transform[^aitchison1982]. FOCUS adaptation: for each spectrum the log is
-  taken over the nonzero entries only and centered by the mean log over that nonzero support;
-  structural zeros are left at 0, so sparsity is preserved.
-- `tic_mean_scaled`: divide each spectrum by \(f_s = T_s / \bar{T}\), where \(T_s\) is the spot's
-  total ion current and \(\bar{T}\) the mean total ion current over that sample's spots for that ion
-  mode (\(\bar{T}=0\) uses divisor 1; empty spots stay at 0). FOCUS design choice: `tic` multiplied
-  by a per-sample constant, which keeps an interpretable absolute intensity scale. The mean is taken
-  within each sample and ion mode, so it does not make intensities comparable across samples.
-- `median`: divide each spectrum by the median of its intensities, which is more robust than TIC
-  against intense, localized signals[^deininger2011][^fonville2012]. FOCUS adaptation: the median is
-  taken over the spectrum's nonzero features, because binned centroid spectra are sparse and the
-  median over all features is usually 0; spectra without signal use divisor 1. Matrix peaks are not
+### 6.1 Frequency
+
+The features of the foreground spectra (§4.1.1, §4.1.2) are kept when
+\(p_{s,j} \ge 0.01 \cdot \max_{j'} p_{s,j'}\). Peak intensity plays no part. FOCUS design choice: the
+fraction 0.01 is fixed. Noise is removed by the recurrence test (§4.1.2) and recurrent ions at the
+noise level by the S/N filter (§6.3), so the frequency rule only trims rare ions: in a microgrid, the
+cell ions recur in the cell spectra only, which are the foreground.
+
+### 6.2 Annotation
+
+With a `lipid_annotation_db`, every frequent feature is annotated with the database entries of its
+ion mode whose ionized mass lies within \(\tau\) ppm (`annotate_masses`). A plain ppm window without
+isotope or adduct logic matches noise in a large database. The number of annotations expected by
+chance is estimated by annotating the features again at masses shifted by \(\pm 3, \pm 5, \pm 7\)
+window widths (\(2\tau\) ppm each) and averaging the matched features (`chance_annotations`), a
+target-decoy estimate[^elias2007]; METASPACE controls annotation FDR with decoy adducts[^palmer2017].
+FOCUS adaptation: decoy mass shifts instead of decoy adducts, and an estimate instead of an FDR
+threshold. When more than half of the annotations are expected by chance a warning reports that
+annotated features are not a reliable exemption from §6.3. The backbone (§7) is annotated again on its
+merged m/z.
+
+### 6.3 S/N filter
+
+The filter compares the foreground intensities of each feature with a noise profile measured on the
+**background** spectra of the same sample (`snr_filter`), so the foreground never enters its own
+noise estimate.
+
+- **Noise profile** (`noise_profile`): the non-recurrent peaks (outside the recurrence map of §4.2, so
+  matrix ions are excluded) of the background spectra are counted per block of \(5\tau\) of the
+  feature grid and per level of \(\log_{10}\) intensity. At feature \(j\), \(\mu_N(m_j)\) and
+  \(\sigma_N(m_j)\) are the median and 1.4826 MAD of the noise peaks in the blocks within \(50\tau\) of
+  it, the layout of the local floor of §4.1.2, with intensities taken as uniform in log within a level.
+- **Test**: for every foreground spectrum holding feature \(j\), the most intense peak in its range
+  gives \((I - \mu_N(m_j)) / \sigma_N(m_j)\). The feature is kept when the median over those spectra is
+  at least 3, the 3-sigma detection limit[^long1983], tested as "at least as many spectra at or above 3
+  as below". A signal-to-noise threshold over a MAD noise estimate is MALDIquant
+  `detectPeaks`[^gibb2012]. FOCUS adaptation: the threshold applies to a feature over the spectra
+  holding it instead of to a peak, and the noise comes from other spectra.
+- **Exemptions**: annotated features (§6.2) and features whose window holds fewer than 50 noise peaks
+  are kept.
+- **Skipped**: the filter does not run, every feature is kept and the reason is reported, when the
+  detector separated no background (§5.2), when there are fewer than \(\max(100,\ 0.01\,n)\)
+  background spectra, or when no feature window holds 50 noise peaks.
+- **Report**: the removed features and their share of the foreground TIC; a share above 5 % is a
+  warning that the background may not represent the noise of the foreground.
+
+FOCUS design choice: centroided data are already thresholded by the instrument software, so in a
+clean sample the few non-recurrent peaks of a tissue spectrum are weak real ions; their MAD measures
+signal, and a per-spectrum estimate would remove real features. The background holds no tissue ions,
+so it measures the noise alone, and a sample without one is not filtered. Chemical noise is usually
+higher on tissue than off tissue, so a background profile errs toward keeping features.
+
+### 6.4 Feature width
+
+The width of feature \(j\) is \(\sigma_j = \text{IQR}_j / 1.349\) in ppm (`feature_widths`), the
+interquartile range of the histogram bins of its range weighted by their peaks above the local floor
+\(f_j\) (§4.1.2), each bin's peaks taken as uniform over the bin; \(\text{IQR}/1.349\) equals the
+standard deviation for normal scatter[^rousseeuw1993]. FOCUS design choice: subtracting the floor
+keeps the noise of the range from widening it. The width sets how close features share a peak
+(§8); on m/z stored on a sampling grid it is quantized to that grid.
+
+Retained per sample and ion mode: the kept features' m/z, presence, width and annotation flag.
+
+---
+
+## 7. Backbone construction
+
+The backbone holds one m/z feature per ion and is shared by every sample (`_BackboneBuilder`,
+`merge_features`). The kept features of all samples (§6) are pooled per ion mode and sorted, and every
+group whose span exceeds \(\tau\) ppm is split at its largest gap between consecutive features,
+recursively, until every group spans at most \(\tau\) (`split_groups`). Grouping sorted peak masses
+by recursive splitting at the largest gap until the members agree within a tolerance is MALDIquant
+`binPeaks`[^gibb2012]. FOCUS adaptation: the criterion is the span of the group instead of each
+member's deviation from the group mean, so no two merged features are more than \(\tau\) apart. Per
+group:
+
+\[
+m = \frac{\sum_k p_k m_k}{\sum_k p_k},
+\qquad
+\sigma^2 = \frac{\sum_k p_k \bigl(\sigma_k^2 + d_k^2\bigr)}{\sum_k p_k},
+\qquad d_k = \frac{m_k - m}{m}\,10^6 ,
+\]
+
+with \(p_k\) the presence of member \(k\), so every sample weighs alike whatever its number of
+spectra, and \(\sigma\) clipped to \([\tau/10,\ \tau/2.3548]\) (one grid bin to a FWHM of \(\tau\)). A
+group is annotated when any member was. FOCUS design choice: every sample feature lands in exactly
+one group, so no feature is lost, while one ion seen a few ppm apart in two samples becomes one
+feature, its width including the spread between samples. The m/z and width are stored as
+`var['mz']` and `var['mz_sigma_ppm']` (float32), and binning (§8) uses the stored values.
+
+---
+
+## 8. Intensity binning
+
+Each spectrum is binned onto the backbone of its ion mode (`bin_spectra_csr`, numba, chunks of
+spectra in parallel via `joblib`). Peak \(p\) at m/z \(m_p\) with intensity \(I_p\) reaches every
+feature \(j\) within \(\tau\) ppm with the Gaussian weight
+
+\[
+G_{pj} = \exp\!\Bigl(-\tfrac12 \bigl(d_{pj} / \sigma_j\bigr)^2\Bigr),
+\qquad d_{pj} = \frac{m_p - m_j}{m_j}\,10^6 ,
+\qquad
+X_{ij} = \sum_{p \in i} I_p\,\frac{G_{pj}}{\sum_k G_{pk}} ,
+\]
+
+the sum running over the features within \(\tau\) ppm of the peak, and peaks with no feature in
+reach are dropped. The fraction is the responsibility of feature \(j\) for peak \(p\) in a mixture
+of Gaussians of equal weights, the E-step of the EM algorithm[^dempster1977], and grouping peaks
+with a Gaussian kernel along the mass axis is the density grouping of XCMS[^smith2006]. FOCUS
+adaptation: the widths are the features' own (§6.4) and the responsibilities split each peak's
+intensity instead of estimating the mixture. FOCUS design choice: a feature alone in reach takes
+every peak in reach whole, whatever its mass error, so a residual calibration error never scales an
+intensity; features closer than the tolerance share a peak in proportion to their weights, so the
+share moves continuously with the peak's position instead of switching from one feature to the
+other; and the intensity of every peak in reach is conserved. A kernel that also attenuates an
+isolated feature's peaks with their mass error was evaluated and rejected: on centroids stored on
+the instrument's sampling grid (5 ppm steps in the data of
+[preprocessing audit §9](../development/preprocessing_audit.md#9-msi-preprocessing-redesign)), the
+per-line recalibration offsets moved the peaks against the Gaussian and produced line stripes and up to
+19 % intensity loss. The kernel writes CSR rows directly, without a dense \(n \times F\) matrix. The
+binned matrix is `.layers['raw']`.
+
+---
+
+## 9. Intensity normalization
+
+Every method divides each spectrum by one divisor at a fixed scale (`normalize_intensities`),
+independently per sample and ion mode, before the positive and negative blocks are concatenated.
+Samples share the scale by construction, so the per-sample files equal the rows of the merged file
+without a pass over the whole dataset. A spectrum without signal keeps divisor 1.
+
+- `none` (default): unchanged.
+- `tic`: the total ion current over the features divided by their number \(F\), so a spectrum sums
+  to \(F\) and its mean feature is 1, the scale of Cardinal `normalize(method = "tic")`[^bemis2015].
+  TIC normalization can create artifacts when a few intense signals are confined to part of the
+  section[^deininger2011].
+- `median`: the median of the spectrum's nonzero features, so a typical peak is 1; more robust than
+  TIC against intense, localized signals[^deininger2011][^fonville2012]. FOCUS adaptation: the median
+  is taken over the nonzero features, because binned centroid spectra are sparse; matrix peaks are not
   excluded (Fonville et al. use the median of selected matrix-independent peaks[^fonville2012]).
-- `internal_standard`: divide each spectrum by the intensity of the internal standards sprayed over
-  the section, the pixel-wise normalization of quantitative MSI[^vandenbosch2023]. It is most
-  effective for ions whose intensity is close to that of the standard[^barry2019]. FOCUS adaptation:
-  one divisor per spectrum and ion mode, the summed raw intensity of the backbone features nearest
-  each `internal_standard_mz` mass (each within \(\tau\) ppm, otherwise preprocessing stops with an
-  error), instead of one class-matched standard per lipid class. FOCUS design choice: a spectrum
-  whose divisor is 0 takes the 3 x 3 neighbourhood median of the nonzero divisors, then the sample
-  median; a sample without the standard in any spectrum stops with an error.
+- `rms`: \(\sqrt{\sum_j X_{ij}^2 / F}\), the root mean square: the vector norm divided by
+  \(\sqrt{F}\). Vector norm normalization is one of the methods Deininger et al. evaluated for
+  MALDI imaging[^deininger2011], and Cardinal offers it as `rms`[^bemis2015].
+- `internal_standard`: the summed binned intensity of the backbone features nearest each
+  `internal_standard_mz` mass (each within \(\tau\) ppm, otherwise preprocessing stops with an error),
+  the pixel-wise normalization of quantitative MSI[^vandenbosch2023]. It is most effective for ions
+  whose intensity is close to that of the standard[^barry2019]. FOCUS adaptation: one divisor per
+  spectrum and ion mode instead of one class-matched standard per lipid class. FOCUS design choice: a
+  spectrum whose divisor is 0 takes the 3 x 3 neighbourhood median of the nonzero divisors, then the
+  sample median; a sample without the standard in any spectrum stops with an error.
 
-Raw binned matrix is preserved in `.layers['raw']`; normalized matrix in `.X`.
+The settings `log`, `clr` and `tic_mean_scaled` were removed: log and centred log-ratio
+transforms[^aitchison1982] apply downstream, and `tic` now has a scale shared by every sample.
+The normalized matrix is `.X`.
 
 ---
 
-## 6b. Per-sample clustering
+## 10. Per-sample clustering
 
 After normalization, per-sample cluster labels are computed (`compute_cluster_labels`) and stored in
 `.obs['cluster']`. They are consumed only by the alignment GUI for categorical spot colouring, and no
@@ -608,7 +736,9 @@ partition instead of an exact Leiden over every spot.
 the same neighbourhood embedding ([ST §3.6.2](st_methods.md#362-neighbourhood-embedding)).
 The modality setting `resolution` sets the neighbourhood: 1 ring for `standard`
 (multicellular pixels, such as MALDI-MSI at tens of micrometres) and 2 rings for
-`sub_cellular` (weak high-resolution pixels). ST clusters the units with its own steps
+`sub_cellular` (weak high-resolution pixels). `sample_type: microgrid` uses no neighbourhood (0
+rings). FOCUS design choice: a microgrid cell covers about one pixel, and the mean of its
+neighbourhood is background. ST clusters the units with its own steps
 ([ST §3.6](st_methods.md#36-per-sample-clustering)). The alignment GUI renders native spots
 in both cases
 ([Alignment §4b](alignment_methods.md#4b-native-spot-display-and-compact-transport)).
@@ -632,9 +762,8 @@ signals[^deininger2011], and `log1p` is the transform the ST clustering applies 
 principal components of raw intensities follow the absolute intensity of the few most abundant ions,
 and the clusters slice their intensity levels. The median sets the `log1p` offset at a typical peak of
 the row, so the transform does not depend on the instrument's intensity scale. The raw matrix is used
-because every linear `intensity_normalization` (`none`, `tic`, `tic_mean_scaled`, `median`,
-`internal_standard`) only rescales rows, which the median normalization replaces, and because `log1p`
-needs non-negative values, which `clr` is not. The row normalization also removes the number of spots
+because every `intensity_normalization` (`none`, `tic`, `median`, `rms`, `internal_standard`) only
+rescales rows, which the median normalization replaces. The row normalization also removes the number of spots
 a pseudo-spot holds.
 
 Then feature selection, PCA, the neighbourhood embedding (each unit's PCs joined to the mean PCs of its
@@ -656,7 +785,7 @@ run with `random_state=0`.
 
 ---
 
-## 7. Outputs
+## 11. Outputs
 
 Per sample:
 
@@ -672,45 +801,58 @@ Merged:
 
 Key fields:
 
-- `.X`: normalized intensities (CSR)
-- `.layers['raw']`: pre-normalization binned intensities
+- `.X`: normalized intensities (float32 CSR, §9)
+- `.layers['raw']`: binned intensities before normalization (float32 CSR, §8)
 - `.obsm['spatial']`: physical coordinates
 - `.obsm['raster_coordinates']`: raster bounding boxes
 - `.obs['foreground']`, `.obs['cluster']`, `.obs['sample_id']` (all categorical)
+- `.obs['foreground_score']` (`float32`): the detector's score (§5.1, robust z for microgrids)
 - `.obs['recalibration_ppm_<mode>']` (`float32`): applied correction \(a_{l(i)} + \delta_i\) at
   \(\bar\mu\) (§4.2), NaN in a sample without that ion mode
 - `.obs['recalibration_matches_<mode>']` (`int16`): references matched at pixel level (§4.2)
-- `.var['mz']`, `.var['mz_mode']`, `.var['lipid_annotation']`
+- `.var['mz']`, `.var['mz_sigma_ppm']` (float32, §7), `.var['mz_mode']`, `.var['lipid_annotation']`
 - `.uns['spot_size']`: per-sample `[x,y]` (merged file stores per-sample dict)
 - `.uns['recalibration_reference']`: the sample's reference m/z per ion mode, on the common mass
   scale (§4.1); per sample, then per ion mode, in the merged file
+- `.uns['recalibration_pool']`: per ion mode, the calibrant pool on the sample's own scale and its
+  mass-scale shift (§4.1.4); per sample in the merged file
 - `.uns['focus_preprocessing_fingerprint']`: SHA-256 over the method version, the settings, the
-  lipid database and every sample's inputs (imzML SHA-256 and `.ibd` size). Every sample depends on
-  the whole dataset (aligned mass scales and backbone), so all files of one run carry the same key.
+  fixed calibration of `focus.preprocessing.msi.technology`, the lipid database and every sample's
+  inputs (imzML SHA-256 and `.ibd` size). Every sample depends on the whole dataset (aligned mass
+  scales and backbone), so all files of one run carry the same key.
+
+Per-sample and merged files are written to a temporary file and renamed, so an interrupted write
+leaves no partial cache. The merged file is concatenated on disk and its per-sample `.uns` entries are
+written into it in place.
 
 **Caching.** A run is skipped when every per-sample file and the merged file carry the current
 fingerprint and the merged file holds the active samples. A changed input, setting or method
 version rebuilds the dataset, and the pipeline then re-runs alignment and registration of the
 modality. An interrupted run with an unchanged fingerprint resumes: cached samples are reused with
-the stored references and backbone, and only the remaining samples are processed.
+their stored references, pools and backbone, and only the remaining samples are processed, with the
+outputs of a fresh run (§4.1.4; the backbone is binned from its stored float32 values in both cases).
 
 ---
 
-## 8. Parameters reflected by implementation
+## 12. Parameters reflected by implementation
 
-- `mass_tolerance` (default 10; must be an `int`, since `process_dataset` rejects floats)
-- `frequency_threshold` (default 0.01): minimum presence of a sample feature, as a fraction of the
-  sample's most present feature (§4.3)
-- `intensity_normalization` (default `none`, in both the settings extractor `_extract_msi_settings`
-  and the `process_dataset` signature)
+- `mass_tolerance` (default 10, ppm, int or float): feature kernel (§4.1.2), backbone merge span
+  (§7), binning reach (§8) and annotation window (§6.2)
+- `sample_type` (`tissue`, `tissue_noisy`, `cell_culture`, `microgrid`; default `tissue`): foreground
+  detection and cleanup (§5), clustering neighbourhood (§10)
+- `intensity_normalization` (`none`, `tic`, `median`, `rms`, `internal_standard`; default `none`, §9)
 - `recalibration_reference` (default `null`): per-ion-mode m/z lists, given as a mapping
   (`{"pos": [760.585, 798.541]}`) or as the GUI string `"pos: 760.585, 798.541; neg: 885.550"`
 - `internal_standard_mz` (default `null`): same forms; m/z of the sprayed internal standards, always
   used as recalibration references and required by `internal_standard` normalization
-- `detect_background` (default `false`; effective only when `lipid_annotation_db` is also set)
-- `sample_type` (`tissue` or `microgrid`, default `tissue`)
 - `lipid_annotation_db` (optional CSV/JSON with `db_name`, `ionized_mass`, `ion_mode`)
+- `resolution` (`standard`, `sub_cellular`): clustering preset (§10)
 - `force_recomputing` (default `false`)
+
+Removed in `msi-13`, rejected by configuration validation with the reason: `detect_background`
+(detection always runs and `sample_type` calibrates it), `frequency_threshold` (fixed, §6.1),
+`min_intensity_threshold` (replaced by the S/N filter, §6.3), and the normalizations `log`, `clr`
+(use `none`) and `tic_mean_scaled` (use `tic`).
 
 ---
 
@@ -737,3 +879,12 @@ the stored references and backbone, and only the remaining samples are processed
 [^aitchison1982]: Aitchison J. The statistical analysis of compositional data. *J R Stat Soc B* 44:139-160 (1982). [doi:10.1111/j.2517-6161.1982.tb01195.x](https://doi.org/10.1111/j.2517-6161.1982.tb01195.x)
 [^zheng2017]: Zheng GXY, Terry JM, Belgrader P, et al. Massively parallel digital transcriptional profiling of single cells. *Nat Commun* 8:14049 (2017). [doi:10.1038/ncomms14049](https://doi.org/10.1038/ncomms14049). Dispersion normalization within mean bins as implemented in Scanpy (Wolf FA, Angerer P, Theis FJ. *Genome Biol* 19:15, 2018).
 [^traag2019]: Traag VA, Waltman L, van Eck NJ. From Louvain to Leiden: guaranteeing well-connected communities. *Sci Rep* 9:5233 (2019). [doi:10.1038/s41598-019-41695-z](https://doi.org/10.1038/s41598-019-41695-z)
+[^long1983]: Long GL, Winefordner JD. Limit of detection: a closer look at the IUPAC definition. *Anal Chem* 55:712A-724A (1983). [doi:10.1021/ac00258a724](https://doi.org/10.1021/ac00258a724)
+[^schwarz1978]: Schwarz G. Estimating the dimension of a model. *Ann Stat* 6:461-464 (1978). [doi:10.1214/aos/1176344136](https://doi.org/10.1214/aos/1176344136)
+[^ashman1994]: Ashman KM, Bird CM, Zepf SE. Detecting bimodality in astronomical datasets. *Astron J* 108:2348 (1994). [doi:10.1086/117248](https://doi.org/10.1086/117248)
+[^soille2004]: Soille P. *Morphological Image Analysis: Principles and Applications*, 2nd ed. Springer, Berlin (2004). [doi:10.1007/978-3-662-05088-0](https://doi.org/10.1007/978-3-662-05088-0)
+[^canny1986]: Canny J. A computational approach to edge detection. *IEEE Trans Pattern Anal Mach Intell* PAMI-8:679-698 (1986). [doi:10.1109/TPAMI.1986.4767851](https://doi.org/10.1109/TPAMI.1986.4767851). Hysteresis thresholding.
+[^elias2007]: Elias JE, Gygi SP. Target-decoy search strategy for increased confidence in large-scale protein identifications by mass spectrometry. *Nat Methods* 4:207-214 (2007). [doi:10.1038/nmeth1019](https://doi.org/10.1038/nmeth1019)
+[^palmer2017]: Palmer A, Phapale P, Chernyavsky I, et al. FDR-controlled metabolite annotation for high-resolution imaging mass spectrometry. *Nat Methods* 14:57-60 (2017). [doi:10.1038/nmeth.4072](https://doi.org/10.1038/nmeth.4072)
+[^bemis2015]: Bemis KD, Harry A, Eberlin LS, et al. Cardinal: an R package for statistical analysis of mass spectrometry-based imaging experiments. *Bioinformatics* 31:2418-2420 (2015). [doi:10.1093/bioinformatics/btv146](https://doi.org/10.1093/bioinformatics/btv146). Normalization as described in the package documentation (`normalize`, methods `tic` and `rms`).
+[^dempster1977]: Dempster AP, Laird NM, Rubin DB. Maximum likelihood from incomplete data via the EM algorithm. *J R Stat Soc B* 39:1-22 (1977). [doi:10.1111/j.2517-6161.1977.tb01600.x](https://doi.org/10.1111/j.2517-6161.1977.tb01600.x)

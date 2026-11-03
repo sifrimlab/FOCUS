@@ -19,12 +19,10 @@ class ProcessingSettings(TypedDict, total=False):
     crop_to_tissue: bool
     pixel_size: float | None
     lipid_annotation_db: str | None
-    mass_tolerance: int
-    frequency_threshold: float
+    mass_tolerance: float
     intensity_normalization: str
     recalibration_reference: MassSetting
     internal_standard_mz: MassSetting
-    detect_background: bool
     sample_type: str
     resolution: str
     max_workers: int

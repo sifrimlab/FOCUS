@@ -3,6 +3,7 @@
 import numpy as np
 
 from dataclasses import dataclass
+from numba import njit
 from scipy.ndimage import gaussian_filter1d, median_filter
 from scipy.stats import poisson as poisson_distribution
 
@@ -256,3 +257,66 @@ def recurrence_map(
     np.add.at(delta, features.left - pad - lo, 1)
     np.add.at(delta, features.right + pad - lo + 1, -1)
     return lo, np.cumsum(delta[:-1]) > 0, log_bin_width
+
+
+@njit(cache=True)
+def _bin_quantile(
+    edges: np.ndarray, cumulative: np.ndarray, weights: np.ndarray, q: float
+) -> float:
+    """Quantile `q` of weighted bins, each weight spread uniformly over its bin [edge, edge + 1)."""
+    target = q * cumulative[-1]
+    k = np.searchsorted(cumulative, target)
+    k = min(k, edges.size - 1)
+    before = cumulative[k] - weights[k]
+    fraction = (target - before) / weights[k] if weights[k] > 0 else 0.0
+    return float(edges[k] + fraction)
+
+
+@njit(cache=True)
+def _feature_widths(
+    bins: np.ndarray,
+    counts: np.ndarray,
+    left: np.ndarray,
+    right: np.ndarray,
+    floor: np.ndarray,
+) -> np.ndarray:
+    """Normal-consistent interquartile range, in grid bins, of each feature range (see feature_widths)."""
+    sigma = np.zeros(left.size, dtype=np.float64)
+    for j in range(left.size):
+        start = np.searchsorted(bins, left[j])
+        stop = np.searchsorted(bins, right[j], side="right")
+        if stop <= start:
+            continue
+        weights = np.maximum(counts[start:stop] - floor[j], 0.0)
+        cumulative = np.cumsum(weights)
+        if cumulative[-1] <= 0.0:
+            continue
+        edges = bins[start:stop].astype(np.float64)
+        q1 = _bin_quantile(edges, cumulative, weights, 0.25)
+        q3 = _bin_quantile(edges, cumulative, weights, 0.75)
+        sigma[j] = (q3 - q1) / 1.349
+    return sigma
+
+
+def feature_widths(
+    features: MzFeatures, bins: np.ndarray, counts: np.ndarray, log_bin_width: float
+) -> np.ndarray:
+    """
+    Robust spread, in ppm, of the peaks of each feature: the interquartile range of the occupied
+    histogram bins in the feature's range divided by 1.349 (equal to the standard deviation for normal
+    scatter), each bin weighted by its peaks above the local floor, so the noise background of the
+    range does not widen it. Peaks are taken as uniform within their grid bin.
+    """
+    if features.mz.size == 0:
+        return np.zeros(0, dtype=np.float64)
+    return (
+        _feature_widths(
+            bins.astype(np.int64),
+            counts.astype(np.float64),
+            features.left.astype(np.int64),
+            features.right.astype(np.int64),
+            features.floor.astype(np.float64),
+        )
+        * log_bin_width
+        * 1e6
+    )

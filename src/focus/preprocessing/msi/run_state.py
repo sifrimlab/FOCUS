@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -17,12 +17,10 @@ if TYPE_CHECKING:
 class MsiRunSettings:
     """Validated run parameters; mass lists retain their parsed array references."""
 
-    mass_tolerance: int
-    frequency_threshold: float
+    mass_tolerance: float
     normalization: str
     references: dict[str, np.ndarray] | None
     standards: dict[str, np.ndarray] | None
-    detect_background: bool
     sample_type: str
     resolution: str
     force: bool
@@ -37,6 +35,11 @@ class ResumeState:
     stored_references: dict[str, dict[str, np.ndarray]]
     files: dict[str, str]
     partial: bool
+    # Per sample and ion mode, the calibrant pool on the sample's own scale ("pool") and its mass-scale
+    # shift ("shift_ppm"): the anchors of the mass-scale alignment of the samples still to process.
+    stored_pools: dict[str, dict[str, dict[str, np.ndarray | float]]] = field(
+        default_factory=dict
+    )
 
 
 @dataclass

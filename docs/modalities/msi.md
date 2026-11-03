@@ -147,35 +147,39 @@ If the database is omitted or set to `None`, FOCUS will process the data without
 
 ## Preprocessing Steps
 
-1. **Parse imzML metadata**: the imzML XML is parsed to extract pixel grid coordinates, physical stage coordinates (µm), raster size, per-spectrum binary offsets, and data types (`float32` or `float64`). Physical coordinates are read from the `3DPositionX`/`3DPositionY` user parameters when present; spots without them fall back to their pixel indices scaled by the raster size, so the result is still in µm. Raster size comes from the `pixel size x`/`pixel size y` scan settings and is parsed as an **integer** number of µm. It falls back to `[1, 1]` when absent or when the stated pixel size is below 1 µm. Compressed binary arrays and profile spectra raise `ValueError`: FOCUS reads uncompressed, centroided spectra.
+The steps run in this order; [MSI methods](../scientific/msi_methods.md) gives every method with its references.
+
+1. **Parse imzML metadata**: pixel grid coordinates, stage coordinates (µm), pixel size, per-spectrum binary offsets and data types. Arrays are identified by their `m/z array` and `intensity array` terms; intensities may be floats or integers. The pixel size is read as a decimal number of µm; when the file declares none it is inferred from the stage positions, and without stage positions preprocessing stops with an error. Compressed binary arrays and profile spectra raise `ValueError`: FOCUS reads uncompressed, centroided spectra. Peaks at m/z 0 or below are dropped.
 
 2. **Rotation correction**: a linear regression is fit to the stage coordinates of the most densely sampled pixel column, and the resulting slope angle is used to de-rotate all physical coordinates to align the scan with the Cartesian axes.
 
-3. **Dual ion mode alignment**: when both ion modes are present, each positive spectrum is paired with the negative spectrum acquired at the same stage position, after removing the constant offset between the two acquisitions ([MSI methods §2.2](../scientific/msi_methods.md#22-dual-ion-mode-affine-harmonization)); spectra acquired in one mode only are removed. The two acquisitions may cover different areas and run their pixel axes in opposite directions. Files without stage positions are paired by pixel index, which is correct only when both modes cover the same raster. An affine transformation is fitted from positive to negative mode physical coordinates; the transformed positive coordinates are averaged with the negative coordinates to yield the consensus spot centre positions.
+3. **Dual ion mode alignment**: when both ion modes are present, each positive spectrum is paired with the negative spectrum acquired at the same stage position, after removing the constant offset between the two acquisitions ([MSI methods §2.2](../scientific/msi_methods.md#22-dual-ion-mode-affine-harmonization)); spectra acquired in one mode only are removed. Files without stage positions are paired by pixel index, which is correct only when both modes cover the same raster. An affine transformation is fitted from positive to negative mode physical coordinates; the transformed positive coordinates are averaged with the negative coordinates to yield the consensus spot centre positions.
 
-4. **M/z recalibration**: see [MSI methods §4.1-4.2](../scientific/msi_methods.md#4-recalibration-and-mz-backbone) for the method and its references. Unless a `recalibration_reference` is supplied, each sample gets its own ten reference peaks per ion mode, selected from its tissue spectra among its m/z features: the ions that recur at the same m/z above the local background, whatever their intensity. The references are features present in a large share of its spectra, spread over the mass range, and isolated: the calibrant matching is replayed on the sample with each candidate, and a candidate is kept when matching, which takes the most intense peak of the search window, finds it in many spectra and takes another ion in at most 10% of its matches. A calibrant match must reach 5 times its spectrum's noise level, measured on the peaks that do not recur (1.4826 × MAD of their intensities); a clean spectrum has no such peaks and no gate, so the matching adapts to each spectrum with no intensity threshold to set. Sprayed internal standards given in `internal_standard_mz` are always included, and the references are then placed on the standards' mass scale. Without standards, one constant ppm shift per sample, from the calibrant candidates the samples share, puts all samples on a common mass scale, so one ion stays one feature across samples. Every spectrum then gets its own correction, in ppm and linear in m/z: a per-scan-line drift (estimated over the whole line, smoothed and interpolated over lines without calibrants, so no line is left uncorrected; calibrants are first searched around the sample's own offset, found within ±10 times the search window when more references agree on it than chance explains, and lines out of reach are searched again around the drift of their neighbours, so drift larger than the search window is followed) plus a per-pixel residual (from at least 3 agreeing references, smoothed over the 3 x 3 pixel neighbourhood). The scan-line direction is read from the imzML scan type. Recalibration runs with or without a lipid annotation database. The applied correction is stored per spot in `obs["recalibration_ppm_<mode>"]`.
+4. **Recalibration** ([MSI methods §4](../scientific/msi_methods.md#4-recalibration)): unless a `recalibration_reference` is supplied, each sample gets its own ten reference peaks per ion mode, selected from **all** its spectra before any foreground is known, so matrix ions present on the whole slide are eligible calibrants. Sprayed internal standards given in `internal_standard_mz` are always included and anchor the mass scale; without them, one ppm shift per sample puts all samples on a common mass scale. Every spectrum then gets its own correction, linear in m/z: a per-scan-line drift plus a per-pixel residual. The applied correction is stored per spot in `obs["recalibration_ppm_<mode>"]`.
 
-5. **Consensus m/z grid construction**: see [MSI methods §4.3](../scientific/msi_methods.md#43-consensus-backbone-construction) for the method and its references. Each sample's m/z features are found in its recalibrated spectra (foreground spots only when background detection ran) as in step 4: every peak is counted on a fine m/z grid and smoothed with a kernel one `mass_tolerance` wide, and every maximum that rises above the local background is a feature, so noise makes no feature and every recurring ion does, whatever its intensity. A feature is kept when its presence (share of spectra holding it above the background) is at least `frequency_threshold` times that of the sample's most present feature; this is the setting that controls the number of features. The kept features of all samples are then grouped: each maximum of their presence density, smoothed with the same kernel, becomes one backbone feature, collecting the sample features up to the density minimum on either side and at most `mass_tolerance` ppm away. One ion therefore gives one feature even when its peaks spread wider than the tolerance. In a microgrid, enable background detection: cell ions recur only in the cell spectra and do not rise above the background noise of the whole slide.
+5. **Foreground detection** ([MSI methods §5](../scientific/msi_methods.md#5-foreground-detection)): always runs, on the recalibrated spectra, without a lipid database; `sample_type` selects the detector.
+    - `tissue`, `tissue_noisy`, `cell_culture`: each spectrum is scored by the number of recurrent ions it holds above its own noise, which noise centroids never raise. A two-component mixture separates a background only when the two score modes are cleanly apart and the lower one holds at most half the ions of the higher one; otherwise every spectrum is foreground. The cleanup follows the preset: hole filling and opening for a section, a stronger opening and removal of small components for a noisy background, a majority vote that keeps gaps between cells for a culture.
+    - `microgrid`: cells of about one pixel are local outliers against the ions present on most of the slide, thresholded with hysteresis, without spatial cleanup.
 
-6. **Intensity binning**: each peak adds its whole intensity to the nearest grid feature within `mass_tolerance` ppm; peaks with no feature in reach are dropped ([MSI methods §5](../scientific/msi_methods.md#5-intensity-binning-to-backbone)). The result is a dense `(N_spots, N_mz)` matrix.
-
-7. **Tissue / background detection**: runs when `detect_background=True` **and** a `lipid_annotation_db` is configured. The strategy depends on `sample_type`.
-
-    For `sample_type="tissue"`, three spectral complexity features are computed per spot: Shannon entropy, peak count, and log(TIC). A 4th feature (annotation DB hit ratio) is added from the database. A 1-component and a 2-component Gaussian Mixture Model are fit and BIC selects between them: unimodal keeps all spots, bimodal classifies spots with posterior ≥ 0.5 on the higher-mean component as tissue. Morphological hole-filling and binary opening clean up the spatial mask.
-
-    For `sample_type="microgrid"`, the slide is treated as a dominant background with sparse cells covering one or a few spots each, and cells are detected as local outliers against it. Ions present in at least 50% of spots on a log-ppm grid one `mass_tolerance` wide (dilated by one bin) form the background ion set: matrix, sprayed standards and slide coating. Per spot, the features are the log intensity of the remaining (cell) ions, their fraction of the TIC and, with a database, the log intensity of the DB-matched cell ions. TIC is not a feature, because on a microgrid it is dominated by matrix ions and ion suppression can lower it on cells. Each feature is rasterised on the pixel grid and a 9 × 9 spot median is subtracted to remove deposition gradients and row drift; the residual becomes a robust z-score (median and 1.4826 × MAD). The mean z-score is thresholded with hysteresis: seeds need z ≥ max(4, the Gaussian quantile that gives 0.01 expected noise seeds per slide), and spots with z ≥ 2 that are 8-connected to a seed join it, so a multi-spot cell is kept whole. No morphological cleanup is applied. Components larger than 25 spots are logged as possible debris or matrix crystals but kept. When no cell is detected, every spot is marked foreground and a warning is printed.
-
-    !!! warning "Background detection requires a lipid annotation database"
-        Detection is currently gated on `lipid_annotation_db` being set. With `detect_background=True` but no database, the step is silently skipped and every spot is marked foreground (`obs["foreground"]` all `True`). Set both, or expect no background flagging.
+    The result is stored in `obs["foreground"]` and `obs["foreground_score"]`; all spectra remain in the output.
 
     !!! note "Alignment of microgrid experiments"
         When any MSI modality has `sample_type="microgrid"`, the alignment GUI shows only the foreground spots of every spot modality of the experiment, all in one colour, because microgrid alignment relies on the positions of the foreground spots and not on cluster patterns. The confirmed transform is applied to all spots, foreground and background. Image modalities are displayed at their lowest pyramid level as usual.
 
-8. **Intensity normalisation**: see [MSI methods §6](../scientific/msi_methods.md#6-intensity-normalization) for the methods and their references. Supported methods are `tic` (divide each spectrum by its total ion current, so each spectrum sums to 1), `log` (log(1 + x) transform), `clr` (sparsity-preserving centered log-ratio: log-centers each spectrum over its nonzero entries only, leaving structural zeros at 0), `tic_mean_scaled` (rescale each spectrum to the **mean** total ion current over that sample's spots for that ion mode; similar to `tic`, but it preserves an interpretable absolute intensity scale instead of forcing a sum of 1, and because the mean is per sample, values are *not* comparable across samples), `median` (divide each spectrum by the median of its nonzero features; more robust than `tic` to intense, localized signals), `internal_standard` (divide each spectrum by the summed intensity of the internal standards listed in `internal_standard_mz`; requires a standard sprayed homogeneously over the section), or `none`. All methods are applied independently per sample and per ion mode. Applied after background detection. The unnormalised binned intensities are preserved in `.layers['raw']`.
+6. **Per-sample feature selection** ([MSI methods §6](../scientific/msi_methods.md#6-per-sample-feature-selection)), from the foreground spectra of each sample:
+    - **Frequency**: the ions that recur at the same m/z above the local background, whatever their intensity, present in at least 1% of the spectra of the sample's most present ion.
+    - **Annotation** with the `lipid_annotation_db`, reported with the number of annotations expected by chance.
+    - **S/N filter**: a feature is kept when its median signal-to-noise over the spectra holding it is at least 3, the noise being measured on the sample's **background** spectra. Annotated features are always kept. Without an independent background (a section that fills the raster, or a background without noise centroids), the filter is skipped and every feature is kept.
 
-9. **Per-sample cluster labels**: labels used only to colour spots in the alignment GUI, stored in `.obs['cluster']`. Samples with more than 250,000 spots are first *coarsened*: spots are grouped into k x k blocks of the acquisition raster (inferred from the coordinates; Voronoi supercells when no raster is found), with the smallest k that leaves at most 250,000 blocks. All spots of a block are **summed** into one pseudo-spot (so weak per-spot MSI signal accumulates into something clusterable), and the pseudo-spots are re-normalised so block occupancy washes out. Then PCA (up to 50 components, bounded by the matrix dimensions) → each unit's PCs joined to the mean PCs of its spatial neighbourhood (1 ring for `resolution="standard"`, 2 rings for `"sub_cellular"`) → neighbour graph → Leiden (`resolution=0.5`, `flavor="igraph"`, `n_iterations=2`, `directed=False`) runs on that matrix, adjacent clusters that no density valley separates are merged, and each block's label propagates back to every spot it contains. Smaller samples cluster every spot directly. See [MSI methods §6b](../scientific/msi_methods.md#6b-per-sample-clustering). The summed matrix, PCA embedding and neighbour graph are all discarded; only `.obs['cluster']` is persisted. Samples too small to cluster, or resolving to a single cluster after merging, get the single label `'0'`. PCA and Leiden run with `random_state=0`.
+7. **Backbone**: the kept features of all samples are pooled and split at their largest gaps until every group spans at most `mass_tolerance` ppm, so no feature is lost and one ion seen a few ppm apart in two samples becomes one feature ([MSI methods §7](../scientific/msi_methods.md#7-backbone-construction)). Each feature carries a Gaussian width measured from the spread of its peaks (`var["mz_sigma_ppm"]`).
 
-10. **Format as AnnData**: the interpolated matrix, spatial coordinates, and metadata are assembled into an AnnData object and saved as a gzip-compressed `.h5ad` file. Ion mode is encoded in `.var`, and all samples are concatenated into a single merged dataset (inner join on m/z features, gzip-compressed).
+8. **Intensity binning**: a feature alone within `mass_tolerance` ppm of a peak takes the whole peak; features closer than the tolerance share it by Gaussian weight of their widths, so the share moves smoothly with the peak position instead of switching between features, and every peak's intensity is conserved ([MSI methods §8](../scientific/msi_methods.md#8-intensity-binning)). The binned matrix is sparse and stored in `.layers['raw']`.
+
+9. **Intensity normalisation** ([MSI methods §9](../scientific/msi_methods.md#9-intensity-normalization)): `none`, `tic` (rows sum to the number of features), `median` (median of the nonzero features is 1), `rms` (root mean square is 1) or `internal_standard` (standard intensity is 1; requires `internal_standard_mz`). Each divides a spectrum by one value at a fixed scale, per sample and ion mode, so all samples share the scale.
+
+10. **Per-sample cluster labels**: labels used only to colour spots in the alignment GUI, stored in `.obs['cluster']`. Samples with more than 250,000 spots are first *coarsened* into k x k blocks of the acquisition raster whose spots are summed. Then PCA, each unit's PCs joined to the mean PCs of its spatial neighbourhood (1 ring for `resolution="standard"`, 2 rings for `"sub_cellular"`, none for `sample_type="microgrid"`), neighbour graph, Leiden (`resolution=0.5`), and adjacent clusters that no density valley separates are merged. See [MSI methods §10](../scientific/msi_methods.md#10-per-sample-clustering). Only `.obs['cluster']` is persisted.
+
+11. **Format as AnnData**: the binned matrices, spatial coordinates and metadata are written per sample as a gzip-compressed `.h5ad`, and all samples are concatenated into a merged dataset (inner join on m/z features).
 
 ---
 
@@ -183,21 +187,17 @@ If the database is omitted or set to `None`, FOCUS will process the data without
 
 | Name | Type | Default | Description | Allowed values |
 |------|------|---------|-------------|----------------|
-| `mass_tolerance` | `int` | `10` | Mass tolerance in ppm for m/z clustering and interpolation | Positive integer |
-| `frequency_threshold` | `float` | `0.01` | Minimum presence of a consensus grid feature (share of spectra holding it above the background), as a fraction of the most present feature of a sample; a feature passing in one sample is kept | `0.0` - `1.0` |
-| `intensity_normalization` | `str` | `"none"` | Intensity normalisation method (applied per ion mode) | `"none"`, `"tic"`, `"log"`, `"clr"`, `"tic_mean_scaled"`, `"median"`, `"internal_standard"` |
-| `detect_background` | `bool` | `False` | Detect and flag background spots in the output (`obs["foreground"]`); all spots are still written. **Requires `lipid_annotation_db`**. Without it the step is skipped and all spots are marked foreground | `True`, `False` |
-| `sample_type` | `str` | `"tissue"` | Tissue architecture type; controls background detection strategy (`"tissue"`: GMM + BIC with morphological cleanup; `"microgrid"`: local-outlier detection of sparse cells) | `"tissue"`, `"microgrid"` |
-| `resolution` | `str` | `"standard"` | Clustering preset for the alignment colours: `"standard"` for multicellular pixels, `"sub_cellular"` for weak high-resolution pixels (wider spatial neighbourhood). See [MSI methods §6b](../scientific/msi_methods.md#6b-per-sample-clustering) | `"standard"`, `"sub_cellular"` |
+| `mass_tolerance` | `float` | `10` | Mass tolerance in ppm: feature detection, backbone merge, binning reach and annotation window | Positive number |
+| `sample_type` | `str` | `"tissue"` | Experiment type; calibrates foreground detection and its cleanup | `"tissue"` (clean background), `"tissue_noisy"` (noisy background), `"cell_culture"` (gradient domains), `"microgrid"` (isolated single cells) |
+| `intensity_normalization` | `str` | `"none"` | Row normalisation, applied per sample and ion mode at a fixed scale | `"none"`, `"tic"`, `"median"`, `"rms"`, `"internal_standard"` |
+| `resolution` | `str` | `"standard"` | Clustering preset for the alignment colours: `"standard"` for multicellular pixels, `"sub_cellular"` for weak high-resolution pixels (wider spatial neighbourhood). See [MSI methods §10](../scientific/msi_methods.md#10-per-sample-clustering) | `"standard"`, `"sub_cellular"` |
 | `recalibration_reference` | `dict`, `str` or `None` | `None` | Per-ion-mode reference m/z values; selected from the dataset when `None` | `None`, `{"pos": [760.585, ...], "neg": [...]}` or `"pos: 760.585, 798.541; neg: 885.550"` |
 | `internal_standard_mz` | `dict`, `str` or `None` | `None` | m/z of internal standards sprayed over the sections, per ion mode. Always used as recalibration references (anchoring the mass scale) and required by `internal_standard` normalisation | Same forms as `recalibration_reference` |
 | `lipid_annotation_db` | `str` or `None` | `None` | Path to a CSV or JSON lipid annotation database (columns: `db_name`, `ionized_mass`, `ion_mode`) | File path or `None` |
 | `force_recomputing` | `bool` | `False` | Reprocess even if cached output files already exist | `True`, `False` |
 
-!!! note "Config defaults and direct API calls agree"
-    The defaults above are applied both by the pipeline's settings extractor (`_extract_msi_settings`) and by the `MsiDataset.process_dataset()` signature, so there is no divergence between config runs and direct Python calls. Enable `detect_background` (together with a `lipid_annotation_db`) when you want a tissue/background flag; leave it off if all spots are known to be tissue or to skip the detection step for speed.
-
-    `mass_tolerance` must be a Python `int`. Passing a float (e.g. `10.0`) raises `ValueError: mass_tolerance must be a positive integer representing ppm.`
+!!! note "Removed settings"
+    Configuration validation rejects the settings removed in `msi-13`, with the reason: `detect_background` (foreground detection always runs and `sample_type` calibrates it), `frequency_threshold` (fixed; noise is removed by the recurrence test and the S/N filter) and `min_intensity_threshold` (replaced by the S/N filter). The normalizations `log` and `clr` (use `none` and transform downstream) and `tic_mean_scaled` (use `tic`) were removed.
 
 ---
 
@@ -230,21 +230,24 @@ Path: `<sample_id>/preprocessing/<modality_name>/<modality_name>_<sample_id>_pro
 
 | Slot | Content |
 |------|---------|
-| `.X` | Normalised interpolated intensity matrix `(N_spots, N_mz)`, sparse CSR `float32` |
-| `.layers['raw']` | Interpolated intensities before normalisation, sparse CSR `float32` |
+| `.X` | Normalised binned intensity matrix `(N_spots, N_mz)`, sparse CSR `float32` |
+| `.layers['raw']` | Binned intensities before normalisation, sparse CSR `float32` |
 | `.var['mz']` | Consensus m/z values (float32) |
+| `.var['mz_sigma_ppm']` | Gaussian width of each feature in ppm, used by the binning (float32) |
 | `.var['mz_mode']` | Ion mode for each m/z (`"pos"` or `"neg"`) |
 | `.var['lipid_annotation']` | Lipid annotation string: `"; "`-separated `db_name` hits, or `"Unannotated"` (categorical) |
 | `.obsm['spatial']` | Physical spot coordinates in µm, shape `(N_spots, 2)`, `float32` |
 | `.obsm['raster_coordinates']` | Raster cell bounding-box corners in µm, shape `(N_spots, 2, 2)` as `[[x1, y1], [x2, y2]]` |
 | `.obs['sample_id']` | Sample identifier (categorical) |
-| `.obs['foreground']` | Categorical boolean mask identifying tissue (`True`) vs. background (`False`) spots. **Always present**; all `True` when background detection did not run |
+| `.obs['foreground']` | Categorical boolean mask identifying foreground (`True`) vs. background (`False`) spots. **Always present**; all `True` when no background was separated |
+| `.obs['foreground_score']` | Foreground detection score (`float32`): log(1 + recurrent ions above noise), robust z for microgrids |
 | `.obs['cluster']` | Per-sample cluster labels for alignment colouring (categorical strings) |
 | `.obs['recalibration_ppm_<mode>']` | Applied m/z correction in ppm at the mean reference m/z, per ion mode (`float32`; NaN for a sample without that mode) |
 | `.obs['recalibration_matches_<mode>']` | Number of references matched in the spot's spectrum at pixel level (`int16`) |
 | `.uns['recalibration_reference']` | Reference m/z per ion mode used to recalibrate the sample, on the common mass scale (merged file: per sample, then per ion mode) |
+| `.uns['recalibration_pool']` | Calibrant pool and mass-scale shift per ion mode, used when an interrupted run resumes (merged file: per sample) |
 | `.uns['focus_preprocessing_fingerprint']` | Fingerprint of inputs, settings and method version; a change rebuilds the dataset and re-runs alignment and registration of the modality |
-| `.uns['spot_size']` | Raster pixel size `[x_µm, y_µm]`. **Automatically read from `.imzML` metadata.** If metadata is unavailable, defaults to `[1.0, 1.0]` µm. In dual ion mode the size is taken from the positive mode (both modes are expected to share the same raster size). In the merged file this becomes a dict keyed by `sample_id`. When MSI is the reference modality, it is the registration footprint of every MSI spot. |
+| `.uns['spot_size']` | Raster pixel size `[x_µm, y_µm]`. **Read from the `.imzML` pixel size**, inferred from the stage positions when the file declares none; without either, preprocessing stops with an error. In dual ion mode the size is taken from the positive mode (both modes are expected to share the same raster size). In the merged file this becomes a dict keyed by `sample_id`. When MSI is the reference modality, it is the registration footprint of every MSI spot. |
 
 ### Merged dataset
 
@@ -263,9 +266,7 @@ modalities:
     processing_settings:
       lipid_annotation_db: resources/lipid_db.csv
       mass_tolerance: 10
-      frequency_threshold: 0.01
       intensity_normalization: tic
-      detect_background: true
       sample_type: tissue
     registration_type: spot_interpolation
 ```
@@ -279,9 +280,7 @@ modalities:
         processing_settings:
           lipid_annotation_db: resources/lipid_db.csv
           mass_tolerance: 10
-          frequency_threshold: 0.01
           intensity_normalization: tic
-          detect_background: true
           sample_type: tissue
         registration_type: spot_interpolation
     ```

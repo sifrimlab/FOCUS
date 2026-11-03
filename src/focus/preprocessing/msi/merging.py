@@ -9,10 +9,11 @@ if TYPE_CHECKING:
 
 import numpy as np
 import os
-import anndata as ad
-import gc
+import h5py
+from anndata.io import write_elem
 
 import focus.io.anndata as anndata_io
+from focus.io.atomic import atomic_path
 from focus.io.paths import merged_preprocessed_file
 from focus.preprocessing.msi.settings import _step
 
@@ -23,6 +24,7 @@ def merge_samples(
     spot_sizes: dict[str, list[float]],
     dataset_key: str,
     stored_references: dict[str, dict[str, np.ndarray]],
+    stored_pools: dict[str, dict[str, dict[str, np.ndarray | float]]],
     reporter: StepReporter,
 ) -> None:
     """Merge per-sample outputs and stamp their unchanged provenance."""
@@ -38,26 +40,35 @@ def merge_samples(
         # Filter to only per-sample files (exclude any "merged" key)
         sample_files = {k: v for k, v in processed_samples.items() if k != "merged"}
 
-        anndata_io.concat_on_disk_compat(
-            sample_files,
-            merged_file,
-            axis=0,
-            join="inner",
-            merge="same",
-            uns_merge="first",
-        )
-
-        # Update the merged file's .uns["spot_size"] to be a per-sample dict
-        merged_adata = ad.read_h5ad(merged_file)
-        merged_adata.uns["spot_size"] = spot_sizes
-        merged_adata.uns["recalibration_reference"] = {
-            s: stored_references[s] for s in sample_files
-        }
-        merged_adata.uns["focus_preprocessing_fingerprint"] = dataset_key
-        anndata_io.write_h5ad_compat(
-            merged_adata, merged_file, compression=dataset._H5AD_COMPRESSION
-        )
-        del merged_adata
-        gc.collect()
+        with atomic_path(merged_file) as tmp:
+            anndata_io.concat_on_disk_compat(
+                sample_files,
+                tmp,
+                axis=0,
+                join="inner",
+                merge="same",
+                uns_merge="first",
+            )
+            # The per-sample values are written into the concatenated file in place: per sample
+            # dicts for spot_size, the recalibration references and pools, and the fingerprint.
+            with h5py.File(tmp, "r+") as handle:
+                if "uns" not in handle:
+                    write_elem(handle, "uns", {})
+                uns = handle["uns"]
+                for key, value in (
+                    ("spot_size", spot_sizes),
+                    (
+                        "recalibration_reference",
+                        {s: stored_references[s] for s in sample_files},
+                    ),
+                    (
+                        "recalibration_pool",
+                        {s: stored_pools.get(s, {}) for s in sample_files},
+                    ),
+                    ("focus_preprocessing_fingerprint", dataset_key),
+                ):
+                    if key in uns:
+                        del uns[key]
+                    write_elem(uns, key, value)
 
         processed_samples["merged"] = merged_file

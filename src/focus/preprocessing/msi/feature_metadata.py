@@ -19,7 +19,7 @@ def feature_metadata(
     dataset: MsiDataset,
     intensity_normalization: str,
     internal_standard_mz: dict[str, np.ndarray] | None,
-    mass_tolerance: int,
+    mass_tolerance: float,
 ) -> FeatureState:
     """Construct shared feature metadata and internal-standard columns."""
 
@@ -37,11 +37,12 @@ def feature_metadata(
     )
     total_cols = positive_cols + negative_cols
 
-    mz_parts, mode_parts, annotation_parts = [], [], []
+    mz_parts, sigma_parts, mode_parts, annotation_parts = [], [], [], []
     for mode in [MsiIonMode.POSITIVE, MsiIonMode.NEGATIVE]:
         if mode not in dataset.reference_mz or dataset.reference_mz[mode].size == 0:
             continue
         mz_parts.append(dataset.reference_mz[mode])
+        sigma_parts.append(dataset.reference_sigma[mode])
         mode_parts.extend([mode] * dataset.reference_mz[mode].shape[0])
         if (
             dataset.lipid_annotation_db is not None
@@ -58,6 +59,11 @@ def feature_metadata(
         if mz_parts
         else np.array([], dtype=np.float32)
     )
+    merged_sigma = (
+        np.concatenate(sigma_parts).astype(np.float32)
+        if sigma_parts
+        else np.array([], dtype=np.float32)
+    )
     merged_mode_labels = mode_parts
     merged_annotations = (
         np.concatenate(annotation_parts)
@@ -68,6 +74,7 @@ def feature_metadata(
     var_df = pd.DataFrame(
         {
             "mz": merged_reference_mz,
+            "mz_sigma_ppm": merged_sigma,
             "mz_mode": pd.Categorical(merged_mode_labels),
             "lipid_annotation": pd.Categorical(merged_annotations),
         },

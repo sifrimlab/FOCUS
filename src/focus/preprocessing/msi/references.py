@@ -90,11 +90,11 @@ class _CalibrationReferenceSelector:
     # cannot fill an empty m/z segment with a rare peak.
     _POOL_MIN_RELATIVE_SCORE = 0.1
 
-    def __init__(self, mass_tolerance: int) -> None:
+    def __init__(self, mass_tolerance: float) -> None:
         """
         Parameters
         ----------
-        mass_tolerance : int
+        mass_tolerance : float
                 Mass tolerance in ppm, used for the feature grid and the feature kernel.
         """
         self._mass_tolerance = mass_tolerance

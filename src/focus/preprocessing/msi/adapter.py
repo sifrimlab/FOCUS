@@ -74,9 +74,6 @@ def _extract_msi_settings(settings: ProcessingSettings) -> MsiSettings:
     """Read configured settings and apply the established modality defaults."""
     return {
         "mass_tolerance": settings.get(MsiPreprocessingParams.MASS_TOLERANCE, 10),
-        "frequency_threshold": settings.get(
-            MsiPreprocessingParams.FREQUENCY_THRESHOLD, 0.01
-        ),
         "intensity_normalization": settings.get(
             MsiPreprocessingParams.INTENSITY_NORMALIZATION,
             MsiIntensityNormalization.NONE,
@@ -88,9 +85,6 @@ def _extract_msi_settings(settings: ProcessingSettings) -> MsiSettings:
         "internal_standard_mz": parse_mz_by_mode(
             settings.get(MsiPreprocessingParams.INTERNAL_STANDARD_MZ, None),
             MsiPreprocessingParams.INTERNAL_STANDARD_MZ,
-        ),
-        "detect_background": settings.get(
-            MsiPreprocessingParams.DETECT_BACKGROUND, False
         ),
         "sample_type": settings.get(
             MsiPreprocessingParams.SAMPLE_TYPE, MsiSampleType.TISSUE

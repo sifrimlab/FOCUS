@@ -1,10 +1,9 @@
-"""Read MSI spectra, select foreground, and apply per-mode recalibration."""
+"""Read MSI spectra and apply per-mode recalibration."""
 
 from __future__ import annotations
 from numpy.typing import DTypeLike
 from typing import TYPE_CHECKING
 import numpy as np
-import pandas as pd
 from focus.config.keys import MsiMetadata
 from focus.preprocessing.msi.recalibration import (
     describe_recalibration,
@@ -20,61 +19,45 @@ Spectra = dict[str, list[np.ndarray]]
 
 
 def read_vectors(sample: MsiSample) -> tuple[Spectra, Spectra]:
-    """Read m/z arrays before intensities, retaining polarity and spectrum order."""
+    """
+    Read m/z arrays before intensities, retaining polarity and spectrum order.
+
+    Integer intensity arrays are cast to float32. Peaks with m/z at or below 0 are dropped: the
+    logarithmic m/z grid and the ppm tolerance are undefined there.
+    """
     mz_vectors: Spectra = {}
     intensity_vectors: Spectra = {}
     for mode in sample._metadata.keys():
         metadata = sample._metadata[mode]
-        mz_vectors[mode] = read_ranges(
+        mz_list = read_ranges(
             sample._binary_files[mode],
             metadata[MsiMetadata.MZ_DTYPE],
             metadata[MsiMetadata.MZ_BINARY_METADATA],
         )
-        intensity_vectors[mode] = read_ranges(
+        intensity_list = read_ranges(
             sample._binary_files[mode],
             metadata[MsiMetadata.INTENSITIES_DTYPE],
             metadata[MsiMetadata.INTENSITIES_BINARY_METADATA],
         )
+        if not np.issubdtype(metadata[MsiMetadata.INTENSITIES_DTYPE], np.floating):
+            intensity_list = [values.astype(np.float32) for values in intensity_list]
+        for k, mz in enumerate(mz_list):
+            if mz.size and (mz <= 0).any():
+                positive = mz > 0
+                mz_list[k], intensity_list[k] = (
+                    mz[positive],
+                    intensity_list[k][positive],
+                )
+        mz_vectors[mode] = mz_list
+        intensity_vectors[mode] = intensity_list
     return mz_vectors, intensity_vectors
-
-
-def select_foreground(
-    sample: MsiSample,
-    mz_vectors: Spectra,
-    intensity_vectors: Spectra,
-    annotation_db: pd.DataFrame | None,
-    mass_tolerance: int | None,
-    detect_background: bool,
-) -> None:
-    """Set shared foreground indices once; retain their original sorted ordering."""
-    if annotation_db is not None:
-        if sample.filtered_idx is None:
-            keep_indices: set[int] = set()
-
-            for mode in sample._metadata.keys():
-                if detect_background:
-                    keep_indices.update(
-                        sample.foreground._detect_tissue_spots(
-                            mz_vectors=mz_vectors[mode],
-                            intensity_vectors=intensity_vectors[mode],
-                            ion_mode=mode,
-                            database=annotation_db,
-                            mass_tolerance=mass_tolerance,
-                        )
-                    )
-                else:
-                    # Keep all the datapoints
-                    keep_indices.update(range(len(mz_vectors[mode])))
-
-            # Save the filtered indices
-            sample.filtered_idx = sorted(list(keep_indices))
 
 
 def recalibrate_vectors(
     sample: MsiSample,
     mz_vectors: Spectra,
     intensity_vectors: Spectra,
-    mass_tolerance: int | None,
+    mass_tolerance: float | None,
 ) -> None:
     """Reuse per-polarity models and replace m/z vectors with their corrected copies."""
     if sample.recalibration_reference is not None and mass_tolerance is not None:
@@ -105,23 +88,6 @@ def recalibrate_vectors(
                 else:
                     get_reporter().detail(message)
             mz_vectors[mode] = sample.recalibration_model[mode].apply(mz_vectors[mode])
-
-
-def filter_vectors(
-    sample: MsiSample, mz_vectors: Spectra, intensity_vectors: Spectra
-) -> tuple[Spectra, Spectra]:
-    """Select paired spectrum lists using the established shared foreground indices."""
-    filtered_mz: Spectra = {}
-    filtered_intensity: Spectra = {}
-    for mode in sample._metadata.keys():
-        indices = (
-            sample.filtered_idx
-            if sample.filtered_idx is not None
-            else range(len(mz_vectors[mode]))
-        )
-        filtered_mz[mode] = [mz_vectors[mode][i] for i in indices]
-        filtered_intensity[mode] = [intensity_vectors[mode][i] for i in indices]
-    return filtered_mz, filtered_intensity
 
 
 def read_ranges(path: str, dtype: DTypeLike, ranges: np.ndarray) -> list[np.ndarray]:

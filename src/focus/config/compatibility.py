@@ -10,6 +10,8 @@ from focus.config.keys import (
     ConfigParameters,
     ModalityParameters,
     MICROSCOPY_REMOVED_SETTINGS,
+    MSI_REMOVED_NORMALIZATIONS,
+    MSI_REMOVED_SETTINGS,
     MicroscopyImageProcessingParams,
     MsiPreprocessingParams,
     STPreprocessingParams,
@@ -20,6 +22,8 @@ from focus.config.options import (
     MicroscopyImageType,
     MicroscopyZProjection,
     ModalityType,
+    MsiIntensityNormalization,
+    MsiSampleType,
     RegistrationType,
     SpotResolution,
     StCapture,
@@ -47,6 +51,8 @@ def validate_resolution(config: PipelineConfig) -> None:
                 name, settings, modality[ModalityParameters.REGISTRATION_TYPE]
             )
         elif modality[ModalityParameters.TYPE] in SPOT_MODALITY_TYPES:
+            if modality[ModalityParameters.TYPE] == ModalityType.MSI:
+                validate_msi_settings(name, settings)
             resolution = settings.get(
                 MsiPreprocessingParams.RESOLUTION, SpotResolution.STANDARD
             )
@@ -80,6 +86,46 @@ def validate_st_settings(name: str, settings: Mapping[str, object]) -> None:
             raise ValueError(
                 f"Modality '{name}': {key} must be one of {options}, got {value!r}."
             )
+
+
+def validate_msi_settings(name: str, settings: Mapping[str, object]) -> None:
+    """Reject removed MSI settings and normalizations (with the reason), unknown presets and bad tolerances."""
+    removed = [key for key in settings if key in MSI_REMOVED_SETTINGS]
+    if removed:
+        reasons = ", ".join(f"'{key}' ({MSI_REMOVED_SETTINGS[key]})" for key in removed)
+        raise ValueError(
+            f"Modality '{name}': these MSI settings were removed: {reasons}. "
+            "Foreground detection, feature selection and binning are now calibrated from "
+            "'sample_type' and 'mass_tolerance'."
+        )
+    normalization = settings.get(
+        MsiPreprocessingParams.INTENSITY_NORMALIZATION, MsiIntensityNormalization.NONE
+    )
+    if normalization in MSI_REMOVED_NORMALIZATIONS:
+        raise ValueError(
+            f"Modality '{name}': intensity_normalization {normalization!r} was removed "
+            f"(use {MSI_REMOVED_NORMALIZATIONS[str(normalization)]!r}; apply log or CLR "
+            "transforms downstream)."
+        )
+    choices = {
+        MsiPreprocessingParams.INTENSITY_NORMALIZATION: MsiIntensityNormalization.list(),
+        MsiPreprocessingParams.SAMPLE_TYPE: MsiSampleType.list(),
+    }
+    for key, options in choices.items():
+        value = settings.get(key, options[0])
+        if value not in options:
+            raise ValueError(
+                f"Modality '{name}': {key} must be one of {options}, got {value!r}."
+            )
+    tolerance = settings.get(MsiPreprocessingParams.MASS_TOLERANCE)
+    if tolerance is not None and (
+        isinstance(tolerance, bool)
+        or not isinstance(tolerance, (int, float))
+        or not tolerance > 0
+    ):
+        raise ValueError(
+            f"Modality '{name}': mass_tolerance must be a positive number of ppm, got {tolerance!r}."
+        )
 
 
 def validate_microscopy_settings(

@@ -130,7 +130,7 @@ Ion mode is **not** a configuration setting. It is detected per sample from whet
 - Carried forward to the final MuData `.uns['spot_size']`, where it reflects the reference modality's spot dimensions
 
 **Automatic vs. manual specification:**
-- **MSI**: Read automatically from instrument metadata (the `pixel size x`/`pixel size y` scan settings in the `.imzML` file), as an integer number of µm; defaults to `[1.0, 1.0]` when absent or below 1 µm. In dual ion mode the positive mode's raster size is used (both modes are expected to share it)
+- **MSI**: Read automatically from instrument metadata (the `pixel size x`/`pixel size y` scan settings in the `.imzML` file), as a decimal number of µm; inferred from the stage positions when the file declares none, and an error without stage positions either. In dual ion mode the positive mode's raster size is used (both modes are expected to share it)
 - **Spatial Transcriptomics (ST)**: Read from the input AnnData's `.uns['spot_size']` field; if absent, defaults to `[1.0, 1.0]`
 - **Raman and microscopy (image modalities)**: **Not used**. Image modalities have pixels, not spots; their pixels are mapped through the alignment, and the footprint always comes from the spot-based reference
 

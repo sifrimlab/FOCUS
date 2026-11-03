@@ -116,7 +116,7 @@ def _dual_coordinates(sample: MsiSample) -> np.ndarray:
     return cast(np.ndarray, final_physical_coords)
 
 
-def _raster_offset(sample: MsiSample) -> tuple[int | np.int16, int | np.int16]:
+def _raster_offset(sample: MsiSample) -> tuple[float, float]:
     """Return the positive-mode half-raster shift along the acquisition's longer axes."""
     # Depending on the raster size, move the coordinates to the center
     if (
@@ -125,8 +125,8 @@ def _raster_offset(sample: MsiSample) -> tuple[int | np.int16, int | np.int16]:
     ):
         # The raster is square, offset along both axes
         offset = (
-            sample._metadata[MsiIonMode.POSITIVE][MsiMetadata.RASTER_SIZE][0] // 2,
-            sample._metadata[MsiIonMode.POSITIVE][MsiMetadata.RASTER_SIZE][1] // 2,
+            sample._metadata[MsiIonMode.POSITIVE][MsiMetadata.RASTER_SIZE][0] / 2,
+            sample._metadata[MsiIonMode.POSITIVE][MsiMetadata.RASTER_SIZE][1] / 2,
         )
     elif (
         sample._metadata[MsiIonMode.POSITIVE][MsiMetadata.RASTER_SIZE][0]
@@ -134,14 +134,14 @@ def _raster_offset(sample: MsiSample) -> tuple[int | np.int16, int | np.int16]:
     ):
         # The raster is rectangular, offset along the X axis
         offset = (
-            sample._metadata[MsiIonMode.POSITIVE][MsiMetadata.RASTER_SIZE][0] // 2,
+            sample._metadata[MsiIonMode.POSITIVE][MsiMetadata.RASTER_SIZE][0] / 2,
             0,
         )
     else:
         # The raster is rectangular, offset along the Y axis
         offset = (
             0,
-            sample._metadata[MsiIonMode.POSITIVE][MsiMetadata.RASTER_SIZE][1] // 2,
+            sample._metadata[MsiIonMode.POSITIVE][MsiMetadata.RASTER_SIZE][1] / 2,
         )
 
     return offset

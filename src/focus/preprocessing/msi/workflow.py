@@ -14,6 +14,7 @@ from focus.preprocessing.msi.resume import resume_samples
 from focus.preprocessing.msi.run_state import MsiRunSettings, ResumeState
 from focus.preprocessing.msi.sample_writing import write_samples
 from focus.preprocessing.msi.selection import select_references
+from focus.preprocessing.msi.technology import sample_profile
 from focus.runtime.reporting import StepReporter
 
 if TYPE_CHECKING:
@@ -37,6 +38,7 @@ def execute_dataset(
         resume.spot_sizes,
         key,
         resume.stored_references,
+        resume.stored_pools,
         reporter,
     )
     return resume.files
@@ -50,13 +52,14 @@ def process_samples(
     reporter: StepReporter,
 ) -> None:
     """Execute the ordered numerical stages, preserving resume state and write barriers."""
-    initialize_samples(resume.samples, settings.sample_type, reporter)
+    profile = sample_profile(settings.sample_type)
+    initialize_samples(resume.samples, reporter)
     select_references(
         dataset,
         resume.samples,
         resume.stored_references,
+        resume.stored_pools,
         settings.mass_tolerance,
-        settings.detect_background,
         settings.references,
         settings.standards,
         reporter,
@@ -66,10 +69,10 @@ def process_samples(
         resume.samples,
         resume.partial,
         settings.mass_tolerance,
-        settings.frequency_threshold,
+        profile,
         reporter,
     )
     features = feature_metadata(
         dataset, settings.normalization, settings.standards, settings.mass_tolerance
     )
-    write_samples(dataset, resume, features, key, settings, reporter)
+    write_samples(dataset, resume, features, key, settings, profile, reporter)

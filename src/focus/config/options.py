@@ -61,10 +61,18 @@ class TransformationType(_AbstractEnum):
 
 
 class MsiSampleType(_AbstractEnum):
-    """Supported msi sample type values in declaration order."""
+    """MSI experiment type; calibrates foreground detection, its spatial cleanup and the clustering."""
 
-    TISSUE: Final = "tissue"
-    MICROGRID: Final = "microgrid"
+    TISSUE: Final = "tissue"  # tissue section on a clean or empty background
+    TISSUE_NOISY: Final = (
+        "tissue_noisy"  # tissue section on a background rich in noise centroids
+    )
+    CELL_CULTURE: Final = (
+        "cell_culture"  # uniform culture, domains that change along gradients
+    )
+    MICROGRID: Final = (
+        "microgrid"  # isolated cells of about one pixel in a background matrix
+    )
 
 
 class MicroscopyImageType(_AbstractEnum):
@@ -120,15 +128,15 @@ class StNormalization(_AbstractEnum):
 
 
 class MsiIntensityNormalization(_AbstractEnum):
-    """Supported msi intensity normalization values in declaration order."""
+    """MSI row normalizations; each divides a spectrum by one divisor at a fixed scale."""
 
-    TIC: Final = "tic"
-    LOG: Final = "log"
-    CLR: Final = "clr"
-    TIC_MEAN_SCALED: Final = "tic_mean_scaled"
-    MEDIAN: Final = "median"
-    INTERNAL_STANDARD: Final = "internal_standard"
     NONE: Final = "none"
+    TIC: Final = "tic"  # total ion current, rows sum to the number of features
+    MEDIAN: Final = "median"  # median of the nonzero features, set to 1
+    RMS: Final = "rms"  # root mean square over the features, set to 1
+    INTERNAL_STANDARD: Final = (
+        "internal_standard"  # sprayed standard intensity, set to 1
+    )
 
 
 class DecompositionMethod(_AbstractEnum):

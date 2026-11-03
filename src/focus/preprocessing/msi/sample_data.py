@@ -1,15 +1,13 @@
 """MSI sample readout and assembly before asynchronous serialization."""
 
 from __future__ import annotations
-from typing import cast
 from typing import TYPE_CHECKING
 from focus.preprocessing.msi.run_state import SampleArrays, ResumeState, FeatureState
-from focus.preprocessing.msi.interpolation import interpolate_mode
+from focus.preprocessing.msi.interpolation import empty_csr, interpolate_mode
 
 if TYPE_CHECKING:
     from focus.preprocessing.msi.dataset import MsiDataset
     from focus.preprocessing.msi.sample import MsiSample
-from typing import TYPE_CHECKING
 
 import numpy as np
 import scipy.sparse as sp
@@ -23,52 +21,68 @@ from focus.config.keys import MsiMetadata
 from focus.config.options import MsiIonMode
 from focus.io.paths import preprocessed_file
 from focus.preprocessing.msi.normalization import normalize_intensities
+from focus.preprocessing.msi.technology import SampleProfile
 
 
 def interpolate_sample(
     dataset: MsiDataset,
     sample: MsiSample,
     features: FeatureState,
-    mass_tolerance: int,
+    mass_tolerance: float,
     intensity_normalization: str,
-) -> tuple[dict[str, np.ndarray], dict[str, np.ndarray]]:
-    """Read, bin, and normalize one sample while releasing its raw payload."""
+    profile: SampleProfile,
+) -> tuple[dict[str, sp.csr_matrix], dict[str, sp.csr_matrix]]:
+    """Read, recalibrate, bin and normalize one sample while releasing its raw payload."""
     sample_id = sample.sample_id
     standard_columns = features.standard_columns
 
-    # Load raw spectra for this sample
-    original_mzs, intensities, _, _ = sample.load_payload(
-        annotation_db=dataset.lipid_annotation_db, mass_tolerance=mass_tolerance
-    )
-    dataset.foreground_masks[sample_id] = cast(np.ndarray, sample.foreground_mask)
+    # Recalibrated spectra; a resumed run detects the foreground of a queued sample here.
+    original_mzs, intensities = sample.load_payload(mass_tolerance)
+    if sample.filtered_idx is None:
+        sample.foreground.detect(original_mzs, intensities, mass_tolerance, profile)
+    dataset.foreground_masks[sample_id] = sample.foreground_mask
 
-    # Interpolate and normalize each ion mode; keep local copies only
-    interp_by_mode: dict[str, np.ndarray] = {}
-    norm_by_mode: dict[str, np.ndarray] = {}
-
+    interp_by_mode: dict[str, sp.csr_matrix] = {}
+    norm_by_mode: dict[str, sp.csr_matrix] = {}
     for mode in sample.ion_modes:
-        merged_intensities = interpolate_mode(
+        raw = interpolate_mode(
             original_mzs[mode],
             intensities[mode],
             dataset.reference_mz[mode],
-            sample._metadata[mode][MsiMetadata.INTENSITIES_DTYPE],
+            dataset.reference_sigma[mode],
             mass_tolerance,
         )
-
-        # Store raw before normalization overwrites the reference
-        interp_by_mode[mode] = merged_intensities
-        merged_intensities = normalize_intensities(
-            merged_intensities,
+        interp_by_mode[mode] = raw
+        norm_by_mode[mode] = normalize_intensities(
+            raw,
             intensity_normalization,
             pixel_coordinates=sample._metadata[mode][MsiMetadata.PIXEL_COORDINATES],
             standard_columns=standard_columns.get(mode),
         )
 
-        norm_by_mode[mode] = merged_intensities
-
     del intensities, original_mzs
     gc.collect()
     return interp_by_mode, norm_by_mode
+
+
+def _polarity_blocks(
+    by_mode: dict[str, sp.csr_matrix], rows: int, features: FeatureState
+) -> sp.csr_matrix:
+    """Positive then negative feature columns of one sample; zeros for an ion mode it lacks."""
+    blocks = []
+    for mode, cols in (
+        (MsiIonMode.POSITIVE, features.positive_cols),
+        (MsiIonMode.NEGATIVE, features.negative_cols),
+    ):
+        if cols:
+            blocks.append(
+                by_mode[mode].astype(np.float32)
+                if mode in by_mode
+                else empty_csr(rows, cols)
+            )
+    if not blocks:
+        return empty_csr(rows, 0)
+    return sp.csr_matrix(sp.hstack(blocks, format="csr"), dtype=np.float32)
 
 
 def prepare_arrays(
@@ -76,25 +90,21 @@ def prepare_arrays(
     sample: MsiSample,
     resume: ResumeState,
     features: FeatureState,
-    mass_tolerance: int,
+    mass_tolerance: float,
     intensity_normalization: str,
+    profile: SampleProfile,
 ) -> SampleArrays:
-    """Assemble polarity matrices and native coordinates with the original release points."""
+    """Assemble the polarity matrices and native coordinates of one sample."""
     sample_id = sample.sample_id
     ref_mode = (
         MsiIonMode.POSITIVE
         if MsiIonMode.POSITIVE in sample.ion_modes
         else MsiIonMode.NEGATIVE
     )
-    spot_sizes = resume.spot_sizes
-    positive_cols = features.positive_cols
-    negative_cols = features.negative_cols
-    total_cols = features.total_cols
     interp_by_mode, norm_by_mode = interpolate_sample(
-        dataset, sample, features, mass_tolerance, intensity_normalization
+        dataset, sample, features, mass_tolerance, intensity_normalization, profile
     )
 
-    # Build combined pos+neg matrices for this sample
     physical_coords = sample._metadata[ref_mode][
         MsiMetadata.PHYSICAL_COORDINATES
     ].astype(np.float32)
@@ -103,33 +113,13 @@ def prepare_arrays(
     spot_size = np.array(
         [float(raster_size[0]), float(raster_size[1])], dtype=np.float32
     )
-    spot_sizes[sample_id] = spot_size.tolist()
+    resume.spot_sizes[sample_id] = spot_size.tolist()
 
     rows = interp_by_mode[ref_mode].shape[0]
-    raw_matrix = np.zeros((rows, total_cols), dtype=np.float32)
-    norm_matrix = np.zeros((rows, total_cols), dtype=np.float32)
-
-    if MsiIonMode.POSITIVE in sample.ion_modes and positive_cols > 0:
-        raw_matrix[:, :positive_cols] = interp_by_mode[MsiIonMode.POSITIVE].astype(
-            np.float32
-        )
-        norm_matrix[:, :positive_cols] = norm_by_mode[MsiIonMode.POSITIVE].astype(
-            np.float32
-        )
-    if MsiIonMode.NEGATIVE in sample.ion_modes and negative_cols > 0:
-        raw_matrix[:, positive_cols:] = interp_by_mode[MsiIonMode.NEGATIVE].astype(
-            np.float32
-        )
-        norm_matrix[:, positive_cols:] = norm_by_mode[MsiIonMode.NEGATIVE].astype(
-            np.float32
-        )
-
+    raw_sparse = _polarity_blocks(interp_by_mode, rows, features)
+    X_sparse = _polarity_blocks(norm_by_mode, rows, features)
     del interp_by_mode, norm_by_mode
     gc.collect()
-
-    X_sparse = sp.csr_matrix(norm_matrix)
-    raw_sparse = sp.csr_matrix(raw_matrix)
-    del raw_matrix, norm_matrix
     return SampleArrays(
         physical_coords, raster_coords, spot_size, rows, X_sparse, raw_sparse
     )
@@ -145,6 +135,11 @@ def sample_observations(
         {
             "sample_id": pd.Categorical([sample_id] * n_obs),
             "foreground": pd.Categorical(dataset.foreground_masks[sample_id]),
+            "foreground_score": (
+                sample.foreground_score
+                if sample.foreground_score is not None
+                else np.zeros(n_obs, dtype=np.float32)
+            ),
         },
         index=obs_index,
     )
@@ -169,13 +164,20 @@ def prepare_sample(
     resume: ResumeState,
     features: FeatureState,
     dataset_key: str,
-    mass_tolerance: int,
+    mass_tolerance: float,
     intensity_normalization: str,
     resolution: str,
+    profile: SampleProfile,
 ) -> tuple[ad.AnnData, str, dict[str, np.ndarray]]:
     """Prepare one processed sample and its output path for asynchronous writing."""
     arrays = prepare_arrays(
-        dataset, sample, resume, features, mass_tolerance, intensity_normalization
+        dataset,
+        sample,
+        resume,
+        features,
+        mass_tolerance,
+        intensity_normalization,
+        profile,
     )
     n_obs = arrays.n_obs
     X_sparse, raw_sparse = arrays.normalized, arrays.raw
@@ -191,6 +193,9 @@ def prepare_sample(
         str(mode): np.asarray(masses, dtype=np.float64)
         for mode, masses in (sample.recalibration_reference or {}).items()
     }
+    stored_pool = {
+        str(mode): dict(entry) for mode, entry in sample.recalibration_pool.items()
+    }
     adata = ad.AnnData(
         X=X_sparse,
         layers={"raw": raw_sparse},
@@ -200,6 +205,7 @@ def prepare_sample(
         uns={
             "spot_size": spot_size.tolist(),
             "recalibration_reference": stored_reference,
+            "recalibration_pool": stored_pool,
             "focus_preprocessing_fingerprint": dataset_key,
         },
     )
@@ -217,7 +223,11 @@ def prepare_sample(
             leiden_resolution=dataset._LEIDEN_RESOLUTION,
             normalize_target_sum=None,
             coordinates=adata.obsm.get("spatial"),
-            smoothing_rings=clustering_preset(resolution)["smoothing_rings"],
+            smoothing_rings=(
+                profile.smoothing_rings
+                if profile.smoothing_rings is not None
+                else clustering_preset(resolution)["smoothing_rings"]
+            ),
         )
     )
 

@@ -3,10 +3,9 @@
 from focus.preprocessing.msi.source import mode_paths
 
 from focus.preprocessing.msi.payload import (
+    Spectra,
     read_vectors,
-    select_foreground,
     recalibrate_vectors,
-    filter_vectors,
 )
 
 from focus.preprocessing.msi.metadata_loading import initialize_sample
@@ -20,10 +19,9 @@ from focus.preprocessing.msi.binary import BinaryValidator
 from focus.preprocessing.msi.coordinates import MsiCoordinates
 from focus.preprocessing.msi.foreground import MsiForeground
 import numpy as np
-import pandas as pd
 
 from focus.config.keys import MsiMetadata
-from focus.config.options import MsiSampleType, MsiIonMode
+from focus.config.options import MsiIonMode
 from focus.preprocessing.base import SampleSource
 from focus.preprocessing.msi.recalibration import (
     MsiRecalibration,
@@ -79,13 +77,16 @@ class MsiSample(SampleSource):
         self.ion_mode = ion_mode
 
         self.recalibration_reference = None  # To be set during dataset preprocessing
+        # Per ion mode, the calibrant pool on the sample's own scale and its mass-scale shift,
+        # stored so a resumed run aligns against the ions a fresh run compares.
+        self.recalibration_pool: dict[str, dict[str, np.ndarray | float]] = {}
         self.recalibration_model: dict[
             str, MsiRecalibration
         ] = {}  # Estimated during dataset preprocessing
-        self.filtered_idx: list[int] | None = (
-            None  # To be computed during dataset preprocessing
-        )
-        self._sample_type: str = MsiSampleType.TISSUE  # To be set from process_dataset
+        # Foreground, set by MsiForeground.detect on the recalibrated spectra.
+        self.filtered_idx: list[int] | None = None
+        self.foreground_score: np.ndarray | None = None
+        self.background_found = False
 
         # Initialize the other variables
         self._metadata_files: dict[
@@ -151,26 +152,17 @@ class MsiSample(SampleSource):
         self._recalibration_reference = value
 
     @property
-    def foreground_mask(self) -> np.ndarray | None:
+    def foreground_mask(self) -> np.ndarray:
         """
-        Get the foreground mask for this sample.
-
-        Returns
-        -------
-        np.ndarray | None
-                Boolean array indicating which spots are foreground (True) and which are background (False).
+        Boolean array, True for the foreground spectra; every spectrum before foreground detection.
         """
-        foreground_mask = np.zeros(
-            self._metadata[self.ion_modes[0]][MsiMetadata.PIXEL_COORDINATES].shape[0],
-            dtype=bool,
-        )
-        if self.filtered_idx is not None:
-            foreground_mask[self.filtered_idx] = True
-
-        # If no foreground spots are defined, invert the mask to consider every spot as foreground
-        if not np.any(foreground_mask):
-            foreground_mask = ~foreground_mask
-
+        n_spectra = self._metadata[self.ion_modes[0]][
+            MsiMetadata.PIXEL_COORDINATES
+        ].shape[0]
+        if self.filtered_idx is None:
+            return np.ones(n_spectra, dtype=bool)
+        foreground_mask = np.zeros(n_spectra, dtype=bool)
+        foreground_mask[self.filtered_idx] = True
         return foreground_mask
 
     def initialize_sample(self) -> None:
@@ -178,67 +170,23 @@ class MsiSample(SampleSource):
         initialize_sample(self)
 
     def load_payload(
-        self,
-        mass_tolerance: int | None = None,
-        annotation_db: pd.DataFrame | None = None,
-        detect_background: bool = False,
-    ) -> tuple[
-        dict[str, list[np.ndarray]],
-        dict[str, list[np.ndarray]],
-        dict[str, list[np.ndarray]],
-        dict[str, list[np.ndarray]],
-    ]:
+        self, mass_tolerance: float | None = None
+    ) -> tuple[Spectra, Spectra]:
         """
-        Load the M/Z vectors and the corresponding intensities from the binary IBD files.
-        If the sample contains both ion modes, load the data for both modes.
-        Before loading, each datapoint is evaluated against the lipid annotation database to filter spots
-        that do not contain at least min_annotated_lipids_per_spot annotated lipids. If the database or the minimum number is not provided, the filter is skipped.
+        Load the m/z and intensity arrays of every spectrum and ion mode from the IBD files.
 
-        If the recalibration reference and mass_tolerance are set, the M/Z values are recalibrated with
-        one per-spectrum model per ion mode (see estimate_recalibration), estimated on first use from all
-        spectra and applied to both the raw and the filtered vectors. Otherwise, the raw M/Z values are
-        loaded.
-
-        Parameters
-        ----------
-        annotation_db: pd.DataFrame
-                Database containing the annotated ionized_masses and the ion_mode
-        mass_tolerance : int
-                Mass tollerance in ppm to match the M/Z values against the lipid annotation database.
-                Must be provided if annotation_db is provided.
-        detect_background : bool
-                If True, detect background spots and exclude them from the loaded data.
+        When the recalibration reference and `mass_tolerance` are set, the m/z values are
+        recalibrated with one per-spectrum model per ion mode (see estimate_recalibration),
+        estimated on first use from all spectra. Otherwise the stored m/z values are returned.
 
         Returns
-        ----------
-
-        mz_vectors:	dict[list[list[np.float32]]]
-                A dictionary with the M/Z vectors for each ion mode.
-                Each ion mode contains a list of M/Z vectors, one for each spectrum. Each M/Z vector is a list of variable length.
-        intensity_vectors:	dict[list[list[np.float32]]]
-                A dictionary with the intensity vectors for each ion mode.
+        -------
+        mz_vectors, intensity_vectors : dict[MsiIonMode, list[np.ndarray]]
+                One array per spectrum, per ion mode, in spectrum order.
         """
-
-        if annotation_db is not None and not isinstance(annotation_db, pd.DataFrame):
-            raise ValueError("If provided, annotation_db must be a pd.DataFrame")
-        if annotation_db is not None and mass_tolerance is None:
-            raise ValueError(
-                "Mass tolerance must be provided if annotation_db is provided"
-            )
         mz_vectors, intensity_vectors = read_vectors(self)
-        select_foreground(
-            self,
-            mz_vectors,
-            intensity_vectors,
-            annotation_db,
-            mass_tolerance,
-            detect_background,
-        )
         recalibrate_vectors(self, mz_vectors, intensity_vectors, mass_tolerance)
-        filtered_mz, filtered_intensity = filter_vectors(
-            self, mz_vectors, intensity_vectors
-        )
-        return mz_vectors, intensity_vectors, filtered_mz, filtered_intensity
+        return mz_vectors, intensity_vectors
 
     @cached_property
     def reader(self) -> ImzmlReader:

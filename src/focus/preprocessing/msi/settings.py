@@ -1,23 +1,22 @@
 """Fixed MSI processing thresholds, method version and progress-step declarations."""
 
+import logging
+
 import numpy as np
 
 
-import logging
-
-
-logger = logging.getLogger("focus.preprocessing.lipidomics")
+logger = logging.getLogger("focus.preprocessing.msi")
 
 
 # MSI dataset preprocessing steps, in order; 1, 2, 4 and 7 run per sample.
 _DATASET_STEPS = (
     "Loading MSI data",
-    "Selecting tissue spots",
     "Selecting recalibration references",
-    "Collecting per-sample m/z peaks",
+    "Aligning sample mass scales",
+    "Recalibrating spectra and selecting features",
     "Building global m/z backbone",
     "Annotating features",
-    "Interpolating intensities",
+    "Binning intensities",
     "Merging samples",
 )
 
@@ -29,7 +28,7 @@ def _step(index: int) -> tuple[int, int, str]:
 
 # Part of the preprocessing fingerprint: bump whenever the same input and settings produce a
 # different output, so cached results are rebuilt.
-METHOD_VERSION = "msi-12"
+METHOD_VERSION = "msi-13"
 
 
 # --- m/z recalibration (docs/scientific/msi_methods.md §4) ---

@@ -12,6 +12,7 @@ import os
 import xml.etree.ElementTree as ET
 
 from focus.config.keys import ImzMLFileParser, MsiMetadata
+from focus.runtime.reporter_context import get_reporter
 
 
 class ImzmlReader:
@@ -20,6 +21,35 @@ class ImzmlReader:
     def __init__(self, sample: MsiSample) -> None:
         """Bind the component to its existing sample state."""
         self.sample = sample
+
+    # Parameter-group ids used by exporters that omit the array cvParams from the group.
+    _MZ_GROUP_IDS = ("mzArray", "mz_array", "mzarray")
+    _INTENSITY_GROUP_IDS = ("intensities", "intensityArray", "intensity_array")
+
+    # imzML binary data types, as read from the IBD; integers are cast to float32 at read.
+    _DTYPES: dict[str, type[np.generic]] = {
+        "32-bit float": np.float32,
+        "64-bit float": np.float64,
+        "32-bit integer": np.int32,
+        "64-bit integer": np.int64,
+    }
+
+    _group_kinds: dict[str, str]
+
+    def _array_kind(self, element: ET.Element) -> str | None:
+        """'mz', 'intensity' or None for one binaryDataArray, from its own or its group's cvParams."""
+        names = {
+            cv_param.attrib.get("name", "")
+            for cv_param in element.iter(ImzMLFileParser.CV_PARAM)
+        }
+        if "m/z array" in names:
+            return "mz"
+        if "intensity array" in names:
+            return "intensity"
+        reference = element.find(ImzMLFileParser.REFERENCEABLE_PARAM_GROUP_REF)
+        if reference is None:
+            return None
+        return getattr(self, "_group_kinds", {}).get(reference.attrib.get("ref", ""))
 
     def _spectra_to_dict(self, spectra: ET.Element) -> SpectrumRecord:
         """
@@ -77,17 +107,14 @@ class ImzmlReader:
                 if cv_param.attrib["name"] == "external offset":
                     offset = int(cv_param.attrib["value"])
 
-            if cast(
-                ET.Element, element.find(ImzMLFileParser.REFERENCEABLE_PARAM_GROUP_REF)
-            ).attrib["ref"] in ["mzArray"]:
+            kind = self._array_kind(element)
+            if kind == "mz":
                 mzs = {
                     "length": length,
                     "encoded_length": encoded_length,
                     "offset": offset,
                 }
-            elif cast(
-                ET.Element, element.find(ImzMLFileParser.REFERENCEABLE_PARAM_GROUP_REF)
-            ).attrib["ref"] in ["intensities", "intensityArray"]:
+            elif kind == "intensity":
                 intensities = {
                     "length": length,
                     "encoded_length": encoded_length,
@@ -151,6 +178,41 @@ class ImzmlReader:
                 f"{filename}: profile spectra are not supported; export centroided (peak-picked) spectra"
             )
 
+    @staticmethod
+    def _infer_pixel_size(
+        filename: str,
+        pixel_xy: np.ndarray,
+        physical: np.ndarray,
+        has_physical: np.ndarray,
+    ) -> np.ndarray:
+        """
+        Pixel size (x, y) in µm from the stage positions, when the file declares none: the
+        least-squares slope of each stage axis on the pixel index of the same axis.
+        """
+        if not has_physical.all():
+            raise ValueError(
+                f"{filename}: no pixel size ('pixel size x' / 'pixel size y') and no stage "
+                "positions for every spectrum; the pixel size in µm cannot be determined"
+            )
+        size = np.zeros(2, dtype=np.float32)
+        for axis in (0, 1):
+            index = pixel_xy[:, axis].astype(np.float64)
+            if np.ptp(index) == 0:
+                continue
+            size[axis] = abs(
+                np.polyfit(index, physical[:, axis].astype(np.float64), 1)[0]
+            )
+        if not size.max() > 0:
+            raise ValueError(
+                f"{filename}: no pixel size declared and the stage positions do not span the raster"
+            )
+        size[size == 0] = size.max()
+        get_reporter().warning(
+            f"{filename}: no pixel size declared; {size[0]:.2f} x {size[1]:.2f} µm inferred from "
+            "the stage positions"
+        )
+        return size
+
     def _parse_imzml(self, filename: str) -> SampleMetadata:
         """
         Parse the imzML files to extract the relevant metadata and the M/Z values.
@@ -173,35 +235,39 @@ class ImzmlReader:
         tree = ET.parse(filename)
         root = tree.getroot()
 
-        # First determine the data types
+        # First determine the array kind and data type of every referenceable parameter group: by the
+        # "m/z array" and "intensity array" cvParams, then by the usual group ids.
         mz_dtype, intensities_dtype = None, None
-
-        def str_to_dtype(name: str) -> type[np.float32] | type[np.float64]:
-            """Resolve the original imzML float storage type."""
-            return np.float32 if name == "32-bit float" else np.float64
-
-        # Extract the data types for mz and intensities
+        self._group_kinds = {}
         for rpg in cast(
             ET.Element, root.find(ImzMLFileParser.REFERENCEABLE_PARAM_GROUP_LIST)
         ):
-            if rpg.attrib["id"] in ["mzArray"]:
-                for cv_param in rpg:
-                    if "float" in cv_param.attrib["name"]:
-                        mz_dtype = str_to_dtype(cv_param.attrib["name"])
-            elif rpg.attrib["id"] in ["intensities", "intensityArray"]:
-                for cv_param in rpg:
-                    if "float" in cv_param.attrib["name"]:
-                        intensities_dtype = str_to_dtype(cv_param.attrib["name"])
+            names = [cv_param.attrib.get("name", "") for cv_param in rpg]
+            group_id = rpg.attrib.get("id", "")
+            if "m/z array" in names or group_id in self._MZ_GROUP_IDS:
+                kind = "mz"
+            elif "intensity array" in names or group_id in self._INTENSITY_GROUP_IDS:
+                kind = "intensity"
+            else:
+                continue
+            self._group_kinds[group_id] = kind
+            dtype = next((self._DTYPES[n] for n in names if n in self._DTYPES), None)
+            if kind == "mz" and dtype is not None:
+                mz_dtype = dtype
+            elif kind == "intensity" and dtype is not None:
+                intensities_dtype = dtype
 
         if mz_dtype is None or intensities_dtype is None:
             raise KeyError(
                 "Could not find the data types for mz and intensities in the imzML file. Check the metadata name"
             )
+        if not np.issubdtype(mz_dtype, np.floating):
+            raise ValueError(f"{filename}: integer m/z arrays are not supported")
 
         self._check_encoding(root, filename)
 
-        # Extract the raster size in micrometers
-        raster_size = np.array([0, 0], dtype=np.int16)
+        # Extract the raster size in micrometers (a decimal value such as "20.0" is accepted).
+        raster_size = np.array([0.0, 0.0], dtype=np.float32)
         # Scan lines run along x for a horizontal line scan (the imzML default assumed here) and along
         # y for a vertical one. PIXEL_COORDINATES stores (y, x), so its column 0 indexes horizontal
         # lines and column 1 vertical ones.
@@ -212,18 +278,18 @@ class ImzmlReader:
             for scan_settings in scan_settings_list:
                 name = scan_settings.attrib.get("name")
                 if name == "pixel size x":
-                    raster_size[0] = int(scan_settings.attrib["value"])
+                    raster_size[0] = float(scan_settings.attrib["value"])
                 elif name == "pixel size y":
-                    raster_size[1] = int(scan_settings.attrib["value"])
+                    raster_size[1] = float(scan_settings.attrib["value"])
                 elif name == "vertical line scan":
                     line_axis = 1
                 elif name == "horizontal line scan":
                     line_axis = 0
-
-        # If raster size is absent from the file, assume unit spacing so that pixel
-        # coordinates can be used directly as physical coordinates without overlap.
-        if raster_size[0] == 0 or raster_size[1] == 0:
-            raster_size = np.array([1, 1], dtype=np.int16)
+        # One declared axis serves both (square pixels).
+        if raster_size[0] > 0 and not raster_size[1] > 0:
+            raster_size[1] = raster_size[0]
+        elif raster_size[1] > 0 and not raster_size[0] > 0:
+            raster_size[0] = raster_size[1]
 
         run = cast(ET.Element, root.find(ImzMLFileParser.RUN_KEY))
         spectrum_list = cast(ET.Element, run.find(ImzMLFileParser.SPECTRUM_LIST_KEY))
@@ -272,6 +338,10 @@ class ImzmlReader:
         # (x, y) before scaling, matching the (x, y) order of physical_coordinates.
         has_physical = np.array([m["has_physical_coordinates"] for m in parsed_spectra])
         pixel_xy = pixel_coordinates[:, ::-1].astype(np.float32)
+        if not raster_size.min() > 0:
+            raster_size = self._infer_pixel_size(
+                filename, pixel_xy, physical_coordinates, has_physical
+            )
         if not has_physical.any():
             physical_coordinates = pixel_xy * raster_size
         elif not has_physical.all():
@@ -285,7 +355,7 @@ class ImzmlReader:
         # Define the metadata dictionary
         experiment_metadata: SampleMetadata = {
             MsiMetadata.INTENSITIES_DTYPE: intensities_dtype,
-            MsiMetadata.MZ_DTYPE: mz_dtype,
+            MsiMetadata.MZ_DTYPE: cast(type[np.floating], mz_dtype),
             MsiMetadata.RASTER_SIZE: raster_size,
             MsiMetadata.LINE_AXIS: line_axis,
             MsiMetadata.STAGE_COORDINATES: bool(has_physical.all()),

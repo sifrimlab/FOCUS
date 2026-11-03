@@ -173,7 +173,8 @@ The following pre-existing issues/restrictions were retained rather than repaire
 
 - Standalone grid configuration still passes the common validation constraints,
   including the alignment-enable requirement even though that script only encodes.
-- MSI background detection remains conditional on having a lipid annotation database.
+- MSI background detection remains conditional on having a lipid annotation database
+  (resolved in `msi-13`: foreground detection always runs, without the database).
 - `read_merged_sample_ids` retains its original broad error fallback; an exception
   before its explicit backed-file close does not gain a new cleanup path here.
 - The auxiliary Raman scripts are resolved relative to a source installation. A

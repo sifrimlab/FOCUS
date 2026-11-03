@@ -237,12 +237,10 @@ class MsiDataset(DatasetState):
 
     def process_dataset(
         self,
-        mass_tolerance: int = 10,
-        frequency_threshold: float = 0.01,
+        mass_tolerance: float = 10,
         intensity_normalization: MsiIntensityNormalization = MsiIntensityNormalization.NONE,
         recalibration_reference: dict | str | None = None,
         internal_standard_mz: dict | str | None = None,
-        detect_background: bool = False,
         sample_type: str = MsiSampleType.TISSUE,  # "tissue"
         resolution: str = SpotResolution.STANDARD,  # "standard"
         force_recomputing: bool = False,
@@ -254,13 +252,11 @@ class MsiDataset(DatasetState):
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `lipid_annotation_db` | `str` or `None` | `None` | Path to a CSV or JSON lipid annotation database. Required columns: `db_name`, `ionized_mass`, `ion_mode`. |
-| `mass_tolerance` | `int` | `10` | Adaptive mass tolerance in ppm for m/z consensus clustering. Must be a Python `int`. A float raises `ValueError`. |
-| `frequency_threshold` | `float` | `0.01` | Minimum presence of a reference grid feature (share of spectra holding it above the background), as a fraction of the most present feature of a sample; a feature passing in one sample is kept. |
-| `intensity_normalization` | `MsiIntensityNormalization` | `"none"` | Normalization method (applied per sample and per ion mode): `"tic"`, `"log"`, `"clr"`, `"tic_mean_scaled"`, `"median"`, `"internal_standard"`, or `"none"`. `"tic"` makes each spectrum sum to 1; `"tic_mean_scaled"` rescales each spectrum to the mean total ion current over that sample's spots for that ion mode, preserving absolute scale (not comparable across samples); `"median"` divides each spectrum by the median of its nonzero features; `"internal_standard"` divides each spectrum by the summed intensity of the internal standards. |
+| `mass_tolerance` | `float` | `10` | Mass tolerance in ppm (int or float): feature detection, backbone merge span, binning reach and annotation window. |
+| `intensity_normalization` | `MsiIntensityNormalization` | `"none"` | Row normalization at a fixed scale, per sample and ion mode: `"none"`, `"tic"` (rows sum to the number of features), `"median"` (median of the nonzero features is 1), `"rms"` (root mean square is 1) or `"internal_standard"` (standard intensity is 1). |
 | `recalibration_reference` | `dict`, `str` or `None` | `None` | Per-ion-mode reference m/z values for recalibration (`{"pos": [...]}`, arrays accepted, or `"pos: 760.585; neg: 885.550"`). Selected from the dataset when `None`. |
 | `internal_standard_mz` | `dict`, `str` or `None` | `None` | m/z of sprayed internal standards per ion mode (same forms). Always used as recalibration references; required by `"internal_standard"`. |
-| `detect_background` | `bool` | `False` | If `True` **and** `lipid_annotation_db` is set, GMM-based (or local-outlier detection, for `microgrid`) tissue/background classification is run. Without a database the step is silently skipped and all spots are marked foreground. |
-| `sample_type` | `str` | `"tissue"` | `"tissue"` or `"microgrid"`. Affects background detection strategy. |
+| `sample_type` | `str` | `"tissue"` | `"tissue"`, `"tissue_noisy"`, `"cell_culture"` or `"microgrid"`. Calibrates foreground detection, which always runs ([MSI methods §5](../scientific/msi_methods.md#5-foreground-detection)). |
 | `resolution` | `str` | `"standard"` | Clustering preset for the alignment colours: `"standard"` or `"sub_cellular"`. |
 | `force_recomputing` | `bool` | `False` | Re-run even if output with the current fingerprint (inputs, settings, method version) already exists. |
 
@@ -289,9 +285,8 @@ dataset = MsiDataset(
 
 results = dataset.process_dataset(
     mass_tolerance=10,
-    frequency_threshold=0.01,
     intensity_normalization="tic",
-    detect_background=True,
+    sample_type="tissue",
     force_recomputing=False,
 )
 ```

@@ -72,19 +72,19 @@ DISPLAY_NAMES: dict[str, str] = {
     AlignmentStrategy.MANUAL: "Manual",
     AlignmentStrategy.PRE_ALIGNED: "Pre-Aligned",
     # MSI intensity normalisation
-    MsiIntensityNormalization.TIC: "TIC",
-    MsiIntensityNormalization.LOG: "Log",
-    MsiIntensityNormalization.CLR: "CLR",
-    MsiIntensityNormalization.TIC_MEAN_SCALED: "TIC Mean Scaled",
-    MsiIntensityNormalization.MEDIAN: "Median",
-    MsiIntensityNormalization.INTERNAL_STANDARD: "Internal Standard",
     MsiIntensityNormalization.NONE: "None",
+    MsiIntensityNormalization.TIC: "TIC",
+    MsiIntensityNormalization.MEDIAN: "Median",
+    MsiIntensityNormalization.RMS: "RMS",
+    MsiIntensityNormalization.INTERNAL_STANDARD: "Internal Standard",
     # Background colour
     SegmentationBackgroundColor.WHITE: "White",
     SegmentationBackgroundColor.BLACK: "Black",
     # MSI sample type
-    MsiSampleType.TISSUE: "Tissue",
-    MsiSampleType.MICROGRID: "Microgrid",
+    MsiSampleType.TISSUE: "Tissue (clean background)",
+    MsiSampleType.TISSUE_NOISY: "Tissue (noisy background)",
+    MsiSampleType.CELL_CULTURE: "Cell culture (gradient domains)",
+    MsiSampleType.MICROGRID: "Microgrid (isolated single cells)",
     # Spot resolution
     SpotResolution.STANDARD: "Standard",
     SpotResolution.SUB_CELLULAR: "Sub-cellular",
