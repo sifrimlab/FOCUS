@@ -16,6 +16,8 @@ import numpy as np
 import pandas as pd
 
 from focus.config.keys import ConfigParameters, AnnotationsParameters
+from focus.io.atomic import atomic_path
+from focus.io.provenance import is_tiff, read_crop_offset
 from focus.io.paths import annotation_file, merged_annotation_file
 from anndata.io import read_elem, write_elem
 from focus.io.anndata import (
@@ -131,6 +133,7 @@ class AnnotationStage:
                     self.aligned[self.source][sample], backed="r"
                 )
                 coordinates = np.asarray(annotation.obsm[f"{self.source}_spatial"])
+                coordinates = coordinates + self.source_offset(sample)
                 annotation.file.close()
                 annotation = None
             sample_ids = np.asarray(reference.obs["sample_id"])
@@ -148,16 +151,37 @@ class AnnotationStage:
         finally:
             close_backed(annotation, reference)
 
+    def source_offset(self, sample: str) -> np.ndarray:
+        """Crop offset ``(x, y)`` of the annotation image in its source image (0 when uncropped).
+
+        Aligned coordinates are level-0 pixels of the preprocessed image, while GeoJSON drawn on
+        the acquisition is in the source frame. Adding the offset moves the spots into the
+        polygons' frame, the same as shifting every polygon by the negative offset.
+        """
+        path = self.files.get(self.source, {}).get(sample)
+        if path is None or not is_tiff(path):
+            return np.zeros(2, dtype=np.float32)
+        offset = read_crop_offset(path)
+        if offset is None:
+            self.reporter.warning(
+                f"'{self.source}' records no crop offset (preprocessed before it was stored): "
+                "annotations are matched without one"
+            )
+            return np.zeros(2, dtype=np.float32)
+        if offset.any():
+            self.reporter.detail(
+                f"'{self.source}' is cropped: annotations shifted by "
+                f"({offset[0]:g}, {offset[1]:g}) px to the cropped image"
+            )
+        return offset
+
     def label_merged(self, source: str, output: str) -> None:
         """Copy the merged reference to ``output`` and add the per-sample labels to its ``obs``.
 
         Only ``obs`` is rewritten, so the matrices are never loaded. Rows are matched within each
         sample by observation name; merged rows of a sample without labels stay unlabelled.
         """
-        temporary = os.path.join(
-            os.path.dirname(output), f".{os.getpid()}.tmp.{os.path.basename(output)}"
-        )
-        try:
+        with atomic_path(output) as temporary:
             shutil.copyfile(source, temporary)
             with h5py.File(temporary, "r+") as handle:
                 obs = cast(pd.DataFrame, read_elem(handle["obs"]))
@@ -173,10 +197,6 @@ class AnnotationStage:
                 del handle["obs"]
                 anndata.settings.allow_write_nullable_strings = True
                 write_elem(handle, "obs", _compat_strings(obs))
-            os.replace(temporary, output)
-        finally:
-            if os.path.exists(temporary):
-                os.remove(temporary)
 
 
 def discover_annotations(path: str, source: str, samples: list[str]) -> dict[str, str]:

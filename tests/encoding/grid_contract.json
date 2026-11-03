@@ -169,6 +169,7 @@
         ],
         "uns": {
           "background_color": "white",
+          "image_signature": "image",
           "patch_mode": "free_form",
           "patch_size": 224,
           "registration_type": "feature_extraction"
@@ -346,6 +347,7 @@
         ],
         "uns": {
           "background_color": "white",
+          "image_signature": "image",
           "patch_mode": "free_form",
           "patch_size": 224,
           "registration_type": "feature_extraction"
@@ -575,6 +577,7 @@
         ],
         "uns": {
           "background_color": "white",
+          "image_signature": "image",
           "patch_mode": "free_form",
           "patch_size": 224,
           "registration_type": "feature_extraction"
@@ -627,6 +630,7 @@
         "uns": {
           "background_color": "white",
           "downsample_factor": 2.0,
+          "image_signature": "image",
           "patch_mode": "free_form",
           "patch_size": 224,
           "registration_type": "feature_extraction",
@@ -857,6 +861,7 @@
         ],
         "uns": {
           "background_color": "white",
+          "image_signature": "image",
           "patch_mode": "free_form",
           "patch_size": 224,
           "registration_type": "feature_extraction"
@@ -909,6 +914,7 @@
         "uns": {
           "background_color": "white",
           "downsample_factor": 2.0,
+          "image_signature": "image",
           "patch_mode": "free_form",
           "patch_size": 224,
           "registration_type": "feature_extraction",
@@ -1139,6 +1145,7 @@
         ],
         "uns": {
           "background_color": "black",
+          "image_signature": "image",
           "patch_mode": "free_form",
           "patch_size": 224,
           "registration_type": "feature_extraction"
@@ -1191,6 +1198,7 @@
         "uns": {
           "background_color": "black",
           "downsample_factor": 2.0,
+          "image_signature": "image",
           "patch_mode": "free_form",
           "patch_size": 224,
           "registration_type": "feature_extraction",

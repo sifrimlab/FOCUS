@@ -16,7 +16,7 @@ Raw Data → [1] Preprocessing → [2] Alignment → [3] Registration → [4] Co
 
 ### Stage 1: Preprocessing
 
-Preprocessing converts raw instrument output into a standardized, quality-controlled representation. Each modality is handled by a dedicated processor that applies domain-appropriate algorithms: colour enhancement, Otsu background removal, tissue cropping and pyramid construction for microscopy images, m/z consensus alignment and intensity normalization for MSI, BaSiC illumination correction and ASHLAR tile stitching for Raman, and mitochondrial flagging with QC metrics, optional count/gene filtering and optional normalisation for spatial transcriptomics. The output of this stage is either an OME-TIFF pyramid (for image modalities) or an AnnData `.h5ad` file (for omics modalities), stored under `{sample_id}/preprocessing/{modality_name}/`.
+Preprocessing converts raw instrument output into a standardized, quality-controlled representation. Each modality is handled by a dedicated processor that applies domain-appropriate algorithms: image-type resolution, tissue detection, optional tissue cropping and background fill, and lossless pyramid construction for microscopy images, m/z consensus alignment and intensity normalization for MSI, BaSiC illumination correction and ASHLAR tile stitching for Raman, and mitochondrial flagging with QC metrics, optional count/gene filtering and optional normalisation for spatial transcriptomics. The output of this stage is either an OME-TIFF pyramid (for image modalities) or an AnnData `.h5ad` file (for omics modalities), stored under `{sample_id}/preprocessing/{modality_name}/`.
 
 ### Stage 2: Alignment
 
@@ -47,7 +47,7 @@ If compilation runs, it reads all per-modality registered AnnData files and asse
 
 | Modality type key | Input format | Output format | Registration method |
 |-------------------|-------------|--------------|---------------------|
-| `microscopy_image` | `.tiff` / `.tif` / `.ome.tiff` / `.ome.tif` / `.qptiff` / `.czi` / `.nd2` | OME-TIFF pyramid | `feature_extraction` (GPU recommended, H&E brightfield only) or `none` |
+| `microscopy_image` | `.ome.tiff` / `.ome.tif` / `.ome.btf` / `.tiff` / `.tif` / `.btf` / `.qptiff` / `.svs` / `.ndpi` / `.scn` / `.bif` / `.czi` / `.nd2` | Lossless OME-TIFF pyramid | `feature_extraction` (GPU recommended, H&E brightfield only; fluorescence rejected) or `none` |
 | `msi` | `.imzML` + `.ibd` | AnnData `.h5ad` | `spot_interpolation` or `spot_aggregation` (CPU) |
 | `raman` | `.lif` | OME-TIFF hyperspectral | `raman_pixel_interpolation` (CPU) |
 | `st` | AnnData `.h5ad` | AnnData `.h5ad` | `spot_interpolation` or `spot_aggregation` (CPU), or `none` |
@@ -97,7 +97,7 @@ FOCUS expects input data and writes intermediate and final outputs according to 
 
 | Modality | Required files | Sub-directory |
 |----------|---------------|---------------|
-| `microscopy_image` | One `.tiff`, `.tif`, `.ome.tiff`, `.ome.tif`, `.qptiff`, `.czi`, or `.nd2` file | directly in `<modality_name>/` |
+| `microscopy_image` | Exactly one `.ome.tiff`, `.ome.tif`, `.ome.btf`, `.tiff`, `.tif`, `.btf`, `.qptiff`, `.svs`, `.ndpi`, `.scn`, `.bif`, `.czi` or `.nd2` file | directly in `<modality_name>/` |
 | `msi` (positive mode only) | `data.imzML` + `data.ibd` | `<modality_name>/pos/` |
 | `msi` (negative mode only) | `data.imzML` + `data.ibd` | `<modality_name>/neg/` |
 | `msi` (dual mode) | 2 × (`.imzML` + `.ibd`) | `<modality_name>/pos/` and `<modality_name>/neg/` |

@@ -17,7 +17,13 @@ from focus.io.provenance import (
     SUPERSEDED_SIGNATURE_KEY,
 )
 from focus.runtime.reporter_context import get_reporter
-from tests.provenance.data import _OFFSET, _write_source, _strip_provenance
+from tests.provenance.data import (
+    CROP,
+    NO_CROP,
+    _write_source,
+    _strip_provenance,
+    crop_offset,
+)
 
 
 class TestAlignmentCache:
@@ -29,7 +35,7 @@ class TestAlignmentCache:
         self.root = Path(self.tmp.name)
         _write_source(self.root / "s" / "he" / "img.tif")
         self.sample = MicroscopyImage(str(self.root), "s", "he")
-        self.image = self.sample.process_image(crop_margin=100)
+        self.image = self.sample.process_image(CROP)
 
         rng = np.random.default_rng(0)
         self.spatial = rng.uniform([800, 1200], [1500, 2000], size=(40, 2)).astype(
@@ -72,7 +78,7 @@ class TestAlignmentCache:
         _strip_provenance(self.image)
         assert cached_fingerprint(self.image) is None
         path = self._stamp_manual_alignment()  # stat-based legacy key
-        self.sample.process_image(crop_margin=100)  # no fingerprint: regenerated
+        self.sample.process_image(CROP)  # no fingerprint: regenerated
         assert SUPERSEDED_SIGNATURE_KEY in cast(
             dict[str, str], read_ome_annotations(self.image)
         )
@@ -85,7 +91,7 @@ class TestAlignmentCache:
         """Verify changed pixels invalidate a legacy alignment."""
         _strip_provenance(self.image)
         self._stamp_manual_alignment()
-        self.sample.process_image(crop_margin=60)
+        self.sample.process_image(NO_CROP)
         assert SUPERSEDED_SIGNATURE_KEY not in cast(
             dict[str, str], read_ome_annotations(self.image)
         )
@@ -97,19 +103,20 @@ class TestAlignmentCache:
         """Verify current alignment matches and survives a pixel identical rerun."""
         self._stamp_manual_alignment()
         assert self.aligner.cache._cache_matches("s")
-        self.sample.process_image(crop_margin=100, force_recomputing=True)
+        self.sample.process_image(CROP, force_recomputing=True)
         assert self.aligner.cache._cache_matches("s")
 
     def test_pre_aligned_coordinates_subtract_the_crop_offset(self) -> None:
         """Verify pre aligned coordinates subtract the crop offset."""
         aligned = self.aligner.uniform_aligned_dataset()
         result = ad.read_h5ad(aligned["s"])
-        np.testing.assert_allclose(result.obsm["he_spatial"], self.spatial - _OFFSET)
+        offset = crop_offset(self.image)
+        np.testing.assert_allclose(result.obsm["he_spatial"], self.spatial - offset)
         assert self.aligner.cache._cache_matches("s", pre_aligned=True)
 
-        self.sample.process_image(crop_margin=60)
+        self.sample.process_image(NO_CROP)
         assert not self.aligner.cache._cache_matches("s", pre_aligned=True)
         aligned = self.aligner.uniform_aligned_dataset()
         np.testing.assert_allclose(
-            ad.read_h5ad(aligned["s"]).obsm["he_spatial"], self.spatial - (_OFFSET + 40)
+            ad.read_h5ad(aligned["s"]).obsm["he_spatial"], self.spatial
         )

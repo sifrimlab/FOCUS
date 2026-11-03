@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 from focus.registration.types import RegistrationJob
-from focus.config.options import RegistrationType
+from focus.config.options import RegistrationType, SegmentationBackgroundColor
+from focus.io.provenance import read_ome_annotations
 
 import anndata
 import numpy as np
@@ -65,11 +66,26 @@ class SpotEncoding:
             reporter=self.reporter,
         )
 
+    def background(self, sample_id: str) -> str:
+        """Fill colour of removed background: the image's own record, else the setting.
+
+        Preprocessing records ``focus_background_fill`` (``none``, 0 or the sample maximum),
+        so a filled image is skipped with the colour it was actually filled with.
+        """
+        fill = (read_ome_annotations(self.image_files[sample_id]) or {}).get(
+            "focus_background_fill", "none"
+        )
+        if fill == "none":
+            return str(self.background_color)
+        if float(fill) == 0:
+            return SegmentationBackgroundColor.BLACK
+        return SegmentationBackgroundColor.WHITE
+
     def settings(self, sample_id: str) -> dict[str, object]:
         """Build the registration settings used to fingerprint this sample."""
         size = read_ome_physical_size_um(self.image_files[sample_id])
         return {
-            "background_color": str(self.background_color),
+            "background_color": self.background(sample_id),
             "model": MicroscopyImageFeatureExtractor.MODEL_ID,
             "anchor_type": str(self.anchor_type),
             "physical_size_um": None if size is None else [float(v) for v in size],
@@ -99,7 +115,7 @@ class SpotEncoding:
             anchor.mapped,
             geom,
             level,
-            background_color=self.background_color,
+            background_color=self.background(sample_id),
             step_reporter=self.reporter,
         )
         del image

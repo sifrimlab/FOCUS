@@ -19,9 +19,9 @@ from focus.io.provenance import (
     cached_fingerprint,
     content_signature,
     fingerprint,
+    parse_crop_offset,
     read_ome_annotations,
     PIXEL_DIGEST_KEY,
-    CROP_OFFSET_KEY,
     SUPERSEDED_SIGNATURE_KEY,
 )
 from focus.runtime.reporter_context import get_reporter
@@ -78,9 +78,9 @@ class AlignmentCache:
         A microscopy image without that record (written before it existed, reachable only when
         preprocessing is skipped) gets offset 0 with a warning.
         """
-        value = self._fixed_annotations(sample_id).get(CROP_OFFSET_KEY)
-        if value is not None:
-            return np.array([float(v) for v in value.split(",")], dtype=np.float32)
+        offset = parse_crop_offset(self._fixed_annotations(sample_id))
+        if offset is not None:
+            return offset
         if (
             self.aligner._reference_modality_type == ModalityType.MICROSCOPY_IMAGE
             and not getattr(self.aligner, "_warned_offset", False)

@@ -67,6 +67,23 @@ class MsiSampleType(_AbstractEnum):
     MICROGRID: Final = "microgrid"
 
 
+class MicroscopyImageType(_AbstractEnum):
+    """Microscopy acquisition class; calibrates tissue detection, Z reduction, fill and storage."""
+
+    AUTO: Final = "auto"  # read from the acquisition metadata
+    BRIGHTFIELD: Final = "brightfield"  # transmitted light: H&E, IHC, special stains
+    FLUORESCENCE: Final = "fluorescence"  # IF, confocal, multiplexed imaging
+
+
+class MicroscopyZProjection(_AbstractEnum):
+    """Reduction of a Z-stack to one plane."""
+
+    AUTO: Final = "auto"  # max for fluorescence, best_focus for brightfield
+    MAX: Final = "max"  # maximum-intensity projection
+    BEST_FOCUS: Final = "best_focus"  # plane with the highest variance of the Laplacian
+    MIDDLE: Final = "middle"  # middle plane
+
+
 class SpotResolution(_AbstractEnum):
     """Spot modality resolution class; selects the clustering preset (CLUSTERING_PRESETS)."""
 

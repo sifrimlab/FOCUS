@@ -51,7 +51,7 @@ export function useTargetContent(layer: ReturnType<typeof usePixiLayer>, store: 
 
   const loadImage = async (content: Container) => {
     destroyChildren();
-    const url = URL.createObjectURL(store.targetData as Blob);
+    const url = URL.createObjectURL((store.targetImage ?? store.targetData) as Blob);
     try {
       const img = new Image();
       img.src = url;

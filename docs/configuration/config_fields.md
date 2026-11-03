@@ -198,7 +198,7 @@ Example:
 - **Default**: `"none"`
 - **Allowed values**:
   - `"none"` (any modality; skips registration)
-  - `"feature_extraction"` (`microscopy_image` only, and only for H&E-stained brightfield RGB images; see [Registration Settings](#feature_extraction))
+  - `"feature_extraction"` (`microscopy_image` only, and only for H&E-stained brightfield images; rejected for fluorescence images; see [Registration Settings](#feature_extraction))
   - `"spot_interpolation"` (`msi`, `st`)
   - `"spot_aggregation"` (`msi`, `st`)
   - `"raman_pixel_interpolation"` (`raman`)
@@ -233,45 +233,35 @@ Example:
 
 ## `microscopy_image`
 
-| Field | Type | Default | Step |
-|---|---|---|---|
-| `color_enhancement` | bool | `true` | Colour enhancement |
-| `gamma` | float | `0.45` | Colour enhancement |
-| `contrast_saturation` | float | `0.35` | Colour enhancement |
-| `remove_background` | bool | `true` | Background removal |
-| `background_color` | string | `"white"` | Background removal |
-| `clip_percentile` | int | `99` | Background removal |
-| `min_object_coverage` | float | `0.01` | Background removal |
-| `crop_to_tissue` | bool | `true` | Cropping |
-| `crop_margin` | int | `250` | Cropping |
-| `force_recomputing` | bool | `false` | All |
+| Field | Type | Default |
+|---|---|---|
+| `image_type` | string | `"auto"` |
+| `z_projection` | string | `"auto"` |
+| `crop_to_tissue` | bool | `false` |
+| `remove_background` | bool | `false` |
+| `pixel_size` | float or null | `null` |
+| `force_recomputing` | bool | `false` |
 
-- `gamma`: exponent of `I^gamma` on the image normalised to `[0, 1]`. Below `1.0` it brightens midtones, above `1.0` it darkens them.
-- `contrast_saturation`: a **percentage**. The `contrast_saturation` and `100 − contrast_saturation` percentiles of the non-zero pixels become the clip bounds, which are then rescaled to `[0, 1]`. Those percentiles are computed once over the whole image, with all channels pooled. The default `0.35` saturates 0.35% of those pixels at each end.
-- `background_color`: `"white"` or `"black"`. Any other value raises `ValueError` when background removal runs.
-- `clip_percentile`: percentile at which the inverted grayscale is clipped before the Gaussian blur that feeds the Otsu threshold.
-- `min_object_coverage`: a tissue contour is kept when its area is at least this fraction of the detection-proxy area. The proxy is the image downscaled to at most 9 megapixels.
-- `crop_margin`: full-resolution pixels added on each side of the tissue bounding box, clamped to the image bounds.
-- `crop_to_tissue`: uses the same tissue mask as background removal, so enabling it alone still runs the full Otsu detection.
-- `force_recomputing`: microscopy keeps no intermediate caches. The only cache is the output OME-TIFF itself, which is reused whenever it exists and this flag is false.
+- `image_type`: `"auto"`, `"brightfield"` or `"fluorescence"`. `"auto"` reads the acquisition class from the metadata, then the channel layout, then the image polarity (the last rule warns and asks for an explicit value). It selects the tissue detection, the `auto` Z projection, the background fill, the display rendering and the codec. See [Microscopy image types](../modalities/microscopy.md#image-types).
+- `z_projection`: `"auto"`, `"max"`, `"best_focus"` or `"middle"`; how a Z-stack becomes one plane. `"auto"` is the maximum-intensity projection for fluorescence and the best-focus plane for brightfield.
+- `crop_to_tissue`: crops to the tissue bounding box plus a fixed 100 µm margin (250 px without a pixel size). Pixels inside the box are unchanged; the box origin is recorded as the crop offset.
+- `remove_background`: sets every pixel outside the tissue to the fill of the image type (the maximum of the sample type, white, for brightfield; 0 for fluorescence) and records it as `focus_background_fill`.
+- `pixel_size`: µm per pixel, used only when the file metadata has none. A metadata value always wins; a difference over 5% is reported.
+- `force_recomputing`: microscopy keeps no intermediate caches. The only cache is the output OME-TIFF itself, which is reused while it carries the current fingerprint and this flag is false.
 
-The number of OME-TIFF pyramid levels is not a configurable field; it is computed automatically from the final image dimensions. The tissue-detection tuning is not configurable either: the 9-megapixel proxy cap, the 25 px Gaussian blur kernel and the 50 px speck-removal size are internal constants.
+Tissue is always detected (its outline is stored as an OME ROI and its pixels set the display windows), whether or not cropping or the fill is enabled. The output is lossless: the source sample type, every channel and no contrast change; contrast is stored as display windows. The detection thresholds, the crop margin and the pyramid levels are not configurable. See [Microscopy Preprocessing Methods](../scientific/microscopy_methods.md#10-parameters-and-effective-defaults).
 
-Except for `background_color`, these fields are not checked: an out-of-range value reaches the processing code, where it either raises (a `clip_percentile` above 100 fails inside `numpy.percentile`) or changes the result. The out-of-range value is never reported during configuration validation.
+Validation rejects an `image_type` or `z_projection` outside the values above, a `pixel_size` that is not a positive number, and `image_type: "fluorescence"` with `registration_type: "feature_extraction"`. The settings `color_enhancement`, `gamma`, `contrast_saturation`, `background_color`, `min_object_coverage`, `clip_percentile` and `crop_margin` were removed in `microscopy-3`; a configuration that sets one fails validation and names the reason.
 
 Example:
 
 ```json
 "processing_settings": {
-  "color_enhancement": true,
-  "gamma": 0.45,
-  "contrast_saturation": 0.35,
-  "remove_background": true,
-  "background_color": "white",
-  "clip_percentile": 99,
-  "min_object_coverage": 0.01,
-  "crop_to_tissue": true,
-  "crop_margin": 250,
+  "image_type": "auto",
+  "z_projection": "auto",
+  "crop_to_tissue": false,
+  "remove_background": false,
+  "pixel_size": null,
   "force_recomputing": false
 }
 ```
@@ -385,6 +375,33 @@ Example:
   "normalization": "auto",
   "quality_control": true,
   "remove_mitochondrial_genes": false,
+  "force_recomputing": false
+}
+```
+
+---
+
+## Registration Settings
+
+### `feature_extraction`
+
+Compatible modality type: `microscopy_image`, and only for **brightfield** images; the encoder (Prov-GigaPath) is pretrained on tiles from H&E whole-slide images. An image recorded as fluorescence is rejected: at validation time when `image_type` is `"fluorescence"`, and at registration time from the `focus_image_type` recorded by preprocessing. The stain of a brightfield image is not verified, so an IHC or other-stain image is encoded without error and yields embeddings that carry no morphological meaning. Use `"none"` for those modalities. See [Registration](../pipeline/registration.md#feature_extraction).
+
+| Field | Type | Default |
+|---|---|---|
+| `background_color` | string | `"white"` |
+| `force_recomputing` | bool | `false` |
+
+- `background_color`: `"white"` or `"black"`. This is the colour counted by the background test: an encoder token whose pixels match it in at least 99% of positions is never read, and a reference spot whose footprint holds only such tokens is stored as an all-zero embedding. It applies to images that preprocessing did not fill; when `remove_background` filled the image, the recorded `focus_background_fill` is used instead (0 counts as black, any other value as white).
+- `force_recomputing`: recompute even when the cached registration matches its inputs.
+
+The encoder window and the encoded pyramid level are not settings: the window is the encoder's input size and the level is the one closest to 0.5 µm per pixel. A `patch_size` key is ignored with a warning.
+
+Example:
+
+```json
+"registration_settings": {
+  "background_color": "white",
   "force_recomputing": false
 }
 ```
@@ -512,15 +529,11 @@ Example:
       "alignment_force_recomputing": false,
       "registration_type": "feature_extraction",
       "processing_settings": {
-        "color_enhancement": true,
-        "gamma": 0.45,
-        "contrast_saturation": 0.35,
-        "remove_background": true,
-        "background_color": "white",
-        "clip_percentile": 99,
-        "min_object_coverage": 0.01,
-        "crop_to_tissue": true,
-        "crop_margin": 250,
+        "image_type": "brightfield",
+        "z_projection": "auto",
+        "crop_to_tissue": false,
+        "remove_background": false,
+        "pixel_size": null,
         "force_recomputing": false
       },
       "registration_settings": {

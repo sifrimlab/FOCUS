@@ -9,12 +9,16 @@ from focus.config.types import PipelineConfig, ModalityConfig
 from focus.config.keys import (
     ConfigParameters,
     ModalityParameters,
+    MICROSCOPY_REMOVED_SETTINGS,
+    MicroscopyImageProcessingParams,
     MsiPreprocessingParams,
     STPreprocessingParams,
     ST_REMOVED_SETTINGS,
 )
 from focus.config.options import (
     AlignmentStrategy,
+    MicroscopyImageType,
+    MicroscopyZProjection,
     ModalityType,
     RegistrationType,
     SpotResolution,
@@ -31,13 +35,17 @@ from focus.config.catalog import (
 
 
 def validate_resolution(config: PipelineConfig) -> None:
-    """Validate the spot-clustering resolution of MSI and the technology settings of ST."""
+    """Validate the MSI clustering resolution and the ST and microscopy preset settings."""
 
     for modality in config[ConfigParameters.MODALITIES]:
         settings = modality.get(ModalityParameters.PROCESSING_SETTINGS) or {}
         name = modality[ModalityParameters.NAME]
         if modality[ModalityParameters.TYPE] == ModalityType.ST:
             validate_st_settings(name, settings)
+        elif modality[ModalityParameters.TYPE] == ModalityType.MICROSCOPY_IMAGE:
+            validate_microscopy_settings(
+                name, settings, modality[ModalityParameters.REGISTRATION_TYPE]
+            )
         elif modality[ModalityParameters.TYPE] in SPOT_MODALITY_TYPES:
             resolution = settings.get(
                 MsiPreprocessingParams.RESOLUTION, SpotResolution.STANDARD
@@ -72,6 +80,48 @@ def validate_st_settings(name: str, settings: Mapping[str, object]) -> None:
             raise ValueError(
                 f"Modality '{name}': {key} must be one of {options}, got {value!r}."
             )
+
+
+def validate_microscopy_settings(
+    name: str, settings: Mapping[str, object], registration: str
+) -> None:
+    """Reject removed microscopy settings (with the reason), unknown presets and bad pixel sizes."""
+    removed = [key for key in settings if key in MICROSCOPY_REMOVED_SETTINGS]
+    if removed:
+        reasons = ", ".join(
+            f"'{key}' ({MICROSCOPY_REMOVED_SETTINGS[key]})" for key in removed
+        )
+        raise ValueError(
+            f"Modality '{name}': these microscopy settings were removed: {reasons}. "
+            "Images are stored lossless; use 'image_type', 'z_projection', 'crop_to_tissue', "
+            "'remove_background' and 'pixel_size'."
+        )
+    choices = {
+        MicroscopyImageProcessingParams.IMAGE_TYPE: MicroscopyImageType.list(),
+        MicroscopyImageProcessingParams.Z_PROJECTION: MicroscopyZProjection.list(),
+    }
+    for key, options in choices.items():
+        value = settings.get(key, options[0])
+        if value not in options:
+            raise ValueError(
+                f"Modality '{name}': {key} must be one of {options}, got {value!r}."
+            )
+    size = settings.get(MicroscopyImageProcessingParams.PIXEL_SIZE)
+    if size is not None and (
+        isinstance(size, bool) or not isinstance(size, (int, float)) or not size > 0
+    ):
+        raise ValueError(
+            f"Modality '{name}': pixel_size must be a positive number of µm per pixel, got {size!r}."
+        )
+    image_type = settings.get(MicroscopyImageProcessingParams.IMAGE_TYPE)
+    if (
+        image_type == MicroscopyImageType.FLUORESCENCE
+        and registration == RegistrationType.FEATURE_EXTRACTION
+    ):
+        raise ValueError(
+            f"Modality '{name}': feature_extraction uses an H&E-pretrained encoder and does not "
+            "apply to fluorescence images; use registration_type 'none'."
+        )
 
 
 def validate_registration(config: PipelineConfig) -> None:

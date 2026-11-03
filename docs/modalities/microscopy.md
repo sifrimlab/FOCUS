@@ -2,68 +2,51 @@
 
 ## Overview
 
-Microscopy provides high-resolution, whole-sample spatial context. FOCUS reads one image file per sample (H&E brightfield, immunofluorescence, or any other TIFF/qpTIFF/CZI/ND2 acquisition) and writes a multi-resolution OME-TIFF pyramid per sample.
+Microscopy provides high-resolution, whole-sample spatial context. FOCUS reads one acquisition per sample (brightfield H&E, IHC or special stains; widefield, confocal or multiplexed fluorescence) and writes one lossless, tiled OME-TIFF pyramid per sample. The stored level-0 pixels are the source pixels: same sample type, every channel, no contrast change. Channel names, colours, wavelengths, objective and pixel size are carried into the OME-XML. Contrast is stored as display metadata and applied only when the image is shown.
 
-`MicroscopyImageDataset.process_dataset()` handles one sample at a time and runs five labeled steps per sample, reported on the console and in the GUI as `1/5` … `5/5`:
+Two settings describe the acquisition: `image_type` (brightfield or fluorescence, read from the metadata by default) and `z_projection` (how a Z-stack becomes one plane). They select the tissue detection, the background fill, the display rendering and the codec, so no numeric threshold is configured. Cropping to the tissue and removing the background are opt-in.
 
-| Step | What it does |
-|------|--------------|
-| `1/5` | Loads the image and normalises it to `float32` in `[0, 1]`, shape `(H, W, C)` with at most 3 channels |
-| `2/5` | Colour enhancement: gamma correction followed by percentile contrast stretching |
-| `3/5` | Tissue detection on a downsampled proxy, then background fill |
-| `4/5` | Crop to the tissue bounding box plus a margin |
-| `5/5` | Writes the multi-resolution OME-TIFF |
-
-Steps `2/5`, `3/5` and `4/5` are individually switchable from the configuration (`color_enhancement`, `remove_background`, `crop_to_tissue`); when one is off, its step line reports `not required` and the image passes through unchanged. Steps `1/5` and `5/5` always run.
-
-!!! note "One tissue-detection pass serves both background removal and cropping"
-    The mask is computed once, as soon as **either** `remove_background` or `crop_to_tissue` is enabled, and both steps consume it. Enabling only `crop_to_tissue` still runs the full Otsu detection; disabling both skips it entirely.
+The algorithms and their sources are described in [Microscopy Preprocessing Methods](../scientific/microscopy_methods.md) (method version `microscopy-3`).
 
 !!! note "Per-sample failures do not stop the run"
-    `process_dataset()` wraps each sample in a `try`/`except`. When a sample raises, the line `Error processing sample <sample_id>: <error>` is printed to the console, that sample is left out of the returned `{sample_id: path}` mapping, and processing continues with the next sample. The one exception is a **missing input file**: that `FileNotFoundError` is raised while the sample objects are being constructed, before processing starts, and it aborts the modality.
+    `MicroscopyImageDataset.process_dataset()` processes one sample at a time. When a sample raises, the warning `Sample skipped: <error>` is reported, that sample is left out of the returned `{sample_id: path}` mapping, and processing continues with the next sample. A sample folder with no supported image (`FileNotFoundError`) or with several (`ValueError`) is detected while the sample objects are constructed, before processing starts, and aborts the modality.
 
 ---
 
 ## Supported input formats
 
-| Extension | Description |
-|-----------|-------------|
-| `.ome.tiff` / `.ome.tif` | OME-TIFF, read with `tifffile`: the file's first series at its base level; any pyramid it already carries is not reused |
-| `.qptiff` | Akoya/PerkinElmer Vectra/PhenoImager qpTIFF. Every series and pyramid level is compared by pixel count and only the largest is loaded, so thumbnail, macro and label images are discarded regardless of their order in the file |
-| `.tiff` / `.tif` | Standard TIFF, read the same way as OME-TIFF |
-| `.czi` | Zeiss CZI, read with `czifile`. Leading axes are reduced by taking index `0` until three axes remain; when the outermost axis has more than one entry, the warning line `The CZI file has multiple scenes: only the first one is used` is reported |
-| `.nd2` | Nikon NIS-Elements ND2, read with `nd2`. Every axis other than `Y`, `X`, channels `C` and RGB components `S` is reduced to one plane: the middle plane of `Z`, index `0` of any other axis (positions `P`, time `T`). Only that plane is read from disk. RGB components become the channels; a file with both `C` and `S` keeps its first channel. When an axis is reduced, the warning line `The ND2 file has extra axes (<axis>=<size>, ...): using <axis>=<index>, ...` is reported |
+| Format | Extensions | Reader |
+|--------|------------|--------|
+| OME-TIFF, BigTIFF | `.ome.tiff`, `.ome.tif`, `.ome.btf`, `.tiff`, `.tif`, `.btf` | tifffile |
+| Akoya qpTIFF | `.qptiff` | tifffile |
+| Aperio SVS, Hamamatsu NDPI, Leica SCN, Ventana BIF | `.svs`, `.ndpi`, `.scn`, `.bif` | tifffile |
+| Zeiss CZI | `.czi` | pylibCZIrw |
+| Nikon ND2 | `.nd2` | nd2 |
 
-FOCUS looks for the extensions in the order listed and loads the first file that matches the highest-priority extension present, so an `.ome.tiff` wins over a `.czi` in the same directory. Extension matching is case-insensitive. If no supported file is found, the sample constructor raises `FileNotFoundError`.
+Extension matching is case-insensitive and hidden files are ignored. Formats outside this list (for example MIRAX `.mrxs` or Olympus `.vsi`) are converted to OME-TIFF first, with `bfconvert` from Bio-Formats or the QuPath OME-TIFF export.
 
-!!! note "Channel handling"
-    A 2D image becomes `(H, W, 1)`. When the last axis is larger than the smallest of the first two, the smallest axis is moved to the end (channels-first input). Images with more than three channels are cut to the **first three** channels.
+Every reader exposes the acquisition lazily, so pixels are read tile by tile and memory does not scale with the slide. Auxiliary images (label, macro, thumbnail, overview, map, preview) are never chosen; among the other series or scenes the one with the most pixels is the acquisition, and other acquisition-sized series are reported. Axes come from the reader metadata; a time series keeps `T = 0` with a warning, and a Z-stack is reduced by `z_projection`. See [Input contract](../scientific/microscopy_methods.md#2-input-contract) and [Time and depth](../scientific/microscopy_methods.md#4-time-and-depth).
 
-    Tissue detection needs 3 channels for its grayscale conversion, so 1- and 2-channel images are promoted for that step only: a single channel is replicated to RGB, two channels gain a zero third channel. This is the same promotion the alignment GUI applies when it builds its display image, so the mask is derived from the composite you see when aligning. The stored pixel data keeps its original channel count.
-
-!!! tip "Dark-background acquisitions: set `background_color: black`"
-    Detection handles both polarities (see step `3/5`), but the fill colour does not follow it. On a fluorescence image the contrast stretch pushes tissue close to the maximum, so filling the background with the default white leaves tissue and background indistinguishable. Set `background_color: "black"` for such images.
+!!! note "Pixel size"
+    The pixel size is read from the file metadata (OME, Aperio `MPP`, ImageJ, TIFF resolution tags, CZI `Scaling`, calibrated ND2 voxel size). Values outside 0.01 to 100 µm and inch-based screen or print defaults (72, 96, 300 dpi and similar) are rejected. When the file has no valid value, the `pixel_size` setting is used. Without either, the run continues with a warning: tissue areas and the crop margin fall back to pixel values, and `feature_extraction` cannot choose its encoding level. See [Pixel size](../scientific/microscopy_methods.md#24-pixel-size).
 
 ---
 
 ## Directory layout
 
-Place one image file per sample inside `<sample_id>/<modality_name>/`:
+Place exactly one supported image file per sample inside `<sample_id>/<modality_name>/`. A folder with several supported images raises `ValueError`, so a sample never uses one of two acquisitions silently.
 
 ```
 dataset_root/
 ├── sample_A/
 │   └── he_image/
-│       └── section_A.tif
+│       └── section_A.svs
 ├── sample_B/
 │   └── he_image/
 │       └── section_B.czi
 ├── sample_C/
 │   └── he_image/
-│       └── section_C.qptiff
-├── sample_D/
-│   └── he_image/
-│       └── section_D.nd2
+│       └── section_C.ome.tiff
 ```
 
 The modality name (e.g. `he_image`) must match the name declared in the FOCUS configuration file.
@@ -72,60 +55,38 @@ The modality name (e.g. `he_image`) must match the name declared in the FOCUS co
 
 ## Preprocessing steps
 
-### 1/5: Load and normalise
+Each sample runs the steps below, reported on the console and in the GUI. A cached output is reported as such and no step runs.
 
-The file is read according to its extension, then normalised:
+| Step | What it does |
+|------|--------------|
+| `1/5` Reading image | Opens the source lazily and reports its format, size, channels, sample type and any reader notes (series chosen, axes interpreted, alpha dropped) |
+| `2/5` Resolving image type | Resolves the pixel size, `image_type` (with its evidence) and the Z plane |
+| `3/5` Detecting tissue | Detects the tissue on a canvas of about 8 µm per pixel and reports its coverage; derives the display windows from the tissue pixels |
+| `4/5` Cropping to tissue or Removing background | Runs only when `crop_to_tissue` or `remove_background` is enabled; the line reads `Cropping to tissue` when cropping is on, otherwise `Removing background` |
+| `5/5` Writing OME-TIFF | Stages the pyramid, digests the level-0 pixels and writes the file atomically |
 
-- a 2D array gains a trailing channel axis;
-- if the last axis is larger than the smallest of the first two, the smallest axis is transposed to the end;
-- pixel values become `float32` in `[0, 1]`: a `float32` array whose maximum is already ≤ 1 is left untouched, an integer array is divided by its **dtype** maximum (`np.iinfo(dtype).max`, so a 12-bit image stored as `uint16` is divided by 65535), and any other float array is divided by its **own** maximum;
-- channels beyond the third are dropped.
+Tissue is always detected, because its outline is stored as an OME ROI and its pixels set the display windows. Detection never changes pixels. The detection rules (HSV saturation and Otsu for brightfield, per-channel scaling and the triangle method for fluorescence, a 0.05 mm² minimum piece capped at a tenth of the largest piece) are described in [Tissue](../scientific/microscopy_methods.md#5-tissue).
 
-The source file's dtype is remembered here and decides the output storage dtype in step `5/5`.
+### Image types
 
-### 2/5: Colour enhancement
+`image_type: auto` is resolved from the configuration, then the acquisition metadata (acquisition mode, contrast method, illumination, emission wavelength, fluorophore, whole-slide brightfield scanner format), then the channel layout (two or more non-RGB channels are fluorescence), then the image polarity (a dark border is fluorescence). The last rule raises a warning that asks for an explicit `image_type`. The evidence is recorded in the output. See [Image type](../scientific/microscopy_methods.md#3-image-type).
 
-Runs when `color_enhancement=true`, in this order:
+| | `brightfield` | `fluorescence` |
+|---|---|---|
+| `z_projection: auto` | Best-focus plane | Maximum-intensity projection |
+| Tissue detection | HSV saturation, median blur, Otsu | Per-channel scaling, channel maximum, triangle |
+| Background fill (`remove_background`) | Maximum of the sample type (white) | 0 |
+| Display rendering | Identity (RGB) or windowed gray | Per-channel window and colour |
+| Lossless codec | JPEG 2000 reversible (8-bit), zstd otherwise | zstd |
+| `feature_extraction` registration | Allowed | Rejected |
 
-1. **Gamma correction**: `I ← I^gamma`, elementwise, in place. With the default `gamma=0.45` (below 1) midtones are brightened.
-2. **Contrast stretching**: the pixels greater than 0 across the **whole image, all channels pooled**, give one pair of percentiles: `contrast_saturation` and `100 − contrast_saturation` (by default the 0.35th and 99.65th). The image is clipped to that interval and linearly rescaled to `[0, 1]`. The same pair is applied to every channel, and the rescale is skipped when the two percentiles are equal.
+### Crop and fill
 
-When more than 9,000,000 pixels are non-zero, the two percentiles are estimated from a strided subsample of those values, with a stride coprime with the channel count so every channel is sampled. The clip and rescale are still applied to every pixel.
+`crop_to_tissue` crops to the bounding box of the tissue mask plus a fixed margin of 100 µm (250 px without a pixel size), clamped to the image. Pixels inside the box are unchanged, and the box origin is recorded as the crop offset. `remove_background` sets every pixel outside the tissue mask to the fill of the image type, so a fluorescence image is never filled with white. Both are off by default, so the output keeps the whole acquisition; the fill in particular changes the values that feature extraction and any quantitative reading use. See [Crop and fill](../scientific/microscopy_methods.md#53-crop-and-fill-opt-in).
 
-### 3/5: Tissue detection and background removal
+### Display
 
-Detection runs on a proxy of the image downscaled (area interpolation) so it holds at most 9,000,000 pixels; an image already at or below that size is used as is. The scale factor is kept so the mask can be mapped back.
-
-On that proxy:
-
-1. When the image has fewer than 3 channels, promote it to 3 (replicated single channel, or a zero-padded third channel).
-2. Determine the polarity, then reduce to a `uint8` grayscale in which **tissue is the bright class**:
-    - **Bright background**: the image is converted to `uint8`; every pixel that is 0 in all channels, and every near-black region (all channels at most 32) that touches the image border, is set to white; the image is then converted to grayscale and inverted. Near-black regions enclosed by tissue (pigment) are kept.
-    - **Dark background**: the grayscale is scaled so its 99.9th percentile maps to 255 and used as is, with neither the black-pixel step nor the inversion.
-
-    The polarity is probed for every channel count on the floating-point grayscale: the median of a border frame (the outer 5% of the shorter side) is compared with the median of the whole grayscale, and the background counts as dark when the border is strictly darker and below a third of the 99th-percentile value. A scan filled edge to edge with tissue gives equal medians and takes the bright-background path.
-3. Clip the grayscale at its `clip_percentile` percentile and apply a 25 × 25 Gaussian blur.
-4. Compute Otsu's threshold on the blurred image and apply it to the **unblurred, unclipped** grayscale. The blur therefore shapes only the histogram the threshold value is derived from; the mask itself is cut at full detail.
-5. Remove connected components of 50 pixels or fewer, then fill holes.
-6. Keep the external contours whose area is at least `min_object_coverage × (proxy height × proxy width)`, capped at a tenth of the largest contour's area, and fill them; this is the tissue mask. If no contour is found at all, `Warning: No contours found; cannot refine background mask.` is printed and the unrefined mask from sub-step 5 is kept.
-
-When `remove_background=true`, the mask is upsampled back to full resolution with nearest-neighbour interpolation and applied: tissue pixels are kept, every other pixel is set to `background_color` (`white` → 1, `black` → 0, in every channel; any other value raises `ValueError`).
-
-The blur kernel (25 px) and the speck-removal size (50 px) are fixed constants expressed in proxy pixels, not configuration fields.
-
-### 4/5: Crop to tissue
-
-Runs when `crop_to_tissue=true`, using the same mask as step `3/5`, including when `remove_background=false`. The mask's bounding box is scaled back to full-resolution coordinates, expanded by `crop_margin` pixels on each side, and clamped to the image bounds. An empty mask raises `ValueError: The image appears to be entirely background; cannot crop.`
-
-Because the bounding box is read at proxy resolution, its edges carry up to one proxy pixel (`1/scale` full-resolution pixels) of tolerance on top of `crop_margin`.
-
-### 5/5: Write the OME-TIFF pyramid
-
-The number of levels is computed from the final (post-crop) image size so the smallest level holds at most 9,000,000 pixels; it is not configurable. Level `ℓ` is the image scaled by `0.5^ℓ` with area interpolation.
-
-Each level is quantised from `float32` to the storage dtype, then written into a BigTIFF with zlib compression and a predictor matched to that dtype (3 for `float32`, 2 for integers). `uint8` and `uint16` sources pass through, float sources stay `float32`, and any other integer depth (`int16`, `uint32`, …) is stored as `uint16`. Levels are separate top-level IFDs, not SubIFDs, and the OME-XML block describing all of them sits in the description of the first IFD.
-
-A 3-channel image is written interleaved (`photometric='rgb'`, axes `YXC`, one OME channel named `RGB`); any other channel count is written as one `minisblack` plane per channel (axes `YX`, OME channels named `Channel_0` …).
+Contrast is stored, not applied. Each channel carries a name, a colour and a window in native values: identity windows for RGB brightfield, otherwise 0.35% of the tissue pixels saturated at each end. Colours come from the metadata, else from the emission wavelength or a nuclear stain name, else the ImageJ composite order. The alignment GUI renders multichannel images as a coloured composite of these windows, with one toggle per channel; the first four channels are visible by default. See [Display rendering](../scientific/microscopy_methods.md#6-display-rendering).
 
 ---
 
@@ -133,31 +94,30 @@ A 3-channel image is written interleaved (`photometric='rgb'`, axes `YXC`, one O
 
 Set under `processing_settings` for the modality. Absent values fall back to the defaults below.
 
-| Name | Type | Default | Used by | Description |
-|------|------|---------|---------|-------------|
-| `color_enhancement` | `bool` | `true` | `2/5` | Run gamma correction and contrast stretching |
-| `gamma` | `float` | `0.45` | `2/5` | Exponent of `I^gamma`; below 1 brightens, above 1 darkens |
-| `contrast_saturation` | `float` | `0.35` | `2/5` | Percentage of non-zero pixels saturated at **each** end of the histogram |
-| `remove_background` | `bool` | `true` | `3/5` | Fill non-tissue pixels with `background_color` |
-| `background_color` | `str` | `"white"` | `3/5` | `"white"` or `"black"`; any other value raises `ValueError` when background removal runs. Not tied to the detected polarity; pick `"black"` for dark-background acquisitions |
-| `clip_percentile` | `int` | `99` | `3/5` | Percentile at which the inverted grayscale is clipped before the blur and Otsu threshold |
-| `min_object_coverage` | `float` | `0.01` | `3/5` | Minimum area of a tissue contour, as a fraction of the detection-proxy area; capped at a tenth of the largest contour's area |
-| `crop_to_tissue` | `bool` | `true` | `4/5` | Crop to the tissue bounding box |
-| `crop_margin` | `int` | `250` | `4/5` | Full-resolution pixels added on each side of the bounding box |
-| `force_recomputing` | `bool` | `false` | all | Reprocess even when the output file already exists |
+| Name | Type | Default | Description |
+|------|------|---------|-------------|
+| `image_type` | `str` | `"auto"` | `"auto"` (from the metadata), `"brightfield"` (H&E, IHC, special stains) or `"fluorescence"` (IF, confocal, multiplexed) |
+| `z_projection` | `str` | `"auto"` | `"auto"` (maximum projection for fluorescence, best focus for brightfield), `"max"`, `"best_focus"` or `"middle"` |
+| `crop_to_tissue` | `bool` | `false` | Crop to the tissue bounding box plus 100 µm |
+| `remove_background` | `bool` | `false` | Set every pixel outside the tissue to the fill of the image type |
+| `pixel_size` | `float` or `null` | `null` | µm per pixel, used only when the file metadata has none; a metadata value that differs by more than 5% is reported |
+| `force_recomputing` | `bool` | `false` | Reprocess even when the output carries the current fingerprint |
 
-Apart from `background_color`, none of these values are checked. They are passed straight to the processing code, so an out-of-range value either raises there (a `clip_percentile` above 100 fails inside `numpy.percentile`) or changes the result, instead of being reported during configuration validation.
+Configuration validation rejects an `image_type` or `z_projection` outside these values, a `pixel_size` that is not a positive number, and `image_type: "fluorescence"` combined with `registration_type: "feature_extraction"`.
 
-!!! note "Not parameters"
-    The number of pyramid levels, the 9,000,000-pixel detection-proxy cap, the 25 px Gaussian blur kernel, the 50 px speck-removal size, the near-black padding level (32), the largest-object fraction (0.1) and the dark-border ratio (1/3) are internal constants. There is no `pyramid_levels`, `gaussian_blur_kernel_size` or `min_object_size` field for this modality.
+!!! warning "Removed settings"
+    `color_enhancement`, `gamma`, `contrast_saturation` (contrast is display-only and automatic), `background_color` (the fill follows `image_type`), `min_object_coverage`, `clip_percentile` (tissue detection is calibrated in µm) and `crop_margin` (a fixed 100 µm) are no longer microscopy processing settings. A configuration that sets one raises `ValueError` naming the reason. The `background_color` key of `registration_settings` is a different setting and remains valid (see [Registration](#registration)).
 
 ---
 
 ## Caching
 
-Microscopy preprocessing has no intermediate caches. Before doing any work, `process_image()` computes a fingerprint of the preprocessing method version, the source file (its size and the SHA-256 of its first and last 8 MiB), the sample, the modality, every processing setting, the internal detection and pyramid constants, and the versions of NumPy, OpenCV, scikit-image, SciPy and tifffile. When the existing output carries the same fingerprint and `force_recomputing` is `false`, the output is reused (the log reports a cached result). An output with another fingerprint, or without one, is regenerated, so changing `gamma`, `crop_margin` or any other setting takes effect on the next run.
+Microscopy preprocessing has no intermediate caches. The output is reused when it carries the current fingerprint and `force_recomputing` is `false`. The fingerprint covers the method version, the SHA-256 of the whole source file, the sample and modality names, the settings, the calibration constants and the versions of the imaging libraries and the format reader. The source SHA-256 stored in the output is reused while the source path, size and modification time are unchanged, so an unchanged source is not re-hashed. Outputs are written to a temporary file and renamed into place.
 
-A regenerated image whose level-0 pixels are identical to the file it replaces keeps the alignments made on that file valid; an image whose pixels changed must be re-aligned (see [Alignment](../pipeline/alignment.md)). Outputs are written to a temporary file and renamed into place.
+A regenerated image whose level-0 pixels are identical to the file it replaces keeps the alignments made on that file valid. When the pixels differ, a warning reports that alignments made on the previous image must be redone (see [Alignment](../pipeline/alignment.md)). See [Cache key and regeneration](../scientific/microscopy_methods.md#8-cache-key-and-regeneration).
+
+!!! note "Upgrading from `microscopy-2`"
+    The method version is part of the fingerprint, so every microscopy output is rebuilt once. Outputs of `microscopy-2` stored contrast-enhanced pixels by default, so manual alignments made on them must be redone once.
 
 ---
 
@@ -171,18 +131,16 @@ One OME-TIFF per sample:
 
 | Property | Value |
 |----------|-------|
-| Data type | `uint8`/`uint16` sources pass through, float sources stay `float32`, other integer depths become `uint16` |
-| Value range | Integer output is `round(I × dtype_max)` clipped to the dtype's range (`[0, 255]`, `[0, 65535]`); `float32` output is written unchanged, on the normalised scale used internally |
-| Compression | zlib, predictor 2 (integer) or 3 (`float32`) |
-| Container | BigTIFF |
-| Pyramid | One top-level IFD group per level, level `ℓ` scaled by `0.5^ℓ`; enough levels for the smallest to hold at most 9,000,000 pixels |
-| Metadata | OME-XML for all levels, in the first IFD's description; each level is an `Image` named `ResolutionLevel_<i>` |
-| Pixel size | `PhysicalSizeX/Y` in µm on every level when the source file records one (level-0 size scaled by the measured size ratio), read from OME `PhysicalSize`, the Aperio `MPP`, the ImageJ unit and resolution tags, TIFF resolution tags (inch or centimetre), the chosen qpTIFF level, the CZI `Scaling` distances or a calibrated ND2 voxel size; values outside 0.01 to 100 µm are ignored |
-| Provenance | A `MapAnnotation` (namespace `focus`) with the preprocessing fingerprint, the level-0 pixel digest, the crop offset `"x,y"` (origin of the output in the source image, in source pixels), the method version, the pixel-size source, and, after a pixel-identical regeneration, the signature of the replaced file. See [Data Schemas](../api/data_types.md#1-preprocessing-outputs) |
-| RGB images | Interleaved `photometric='rgb'`, one channel named `RGB` with 3 samples per pixel |
-| Single/multi-channel | One `minisblack` plane per channel, named `Channel_<c>` |
+| Pixels | Level 0 holds the source pixels after the optional crop and fill: the source sample type (`uint8`, `uint16`, `int16`, `uint32`, `float32` and the other OME pixel types) and every channel |
+| Layout | One OME-TIFF series, 512 x 512 tiles; one page per channel, or one interleaved page for RGB |
+| Pyramid | Lower levels stored as SubIFDs, each halving both sides with a 2 x 2 area average, until the image fits in one tile |
+| Compression | Lossless: JPEG 2000 reversible for 8-bit brightfield, zstd with a predictor otherwise; readable by tifffile and Bio-Formats 8 (QuPath 0.7) |
+| Channel metadata | Name, colour, excitation and emission wavelengths, fluorophore, illumination type, acquisition mode and contrast method, when the source records them |
+| Pixel size | `PhysicalSizeX/Y` in µm when known, plus TIFF resolution tags on every page |
+| Tissue outline | OME ROI `tissue`, one polygon per tissue piece in level-0 pixels |
+| Provenance | `MapAnnotation` (namespace `focus`): fingerprint, input signature, pixel digest, crop offset, method, pixel-size source, image type and evidence, Z projection, source series, background fill, display windows (`focus_display`) and, after a pixel-identical regeneration, the superseded signature. See [OME-XML](../scientific/microscopy_methods.md#73-ome-xml) and [Data Schemas](../api/data_types.md#1-preprocessing-outputs) |
 
-No merged file is produced for microscopy; the returned mapping contains one entry per successfully processed sample.
+A source compressed with lossy JPEG (for example an SVS) is decoded once and stored lossless, so the output is larger than the source. No merged file is produced for microscopy; the returned mapping contains one entry per successfully processed sample.
 
 ---
 
@@ -193,9 +151,9 @@ No merged file is produced for microscopy; the returned mapping contains one ent
 `feature_extraction` gives each anchor spot one embedding of the image area inside its footprint, computed with [Prov-GigaPath](https://huggingface.co/prov-gigapath/prov-gigapath), a pathology foundation model downloaded from HuggingFace on first use, so `huggingface_token` must be set in the configuration. The image is encoded at the stored pyramid level closest to the model's 0.5 µm per pixel, using the pixel size recorded at preprocessing. It runs on a GPU when one is available and otherwise on the CPU.
 
 !!! warning "Use `feature_extraction` only on H&E-stained brightfield images"
-    Prov-GigaPath is pretrained on brightfield tiles from H&E-stained whole-slide images, so its embeddings represent H&E morphology. Run it only when this modality is an **H&E-stained histological section imaged in brightfield RGB**.
+    Prov-GigaPath is pretrained on brightfield tiles from H&E-stained whole-slide images, so its embeddings represent H&E morphology. `feature_extraction` applies to brightfield images only. An image recorded as `fluorescence` is rejected: at configuration time when `image_type` is `"fluorescence"`, and at registration time from the `focus_image_type` recorded in the preprocessed image (for example when `image_type: auto` resolved to fluorescence).
 
-    Nothing in FOCUS checks the stain or the imaging mode. An immunofluorescence, IHC or other-stain image is encoded the same way, and a complete embedding matrix is returned with no error. The values do not describe the tissue. A single-channel image is replicated to RGB first, so it runs to completion rather than failing.
+    The stain of a brightfield image is not checked. An IHC or other-stain brightfield image is encoded the same way, and a complete embedding matrix is returned with no error; the values do not describe the tissue. A single-channel image is replicated to RGB first, so it runs to completion rather than failing.
 
     For any such modality use `registration_type: none`. Preprocessing and alignment still run and the aligned OME-TIFF remains available; only the embedding step is skipped.
 
@@ -203,7 +161,7 @@ No merged file is produced for microscopy; the returned mapping contains one ent
 
 | Name | Type | Default | Description |
 |------|------|---------|-------------|
-| `background_color` | `str` | `"white"` | Colour used to recognise empty image areas. An encoder token whose pixels match it in at least 99% of positions is never read; an anchor spot whose footprint holds only such tokens receives an all-zero embedding, keeping one output row per anchor spot |
+| `background_color` | `str` | `"white"` | Colour used to recognise empty image areas when the image was not filled. An encoder token whose pixels match it in at least 99% of positions is never read; an anchor spot whose footprint holds only such tokens receives an all-zero embedding, keeping one output row per anchor spot. When preprocessing filled the background (`remove_background: true`), the fill recorded in the image (`focus_background_fill`) is used instead: 0 counts as black, any other value as white |
 | `force_recomputing` | `bool` | `false` | Recompute even if the registration output matches its inputs |
 
 ```yaml
@@ -218,22 +176,33 @@ See [Registration](../pipeline/registration.md) for the algorithm.
 
 ## Config example
 
-```yaml
-modalities:
-  - name: he_image
-    type: microscopy_image
-    processing_settings:
-      color_enhancement: true
-      gamma: 0.45
-      contrast_saturation: 0.35
-      remove_background: true
-      background_color: white
-      clip_percentile: 99
-      min_object_coverage: 0.01
-      crop_to_tissue: true
-      crop_margin: 250
-      force_recomputing: false
-    registration_type: feature_extraction
-    registration_settings:
-      background_color: white
-```
+=== "H&E brightfield (feature extraction)"
+
+    ```yaml
+    modalities:
+      - name: he_image
+        type: microscopy_image
+        processing_settings:
+          image_type: brightfield
+          z_projection: auto
+          crop_to_tissue: false
+          remove_background: false
+          pixel_size: null
+          force_recomputing: false
+        registration_type: feature_extraction
+        registration_settings:
+          background_color: white
+    ```
+
+=== "Multiplexed fluorescence"
+
+    ```yaml
+    modalities:
+      - name: if_image
+        type: microscopy_image
+        processing_settings:
+          image_type: fluorescence
+          z_projection: max
+          crop_to_tissue: true
+        registration_type: none
+    ```

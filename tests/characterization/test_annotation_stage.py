@@ -137,3 +137,42 @@ def test_merged_annotation_keeps_the_merged_reference(tmp_path: Path) -> None:
     assert values[0:2] == ["region", "region"] and values[3:5] == ["region", "region"]
     assert pd.isna(values[2]) and pd.isna(values[5])
     assert "spatial_annotation" not in ad.read_h5ad(merged_path).obs
+
+
+def _image_with_offset(path: Path, offset: str | None) -> None:
+    """A tiny OME-TIFF whose FOCUS MapAnnotation records ``offset`` (none when None)."""
+    import tifffile
+
+    entry = f'<M K="focus_crop_offset">{offset}</M>' if offset is not None else ""
+    xml = (
+        '<OME xmlns="http://www.openmicroscopy.org/Schemas/OME/2016-06">'
+        '<StructuredAnnotations><MapAnnotation ID="Annotation:0" Namespace="focus">'
+        f"<Value>{entry}</Value></MapAnnotation></StructuredAnnotations></OME>"
+    )
+    tifffile.imwrite(path, np.zeros((4, 4), np.uint8), description=xml, metadata=None)
+
+
+@pytest.mark.parametrize(("offset", "labelled"), [("10,10", 2), ("0,0", 1), (None, 1)])
+def test_annotations_on_a_cropped_image_follow_the_crop(
+    tmp_path: Path, offset: str | None, labelled: int
+) -> None:
+    """GeoJSON drawn on the source image is matched after shifting by the recorded crop offset.
+
+    The polygon covers source pixels 9 to 15; the aligned spots lie at (1, 0), (3, 2) and
+    (11, 10) in the cropped image: unshifted only the third is inside; a crop starting at
+    (10, 10) moves them to (11, 10), (13, 12) and (21, 20), so the first two are inside.
+    """
+    config, files, aligned = annotation_inputs(tmp_path, same_source=False)
+    square = [[[9, 9], [15, 9], [15, 15], [9, 15], [9, 9]]]
+    files["annotation"] = {}
+    for sample in ("A", "B"):
+        geojson = tmp_path / sample / "annotation" / "regions.geojson"
+        collection = json.loads(geojson.read_text())
+        collection["features"][0]["geometry"]["coordinates"] = square
+        geojson.write_text(json.dumps(collection))
+        image = tmp_path / sample / "annotation.ome.tiff"
+        _image_with_offset(image, offset)
+        files["annotation"][sample] = str(image)
+    outputs = _run_annotation_transfer(config, files, aligned)
+    labels = ad.read_h5ad(outputs["A"]).obs["spatial_annotation"]
+    assert int(labels.notna().sum()) == labelled

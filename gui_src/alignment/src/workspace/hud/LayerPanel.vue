@@ -12,6 +12,7 @@ import TagLabel from '@focus/ui/components/ui/TagLabel.vue';
 import { useMainStore } from '../../store/main';
 import { useUiStore } from '../../store/ui';
 import { useLayer, type LayerRole } from '../../composables/useLayer';
+import ChannelList from './ChannelList.vue';
 import ClassFilterList from './ClassFilterList.vue';
 import ForegroundFilter from './ForegroundFilter.vue';
 import SpotSizeFields from './SpotSizeFields.vue';
@@ -39,9 +40,12 @@ const opacityPercent = computed(() => (store.targetOpacity * 100).toFixed(0));
         <ForegroundFilter :role="role" />
         <SpotSizeFields :role="role" />
       </div>
-      <p v-else class="type-footnote nums text-fg2">
-        {{ layer.meta?.image_shape?.join(' × ') }} px
-      </p>
+      <div v-else class="flex flex-col gap-4">
+        <ChannelList v-if="layer.channels.length" :role="role" />
+        <p class="type-footnote nums text-fg2">
+          {{ layer.meta?.image_shape?.join(' × ') }} px
+        </p>
+      </div>
     </Disclosure>
     <RangeSlider v-if="role === 'target'" v-model="store.targetOpacity" label="Opacity">
       <template #value>{{ opacityPercent }}%</template>

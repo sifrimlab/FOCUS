@@ -12,13 +12,12 @@ if TYPE_CHECKING:
     from focus.alignment.coordinator import DirectMappingAligner
 
 import os
-import tifffile
 import anndata
 import numpy as np
 from PIL import Image
 
 
-from focus.io.ome import hw_from_axes
+from focus.alignment.image_view import ImageView, load_view
 
 from focus.alignment.spot_payload import pack_spots, acquisition_basis
 from focus.spot_colors import cluster_colors, label_order
@@ -35,70 +34,22 @@ class AlignmentInputs:
 
     def _load_ome_tiff(
         self, filename: str
-    ) -> tuple[np.ndarray, tuple[int, int], tuple[int, int]]:
+    ) -> tuple[np.ndarray | ImageView, tuple[int, int], tuple[int, int]]:
         """
-        Load an OME-TIFF file, returning the lowest pyramid level as RGB uint8 for display
-        plus the true (H, W) of both the display level and the full-resolution level.
+        Load the display level of an OME-TIFF plus the (H, W) of that level and of level 0.
 
-        Handles SubIFD-based pyramids (new format, written with subifds + ome=True),
-        direct SubIFD page access (fallback when series.levels doesn't expose SubIFDs),
-        and multi-series pyramids (old format with a separate series per level).
-
-        The (H, W) dimensions are derived from the OME ``axes`` metadata (via
-        ``hw_from_axes``), so they are correct for both channel-first ('CYX', e.g. Raman)
-        and channel-last ('YXC', e.g. RGB microscopy) layouts. This is what makes the
-        display->full-resolution ``scale_factors`` accurate for multi-channel images.
-
-        Returns
-        -------
-        tuple of (image_rgb, (H_low, W_low), (H_full, W_full))
-                image_rgb: uint8 array (H, W, 3) at lowest pyramid resolution
-                (H_low, W_low): height/width of the loaded (display) level
-                (H_full, W_full): height/width of the full-resolution level
+        The display level is the largest stored level within the display caps
+        (``image_view.display_level``). A FOCUS image carrying its display settings is
+        returned as an :class:`ImageView` (rendered with the stored per-channel windows and
+        colours); any other file is converted to RGB uint8 with the legacy min-max rule.
+        (H, W) come from the OME axes, so channel-first and channel-last layouts scale alike.
         """
         if not os.path.exists(filename):
             raise FileNotFoundError(f"File not found: {filename}")
-
-        with tifffile.TiffFile(filename) as tif:
-            series0 = tif.series[0]
-            original_shape = series0.shape
-            original_axes = getattr(series0, "axes", "") or ""
-
-            # Priority 1: SubIFD pyramid via series.levels (modern tifffile with ome=True + subifds)
-            if len(series0.levels) > 1:
-                lowest = series0.levels[-1]
-                image_data = lowest.asarray()
-                lowest_shape = lowest.shape
-                lowest_axes = getattr(lowest, "axes", "") or original_axes
-
-            # Priority 2: direct SubIFD page access — handles ome=True + subifds written by
-            # tifffile versions that don't expose SubIFDs through series.levels
-            elif tif.pages[0].pages:
-                lowest_page = tif.pages[0].pages[-1]
-                image_data = lowest_page.asarray()
-                lowest_shape = image_data.shape
-                lowest_axes = getattr(lowest_page, "axes", "") or ""
-
-            # Priority 3: separate top-level series per pyramid level (old ome_types format)
-            elif len(tif.series) > 1:
-                lowest = tif.series[-1]
-                image_data = lowest.asarray()
-                lowest_shape = lowest.shape
-                lowest_axes = getattr(lowest, "axes", "") or original_axes
-
-            # Priority 4: single-level file (no pyramid at all)
-            else:
-                image_data = series0.asarray()
-                lowest_shape = series0.shape
-                lowest_axes = original_axes
-
-        # Identify the true (H, W) of each level from OME axes metadata — never positional
-        # guessing — so the scale is correct regardless of channel-axis position/count.
-        H_full, W_full = hw_from_axes(original_shape, original_axes)
-        H_low, W_low = hw_from_axes(lowest_shape, lowest_axes)
-
-        image_rgb = _image_to_rgb_uint8(image_data, lowest_axes)
-        return image_rgb, (H_low, W_low), (H_full, W_full)
+        view, data, axes, low, full = load_view(filename)
+        if view is not None:
+            return view, low, full
+        return _image_to_rgb_uint8(data, axes), low, full
 
     def _load_anndata_spots(
         self, filename: str
@@ -168,12 +119,18 @@ class AlignmentInputs:
         full_coordinates is None for IMAGE modalities.
         """
         image, (H_low, W_low), (H_full, W_full) = self._load_ome_tiff(filename)
-        payload = Image.fromarray(image)
         metadata: ModalityMetadata = {
             "modality_type": "IMAGE",
             "modality_name": modality_name,
             "image_shape": [int(H_low), int(W_low)],
         }
+        payload: ImageView | Image.Image
+        if isinstance(image, ImageView):
+            payload = image
+            if image.metadata():
+                metadata["channels"] = image.metadata()
+        else:
+            payload = Image.fromarray(image)
         # Display (lowest level) -> full-resolution scale, per axis [y_scale, x_scale].
         scale_factors = np.array([H_full / H_low, W_full / W_low])
         return metadata, payload, None, scale_factors

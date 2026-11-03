@@ -105,16 +105,19 @@ Applicable modality type: `microscopy_image`, restricted by the encoder's traini
 
 The encoder is Prov-GigaPath, pretrained on brightfield tiles from H&E-stained whole-slide
 images[^xu2024] ([model card](https://huggingface.co/prov-gigapath/prov-gigapath)). The embeddings
-it produces are a representation of H&E morphology, and nothing in the FOCUS code path narrows or
-adapts that domain: windows are cut, ImageNet-normalized (§2.3) and forwarded to the model
-regardless of stain, imaging mode or channel semantics, and the resulting \(N_R \times 1536\) matrix
-is written out with no diagnostic. Applying it to immunofluorescence, IHC with other chromogens,
-other histological stains, or any non-brightfield-RGB acquisition therefore yields well-formed
-embeddings of an input the model was never trained on.
+it produces are a representation of H&E morphology. `feature_extraction` applies to brightfield
+images only: an image recorded as fluorescence is rejected, at configuration time when the modality
+sets `image_type: "fluorescence"` and at registration time from the `focus_image_type` that
+[microscopy preprocessing](microscopy_methods.md#3-image-type) records. Within brightfield, nothing
+in the FOCUS code path narrows or adapts the domain: windows are cut, ImageNet-normalized (§2.3) and
+forwarded to the model regardless of stain or channel semantics, and the resulting
+\(N_R \times 1536\) matrix is written out with no diagnostic. Applying it to IHC with other
+chromogens or other histological stains therefore yields well-formed embeddings of an input the
+model was never trained on.
 
 Channel coercion happens before encoding (`ensure_hwc3`): a 1-channel image is replicated to RGB, a
-4-channel image loses its 4th channel. A single-channel fluorescence image is consequently encoded as
-a grayscale brightfield slide rather than rejected.
+4-channel image loses its 4th channel. A single-channel brightfield image is consequently encoded as
+a grayscale slide.
 
 The intended configuration for those modalities is `registration_type: "none"`: preprocessing and
 alignment still run and their outputs are kept, only the registration matrix (and hence the MuData
@@ -123,7 +126,7 @@ modality) is not produced.
 ### 2.1 Encoding scale
 
 Prov-GigaPath tiles were cut from slides resized to 0.5 µm per pixel (20x)[^xu2024]. FOCUS encodes
-the stored level of the [preprocessed pyramid](microscopy_methods.md#5-ome-tiff-pyramid-output)
+the stored level of the [preprocessed pyramid](microscopy_methods.md#71-pyramid)
 whose pixel size is closest to 0.5 µm on a log scale. Level \(i\) has the pixel size
 \(u_i = u_0\sqrt{(W_0/W_i)(H_0/H_i)}\) from the measured level sizes; ties go to the finer level.
 FOCUS adaptation: the level is used as stored, without resampling, so a 40x scan (0.25 µm) is
@@ -133,8 +136,8 @@ than 0.5 µm is encoded at full resolution.
 The level-0 pixel size \(u_0\) (geometric mean of x and y) is read, in order, from:
 
 1. the `PhysicalSizeX/Y` of the preprocessed OME-TIFF, recorded by
-   [microscopy preprocessing](microscopy_methods.md#5-ome-tiff-pyramid-output) from the source
-   file;
+   [microscopy preprocessing](microscopy_methods.md#24-pixel-size) from the source file metadata
+   or, when the file has none, the `pixel_size` setting;
 2. for an MSI reference, whose coordinates are always µm, the inverse of the alignment map's linear
    scale \(\sqrt{|\det J|}\) at the anchor centroid;
 3. otherwise it is unknown: level 0 is encoded and a warning is logged.
@@ -177,10 +180,13 @@ is smaller than one token keep an all-zero row.
 \((o_x + (k + 0.5)p,\ o_y + (r + 0.5)p)\). A token belongs to an anchor when its centre, mapped to
 level 0 and into the anchor frame, lies inside the footprint (§1.3). An anchor whose footprint
 contains no token centre (a footprint smaller than one token) reads the token that contains the
-anchor centre. A token is background when at least 99 % of its pixels match the configured
-background color, a pixel matching iff `np.isclose(pixel, bg_color, atol=1e-3)` holds on every
+anchor centre. A token is background when at least 99 % of its pixels match the background color,
+a pixel matching iff `np.isclose(pixel, bg_color, atol=1e-3)` holds on every
 channel; background tokens are removed from every footprint, and an anchor left without tokens keeps
-an all-zero row.
+an all-zero row. The background color is the fill recorded by preprocessing
+(`focus_background_fill`, [microscopy §5.3](microscopy_methods.md#53-crop-and-fill-opt-in): 0 is
+black, any other value white) when the image was filled, and the configured `background_color`
+otherwise.
 
 **Readout.** For each chunk, one query per anchor is appended to the window's token sequence,
 initialised as the window CLS (class token plus its position embedding). The boolean attention mask
@@ -233,7 +239,8 @@ Per-sample AnnData:
 
 ### 2.5 Parameters reflected in code path
 
-- `background_color` (`white`/`black`, default `white`)
+- `background_color` (`white`/`black`, default `white`), used when the image records no background
+  fill
 - `force_recomputing` (default `false`)
 
 The window size is fixed by the model; a `patch_size` key in `registration_settings` is ignored with

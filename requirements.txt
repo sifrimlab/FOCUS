@@ -11,7 +11,7 @@ scikit-image>=0.26
 opencv-python
 Pillow
 tifffile
-czifile
+pylibCZIrw
 nd2
 ome-types
 imagecodecs

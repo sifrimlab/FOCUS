@@ -1,4 +1,4 @@
-"""Microscopy method version and supported source-file extensions."""
+"""Microscopy method version, supported source-file extensions and source pixel-size parsers."""
 
 from numpy.typing import ArrayLike
 import nd2
@@ -8,20 +8,27 @@ import numpy as np
 import tifffile
 
 
-# Supported input file extensions, ordered by priority
+# Supported input file extensions. TIFF-family files (OME, qpTIFF, Aperio SVS, Hamamatsu NDPI,
+# Leica SCN, Ventana BIF, BigTIFF) are read with tifffile, CZI with pylibCZIrw, ND2 with nd2.
 _SUPPORTED_EXTENSIONS = (
     ".ome.tiff",
     ".ome.tif",
+    ".ome.btf",
     ".qptiff",
     ".tiff",
     ".tif",
+    ".btf",
+    ".svs",
+    ".ndpi",
+    ".scn",
+    ".bif",
     ".czi",
     ".nd2",
 )
 
 
 # Bump whenever the same input and settings produce a different output image.
-METHOD_VERSION = "microscopy-2"
+METHOD_VERSION = "microscopy-3"
 
 
 # Plausible microscope pixel sizes; anything outside is a placeholder (e.g. a 72/300 dpi default).
@@ -42,6 +49,10 @@ _UNIT_TO_UM = {
 
 # TIFF ResolutionUnit tag values (tifffile RESUNIT) -> µm per unit
 _RESUNIT_TO_UM = {2: 25400.0, 3: 1e4, 4: 1e3, 5: 1.0}
+
+# Screen and print resolutions written by image editors and exporters when no pixel size is known.
+# An inch-based resolution tag equal to one of them is a placeholder, not a calibration.
+_PLACEHOLDER_DPI = (72, 96, 150, 200, 240, 300, 600, 1200)
 
 
 def _valid_pixel_size(size: ArrayLike | None) -> np.ndarray | None:
@@ -91,8 +102,13 @@ def _tiff_page_pixel_size(
             ), "imagej"
 
     unit_tag = page.tags.get("ResolutionUnit")
-    um_per_unit = _RESUNIT_TO_UM.get(int(unit_tag.value) if unit_tag is not None else 2)
+    resolution_unit = int(unit_tag.value) if unit_tag is not None else 2
+    um_per_unit = _RESUNIT_TO_UM.get(resolution_unit)
     if um_per_unit is None:
+        return None, "none"
+    if resolution_unit == 2 and any(
+        abs(r - dpi) < 1e-6 for r in (x_res, y_res) for dpi in _PLACEHOLDER_DPI
+    ):
         return None, "none"
     return _valid_pixel_size(
         [um_per_unit / x_res, um_per_unit / y_res]

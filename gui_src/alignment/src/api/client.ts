@@ -20,8 +20,13 @@ export const api = {
     return response.data;
   },
 
-  async getPayload(type: 'reference' | 'target', responseType: 'blob' | 'json' | 'arraybuffer' = 'json'): Promise<any> {
-    const response = await apiClient.get(`/${type}/payload`, { responseType });
+  async getPayload(
+    type: 'reference' | 'target',
+    responseType: 'blob' | 'json' | 'arraybuffer' = 'json',
+    channels?: number[],
+  ): Promise<any> {
+    const params = channels ? { channels: channels.join(',') } : undefined;
+    const response = await apiClient.get(`/${type}/payload`, { responseType, params });
     return response.data;
   },
 

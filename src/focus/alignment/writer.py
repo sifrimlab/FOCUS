@@ -6,7 +6,7 @@ from focus.alignment.preview import _first
 from focus.alignment.settings import _H5AD_COMPRESSION
 from focus.alignment.settings import _STEP_MERGE
 from focus.alignment.settings import _STEP_SAVE
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 if TYPE_CHECKING:
     from focus.alignment.coordinator import DirectMappingAligner
@@ -14,7 +14,9 @@ if TYPE_CHECKING:
 import os
 import tifffile
 import numpy as np
+import zarr
 
+from focus.io.ome import read_channel_names, read_ome_physical_size_um
 from focus.io.paths import merged_alignment_file
 from focus.io.anndata import write_h5ad_compat, concat_on_disk_compat
 
@@ -33,7 +35,7 @@ class AlignmentWriter:
 
         The bounding box comes from the moving layer's mapped corners, so the crop keeps the
         region of the fixed image that the moving image covers. The output carries the fixed
-        modality's name (see ``_aligned_output_path``).
+        modality's name (see ``_aligned_output_path``), its axes, pixel size and channel names.
         """
         for sample_id, aligned_coords in self.aligner._reporter.tqdm(
             list(self.aligner._aligned_coordinates.items()),
@@ -42,40 +44,16 @@ class AlignmentWriter:
             id_of=_first,
         ):
             reference_file = self.aligner._reference_modality[sample_id]
-
-            min_x, max_x = (
-                int(np.nanmin(aligned_coords[:, 0])),
-                int(np.nanmax(aligned_coords[:, 0])),
-            )
-            min_y, max_y = (
-                int(np.nanmin(aligned_coords[:, 1])),
-                int(np.nanmax(aligned_coords[:, 1])),
-            )
-
-            with tifffile.TiffFile(reference_file) as tif:
-                series = tif.series[0]
-                img_shape = series.shape
-                h, w = img_shape[-2], img_shape[-1]
-
-                min_x, min_y = max(0, min_x), max(0, min_y)
-                max_x, max_y = min(w, max_x), min(h, max_y)
-
-                if min_x >= max_x or min_y >= max_y:
-                    self.aligner._reporter.warning(
-                        "Invalid crop: the aligned layers do not overlap; no output written"
-                    )
-                    continue
-
-                slices = [slice(None)] * len(img_shape)
-                slices[-2] = slice(min_y, max_y)
-                slices[-1] = slice(min_x, max_x)
-                crop_data = series.asarray()[tuple(slices)]
-
+            crop = _crop_image(reference_file, aligned_coords)
+            if crop is None:
+                self.aligner._reporter.warning(
+                    "Invalid crop: the aligned layers do not overlap; no output written"
+                )
+                continue
             alignment_folder = os.path.join(self.aligner._path, sample_id, "alignment")
             os.makedirs(alignment_folder, exist_ok=True)
             aligned_file = self.aligner.cache._aligned_output_path(sample_id)
-
-            tifffile.imwrite(aligned_file, crop_data, compression="zlib")
+            _write_crop(aligned_file, reference_file, *crop)
             aligned_samples[sample_id] = aligned_file
 
         return aligned_samples
@@ -193,3 +171,56 @@ class AlignmentWriter:
             )
 
         return aligned_samples
+
+
+def _crop_image(path: str, coords: np.ndarray) -> tuple[np.ndarray, str, bool] | None:
+    """``(pixels, axes, rgb)`` of the bounding box of ``coords`` in the image, or None if empty.
+
+    Y and X are located by the series axes (RGB is YXS, channels are CYX); only the crop is read.
+    """
+    with tifffile.TiffFile(path) as tif:
+        series = tif.series[0]
+        axes = series.axes.upper()
+        yi, xi = axes.index("Y"), axes.index("X")
+        h, w = series.shape[yi], series.shape[xi]
+        min_x, max_x = (
+            max(0, int(np.nanmin(coords[:, 0]))),
+            min(w, int(np.nanmax(coords[:, 0]))),
+        )
+        min_y, max_y = (
+            max(0, int(np.nanmin(coords[:, 1]))),
+            min(h, int(np.nanmax(coords[:, 1]))),
+        )
+        if min_x >= max_x or min_y >= max_y:
+            return None
+        slices = [slice(None)] * len(series.shape)
+        slices[yi] = slice(min_y, max_y)
+        slices[xi] = slice(min_x, max_x)
+        data = zarr.open_array(series.aszarr(level=0), mode="r")[tuple(slices)]
+        rgb = (
+            cast(tifffile.TiffPage, tif.pages[0]).photometric
+            == tifffile.PHOTOMETRIC.RGB
+        )
+    return np.asarray(data), axes, rgb
+
+
+def _write_crop(path: str, source: str, data: np.ndarray, axes: str, rgb: bool) -> None:
+    """Tiled OME-TIFF of a crop with the source's axes, pixel size and channel names."""
+    metadata: dict[str, object] = {"axes": axes}
+    pixel_size = read_ome_physical_size_um(source)
+    if pixel_size is not None:
+        metadata.update(
+            PhysicalSizeX=float(pixel_size[0]), PhysicalSizeY=float(pixel_size[1])
+        )
+    names = read_channel_names(source)
+    if names and not rgb:
+        metadata["Channel"] = {"Name": names}
+    tifffile.imwrite(
+        path,
+        data,
+        ome=True,
+        metadata=metadata,
+        photometric="rgb" if rgb else "minisblack",
+        tile=(512, 512),
+        compression="zlib",
+    )

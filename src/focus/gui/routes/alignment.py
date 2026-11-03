@@ -12,6 +12,29 @@ if TYPE_CHECKING:
     from focus.gui.alignment import DirectMappingAlignmentGUI
 
 
+def _requested_channels() -> list[int] | None:
+    """Channel indices of ``?channels=0,2`` (empty string: none shown); None without the query."""
+    raw = request.args.get("channels")
+    if raw is None:
+        return None
+    return [int(v) for v in raw.split(",") if v.strip().lstrip("-").isdigit()]
+
+
+def _image_response(payload: object) -> ResponseReturnValue:
+    """PNG of an image payload; an ImageView renders the requested channels first."""
+    # Imported here: focus.alignment imports the GUI package at import time.
+    from focus.alignment.image_view import ImageView
+
+    if isinstance(payload, ImageView):
+        payload = payload.image(_requested_channels())
+    if not isinstance(payload, Image.Image):
+        return jsonify({"message": "Invalid payload type for IMAGE"}), 500
+    img_io = BytesIO()
+    payload.save(img_io, "PNG")
+    img_io.seek(0)
+    return send_file(img_io, mimetype="image/png")
+
+
 def register_routes(gui: DirectMappingAlignmentGUI) -> None:
     """Register the GUI endpoints in their established declaration order."""
 
@@ -75,13 +98,7 @@ def register_routes(gui: DirectMappingAlignmentGUI) -> None:
             return jsonify({"message": "Payload not set"}), 404
         modality_type = metadata.get("modality_type")
         if modality_type == "IMAGE":
-            if isinstance(payload, Image.Image):
-                img_io = BytesIO()
-                payload.save(img_io, "PNG")
-                img_io.seek(0)
-                return send_file(img_io, mimetype="image/png")
-            else:
-                return jsonify({"message": "Invalid payload type for IMAGE"}), 500
+            return _image_response(payload)
         elif modality_type == "SPOT":
             if isinstance(payload, bytes):
                 return Response(payload, mimetype="application/octet-stream")

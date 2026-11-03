@@ -1,257 +1,174 @@
-"""Detect microscopy tissue on a bounded detection canvas with original threshold rules."""
+"""Tissue detection on the low-resolution canvas: saturation for brightfield, intensity for fluorescence."""
 
 from __future__ import annotations
+
 from typing import cast
-from typing import TYPE_CHECKING
-import focus.preprocessing.microscopy.settings as _settings
 
-if TYPE_CHECKING:
-    from focus.preprocessing.microscopy.sample import MicroscopyImage
-
-import numpy as np
 import cv2
+import numpy as np
+import skimage.filters as filters
 import skimage.morphology as morphology
 from scipy.ndimage import binary_fill_holes
 
+import focus.preprocessing.microscopy.technology as tech
 from focus.runtime.reporter_context import get_reporter
 
 
-class TissueMask:
-    """Compute and refine the tissue mask on the bounded microscopy detection canvas."""
+def to_unit(canvas: np.ndarray, dtype: np.dtype) -> np.ndarray:
+    """Canvas values scaled to [0, 1] by the sample type's range (floats by their own maximum)."""
+    dtype = np.dtype(dtype)
+    if np.issubdtype(dtype, np.integer):
+        return canvas / float(np.iinfo(dtype).max)
+    peak = float(canvas.max()) if canvas.size else 0.0
+    return canvas / peak if peak > 0 else canvas
 
-    def __init__(self, sample: MicroscopyImage) -> None:
-        """Bind the component to its existing sample state."""
-        self.sample = sample
 
-    @staticmethod
-    def _as_detection_rgb(image_uint8: np.ndarray) -> np.ndarray:
-        """Coerce a uint8 (H, W, C) array to 3 channels so cv2's RGB->gray conversion accepts it.
+def has_dark_background(gray: np.ndarray) -> bool:
+    """True when the border frame (outer 5%) is darker than the image and than its bright content.
 
-        Only the tissue mask is computed from the result, so replicating/padding channels is
-        harmless. Follows the same convention as the alignment GUI's display payload
-        (``alignment._image_to_rgb_uint8``) so the mask is derived from the same composite the
-        user sees when aligning: 1 channel is replicated to RGB, 2 channels gain a zero third
-        channel. A 3-channel array is returned unchanged (same object, no copy).
-        """
-        c = image_uint8.shape[2]
-        if c == 1:
-            return np.repeat(image_uint8, 3, axis=2)
-        if c == 2:
-            pad = np.zeros((*image_uint8.shape[:2], 1), dtype=image_uint8.dtype)
-            return np.concatenate([image_uint8, pad], axis=2)
-        return image_uint8
+    A scan filled edge to edge with tissue gives equal medians and reports False.
+    """
+    h, w = gray.shape[:2]
+    k = max(1, round(0.05 * min(h, w)))
+    border = np.concatenate(
+        [gray[:k].ravel(), gray[-k:].ravel(), gray[:, :k].ravel(), gray[:, -k:].ravel()]
+    )
+    border_level = float(np.median(border))
+    return border_level < float(np.median(gray)) and border_level < (
+        tech.DARK_BORDER_RATIO * float(np.percentile(gray, 99))
+    )
 
-    @staticmethod
-    def _border_padding(image_uint8: np.ndarray) -> np.ndarray:
-        """Boolean (H, W) mask of the near-black connected regions that touch the image border.
 
-        A pixel is near-black when every channel is at most _DETECTION_BLACK_LEVEL.
-        """
-        near_black = cast(
-            np.ndarray,
-            np.all(image_uint8 <= _settings._DETECTION_BLACK_LEVEL, axis=-1),
+def _border_padding(rgb8: np.ndarray) -> np.ndarray:
+    """Near-black regions (all channels at most BLACK_LEVEL) connected to the image border."""
+    near_black = np.all(rgb8 <= tech.BLACK_LEVEL, axis=-1)
+    if not near_black.any():
+        return cast(np.ndarray, near_black)
+    _, labels = cv2.connectedComponents(near_black.astype(np.uint8), connectivity=8)
+    border = np.unique(
+        np.concatenate([labels[0], labels[-1], labels[:, 0], labels[:, -1]])
+    )
+    return cast(np.ndarray, np.isin(labels, border[border != 0]))
+
+
+def _odd(pixels: float) -> int:
+    return max(3, int(round(pixels)) | 1)
+
+
+def brightfield_signal(unit: np.ndarray, um_per_px: float) -> tuple[np.ndarray, int]:
+    """8-bit tissue signal of a brightfield canvas and the threshold that separates tissue.
+
+    RGB: HSV saturation, median-blurred, Otsu (CLAM). Stain is saturated, glass and padding are
+    not; border-connected near-black padding is set to 0 because compression noise in it has a
+    high saturation. One channel: inverted intensity with Otsu.
+    """
+    rgb8 = np.clip(np.rint(unit * 255), 0, 255).astype(np.uint8)
+    if rgb8.shape[-1] >= 3:
+        signal = cv2.cvtColor(np.ascontiguousarray(rgb8[..., :3]), cv2.COLOR_RGB2HSV)[
+            ..., 1
+        ]
+        signal[_border_padding(rgb8[..., :3])] = 0
+    else:
+        gray = rgb8[..., 0].copy()
+        gray[_border_padding(rgb8[..., :1])] = 255
+        signal = cv2.bitwise_not(gray)
+    blurred = cv2.medianBlur(signal, _odd(tech.MEDIAN_BLUR_UM / um_per_px))
+    threshold, _ = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    return blurred, int(threshold)
+
+
+def fluorescence_signal(
+    canvas: np.ndarray, um_per_px: float
+) -> tuple[np.ndarray, float]:
+    """Tissue signal of a fluorescence canvas and its triangle threshold.
+
+    Each channel is scaled to its own 99.9th percentile, so a dim stain counts as much as a bright
+    one; the channel maximum is smoothed and thresholded with the triangle method, which suits a
+    histogram dominated by a dark background peak (Zack et al. 1977).
+    """
+    peaks = np.percentile(
+        canvas.reshape(-1, canvas.shape[-1]),
+        tech.FLUORESCENCE_CHANNEL_PERCENTILE,
+        axis=0,
+    )
+    peaks[peaks <= 0] = 1.0
+    signal = np.clip(canvas / peaks, 0, 1).max(axis=-1).astype(np.float32)
+    sigma = tech.FLUORESCENCE_SMOOTH_UM / um_per_px
+    signal = cv2.GaussianBlur(signal, (0, 0), sigmaX=max(0.5, sigma))
+    threshold = filters.threshold_triangle(signal, nbins=256)  # type: ignore[no-untyped-call]
+    return signal, float(threshold)
+
+
+def clean_mask(raw: np.ndarray, um_per_px: float, pixel_known: bool) -> np.ndarray:
+    """Close gaps, drop specks, fill holes and keep the pieces above the debris area."""
+    radius = max(1, int(round(tech.CLOSING_UM / um_per_px / 2)))
+    mask = cv2.morphologyEx(
+        raw.astype(np.uint8),
+        cv2.MORPH_CLOSE,
+        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * radius + 1,) * 2),
+    ).astype(bool)
+    mask = morphology.remove_small_objects(mask, max_size=tech.SPECK_PIXELS)
+    mask = binary_fill_holes(mask)
+    contours, _ = cv2.findContours(
+        mask.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+    )
+    if not contours:
+        return cast(np.ndarray, mask)
+    areas = [cv2.contourArea(c) for c in contours]
+    if pixel_known:
+        minimum = tech.MIN_TISSUE_AREA_UM2 / um_per_px**2
+    else:
+        minimum = tech.MIN_TISSUE_FRACTION_NO_SIZE * mask.size
+    threshold = min(minimum, tech.LARGEST_FRACTION * max(areas))
+    kept = [c for c, a in zip(contours, areas) if a >= threshold]
+    out = np.zeros(mask.shape, dtype=np.uint8)
+    cv2.drawContours(out, kept, contourIdx=-1, color=1, thickness=cv2.FILLED)
+    return out.astype(bool)
+
+
+def detect_tissue(
+    canvas: np.ndarray,
+    dtype: np.dtype,
+    brightfield: bool,
+    um_per_px: float | None,
+) -> np.ndarray:
+    """Boolean tissue mask of a float32 canvas in native values.
+
+    ``um_per_px`` is the canvas pixel size; without one the kernels assume the 8 µm/px design
+    resolution and the debris threshold is a fraction of the canvas.
+    """
+    scale = um_per_px or tech.DETECTION_UM_PER_PX
+    if brightfield:
+        signal, threshold = brightfield_signal(to_unit(canvas, dtype), scale)
+        raw = signal > threshold
+    else:
+        signal, cut = fluorescence_signal(canvas, scale)
+        raw = signal > cut
+    mask = clean_mask(raw, scale, um_per_px is not None)
+    if not mask.any():
+        get_reporter().warning("No tissue detected: the whole image is kept as tissue")
+        mask = np.ones(canvas.shape[:2], dtype=bool)
+    return mask
+
+
+def contours_level0(
+    mask: np.ndarray, factor: float, offset: tuple[int, int]
+) -> list[np.ndarray]:
+    """External tissue outlines as ``(n, 2)`` (x, y) level-0 coordinates of the output image.
+
+    Outlines are simplified to one canvas pixel, then scaled by ``factor`` and shifted by the crop
+    ``offset`` so they match the written pixels.
+    """
+    contours, _ = cv2.findContours(
+        mask.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+    )
+    out = []
+    for contour in contours:
+        simplified = (
+            cv2.approxPolyDP(contour, 1.0, True).reshape(-1, 2).astype(np.float64)
         )
-        if not near_black.any():
-            return near_black
-        _, labels = cv2.connectedComponents(near_black.astype(np.uint8), connectivity=8)
-        border = np.unique(
-            np.concatenate([labels[0], labels[-1], labels[:, 0], labels[:, -1]])
-        )
-        border = border[border != 0]
-        return cast(np.ndarray, np.isin(labels, border))
-
-    @staticmethod
-    def _has_dark_background(gray: np.ndarray) -> bool:
-        """True when `gray`'s background is darker than its content (fluorescence-like).
-
-        The border frame of a slide scan is background, so its median is compared against the
-        median of the whole image. Ties (a scan filled edge to edge with tissue) report False,
-        which keeps the bright-background handling below. The border must also be dark relative
-        to the bright content (below _DETECTION_DARK_BORDER_RATIO of the 99th percentile), so a
-        brightfield scan whose tissue reaches the border is not taken for fluorescence.
-        """
-        h, w = gray.shape[:2]
-        k = max(1, round(0.05 * min(h, w)))
-        border = np.concatenate(
-            [
-                gray[:k, :].ravel(),
-                gray[-k:, :].ravel(),
-                gray[:, :k].ravel(),
-                gray[:, -k:].ravel(),
-            ]
-        )
-        border_level = float(np.median(border))
-        bright_level = float(np.percentile(gray, 99))
-        return (
-            border_level < float(np.median(gray))
-            and border_level < _settings._DETECTION_DARK_BORDER_RATIO * bright_level
-        )
-
-    def _detect_tissue_mask(
-        self,
-        image: np.ndarray,
-        min_object_coverage: float = 0.01,
-        clip_percentile: int = 99,
-    ) -> np.ndarray:
-        """
-        Segment tissue vs. background (Otsu-based) on `image` at its current resolution,
-        preserving tissue areas larger than image_area * min_object_coverage.
-
-        Blur kernel size and speck-removal size are fixed relative to the detection canvas
-        (_DETECTION_BLUR_KERNEL_SIZE / _DETECTION_MAX_OBJECT_SIZE) rather than configurable,
-        since `image` here is always already at or below the ~3000px detection canvas size.
-
-        Everything from the percentile clip onwards expects tissue to be the *bright* class.
-        Brightfield input reaches that state by inversion; an image with a dark background
-        (fluorescence-like, any channel count) is already in it.
-
-        Parameters
-        ----------
-        image : np.ndarray
-                Input float32 image of shape (H, W, C) in [0, 1]. C may be 1, 2 or 3; fewer than
-                3 channels are promoted to RGB for the grayscale conversion only.
-        min_object_coverage : float
-                Minimum tissue area relative to image area. The threshold is capped at
-                _DETECTION_MIN_LARGEST_FRACTION of the largest object, so the largest object and
-                the pieces of comparable size are always kept (TMA cores, small biopsies).
-        clip_percentile : int
-                Percentile for intensity clipping before thresholding.
-
-        Returns
-        -------
-        np.ndarray
-                Boolean tissue mask, same (H, W) as `image`.
-        """
-        # Polarity: brightfield scans have a bright background and are inverted below so tissue
-        # becomes the bright class. A fluorescence-like image instead has tissue already bright on
-        # a dark background; inverting it would segment the background. The probe runs on the
-        # float luma: the 8-bit values of a low-range scan (12-bit data in a 16-bit container, no
-        # colour enhancement) are all near 0 and would tie.
-        luma = cv2.cvtColor(self._as_detection_rgb(image), cv2.COLOR_RGB2GRAY)
-        dark_background = self._has_dark_background(luma)
-
-        if dark_background:
-            # Stretch to the bright content so a low-range scan keeps the 8-bit resolution Otsu needs.
-            bright_level = float(np.percentile(luma, 99.9))
-            scale = 255.0 / bright_level if bright_level > 0 else 255.0
-            gray = np.clip(luma * scale, 0, 255).astype(np.uint8)
-            del luma
-        else:
-            del luma
-            # Convert to uint8 for mask computation (avoids float intermediaries). Promoted to 3
-            # channels for cv2's RGB->gray conversion: replicated/padded channels are near-black
-            # exactly where the source channels are, so the guard below selects the same pixels.
-            image_uint8 = self._as_detection_rgb((image * 255).astype(np.uint8))
-
-            # Replace black pixels, and the near-black regions connected to the image border
-            # (unscanned padding, compression noise included), with white, so the padding does not
-            # become the brightest class after inversion. Near-black regions inside the tissue
-            # (pigment) are kept.
-            black_pixels = np.all(image_uint8 == 0, axis=-1)
-            black_pixels |= self._border_padding(image_uint8)
-            image_uint8[black_pixels] = 255
-
-            # Grayscale → invert (white bg becomes black)
-            gray = cv2.cvtColor(image_uint8, cv2.COLOR_RGB2GRAY)
-            gray = cv2.bitwise_not(gray)
-            del image_uint8  # Free the uint8 RGB copy
-
-        # Clip at percentile to reduce oversaturation impact
-        clip_value = np.percentile(cast(np.ndarray, gray), clip_percentile)
-        blurred = cv2.GaussianBlur(
-            np.clip(cast(np.ndarray, gray), None, clip_value).astype(np.uint8),
-            (
-                _settings._DETECTION_BLUR_KERNEL_SIZE,
-                _settings._DETECTION_BLUR_KERNEL_SIZE,
-            ),
-            0,
-        )
-
-        # Otsu threshold on blurred, apply to original grayscale
-        otsu_thresh, _ = cv2.threshold(
-            blurred, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU
-        )
-        del blurred
-        _, thresh = cv2.threshold(
-            cast(np.ndarray, gray), int(otsu_thresh), 255, cv2.THRESH_BINARY
-        )
-        del gray
-
-        # Morphological cleanup
-        mask_clean = morphology.remove_small_objects(
-            thresh.astype(bool), max_size=_settings._DETECTION_MAX_OBJECT_SIZE
-        )
-        del thresh
-        segmentation_mask = binary_fill_holes(mask_clean)
-        del mask_clean
-
-        # Refine with contour-based area filtering
-        seg_uint8 = segmentation_mask.astype(np.uint8) * 255
-        contours, _ = cv2.findContours(
-            seg_uint8, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
-        )
-
-        if contours:
-            image_area = seg_uint8.shape[0] * seg_uint8.shape[1]
-            areas = [cv2.contourArea(c) for c in contours]
-            area_threshold = min(
-                min_object_coverage * image_area,
-                _settings._DETECTION_MIN_LARGEST_FRACTION * max(areas),
-            )
-            large_contours = [
-                c for c, area in zip(contours, areas) if area >= area_threshold
-            ]
-
-            tissue_mask = np.zeros_like(seg_uint8)
-            cv2.drawContours(
-                tissue_mask,
-                large_contours,
-                contourIdx=-1,
-                color=255,
-                thickness=cv2.FILLED,
-            )
-            segmentation_mask = tissue_mask.astype(bool)
-        else:
-            get_reporter().warning(
-                "No contours found: the background mask is not refined"
-            )
-        del seg_uint8
-
-        return segmentation_mask
-
-    def _compute_tissue_mask(
-        self,
-        image: np.ndarray,
-        min_object_coverage: float = 0.01,
-        clip_percentile: int = 99,
-    ) -> tuple[np.ndarray, float]:
-        """
-        Detect the tissue mask on a downsampled proxy for speed on very large images.
-
-        Segmentation (Gaussian blur, Otsu threshold, morphological cleanup) is run on a
-        proxy capped at _DETECTION_MAX_PIXELS rather than the full-resolution image, since
-        a tissue/background boundary is a smooth, low-frequency shape that doesn't need
-        full-resolution input to locate accurately.
-
-        Returns
-        -------
-        tuple of (mask, scale)
-                mask : boolean tissue mask at `scale` resolution relative to `image`.
-                scale : proxy_size / full_size, in (0, 1]. 1.0 means no downsampling occurred.
-        """
-        import math
-
-        H, W = image.shape[:2]
-        scale = min(1.0, math.sqrt(_settings._DETECTION_MAX_PIXELS / (H * W)))
-        if scale < 1.0:
-            proxy = cv2.resize(
-                image,
-                (max(1, round(W * scale)), max(1, round(H * scale))),
-                interpolation=cv2.INTER_AREA,
-            )
-            if proxy.ndim == 2:
-                proxy = proxy[..., np.newaxis]
-        else:
-            proxy = image
-        mask = self._detect_tissue_mask(proxy, min_object_coverage, clip_percentile)
-        return mask, scale
+        if len(simplified) < 3:
+            continue
+        points = (simplified + 0.5) * factor - np.asarray(offset, dtype=np.float64)
+        out.append(np.round(points, 1))
+    return out

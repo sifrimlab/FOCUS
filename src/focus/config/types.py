@@ -13,15 +13,11 @@ class ProcessingSettings(TypedDict, total=False):
     """Existing modality settings, with their original optional fields."""
 
     force_recomputing: bool
-    color_enhancement: bool
+    image_type: str
+    z_projection: str
     remove_background: bool
     crop_to_tissue: bool
-    background_color: str
-    min_object_coverage: float
-    clip_percentile: int
-    crop_margin: int
-    gamma: float
-    contrast_saturation: float
+    pixel_size: float | None
     lipid_annotation_db: str | None
     mass_tolerance: int
     frequency_threshold: float

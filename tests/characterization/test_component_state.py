@@ -8,7 +8,6 @@ import numpy as np
 
 from focus.alignment.cache import AlignmentCache
 from focus.alignment.coordinator import DirectMappingAligner
-from focus.preprocessing.microscopy.sample import MicroscopyImage
 from focus.runtime.reporting import StepReporter
 
 
@@ -44,17 +43,18 @@ def test_alignment_payload_uses_owner_basis(tmp_path: Path) -> None:
     assert metadata["spot_basis"] == aligner._spot_basis
 
 
-def test_image_pyramid_uses_sample_reporter(tmp_path: Path) -> None:
-    """Route regeneration details through the reporter supplied by dataset execution."""
-    sample = MicroscopyImage.__new__(MicroscopyImage)
-    sample._step_reporter = StepReporter()
-    output = str(tmp_path / "image.ome.tiff")
-    image = np.zeros((8, 8, 3), dtype=np.float32)
-    sample.pyramid._save_image_pyramid(image, output, np.dtype(np.uint8))
-    previous = sample.pyramid._previous_output(output)
-    assert previous is not None
-    with patch.object(sample._step_reporter, "detail") as detail:
-        sample.pyramid._save_image_pyramid(
-            image, output, np.dtype(np.uint8), previous=previous
-        )
+def test_regeneration_reports_through_the_dataset_reporter(tmp_path: Path) -> None:
+    """Route the supersession detail through the reporter supplied by dataset execution."""
+    from focus.preprocessing.microscopy.output import supersession
+    from focus.preprocessing.microscopy.workflow import Provenance
+
+    reporter = StepReporter()
+    values: dict[str, object] = {}
+    previous = Provenance("key", "{}", ("digest", ["old", 1, 2]))
+    with patch.object(reporter, "detail") as detail:
+        supersession("digest", previous, values, reporter)
         detail.assert_called_once_with("Pixels identical to the previous output")
+    assert values["focus_superseded_signature"] == '["old", 1, 2]'
+    with patch.object(reporter, "warning") as warning:
+        supersession("other", previous, {}, reporter)
+        warning.assert_called_once()

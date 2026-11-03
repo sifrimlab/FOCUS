@@ -11,7 +11,11 @@ from focus.io.anndata import write_h5ad_compat
 from focus.io.ome import load_ome_tiff_level, ome_tiff_pyramid_dims
 from focus.io.paths import merged_registration_file, registration_file
 from focus.registration.encoder import MicroscopyImageFeatureExtractor
-from focus.registration.free_form_cache import _level_cache_valid, _res_level_path
+from focus.registration.free_form_cache import (
+    _level_cache_valid,
+    _res_level_path,
+    image_signature,
+)
 from focus.registration.free_form_data import grid_anndata, level0_centers
 from focus.config.grid_settings import GridSettings
 from focus.registration.merging import merge_registered_samples
@@ -97,7 +101,11 @@ class GridExtraction:
             if os.path.exists(target) and not self.settings.force:
                 cached = anndata.read_h5ad(target)
                 valid = _level_cache_valid(
-                    cached, level, self.settings.patch_size, self.settings.background
+                    cached,
+                    level,
+                    self.settings.patch_size,
+                    self.settings.background,
+                    image_signature(self.files[sample]),
                 )
                 del cached
                 if valid:
@@ -143,6 +151,7 @@ class GridExtraction:
         data = grid_anndata(
             embeddings, centers, sample, self.settings, level, dimensions
         )
+        data.uns["image_signature"] = image_signature(path)
         write_h5ad_compat(data, target, compression=_H5AD_COMPRESSION)
         self.outputs[level][sample] = target
         self.logger.debug(

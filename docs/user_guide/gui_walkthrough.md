@@ -87,7 +87,8 @@ Key defaults to review:
 | `st` | `normalization` | `"auto"` |
 | `msi` | `mass_tolerance` | `10` ppm |
 | `msi` | `intensity_normalization` | `"none"` |
-| `microscopy_image` | `gamma` | `0.45` |
+| `microscopy_image` | `image_type` | `"auto"` |
+| `microscopy_image` | `crop_to_tissue`, `remove_background` | `false` |
 
 **2. Alignment** (non-reference modalities only). How the reference is placed in the coordinate space of this modality. When the reference is spot-based, choose the strategy:
 

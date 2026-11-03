@@ -8,9 +8,22 @@ from pathlib import Path
 import numpy as np
 import tifffile
 
-# Blob rows 1200:2000, cols 800:1500; with a 100 px margin the crop starts at (700, 1100).
+from focus.io.provenance import CROP_OFFSET_KEY, read_ome_annotations
+from focus.preprocessing.microscopy.parameters import ImageSettings
+
+# Blob rows 1200:2000, cols 800:1500 at 0.5 µm/px; the 100 µm margin is 200 px, so the crop
+# starts near (600, 1000), within the detection canvas pixel (about 2 px here).
 _BLOB = (slice(1200, 2000), slice(800, 1500))
-_OFFSET = np.array([700, 1100], dtype=np.float32)
+_OFFSET = np.array([600, 1000], dtype=np.float32)
+CROP = ImageSettings("brightfield", "auto", True, False, None)
+NO_CROP = ImageSettings("brightfield", "auto", False, False, None)
+FILLED = ImageSettings("brightfield", "auto", True, True, None)
+
+
+def crop_offset(path: str) -> np.ndarray:
+    """``focus_crop_offset`` of an output as ``[x, y]``."""
+    value = cast(dict[str, str], read_ome_annotations(path))[CROP_OFFSET_KEY]
+    return np.array([float(v) for v in value.split(",")], dtype=np.float32)
 
 
 def _write_source(path: Path, shape: tuple[int, int] = (2500, 2000)) -> None:

@@ -67,10 +67,11 @@ The example below covers all three supported modality types and uses every avail
       "alignment_strategy": "manual",
       "name": "microscopy",
       "processing_settings": {
-        "color_enhancement": true,
-        "remove_background": true,
-        "crop_to_tissue": true,
-        "gamma": 0.45,
+        "image_type": "brightfield",
+        "z_projection": "auto",
+        "crop_to_tissue": false,
+        "remove_background": false,
+        "pixel_size": null,
         "force_recomputing": false
       },
       "registration_settings": {
@@ -190,7 +191,7 @@ The computational method used to map this modality's features onto the reference
 | `"spot_interpolation"` | Gaussian-weighted average of the spot-based data in each anchor footprint. Runs on CPU. | `msi`, `st` |
 | `"spot_aggregation"` | Equal-weight **sum** of the spot-based data in each anchor footprint (no normalization); accumulates signal for subcellular-resolution data (e.g. Visium HD). Runs on CPU. | `msi`, `st` |
 | `"raman_pixel_interpolation"` | Gaussian-weighted interpolation over the hyperspectral OME-TIFF pixels, each pixel acting as a spot. Runs on CPU. | `raman` |
-| `"feature_extraction"` | One Prov-GigaPath embedding (deep learning) per reference spot, restricted to the image inside its footprint. **Only for H&E-stained brightfield RGB images**: the model is pretrained on H&E tiles and FOCUS does not check the stain, so other image types yield embeddings that carry no morphological meaning; use `"none"` for those. Requires a HuggingFace token; runs on an NVIDIA GPU when available, otherwise on the CPU (impractically slow for real images). | `microscopy_image` |
+| `"feature_extraction"` | One Prov-GigaPath embedding (deep learning) per reference spot, restricted to the image inside its footprint. **Only for H&E-stained brightfield images**: the model is pretrained on H&E tiles. Fluorescence images are rejected (at validation when `image_type` is `"fluorescence"`, at registration from the image type recorded by preprocessing); the stain of a brightfield image is not checked, so other stains yield embeddings that carry no morphological meaning. Use `"none"` for those. Requires a HuggingFace token; runs on an NVIDIA GPU when available, otherwise on the CPU (impractically slow for real images). | `microscopy_image` |
 
 ### `processing_settings` _(required, object)_
 
@@ -198,7 +199,7 @@ Modality-specific preprocessing parameters. See the per-type sections below.
 
 ### `registration_settings` _(optional, object, default: `{}`)_
 
-Additional settings for the chosen registration method. May be an empty object when `registration_type` is `"none"`. Every method accepts `force_recomputing`; `feature_extraction` also accepts `background_color` (`"white"` or `"black"`). See [Configuration Fields](../configuration/config_fields.md#registration-settings).
+Additional settings for the chosen registration method. May be an empty object when `registration_type` is `"none"`. Every method accepts `force_recomputing`; `feature_extraction` also accepts `background_color` (`"white"` or `"black"`), used for images that preprocessing did not fill. See [Configuration Fields](../configuration/config_fields.md#registration-settings).
 
 ---
 
@@ -235,18 +236,14 @@ Additional settings for the chosen registration method. May be an empty object w
 
     | Parameter | Type | Description |
     |-----------|------|-------------|
-    | `color_enhancement` | bool | Apply gamma correction and contrast stretching. Default `true`. |
-    | `gamma` | float | Exponent of the power-law intensity correction; below `1.0` brightens. Default `0.45`. |
-    | `contrast_saturation` | float | Percentage of non-zero pixels saturated at each end of the histogram before the stretch. Default `0.35`. |
-    | `remove_background` | bool | Fill off-tissue pixels with `background_color`. Default `true`. |
-    | `background_color` | string | `"white"` or `"black"`; fill colour for removed background. Default `"white"`. |
-    | `clip_percentile` | int | Percentile at which the inverted grayscale is clipped before the Otsu threshold. Default `99`. |
-    | `min_object_coverage` | float | Minimum area of a tissue contour, as a fraction of the detection-proxy area. Default `0.01`. |
-    | `crop_to_tissue` | bool | Crop the output image around the tissue. Uses the same tissue mask as background removal. Default `true`. |
-    | `crop_margin` | int | Pixels added on each side of the tissue bounding box. Default `250`. |
+    | `image_type` | string | `"auto"` (default; read from the acquisition metadata), `"brightfield"` (H&E, IHC, special stains) or `"fluorescence"` (IF, confocal, multiplexed). Selects the tissue detection, the `auto` Z projection, the background fill, the display rendering and the codec. |
+    | `z_projection` | string | `"auto"` (default; maximum projection for fluorescence, best focus for brightfield), `"max"`, `"best_focus"` or `"middle"`. How a Z-stack becomes one plane. |
+    | `crop_to_tissue` | bool | Crop the output to the tissue bounding box plus a fixed 100 µm margin. Default `false`. |
+    | `remove_background` | bool | Set every pixel outside the tissue to the fill of the image type (white for brightfield, 0 for fluorescence). Default `false`. |
+    | `pixel_size` | float or null | µm per pixel, used only when the file metadata has none. Default `null`. |
     | `force_recomputing` | bool | Reprocess even if output already exists. Default `false`. |
 
-    Tissue detection works on any channel count: 1- and 2-channel images are promoted to 3 channels for the grayscale conversion, and their background polarity is detected automatically, so fluorescence acquisitions are segmented as well as brightfield ones. `background_color` does not follow that detection. Set it to `"black"` for dark-background images, otherwise the white fill leaves tissue and background indistinguishable.
+    The output stores the source pixels losslessly (sample type, every channel, no contrast change); contrast is stored as display windows that the alignment GUI applies. Tissue is always detected, for the stored outline and the display windows. The settings `color_enhancement`, `gamma`, `contrast_saturation`, `background_color`, `min_object_coverage`, `clip_percentile` and `crop_margin` were removed and fail validation. See [Microscopy Images](../modalities/microscopy.md#processing-parameters).
 
 === "Raman Spectroscopy Imaging (`raman`)"
 
@@ -277,6 +274,8 @@ Common validation errors and their causes:
 | `perform_registration requires perform_alignment to be true` | You set `perform_registration: true` but `perform_alignment: false`. |
 | `huggingface_token is required` | A modality uses `feature_extraction` but `huggingface_token` is null or absent. |
 | `Registration type not compatible with modality type` | e.g., `feature_extraction` assigned to an `msi` modality. |
+| `these microscopy settings were removed` | A `microscopy_image` modality sets a key removed in `microscopy-3` (e.g. `gamma`, `color_enhancement`); the message gives the reason. |
+| `feature_extraction ... does not apply to fluorescence images` | A `microscopy_image` modality with `image_type: "fluorescence"` uses `registration_type: "feature_extraction"`. |
 | `Missing modality directory for sample` | A sample directory is missing one of the declared modality subdirectories. |
 | `Duplicate modality names` | Two modalities share the same `name` value. |
 | `pre_aligned cannot be set on reference modality` | The reference modality must not use `alignment_strategy: "pre_aligned"`. |

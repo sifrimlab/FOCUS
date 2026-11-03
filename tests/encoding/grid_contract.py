@@ -187,6 +187,7 @@ def run_grid_case(
         patch.object(implementation, "write_h5ad_compat", write),
         patch.object(implementation, "ome_tiff_pyramid_dims", pyramid),
         patch.object(merger, "stat_signature", identity),
+        patch.object(implementation, "image_signature", lambda path: "image"),
         patch(
             "sys.argv",
             [

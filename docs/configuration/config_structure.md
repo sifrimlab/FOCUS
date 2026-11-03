@@ -98,7 +98,7 @@ This page documents the **canonical structure** and the set of config fields tha
 | Value | Meaning | Compatible modality type(s) |
 |---|---|---|
 | `none` | Skip registration for this modality | all |
-| `feature_extraction` | One Prov-GigaPath embedding per reference spot, restricted to the image inside its footprint | `microscopy_image` |
+| `feature_extraction` | One Prov-GigaPath embedding per reference spot, restricted to the image inside its footprint; brightfield images only (fluorescence is rejected) | `microscopy_image` |
 | `spot_interpolation` | Gaussian-weighted average of the target spots in each anchor footprint | `msi`, `st` |
 | `spot_aggregation` | Equal-weight **sum** of the target spots in each anchor footprint; a normalized ST target is summed on its raw counts and the merged result normalized with the same method; for subcellular-resolution data (e.g. Visium HD) | `msi`, `st` |
 | `raman_pixel_interpolation` | Gaussian-weighted pixel interpolation over the hyperspectral OME-TIFF | `raman` |
@@ -111,15 +111,11 @@ This page documents the **canonical structure** and the set of config fields tha
 
 ```json
 {
-  "color_enhancement": true,
-  "gamma": 0.45,
-  "contrast_saturation": 0.35,
-  "remove_background": true,
-  "background_color": "white",
-  "clip_percentile": 99,
-  "min_object_coverage": 0.01,
-  "crop_to_tissue": true,
-  "crop_margin": 250,
+  "image_type": "auto",
+  "z_projection": "auto",
+  "crop_to_tissue": false,
+  "remove_background": false,
+  "pixel_size": null,
   "force_recomputing": false
 }
 ```
@@ -278,15 +274,11 @@ This page documents the **canonical structure** and the set of config fields tha
       "alignment_force_recomputing": false,
       "registration_type": "feature_extraction",
       "processing_settings": {
-        "color_enhancement": true,
-        "gamma": 0.45,
-        "contrast_saturation": 0.35,
-        "remove_background": true,
-        "background_color": "white",
-        "clip_percentile": 99,
-        "min_object_coverage": 0.01,
-        "crop_to_tissue": true,
-        "crop_margin": 250,
+        "image_type": "brightfield",
+        "z_projection": "auto",
+        "crop_to_tissue": false,
+        "remove_background": false,
+        "pixel_size": null,
         "force_recomputing": false
       },
       "registration_settings": {

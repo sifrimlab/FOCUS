@@ -2,10 +2,8 @@
 
 from focus.preprocessing.transcriptomics.parameters import StSampleSettings
 from focus.preprocessing.transcriptomics.counts import resolve_counts
-from focus.preprocessing.transcriptomics.provenance import (
-    input_signature,
-    sample_fingerprint,
-)
+from focus.io.provenance import input_signature
+from focus.preprocessing.transcriptomics.provenance import sample_fingerprint
 from focus.preprocessing.transcriptomics.sample_operations import write_sample
 from focus.preprocessing.transcriptomics.technology import technology
 

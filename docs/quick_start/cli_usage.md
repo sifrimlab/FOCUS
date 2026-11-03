@@ -56,10 +56,10 @@ schema.
       "alignment_strategy": "manual",
       "name": "microscopy",
       "processing_settings": {
-        "color_enhancement": true,
-        "remove_background": false,
+        "image_type": "auto",
+        "z_projection": "auto",
         "crop_to_tissue": false,
-        "gamma": 0.45,
+        "remove_background": false,
         "force_recomputing": false
       },
       "registration_settings": {},

@@ -43,10 +43,10 @@ results = preprocess_modality(
     modality_name="microscopy_image",
     modality_type="microscopy_image",
     preprocessing_settings={
-        "color_enhancement": True,
-        "gamma": 0.45,
-        "remove_background": True,
-        "crop_to_tissue": True,
+        "image_type": "brightfield",
+        "z_projection": "auto",
+        "crop_to_tissue": False,
+        "remove_background": False,
         "force_recomputing": False,
     },
 )
@@ -86,7 +86,7 @@ Typed path and sample collection for modality-specific dataset processors. Concr
 
 ### `MicroscopyImage`
 
-Processes a single microscopy image to a uniform multi-resolution OME-TIFF ready for alignment.
+Writes one microscopy acquisition as a lossless, tiled OME-TIFF pyramid: the native pixels (sample type and every channel), the acquisition metadata, the tissue outline and the display windows. See [Microscopy Images](../modalities/microscopy.md) and [Microscopy Preprocessing Methods](../scientific/microscopy_methods.md).
 
 ```python
 class MicroscopyImage(SampleSource):
@@ -98,56 +98,22 @@ class MicroscopyImage(SampleSource):
     ) -> None: ...
 ```
 
-On construction, `MicroscopyImage` scans `<source_path>/<sample_id>/<modality_name>/` for a supported image file and keeps the first match for the highest-priority extension present (`.ome.tiff`, `.ome.tif`, `.qptiff`, `.tiff`, `.tif`, `.czi`, `.nd2`, matched case-insensitively). With no match it raises `FileNotFoundError` at construction time, before any sample is processed.
+On construction, `MicroscopyImage` resolves the single supported image file of `<source_path>/<sample_id>/<modality_name>/` (`.ome.tiff`, `.ome.tif`, `.ome.btf`, `.qptiff`, `.tiff`, `.tif`, `.btf`, `.svs`, `.ndpi`, `.scn`, `.bif`, `.czi`, `.nd2`, matched case-insensitively; hidden files are ignored). With no match it raises `FileNotFoundError`, and with several matches `ValueError`, at construction time, before any sample is processed.
 
 **`process_image()`**
 
 ```python
 def process_image(
     self,
-    color_enhancement: bool = True,
-    remove_background: bool = True,
-    crop_to_tissue: bool = True,
-    background_color: SegmentationBackgroundColor = SegmentationBackgroundColor.WHITE,
-    min_object_coverage: float = 0.01,
+    settings: ImageSettings,
     force_recomputing: bool = False,
-    clip_percentile: int = 99,
-    crop_margin: int = 250,
-    gamma: float = 0.45,
-    contrast_saturation: float = 0.35,
 ) -> str:
     ...
 ```
 
-Pipeline: load → gamma correction + contrast stretching → background removal (Otsu) → tissue crop → save as multi-resolution OME-TIFF.
+`settings` is a `focus.preprocessing.microscopy.parameters.ImageSettings(image_type, z_projection, crop_to_tissue, remove_background, pixel_size)` (see the `process_dataset()` parameters below). Steps: reading image, resolving image type, detecting tissue, cropping to tissue or removing background (only when either is enabled), writing OME-TIFF.
 
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `color_enhancement` | `bool` | `True` | Apply gamma correction and contrast stretching. |
-| `remove_background` | `bool` | `True` | Fill non-tissue pixels, using an Otsu mask detected on a downsampled proxy. |
-| `crop_to_tissue` | `bool` | `True` | Crop the image to the tissue bounding box. Uses the same mask, so it triggers detection even with `remove_background=False`. |
-| `background_color` | `SegmentationBackgroundColor` | `WHITE` | Fill color for background regions (`"white"` or `"black"`; anything else raises `ValueError`). |
-| `min_object_coverage` | `float` | `0.01` | Minimum tissue contour area, as a fraction of the detection-proxy area. |
-| `force_recomputing` | `bool` | `False` | Re-run even if output already exists. |
-| `clip_percentile` | `int` | `99` | Percentile at which the inverted grayscale is clipped before the blur and Otsu threshold. |
-| `crop_margin` | `int` | `250` | Pixel margin around the tissue bounding box. |
-| `gamma` | `float` | `0.45` | Gamma value for correction (< 1 brightens, > 1 darkens). |
-| `contrast_saturation` | `float` | `0.35` | Percentage of non-zero pixels saturated at each end of the histogram. |
-
-The number of OME-TIFF pyramid levels is not a parameter. It is computed automatically from the final image dimensions (smallest level kept within 3,000 × 3,000 px). The Gaussian blur kernel size (25 px) and the speck-removal size (50 px) used during background detection are also not parameters: detection always runs on a downsampled proxy capped at 9 megapixels, so these are fixed internal constants expressed in proxy pixels rather than in the source image's native resolution.
-
-Detection converts the proxy with `cv2.COLOR_RGB2GRAY`, so an image with fewer than 3 channels is promoted first: a single channel is replicated, and two channels gain a zero third channel. The promotion applies to the mask computation only, never to the stored pixel data. For those promoted images the background polarity is also probed (border median vs global median) and the grayscale inversion is skipped when the background is the darker class; 3-channel input always takes the bright-background path. `background_color` is independent of that probe, so a dark-background acquisition wants `background_color="black"`.
-
-Returns `str`, the path to the output OME-TIFF. When the output already exists and `force_recomputing=False`, it is returned without reloading or reprocessing the source image.
-
-**`preview_image()`**
-
-```python
-def preview_image(self) -> np.ndarray:
-    ...
-```
-
-Loads and returns the image as a float32 `(H, W, C)` array in `[0, 1]`, normalised as in step 1 (channel axis moved last, at most 3 channels) but with no enhancement, background removal or cropping applied.
+Returns `str`, the path to the output OME-TIFF. When the output already carries the current fingerprint and `force_recomputing=False`, it is returned without reading the source pixels; the source SHA-256 stored in the output is reused while the source path, size and modification time are unchanged.
 
 ---
 
@@ -159,24 +125,31 @@ class MicroscopyImageDataset(DatasetState):
 
     def process_dataset(
         self,
-        color_enhancement: bool = True,
-        remove_background: bool = True,
-        crop_to_tissue: bool = True,
-        background_color: SegmentationBackgroundColor = SegmentationBackgroundColor.WHITE,
-        min_object_coverage: float = 0.01,
+        image_type: str = "auto",
+        z_projection: str = "auto",
+        crop_to_tissue: bool = False,
+        remove_background: bool = False,
+        pixel_size: float | None = None,
         force_recomputing: bool = False,
-        clip_percentile: int = 99,
-        crop_margin: int = 250,
-        gamma: float = 0.45,
-        contrast_saturation: float = 0.35,
         step_reporter=None,
     ) -> dict[str, str]:
         ...
 ```
 
-All parameters are forwarded verbatim to each sample's `process_image()` call; `step_reporter` is attached to each sample instead (the running pipeline's reporter, `get_reporter()`, is used when omitted). The constructor rejects any element of `samples` that is not a `MicroscopyImage` with `ValueError`.
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `image_type` | `str` | `"auto"` | `"auto"` (from the metadata), `"brightfield"` or `"fluorescence"`; selects the tissue detection, the `auto` Z projection, the fill, the display rendering and the codec. |
+| `z_projection` | `str` | `"auto"` | `"auto"`, `"max"`, `"best_focus"` or `"middle"`. |
+| `crop_to_tissue` | `bool` | `False` | Crop to the tissue bounding box plus 100 µm. |
+| `remove_background` | `bool` | `False` | Set pixels outside the tissue to the fill of the image type (white for brightfield, 0 for fluorescence). |
+| `pixel_size` | `float` or `None` | `None` | µm per pixel, used only when the file metadata has none. |
+| `force_recomputing` | `bool` | `False` | Re-run even if the output carries the current fingerprint. |
 
-Exceptions raised while processing a sample are caught: `Error processing sample <sample_id>: <error>` is printed to the console, that sample is omitted from the result, and the loop continues. The call itself does not raise.
+The same `ImageSettings` is passed to each sample's `process_image()`; `step_reporter` is attached to each sample (the running pipeline's reporter, `get_reporter()`, is used when omitted). The constructor rejects any element of `samples` that is not a `MicroscopyImage` with `ValueError`.
+
+Exceptions raised while processing a sample are caught: the warning `Sample skipped: <error>` is reported, that sample is omitted from the result, and the loop continues. The call itself does not raise.
+
+The values are not validated here: configuration validation (`validate_microscopy_settings`) rejects unknown `image_type` or `z_projection` values, a non-positive `pixel_size`, the settings removed in `microscopy-3` and `image_type="fluorescence"` with `feature_extraction`. `preprocess_modality()` reads only the current keys, so a removed key passed to it directly is ignored.
 
 Returns a `dict[str, str]` mapping sample IDs to output OME-TIFF paths. No merged output is produced for image modalities.
 
@@ -202,9 +175,8 @@ dataset = MicroscopyImageDataset(
 )
 
 results = dataset.process_dataset(
-    color_enhancement=True,
-    gamma=0.45,
-    remove_background=True,
+    image_type="fluorescence",
+    z_projection="max",
     crop_to_tissue=True,
 )
 # results == {

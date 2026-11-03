@@ -140,6 +140,12 @@ watch(() => store.targetData, () => {
   }
 });
 
+// Re-rendered channels: swap the sprite only; the alignment in progress is kept.
+watch(() => store.targetImage, async () => {
+  await content.updateContent();
+  layer.app()?.render();
+});
+
 // Panel commands.
 watch(() => store.pendingCommand, (cmd) => {
   const app = layer.app();

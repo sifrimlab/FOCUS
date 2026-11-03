@@ -39,16 +39,6 @@
     "category": "declaration",
     "reason": "The static GUI form schema is one ordered serialized declaration. Keeping it together makes field/default/choice parity reviewable against the unchanged frontend contract."
   },
-  "src/focus/preprocessing/microscopy/pyramid.py::ImagePyramid._save_image_pyramid": {
-    "max_lines": 177,
-    "category": "declaration",
-    "reason": "OME pyramid declaration keeps channel/plane IDs, physical units, structured annotations and TIFF write layout together with digest/supersession stamping; XML/IFD ordering is part of the output contract."
-  },
-  "src/focus/preprocessing/microscopy/tissue.py::TissueMask._detect_tissue_mask": {
-    "max_lines": 65,
-    "category": "kernel",
-    "reason": "Microscopy mask kernel retains dark-background promotion, percentile clipping, Otsu adjustment and component/contour cleanup in detection-canvas units; Raman segmentation has distinct assumptions."
-  },
   "src/focus/preprocessing/msi/backbone.py::mass_scale_shifts": {
     "max_lines": 48,
     "category": "kernel",
@@ -250,9 +240,9 @@
     "reason": "Original configuration, schema, geometry and numerical contract fixture is one ordered declaration; the recorded dictionary is compared in full rather than selecting convenient fields."
   },
   "tests/encoding/grid_contract.py::run_grid_case": {
-    "max_lines": 53,
+    "max_lines": 54,
     "category": "declaration",
-    "reason": "Controlled grid workflow fixture declares its tiny encoder, logical file identities and IO hooks together; these shared closures make cold/cache/forced/invalidation snapshots independent of temporary paths."
+    "reason": "Controlled grid workflow fixture declares its tiny encoder, logical file and image identities and IO hooks together; these shared closures make cold/cache/forced/invalidation snapshots independent of temporary paths."
   },
   "tests/msi/data.py::write_imzml": {
     "max_lines": 54,

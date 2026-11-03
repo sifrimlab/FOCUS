@@ -1,20 +1,14 @@
 """Adapt configured microscopy settings and samples to the modality registry."""
 
+from focus.config.keys import MicroscopyImageProcessingParams as Keys
+from focus.config.options import MicroscopyImageType, MicroscopyZProjection
 from focus.config.types import ProcessingSettings
-from focus.preprocessing.microscopy.parameters import MicroscopyImageSettings
-from focus.runtime.reporting import StepReporter
 from focus.pipeline.types import SampleFiles
-import focus.preprocessing.microscopy.settings as _settings
-
-
-from focus.config.options import SegmentationBackgroundColor
-from focus.config.keys import MicroscopyImageProcessingParams
-from focus.preprocessing.registry import ModalityHandler, register_modality
-from focus.preprocessing.microscopy.sample import MicroscopyImage
 from focus.preprocessing.microscopy.dataset import MicroscopyImageDataset
-
-
-# --- Modality Registration ---
+from focus.preprocessing.microscopy.parameters import MicroscopyImageSettings
+from focus.preprocessing.microscopy.sample import MicroscopyImage
+from focus.preprocessing.registry import ModalityHandler, register_modality
+from focus.runtime.reporting import StepReporter
 
 
 def _create_microscopy_samples(
@@ -37,43 +31,14 @@ def _create_microscopy_dataset(
 def _extract_microscopy_settings(
     settings: ProcessingSettings,
 ) -> MicroscopyImageSettings:
-    """Read configured settings and apply the established modality defaults."""
+    """Read configured settings and apply the modality defaults (lossless, nothing removed)."""
     return {
-        "color_enhancement": settings.get(
-            MicroscopyImageProcessingParams.COLOR_ENHANCEMENT, True
-        ),
-        "remove_background": settings.get(
-            MicroscopyImageProcessingParams.REMOVE_BACKGROUND, True
-        ),
-        "crop_to_tissue": settings.get(
-            MicroscopyImageProcessingParams.CROP_TO_TISSUE, True
-        ),
-        "background_color": settings.get(
-            MicroscopyImageProcessingParams.BACKGROUND_COLOR,
-            SegmentationBackgroundColor.WHITE,
-        ),
-        "min_object_coverage": settings.get(
-            MicroscopyImageProcessingParams.MIN_OBJECT_COVERAGE, 0.01
-        ),
-        "force_recomputing": settings.get(
-            MicroscopyImageProcessingParams.FORCE_RECOMPUTING, False
-        ),
-        "clip_percentile": settings.get(
-            MicroscopyImageProcessingParams.CLIP_PERCENTILE,
-            _settings._CLIP_PERCENTILE,
-        ),
-        "crop_margin": settings.get(
-            MicroscopyImageProcessingParams.CROP_MARGIN,
-            _settings._CROP_MARGIN_PX,
-        ),
-        "gamma": settings.get(
-            MicroscopyImageProcessingParams.GAMMA,
-            _settings._GAMMA,
-        ),
-        "contrast_saturation": settings.get(
-            MicroscopyImageProcessingParams.CONTRAST_SATURATION,
-            _settings._CONTRAST_SATURATION,
-        ),
+        "image_type": settings.get(Keys.IMAGE_TYPE, MicroscopyImageType.AUTO),
+        "z_projection": settings.get(Keys.Z_PROJECTION, MicroscopyZProjection.AUTO),
+        "crop_to_tissue": settings.get(Keys.CROP_TO_TISSUE, False),
+        "remove_background": settings.get(Keys.REMOVE_BACKGROUND, False),
+        "pixel_size": settings.get(Keys.PIXEL_SIZE),
+        "force_recomputing": settings.get(Keys.FORCE_RECOMPUTING, False),
     }
 
 

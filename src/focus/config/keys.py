@@ -83,16 +83,24 @@ class ModalityParameters(_AbstractEnum):
 class MicroscopyImageProcessingParams(_AbstractEnum):
     """Serialized keys for microscopy image processing params."""
 
-    COLOR_ENHANCEMENT: Final = "color_enhancement"
-    REMOVE_BACKGROUND: Final = "remove_background"
+    IMAGE_TYPE: Final = "image_type"
+    Z_PROJECTION: Final = "z_projection"
     CROP_TO_TISSUE: Final = "crop_to_tissue"
-    BACKGROUND_COLOR: Final = "background_color"
-    MIN_OBJECT_COVERAGE: Final = "min_object_coverage"
+    REMOVE_BACKGROUND: Final = "remove_background"
+    PIXEL_SIZE: Final = "pixel_size"
     FORCE_RECOMPUTING: Final = "force_recomputing"
-    CLIP_PERCENTILE: Final = "clip_percentile"
-    CROP_MARGIN: Final = "crop_margin"
-    GAMMA: Final = "gamma"
-    CONTRAST_SATURATION: Final = "contrast_saturation"
+
+
+# Microscopy settings removed in microscopy-3, with the reason (config validation rejects them).
+MICROSCOPY_REMOVED_SETTINGS: dict[str, str] = {
+    "color_enhancement": "contrast is display-only and automatic",
+    "gamma": "contrast is display-only and automatic",
+    "contrast_saturation": "contrast is display-only and automatic",
+    "background_color": "the fill follows 'image_type'",
+    "min_object_coverage": "tissue detection is calibrated in µm",
+    "clip_percentile": "tissue detection is calibrated in µm",
+    "crop_margin": "the crop margin is a fixed 100 µm",
+}
 
 
 class MsiPreprocessingParams(_AbstractEnum):

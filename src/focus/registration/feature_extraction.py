@@ -3,7 +3,12 @@
 from focus.runtime.reporting import StepReporter
 
 
-from focus.config.options import RegistrationType, SegmentationBackgroundColor
+from focus.config.options import (
+    MicroscopyImageType,
+    RegistrationType,
+    SegmentationBackgroundColor,
+)
+from focus.io.ome import read_image_type
 from focus.registration.execution import register_samples
 from focus.registration.merging import merge_registered_samples
 from focus.runtime.reporter_context import get_reporter
@@ -89,6 +94,7 @@ class FeatureExtractorRegistration:
         common_samples = sorted(
             set(image_files.keys()) & set(anchor_files.keys()) - {"merged"}
         )
+        _reject_fluorescence(image_files, common_samples, image_name)
         reporter = step_reporter or get_reporter()
         background_color = background_color or SegmentationBackgroundColor.WHITE
         encoding = SpotEncoding(
@@ -116,4 +122,21 @@ class FeatureExtractorRegistration:
             image_name,
             self._REGISTRATION_TYPE,
             force_recomputing=force_recomputing,
+        )
+
+
+def _reject_fluorescence(
+    image_files: dict[str, str], samples: list[str], name: str
+) -> None:
+    """Raise when a preprocessed image is recorded as fluorescence (H&E encoder only)."""
+    fluorescence = [
+        s
+        for s in samples
+        if read_image_type(image_files[s]) == MicroscopyImageType.FLUORESCENCE
+    ]
+    if fluorescence:
+        raise ValueError(
+            f"Modality '{name}': feature_extraction uses an H&E-pretrained encoder and does not "
+            f"apply to fluorescence images (samples {', '.join(fluorescence)}); use "
+            "registration_type 'none'."
         )

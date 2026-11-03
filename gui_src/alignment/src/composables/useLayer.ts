@@ -27,6 +27,10 @@ export function useLayer(role: LayerRole) {
       get: () => (isTarget ? store.targetForegroundMode : store.referenceForegroundMode),
       set: (v: ForegroundMode) => { if (isTarget) store.targetForegroundMode = v; else store.referenceForegroundMode = v; },
     }),
+    /** Channels of a multichannel image layer (empty for RGB images and spots). */
+    channels: computed(() => meta.value?.channels ?? []),
+    shownChannels: computed(() => (isTarget ? store.targetChannels : store.referenceChannels)),
+    setChannels: (channels: number[]) => store.setChannels(role, channels),
     /** The store's own array: fields assign into it in place. */
     spotSize: computed(() => (isTarget ? store.targetSpotSize : store.referenceSpotSize)),
     colorOf: (cls: number) => classColor(meta.value, cls, isTarget),

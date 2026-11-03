@@ -56,49 +56,41 @@
     ],
     "processing_params": {
       "microscopy_image": {
-        "color_enhancement": {
-          "type": "bool",
-          "default": true
+        "image_type": {
+          "type": "enum",
+          "options": [
+            "auto",
+            "brightfield",
+            "fluorescence"
+          ],
+          "default": "auto"
         },
-        "remove_background": {
-          "type": "bool",
-          "default": true
+        "z_projection": {
+          "type": "enum",
+          "options": [
+            "auto",
+            "max",
+            "best_focus",
+            "middle"
+          ],
+          "default": "auto"
         },
         "crop_to_tissue": {
           "type": "bool",
-          "default": true
+          "default": false
         },
-        "background_color": {
-          "type": "enum",
-          "options": [
-            "white",
-            "black"
-          ],
-          "default": "white"
+        "remove_background": {
+          "type": "bool",
+          "default": false
         },
-        "min_object_coverage": {
+        "pixel_size": {
           "type": "float",
-          "default": 0.01
+          "default": null,
+          "nullable": true
         },
         "force_recomputing": {
           "type": "bool",
           "default": false
-        },
-        "clip_percentile": {
-          "type": "int",
-          "default": 99
-        },
-        "crop_margin": {
-          "type": "int",
-          "default": 250
-        },
-        "gamma": {
-          "type": "float",
-          "default": 0.45
-        },
-        "contrast_saturation": {
-          "type": "float",
-          "default": 0.35
         }
       },
       "msi": {
@@ -269,11 +261,16 @@
       "spot": "Multicellular spots",
       "bin": "Sub-cellular bins",
       "cell": "Segmented cells",
-      "auto": "Automatic (technology default)",
+      "auto": "Automatic",
       "log_normalize": "Log-normalize (median depth)",
       "cp10k_log": "Log-normalize (10,000 counts)",
       "size_factors": "Size factors (median depth, linear)",
       "area_log_normalize": "Log-normalize (area)",
+      "brightfield": "Brightfield (H&E, IHC, special stains)",
+      "fluorescence": "Fluorescence (IF, confocal, multiplexed)",
+      "max": "Maximum-intensity projection",
+      "best_focus": "Best-focus plane",
+      "middle": "Middle plane",
       "geojson": "GeoJSON"
     },
     "registration_params": {
@@ -726,22 +723,27 @@
         ],
         "display_names": {
           "area_log_normalize": "Log-normalize (area)",
-          "auto": "Automatic (technology default)",
+          "auto": "Automatic",
+          "best_focus": "Best-focus plane",
           "bin": "Sub-cellular bins",
           "black": "Black",
+          "brightfield": "Brightfield (H&E, IHC, special stains)",
           "cell": "Segmented cells",
           "clr": "CLR",
           "cp10k_log": "Log-normalize (10,000 counts)",
           "feature_extraction": "Feature Extraction",
+          "fluorescence": "Fluorescence (IF, confocal, multiplexed)",
           "geojson": "GeoJSON",
           "imaging": "Imaging (Xenium, MERFISH, CosMx)",
           "internal_standard": "Internal Standard",
           "log": "Log",
           "log_normalize": "Log-normalize (median depth)",
           "manual": "Manual",
+          "max": "Maximum-intensity projection",
           "median": "Median",
           "microgrid": "Microgrid",
           "microscopy_image": "Microscopy Image",
+          "middle": "Middle plane",
           "msi": "MSI",
           "none": "None",
           "pre_aligned": "Pre-Aligned",
@@ -777,49 +779,41 @@
         ],
         "processing_params": {
           "microscopy_image": {
-            "background_color": {
-              "default": "white",
-              "options": [
-                "white",
-                "black"
-              ],
-              "type": "enum"
-            },
-            "clip_percentile": {
-              "default": 99,
-              "type": "int"
-            },
-            "color_enhancement": {
-              "default": true,
-              "type": "bool"
-            },
-            "contrast_saturation": {
-              "default": 0.35,
-              "type": "float"
-            },
-            "crop_margin": {
-              "default": 250,
-              "type": "int"
-            },
             "crop_to_tissue": {
-              "default": true,
+              "default": false,
               "type": "bool"
             },
             "force_recomputing": {
               "default": false,
               "type": "bool"
             },
-            "gamma": {
-              "default": 0.45,
-              "type": "float"
+            "image_type": {
+              "default": "auto",
+              "options": [
+                "auto",
+                "brightfield",
+                "fluorescence"
+              ],
+              "type": "enum"
             },
-            "min_object_coverage": {
-              "default": 0.01,
+            "pixel_size": {
+              "default": null,
+              "nullable": true,
               "type": "float"
             },
             "remove_background": {
-              "default": true,
+              "default": false,
               "type": "bool"
+            },
+            "z_projection": {
+              "default": "auto",
+              "options": [
+                "auto",
+                "max",
+                "best_focus",
+                "middle"
+              ],
+              "type": "enum"
             }
           },
           "msi": {

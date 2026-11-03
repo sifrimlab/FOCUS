@@ -3,8 +3,11 @@
 from __future__ import annotations
 from typing import cast
 import os
+import json
+
 from anndata import AnnData
 from focus.config.options import RegistrationType
+from focus.io.provenance import content_signature
 
 _PATCH_MODE_FREE_FORM = "free_form"
 
@@ -46,13 +49,24 @@ def _res_level_path(path: str, level: int) -> str:
     return f"{root}_res{level}{ext}"
 
 
+def image_signature(path: str) -> str:
+    """Identity of the encoded image: its level-0 pixel digest (stat signature otherwise)."""
+    return json.dumps(content_signature(path))
+
+
 def _level_cache_valid(
-    cached_adata: AnnData, level: int, patch_size: int, background_color: str
+    cached_adata: AnnData,
+    level: int,
+    patch_size: int,
+    background_color: str,
+    signature: str,
 ) -> bool:
-    """Like :func:`_cached_registration_valid`, but for coarser levels also requires the stamped
-    ``res_level`` to match. Level 0 files carry no ``res_level`` key and use the base check only.
+    """Like :func:`_cached_registration_valid`, but also requires the stamped image signature and,
+    for coarser levels, the stamped ``res_level``. Level 0 files carry no ``res_level`` key.
     """
     if not _cached_registration_valid(cached_adata, patch_size, background_color):
+        return False
+    if cached_adata.uns.get("image_signature") != signature:
         return False
     if level == 0:
         return True

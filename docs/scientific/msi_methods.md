@@ -184,7 +184,7 @@ defeats Otsu. The scores are modeled with Gaussian mixtures and selected by BIC:
 Isolated single cells on a mostly-background grid; spatial cleanup is disabled (it would erase
 real cells). A 1D Otsu threshold maximizes between-class variance over the 256-bin score histogram.
 This is the same criterion used for image segmentation in
-[microscopy §3](microscopy_methods.md#3-background-removal-remove_background), applied here to the
+[microscopy §5.2](microscopy_methods.md#52-segmentation), applied here to the
 composite score instead of to pixel intensities:
 
 \[

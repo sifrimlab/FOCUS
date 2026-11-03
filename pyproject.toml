@@ -33,7 +33,7 @@ dependencies = [
     "opencv-python",
     "Pillow",
     "tifffile",
-    "czifile",
+    "pylibCZIrw",
     "nd2",
     "ome-types",
     "imagecodecs",
@@ -95,7 +95,7 @@ show_error_codes = true
 # These external scientific packages do not publish complete PEP 561 typing.
 # Owned modules remain checked; their library boundaries are annotated locally.
 [[tool.mypy.overrides]]
-module = ["numba.*", "joblib.*", "sklearn.*", "h5py.*", "anndata.*", "mudata.*", "scanpy.*", "ramanspy.*", "readlif.*", "czifile.*", "basicpy.*", "ashlar.*", "cv2.*", "igraph.*", "leidenalg.*"]
+module = ["numba.*", "joblib.*", "sklearn.*", "h5py.*", "anndata.*", "mudata.*", "scanpy.*", "ramanspy.*", "readlif.*", "pylibCZIrw.*", "basicpy.*", "ashlar.*", "cv2.*", "igraph.*", "leidenalg.*"]
 ignore_missing_imports = true
 
 # The compiled Vue/Vite front-ends under focus/gui/{main,alignment} are data

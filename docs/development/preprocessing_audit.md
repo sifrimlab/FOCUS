@@ -203,9 +203,10 @@ Verification labels: **R** reproduced by a controlled run, **A** reproduced by a
 
 | Item | Status |
 |---|---|
-| 1.2 GUI directory case | Open |
+| 1.2 GUI directory case | Fixed (`0a92ee7`) |
 | 2.1 defects 1 to 9 | Fixed, see section 6 |
 | ST items of 2.2, 2.3, 3.2 and 4 | Fixed, see section 7 |
+| Microscopy items of 2.2, 3.1, 3.6 and 4 | Fixed, see section 8 |
 | Other items of 2.2, 2.3, 3, 4 | Open |
 
 Not verified: Raman on real `.lif` files, the real LAS X LIF tree layout, and the physically correct
@@ -251,6 +252,47 @@ merged `.X` float32 `log_normalize` at a median library size of 485, `pct_counts
 in `obs`, merged rows equal to the per-sample rows, and a second run fully cached without re-hashing.
 Readers for 10x HDF5, Space Ranger, Visium HD `binned_outputs` and Xenium bundles remain out of
 scope: the input contract is an AnnData with raw counts, `obsm['spatial']` and `uns['spot_size']`.
+
+## 8. Microscopy preprocessing redesign
+
+The microscopy pipeline (source file to per-sample OME-TIFF) was rebuilt around two acquisition
+settings, `image_type` (`auto`, `brightfield`, `fluorescence`) and `z_projection` (`auto`, `max`,
+`best_focus`, `middle`), and one metadata fallback, `pixel_size`. Stored pixels are the source pixels;
+contrast is display metadata; tissue is detected and stored as an OME ROI; crop and background fill are
+opt-in. Method version `microscopy-3`: every microscopy output is rebuilt once, and alignments made on
+`microscopy-2` outputs written with the old defaults (enhanced pixels) are redone once. See
+`docs/scientific/microscopy_methods.md`.
+
+| Audit item | Resolution |
+|---|---|
+| Channels after the third dropped; 3-channel IF written as RGB without channel names (2.2) | Every channel kept with its OME channel metadata; RGB only for photometric RGB, YCbCr, BGR or ND2 RGB samples. |
+| 4-D stacks fail; CZI keeps `C=0`, `Z=0`; `czifile` fails on numpy 2.4 (2.2) | Axes from the reader metadata; `z_projection` preset; one series rule for every format; CZI read with pylibCZIrw. |
+| 300 and 600 dpi placeholders accepted (2.2) | Inch resolutions at screen or print defaults are rejected; `pixel_size` is the fallback. |
+| Enhancement, fill and crop on by default; enhanced pixels fed to Prov-GigaPath (3.1) | Lossless defaults; per-channel display windows in `focus_display`; fill and crop opt-in, the fill value set by the image type. |
+| No citations in the microscopy methods page (3.1) | Every step attributed; FOCUS adaptations and design choices labelled. |
+| Luma Otsu detection with pixel-relative areas (3.6) | Saturation and Otsu for brightfield (CLAM, HistoQC), per-channel scaled channel maximum and triangle threshold for fluorescence, kernels and areas in µm on an 8 µm/px canvas. |
+| Full slide in memory, about 39 bytes per source pixel; strips with a duplicate description (4) | Lazy reading, canvas detection on stored levels, zarr staging, tiled SubIFD pyramid. A 24,000 x 24,000 RGB slide peaks at 0.73 GB (about 22 GB before). |
+| Output not recognised as a pyramid or as OME-TIFF by Bio-Formats | One series with SubIFD levels; UTF-8 OME-XML (Bio-Formats read the former `&#181;m` unit as invalid and fell back to plain TIFF). Verified with Bio-Formats 8.4 (QuPath 0.7): OME-TIFF reader, all channels, every level. |
+| Image-type polarity guessed for every image | Configuration, then acquisition metadata, then layout, then polarity with a warning. |
+
+Also changed downstream:
+
+- The alignment view renders the stored display level with the saved windows and colours and toggles
+  channels (`?channels=` on the payload route). Before, 1- and 2-channel images showed their last
+  channel and every image used a global min-max.
+- Image-to-image alignment crops by the series axes (RGB was cropped on the wrong axes) and keeps axes,
+  pixel size and channel names.
+- `feature_extraction` rejects fluorescence images (configuration and registration time); its
+  background skip follows the recorded fill.
+- The standalone grid feature cache includes the image pixel digest; changed pixels are re-encoded.
+- Annotation transfer adds the recorded crop offset of an image annotation modality to the aligned
+  coordinates, so GeoJSON drawn on the source acquisition matches a cropped image
+  (`src/focus/pipeline/annotations.py`, `AnnotationStage.source_offset`).
+
+Out of scope, still open:
+
+- No registration type for fluorescence images (per-channel intensity in the anchor footprint).
+- Pen-mark detection; flat-field correction of stitched mosaics.
 
 [^xu2024]: Xu H. et al. A whole-slide foundation model for digital pathology from real-world data. *Nature* 630, 181-188 (2024). [doi:10.1038/s41586-024-07441-w](https://doi.org/10.1038/s41586-024-07441-w)
 [^singhal2024]: Singhal V. et al. BANKSY unifies cell typing and tissue domain segmentation for scalable spatial omics data analysis. *Nature Genetics* 56, 431-441 (2024). [doi:10.1038/s41588-024-01664-3](https://doi.org/10.1038/s41588-024-01664-3)

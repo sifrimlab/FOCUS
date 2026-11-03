@@ -60,7 +60,7 @@ Interactive browser-based direct mapping (`DirectMappingAligner` + `DirectMappin
 No GUI. The pipeline copies the reference's native `obsm['spatial']` into the pair-specific
 aligned key `obsm['{target_name}_spatial']`. For a microscopy target the coordinates are taken to be
 in the source image's pixel frame, and the crop offset recorded by
-[preprocessing](microscopy_methods.md#4-tissue-cropping-crop_to_tissue) is subtracted, so they land
+[preprocessing](microscopy_methods.md#53-crop-and-fill-opt-in) is subtracted, so they land
 on the preprocessed image's pixels. A microscopy image without a recorded offset (preprocessed before
 the offset was stored and not regenerated, which happens only when preprocessing is skipped, e.g. by
 `scripts/align_only.py`) is used with offset 0 and a warning.
@@ -95,7 +95,7 @@ What the GUI returns depends on the **reference (moving)** modality type; whethe
 
 ## 4. Coordinate scaling
 
-When the fixed target modality is an image, GUI interaction runs on its lowest OME-TIFF pyramid level, and the mapped coordinates (which are expressed in the target's coordinate space) are rescaled back to full resolution before persistence. If
+When the fixed target modality is an image, GUI interaction runs on its display level (the largest stored OME-TIFF pyramid level within 9 MP and 256 MiB of native samples over all channels), and the mapped coordinates (which are expressed in the target's coordinate space) are rescaled back to full resolution before persistence. If
 
 - \((H_0, W_0)\): full-resolution dimensions of the target image
 - \((H_L, W_L)\): displayed-level dimensions
@@ -159,7 +159,12 @@ still agree.
 
 ## 5. GUI image representation details
 
-For image modalities, display payload construction (`_image_to_rgb_uint8`) is:
+A microscopy image that carries display settings (`focus_display`, written by
+[microscopy preprocessing](microscopy_methods.md#6-display-rendering) since `microscopy-3`) is rendered
+from them: each shown channel is scaled to \([0, 1]\) by its window, multiplied by its colour and
+added, then clipped; an RGB image uses its three windows directly. Multichannel images expose one
+toggle per channel. Every other image (Raman, microscopy written before `microscopy-3`) keeps the
+legacy display payload construction (`_image_to_rgb_uint8`):
 
 - dynamic range normalization to uint8
 - channel arrangement to HWC
@@ -232,7 +237,7 @@ is compared with the current inputs for pairs involving ST, for `pre_aligned` pa
 target is a digested microscopy image against a fingerprinted reference; a mismatch re-runs the pair.
 A manual alignment whose record was made on a file that preprocessing later replaced with a
 pixel-identical image (the replaced file's signature is kept in the image as
-`focus_superseded_signature`, see [microscopy preprocessing](microscopy_methods.md#5-ome-tiff-pyramid-output))
+`focus_superseded_signature`, see [microscopy preprocessing](microscopy_methods.md#8-cache-key-and-regeneration))
 is accepted, and its record is re-written for the current image.
 
 `_compute_force_flags` in `orchestrator.py` re-runs a pair when any of the following is true:

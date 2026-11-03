@@ -4,8 +4,9 @@ from typing import Any
 from os import PathLike
 from mudata import MuData
 
-import os
 from pathlib import Path
+
+from focus.io.atomic import atomic_path
 
 import anndata
 import pandas as pd
@@ -90,11 +91,5 @@ def write_h5ad_atomic(
 
     A crash mid-write never leaves a truncated file that a later run could mistake for a cache.
     """
-    head, tail = os.path.split(path)
-    tmp = os.path.join(head, f".{os.getpid()}.tmp.{tail}")
-    try:
+    with atomic_path(path) as tmp:
         write_h5ad_compat(adata, tmp, **kwargs)
-        os.replace(tmp, path)
-    finally:
-        if os.path.exists(tmp):
-            os.remove(tmp)

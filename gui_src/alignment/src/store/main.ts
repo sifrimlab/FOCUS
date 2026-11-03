@@ -17,6 +17,9 @@ export interface PendingCommand { type: CommandType; value?: any }
 
 export type ForegroundMode = 'all' | 'foreground' | 'background';
 
+/** Latest channel re-render request per layer; older responses are dropped. */
+const channelRequests = { reference: 0, target: 0 };
+
 export const useMainStore = defineStore('main', {
   state: () => ({
     sampleInfo: null as SampleStatus | null,
@@ -34,6 +37,12 @@ export const useMainStore = defineStore('main', {
     referenceClassFilter: [] as number[],
     targetSpotClasses: [] as number[],
     targetClassFilter: [] as number[],
+    // Multichannel images: shown channels and the composite re-rendered for them (null: the
+    // initial payload). Kept apart from *Data so a re-render never re-fits the layer.
+    referenceChannels: [] as number[],
+    targetChannels: [] as number[],
+    referenceImage: null as Blob | null,
+    targetImage: null as Blob | null,
     targetOpacity: 0.7,
     globalZoom: 1.0,
     viewOffset: [0, 0] as [number, number],
@@ -74,6 +83,16 @@ export const useMainStore = defineStore('main', {
             this.viewOffset[1] + dy * speedFactor
         ];
     },
+    /** Show `channels` of a multichannel image layer: the backend re-renders the composite. */
+    async setChannels(role: 'reference' | 'target', channels: number[]) {
+        if (role === 'target') this.targetChannels = channels;
+        else this.referenceChannels = channels;
+        const request = ++channelRequests[role];
+        const image: Blob = await api.getPayload(role, 'blob', channels);
+        if (request !== channelRequests[role]) return; // a later toggle superseded this one
+        if (role === 'target') this.targetImage = image;
+        else this.referenceImage = image;
+    },
     async fetchNextSample() {
       this.isLoading = true;
       this.error = null;
@@ -100,6 +119,13 @@ export const useMainStore = defineStore('main', {
         if (tgtMeta.spot_size) {
             this.targetSpotSize = [...tgtMeta.spot_size];
         }
+
+        const shownOf = (meta: Metadata) =>
+            (meta.channels ?? []).flatMap((ch, i) => (ch.visible ? [i] : []));
+        this.referenceChannels = shownOf(refMeta);
+        this.targetChannels = shownOf(tgtMeta);
+        this.referenceImage = null;
+        this.targetImage = null;
 
         // Fetch payloads
         const [refData, tgtData] = await Promise.all([

@@ -88,6 +88,15 @@ The transfer always runs **per sample**, never against the merged aligned file (
 
 Either way, the point-in-polygon queries are performed in annotation-modality coordinates, matching the GeoJSON pixel space.
 
+**Cropped images.** GeoJSON is read in the frame of the source acquisition (for example a QuPath
+project on the original slide), while aligned coordinates are level-0 pixels of the preprocessed
+image. When the annotation modality is an image whose preprocessing cropped it to the tissue
+(`crop_to_tissue`, see [microscopy §5.3](microscopy_methods.md#53-crop-and-fill-opt-in)), the
+recorded crop offset \((x_0, y_0)\) (`focus_crop_offset`) is added to every aligned coordinate
+before the test, which is the same as shifting every polygon by \((-x_0, -y_0)\) into the cropped
+image. An uncropped image records \((0, 0)\). An image preprocessed before the offset was stored
+records none: the coordinates are used unshifted and a warning reports it.
+
 ---
 
 ## 6. Requirements
@@ -101,7 +110,7 @@ Either way, the point-in-polygon queries are performed in annotation-modality co
     > `'spatial_annotations.modality_name' is '<name>' (a non-reference modality). Transferring annotations from a non-reference modality requires 'perform_alignment' to be true.`
 
     Alignment is what produces the `obsm['{annotation_modality}_spatial']` coordinates the transfer reads.
-- **Shared coordinate frame.** The GeoJSON polygon coordinates and the spot coordinates must live in the same pixel space. When the annotation modality is the reference, the reference's `obsm['spatial']` must already be in the GeoJSON's pixel frame (no alignment step corrects it).
+- **Shared coordinate frame.** The GeoJSON polygon coordinates and the spot coordinates must live in the same pixel space. For an image annotation modality that frame is the source acquisition, at full resolution; the tissue crop of preprocessing is compensated (§5). When the annotation modality is the reference, the reference's `obsm['spatial']` must already be in the GeoJSON's pixel frame (no alignment step corrects it).
 
 ---
 

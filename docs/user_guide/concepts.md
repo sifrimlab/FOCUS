@@ -98,7 +98,7 @@ FOCUS writes all omics modalities as AnnData `.h5ad` files at every intermediate
 - multi-channel images (e.g., DAPI, GFP, RFP channels)
 - rich XML metadata describing pixel size, channel names, and acquisition parameters
 
-FOCUS converts all image modalities (microscopy and Raman) to multi-resolution OME-TIFF pyramids during preprocessing: microscopy with zlib compression, Raman with the Adobe Deflate compression that ASHLAR's pyramid writer applies. OME-TIFF files can be opened in [QuPath](https://qupath.github.io), [Napari](https://napari.org), [FIJI](https://fiji.sc), and other bioimaging tools.
+FOCUS converts all image modalities (microscopy and Raman) to multi-resolution OME-TIFF pyramids during preprocessing: microscopy losslessly in the source pixel type with every channel (JPEG 2000 reversible for 8-bit brightfield, zstd otherwise), Raman with the Adobe Deflate compression that ASHLAR's pyramid writer applies. OME-TIFF files can be opened in [QuPath](https://qupath.github.io), [Napari](https://napari.org), [FIJI](https://fiji.sc), and other bioimaging tools.
 
 ---
 

@@ -20,6 +20,7 @@ class ModalityMetadata(TypedDict, total=False):
     spot_count: int
     spot_basis: list[list[float]] | None
     acquisition_basis: list[list[float]] | None
+    channels: list[dict[str, object]]
 
 
 class AlignedSpot(TypedDict, total=False):
@@ -38,7 +39,10 @@ class AlignmentResult(TypedDict, total=False):
     corner_pixels: list[list[float]]
 
 
-AlignmentPayload: TypeAlias = bytes | list[dict[str, object]] | Image.Image | None
+# An image payload is a PIL image, or an ImageView that renders its channels on request.
+AlignmentPayload: TypeAlias = (
+    bytes | list[dict[str, object]] | Image.Image | object | None
+)
 PreparedModality: TypeAlias = tuple[
     ModalityMetadata, AlignmentPayload, np.ndarray | None, np.ndarray
 ]

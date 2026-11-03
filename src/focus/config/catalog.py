@@ -3,6 +3,8 @@
 from focus.config.options import (
     AlignmentStrategy,
     AnnotationFileType,
+    MicroscopyImageType,
+    MicroscopyZProjection,
     ModalityType,
     MsiIntensityNormalization,
     MsiSampleType,
@@ -92,11 +94,17 @@ DISPLAY_NAMES: dict[str, str] = {
     StUnit.SPOT: "Multicellular spots",
     StUnit.BIN: "Sub-cellular bins",
     StUnit.CELL: "Segmented cells",
-    StNormalization.AUTO: "Automatic (technology default)",
+    StNormalization.AUTO: "Automatic",
     StNormalization.LOG_NORMALIZE: "Log-normalize (median depth)",
     StNormalization.CP10K_LOG: "Log-normalize (10,000 counts)",
     StNormalization.SIZE_FACTORS: "Size factors (median depth, linear)",
     StNormalization.AREA_LOG_NORMALIZE: "Log-normalize (area)",
+    # Microscopy image type and Z reduction ("auto" is labelled above)
+    MicroscopyImageType.BRIGHTFIELD: "Brightfield (H&E, IHC, special stains)",
+    MicroscopyImageType.FLUORESCENCE: "Fluorescence (IF, confocal, multiplexed)",
+    MicroscopyZProjection.MAX: "Maximum-intensity projection",
+    MicroscopyZProjection.BEST_FOCUS: "Best-focus plane",
+    MicroscopyZProjection.MIDDLE: "Middle plane",
     # Annotation file types
     AnnotationFileType.GEOJSON: "GeoJSON",
 }

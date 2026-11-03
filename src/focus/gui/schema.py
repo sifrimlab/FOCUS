@@ -7,6 +7,8 @@ from focus.config.keys import (
     STPreprocessingParams,
 )
 from focus.config.options import (
+    MicroscopyImageType,
+    MicroscopyZProjection,
     ModalityType,
     RegistrationType,
     AlignmentStrategy,
@@ -44,46 +46,32 @@ def _build_schema() -> dict[str, object]:
         "background_color": SegmentationBackgroundColor.list(),
         "processing_params": {
             ModalityType.MICROSCOPY_IMAGE: {
-                MicroscopyImageProcessingParams.COLOR_ENHANCEMENT: {
-                    "type": "bool",
-                    "default": True,
+                MicroscopyImageProcessingParams.IMAGE_TYPE: {
+                    "type": "enum",
+                    "options": MicroscopyImageType.list(),
+                    "default": MicroscopyImageType.AUTO,
                 },
-                MicroscopyImageProcessingParams.REMOVE_BACKGROUND: {
-                    "type": "bool",
-                    "default": True,
+                MicroscopyImageProcessingParams.Z_PROJECTION: {
+                    "type": "enum",
+                    "options": MicroscopyZProjection.list(),
+                    "default": MicroscopyZProjection.AUTO,
                 },
                 MicroscopyImageProcessingParams.CROP_TO_TISSUE: {
                     "type": "bool",
-                    "default": True,
+                    "default": False,
                 },
-                MicroscopyImageProcessingParams.BACKGROUND_COLOR: {
-                    "type": "enum",
-                    "options": SegmentationBackgroundColor.list(),
-                    "default": SegmentationBackgroundColor.WHITE,
+                MicroscopyImageProcessingParams.REMOVE_BACKGROUND: {
+                    "type": "bool",
+                    "default": False,
                 },
-                MicroscopyImageProcessingParams.MIN_OBJECT_COVERAGE: {
+                MicroscopyImageProcessingParams.PIXEL_SIZE: {
                     "type": "float",
-                    "default": 0.01,
+                    "default": None,
+                    "nullable": True,
                 },
                 MicroscopyImageProcessingParams.FORCE_RECOMPUTING: {
                     "type": "bool",
                     "default": False,
-                },
-                MicroscopyImageProcessingParams.CLIP_PERCENTILE: {
-                    "type": "int",
-                    "default": 99,
-                },
-                MicroscopyImageProcessingParams.CROP_MARGIN: {
-                    "type": "int",
-                    "default": 250,
-                },
-                MicroscopyImageProcessingParams.GAMMA: {
-                    "type": "float",
-                    "default": 0.45,
-                },
-                MicroscopyImageProcessingParams.CONTRAST_SATURATION: {
-                    "type": "float",
-                    "default": 0.35,
                 },
             },
             ModalityType.MSI: {

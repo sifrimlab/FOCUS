@@ -11,19 +11,27 @@ This page documents the canonical data schemas that FOCUS writes at each pipelin
 
 ### Image modalities (microscopy, raman) → OME-TIFF outputs
 
-- **Microscopy preprocessing** writes a multi-resolution OME-TIFF pyramid using `tifffile` with `zlib` compression and a predictor matched to the storage dtype (3 for `float32`, 2 for integers). The storage dtype follows the source file: `uint8`/`uint16` pass through, float sources stay `float32`, and any other integer depth becomes `uint16`. Integer output is the internally normalised image scaled by the dtype maximum and rounded; `float32` output is written on that normalised scale unchanged. When the source file records a pixel size, every level's `Pixels` element carries `PhysicalSizeX/Y` in µm (the level-0 size scaled by the measured size ratio). The OME-XML also holds a FOCUS `MapAnnotation` (namespace `focus`) with string values:
+- **Microscopy preprocessing** writes a lossless, tiled OME-TIFF pyramid with `tifffile`: level 0 holds the source pixels (after the optional crop and fill) in the source sample type with every channel, one page per channel or one interleaved page for RGB, 512 x 512 tiles, and the lower levels as SubIFDs. Compression is JPEG 2000 reversible for 8-bit brightfield images and zstd with a predictor otherwise. The OME-XML carries the channel metadata (name, colour, wavelengths, fluorophore, acquisition mode), the objective, `PhysicalSizeX/Y` in µm when known, and the tissue outline as the ROI `tissue` (one polygon per piece, in level-0 pixels). It also holds a FOCUS `MapAnnotation` (namespace `focus`) with string values:
 
     | Key | Value |
     |---|---|
-    | `focus_preprocessing_fingerprint` | SHA-256 fingerprint of the method version, source file, sample, modality, settings and software versions; the cached file is reused only when it matches |
-    | `focus_pixel_digest` | SHA-256 digest of the level-0 pixel planes as written; downstream caches use it as the image's identity |
+    | `focus_preprocessing_fingerprint` | SHA-256 fingerprint of the method version, source file, sample, modality, settings, calibration constants and software versions; the cached file is reused only when it matches |
+    | `focus_input_signature` | JSON `{"stat", "sha256"}` of the source file; the SHA-256 is reused while the source path, size and modification time are unchanged |
+    | `focus_pixel_digest` | SHA-256 digest of the level-0 pages as written; downstream caches use it as the image's identity |
     | `focus_crop_offset` | `"x,y"`: position of the output's origin in the source image, in source pixels (`"0,0"` without tissue cropping) |
-    | `focus_method` | Preprocessing method version |
-    | `focus_pixel_size_source` | Where the pixel size was read: `ome`, `aperio`, `imagej`, `tiff_resolution`, `czi`, `nd2`, or `none` |
+    | `focus_method` | Preprocessing method version (`microscopy-3`) |
+    | `focus_pixel_size_source` | Where the pixel size was read: `ome`, `aperio`, `imagej`, `tiff_resolution`, `czi`, `nd2`, `configuration` or `none` |
+    | `focus_image_type`, `focus_image_type_evidence` | `brightfield` or `fluorescence`, and the evidence it was resolved from; `feature_extraction` rejects `fluorescence` |
+    | `focus_z_projection` | The Z rule and the plane used |
+    | `focus_source_series` | Index of the chosen series or scene |
+    | `focus_background_fill` | `none`, or the fill value written outside the tissue; `feature_extraction` uses it as the background colour |
+    | `focus_display` | JSON per-channel display settings: name, colour, window `[low, high]` in native values and default visibility |
     | `focus_superseded_signature` | Present when a regenerated file is pixel-identical to the file it replaced: that file's path, size and modification time (JSON), so alignments made on it stay valid |
+
+    See [OME-XML](../scientific/microscopy_methods.md#73-ome-xml) for the full layout.
 - **Raman preprocessing** writes the OME-TIFF pyramid produced by the ASHLAR stitching step (via the external `FOCUS_ASHLAR` environment): `uint8`, one channel per spectral channel in scan order, Adobe-Deflate compressed with a horizontal predictor, with successive 2× levels. Its OME-XML holds the physical pixel size in µm; it carries no channel names and no wavenumber values, so the spectral axis cannot be read back from the file.
 
-In both cases the full-resolution level is at index `0` and higher indices are progressively downsampled, but they are stored differently: microscopy writes one TIFF series per level, while ASHLAR stores the Raman levels as SubIFDs of a single series (`tifffile.TiffFile(...).series[0].levels`). OME-TIFF files can be read with `tifffile.TiffFile`, `bioformats`, QuPath, or Napari.
+In both cases the full-resolution level is at index `0` and higher indices are progressively downsampled, stored as SubIFDs of a single series (`tifffile.TiffFile(...).series[0].levels`). OME-TIFF files can be read with `tifffile.TiffFile`, `bioformats`, QuPath, or Napari.
 
 ---
 

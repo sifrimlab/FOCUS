@@ -11,8 +11,8 @@ from pathlib import Path
 import numpy as np
 import tifffile
 
-from focus.preprocessing.microscopy.sample import MicroscopyImage
 from focus.preprocessing.microscopy.metadata import _czi_pixel_size, _nd2_pixel_size
+from focus.preprocessing.microscopy.source import open_source
 
 
 class TestPixelSizeParser:
@@ -22,7 +22,6 @@ class TestPixelSizeParser:
         """Create the isolated fixture state."""
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name)
-        self.reader = MicroscopyImage.__new__(MicroscopyImage).reader
 
     def teardown_method(self) -> None:
         """Release the isolated fixture resources."""
@@ -32,7 +31,8 @@ class TestPixelSizeParser:
         """Write a controlled TIFF with the supplied metadata and return its parsed physical pixel size."""
         path = self.root / name
         tifffile.imwrite(path, np.zeros((32, 32), np.uint8), **kwargs)
-        return self.reader._source_pixel_size_um(str(path))
+        with open_source(str(path)) as source:
+            return source.pixel_size, source.pixel_size_source
 
     def test_aperio_description(self) -> None:
         """Verify aperio description."""
@@ -54,10 +54,11 @@ class TestPixelSizeParser:
 
     def test_dpi_default_is_rejected(self) -> None:
         """Verify dpi default is rejected."""
-        assert self._size("dpi.tif", resolution=(72, 72), resolutionunit="INCH") == (
-            None,
-            "none",
-        )
+        for dpi in (72, 300, 600):
+            size, source = self._size(
+                f"dpi{dpi}.tif", resolution=(dpi, dpi), resolutionunit="INCH"
+            )
+            assert size is None and source == "none"
 
     def test_czi_scaling(self) -> None:
         """Verify czi scaling."""

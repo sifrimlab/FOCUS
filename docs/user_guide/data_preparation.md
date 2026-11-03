@@ -39,14 +39,13 @@ FOCUS expects a two-level directory hierarchy rooted at the `dataset_path` you s
 
 ### Microscopy Image (`microscopy_image`)
 
-Place exactly one image file per sample inside the modality directory. Supported extensions are `.tiff`, `.tif`, `.ome.tiff`, `.ome.tif`, `.qptiff`, `.czi`, and `.nd2`. If multiple supported files are present, FOCUS selects the first match in extension-priority order (`.ome.tiff` > `.ome.tif` > `.qptiff` > `.tiff` > `.tif` > `.czi` > `.nd2`). A modality directory with no supported file raises `FileNotFoundError` before processing starts.
+Place exactly one image file per sample inside the modality directory. Supported extensions are `.ome.tiff`, `.ome.tif`, `.ome.btf`, `.qptiff`, `.tiff`, `.tif`, `.btf`, `.svs`, `.ndpi`, `.scn`, `.bif` (read with tifffile), `.czi` (pylibCZIrw) and `.nd2` (nd2), matched case-insensitively; hidden files are ignored. A modality directory with no supported file raises `FileNotFoundError`, and one with several supported files raises `ValueError`, both before processing starts. Other formats (for example MIRAX `.mrxs` or Olympus `.vsi`) are converted to OME-TIFF first, with Bio-Formats `bfconvert` or the QuPath OME-TIFF export.
 
-- **TIFF/OME-TIFF**: any number of channels; any pixel type. The first series is read at its base level, so a pyramid already in the file is not reused. FOCUS builds its own.
-- **qpTIFF (Akoya/PerkinElmer)**: if the file contains multiple resolutions or auxiliary series (pyramid levels, thumbnail, macro, label), only the highest-resolution series/level is used.
-- **CZI (Zeiss)**: multi-scene and multi-dimensional CZI files are supported. FOCUS keeps index 0 of every leading axis until three axes remain, and prints a warning when the outermost axis holds more than one entry.
-- **ND2 (Nikon)**: multi-position, time-lapse and Z-stack ND2 files are supported. FOCUS keeps the middle Z plane and index 0 of every other extra axis, reads only that plane from disk, and reports a warning listing the reduced axes. An RGB ND2 file keeps its three components as channels.
-
-Only the first three channels are kept, whatever the source. Fewer channels are accepted: background removal and cropping promote a 1- or 2-channel image to 3 channels internally to compute the tissue mask, and detect whether its background is the bright or the dark class. For dark-background (fluorescence) acquisitions also set `background_color: "black"` in the modality's `processing_settings`, so the removed background is not filled brighter than the tissue.
+- **Channels and pixel types**: every channel and the source pixel type are kept; the output stores the source pixels losslessly.
+- **Series and scenes**: label, macro, thumbnail, overview, map and preview images are never chosen; among the other series (or CZI scenes) the one with the most pixels is the acquisition, and other acquisition-sized series are reported. ND2 stage positions other than the first are reported and not read.
+- **Time and depth**: a time series keeps its first time point with a warning; a Z-stack is reduced by `z_projection` (maximum projection for fluorescence, best focus for brightfield by default).
+- **Pixel size**: read from the file metadata. When the file has none, set `pixel_size` (µm per pixel) in the modality's `processing_settings`; without either, tissue areas fall back to pixel values and `feature_extraction` cannot choose its encoding level.
+- **Image type**: brightfield or fluorescence is read from the acquisition metadata, then the channel layout, then the image polarity. When it is inferred from the polarity a warning asks for an explicit `image_type`.
 
 ```
 <dataset_path>/
@@ -56,7 +55,7 @@ Only the first three channels are kept, whatever the source. Fewer channels are 
 ```
 
 !!! note "OME-TIFF input is preserved"
-    If you supply an OME-TIFF as input, FOCUS will still re-encode the output as a fresh multi-resolution OME-TIFF pyramid after applying its processing steps (background removal, colour enhancement, cropping). The original file is not modified.
+    If you supply an OME-TIFF as input, FOCUS still writes a fresh tiled OME-TIFF pyramid with its own metadata (tissue outline, display windows, provenance). The pixels are stored losslessly, changed only by the opt-in crop and background fill. The original file is not modified.
 
 ---
 

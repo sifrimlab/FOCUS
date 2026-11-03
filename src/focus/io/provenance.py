@@ -3,7 +3,7 @@
 from typing import cast
 
 from os import PathLike
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from numpy.typing import ArrayLike
 import hashlib
 import json
@@ -21,6 +21,8 @@ PIXEL_DIGEST_KEY = "focus_pixel_digest"
 CROP_OFFSET_KEY = "focus_crop_offset"
 # JSON stat signature of the file a regenerated, pixel-identical image replaced.
 SUPERSEDED_SIGNATURE_KEY = "focus_superseded_signature"
+# JSON {"stat", "sha256"} of the input file, stored in the output (uns or OME MapAnnotation).
+INPUT_SIGNATURE_KEY = "focus_input_signature"
 
 _TIFF_SUFFIXES = (".tif", ".tiff", ".qptiff")
 _SIGNATURE_CHUNK = 8 * 1024 * 1024
@@ -113,6 +115,23 @@ def read_ome_annotations(path: str | PathLike[str]) -> dict[str, str] | None:
     return values or None
 
 
+def read_crop_offset(path: str | PathLike[str]) -> np.ndarray | None:
+    """``(x, y)`` level-0 offset of a preprocessed image's origin in its source image, or None.
+
+    Microscopy preprocessing records it (``focus_crop_offset``) when it crops to the tissue, and
+    ``"0,0"`` otherwise; files written before it was stored, and other files, carry none.
+    """
+    return parse_crop_offset(read_ome_annotations(path) or {})
+
+
+def parse_crop_offset(annotations: Mapping[str, str]) -> np.ndarray | None:
+    """``(x, y)`` of a ``focus_crop_offset`` annotation value ``"x,y"``, or None when absent."""
+    value = annotations.get(CROP_OFFSET_KEY)
+    if value is None:
+        return None
+    return np.array([float(v) for v in value.split(",")], dtype=np.float32)
+
+
 def cached_fingerprint(
     path: str | PathLike[str], key: str = PREPROCESSING_FINGERPRINT_KEY
 ) -> str | None:
@@ -138,3 +157,23 @@ def content_signature(path: str | PathLike[str]) -> str | list[str | int]:
         return f"pixels:{digest}" if digest else stat_signature(path)
     key = cached_fingerprint(path)
     return key if key is not None else stat_signature(path)
+
+
+def input_signature(path: str | PathLike[str], output_file: str | PathLike[str]) -> str:
+    """
+    JSON ``{"stat": ..., "sha256": ...}`` of the input file.
+
+    The SHA-256 stored in ``output_file`` (``uns`` of an h5ad, the MapAnnotation of an OME-TIFF) is
+    reused while the input's path, size and modification time are unchanged, so an unchanged input
+    is not re-hashed on every run.
+    """
+    stat = stat_signature(path)
+    stored = cached_fingerprint(output_file, key=INPUT_SIGNATURE_KEY)
+    if stored is not None:
+        try:
+            previous = json.loads(stored)
+        except json.JSONDecodeError:
+            previous = None
+        if isinstance(previous, dict) and previous.get("stat") == stat:
+            return stored
+    return json.dumps({"stat": stat, "sha256": file_digest(path)})

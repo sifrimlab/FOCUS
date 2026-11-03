@@ -55,12 +55,12 @@ Used for microscopy images. Each reference spot is described by a deep-learning 
 !!! warning "H&E-stained brightfield images only"
     The encoder is **Prov-GigaPath**, a foundation model pretrained on brightfield tiles from H&E-stained whole-slide images ([model card](https://huggingface.co/prov-gigapath/prov-gigapath)). Its embeddings describe H&E morphology, so `feature_extraction` is only appropriate when the modality is an **H&E-stained histological section imaged in brightfield RGB**.
 
-    FOCUS performs no check on the stain, the imaging mode or the channel content. Any microscopy image is cut into windows, normalized and forwarded to the model, and a full `(N_ref, 1536)` matrix comes back without an error or a warning. For immunofluorescence, IHC with other chromogens, other histological stains, or any acquisition that is not brightfield RGB, those numbers do not describe the tissue and must not be interpreted as morphology.
+    `feature_extraction` applies to brightfield images only. An image recorded as fluorescence is rejected: at configuration time when the modality sets `image_type: "fluorescence"`, and at registration time from the `focus_image_type` that preprocessing recorded in the image (for example when `image_type: auto` resolved to fluorescence). FOCUS performs no check on the stain of a brightfield image: it is cut into windows, normalized and forwarded to the model, and a full `(N_ref, 1536)` matrix comes back without an error or a warning. For IHC with other chromogens, other histological stains, or any brightfield acquisition that is not H&E, those numbers do not describe the tissue and must not be interpreted as morphology.
 
     For such modalities set `"registration_type": "none"`. The modality is still preprocessed and aligned, and its OME-TIFF stays available under `alignment/`; it is only left out of the registered outputs and the final MuData.
 
 !!! note "Channel handling before encoding"
-    Windows are cut as 3-channel RGB. A single-channel image is **replicated to RGB** by `ensure_hwc3` and encoded as if it were a grayscale brightfield slide, so a fluorescence acquisition saved as one channel runs to completion instead of failing. A 4-channel image has its 4th channel dropped. Neither conversion brings the input any closer to the model's training domain.
+    Windows are cut as 3-channel RGB. A single-channel image is **replicated to RGB** by `ensure_hwc3` and encoded as if it were a grayscale brightfield slide. A 4-channel image has its 4th channel dropped. Neither conversion brings the input any closer to the model's training domain.
 
 **Algorithm**
 
@@ -68,12 +68,12 @@ Used for microscopy images. Each reference spot is described by a deep-learning 
 2. Map every reference spot's footprint into the image (see the shared rules above).
 3. Cut **windows** of 224 px, the encoder's input size, around the footprints, with at least 56 px of tissue around each footprint. Spots that fall in the same window share one forward pass. A footprint too large for a 224 px window gets a larger window (up to 1024 px), with interpolated position embeddings.
 4. For each spot, add a **readout query** to its window: a copy of the encoder's class token whose attention is restricted to the window's patch tokens (the square pixel blocks the encoder embeds) whose centres lie inside the footprint. The window's own tokens attend to each other exactly as in a normal forward pass, so they keep the context of the surrounding tissue, while each spot's embedding reads only its footprint. A spot smaller than one token reads the token that contains its centre.
-5. A token is **background** when **≥99 % of its pixels match the configured `background_color`** (white `[1,1,1]` or black `[0,0,0]`); background tokens are never read. A spot whose footprint holds only background, or lies outside the image, keeps an **all-zero embedding**, which the [compilation](compilation.md) coverage filter later drops.
+5. A token is **background** when **≥99 % of its pixels match the background colour** (white `[1,1,1]` or black `[0,0,0]`); background tokens are never read. The colour is the fill that preprocessing recorded in the image (`focus_background_fill`: 0 is black, any other value white) when `remove_background` was enabled, and the configured `background_color` otherwise. A spot whose footprint holds only background, or lies outside the image, keeps an **all-zero embedding**, which the [compilation](compilation.md) coverage filter later drops.
 6. Encode with **Prov-GigaPath** (`hf_hub:prov-gigapath/prov-gigapath`, loaded via `timm`, run under `torch.inference_mode()`), producing a **1536-dimensional** embedding per spot. Input windows are normalized with ImageNet statistics (μ = (0.485, 0.456, 0.406), σ = (0.229, 0.224, 0.225)); inference runs on the GPU when CUDA is available and otherwise on CPU. On GPU the batch size is chosen automatically per window size from the free VRAM and is reduced and retried if an out-of-memory error occurs.
 
 When the model is loaded, FOCUS checks that a readout covering a whole window reproduces the encoder's standard embedding of that window, and stops with an error otherwise. No normalization is applied to the output embeddings.
 
-**Requirements:** an H&E-stained brightfield RGB image (see the warning above), a `huggingface_token` in the config (for the model download), and for reasonable runtime an NVIDIA GPU with CUDA.
+**Requirements:** an H&E-stained brightfield image (see the warning above), a `huggingface_token` in the config (for the model download), and for reasonable runtime an NVIDIA GPU with CUDA.
 
 **Output AnnData:** `X` = `(N_ref, 1536)` dense embeddings; `obsm['spatial']` = the reference coordinates in full-resolution image pixels; `obs['sample_id']`; `uns['focus_registration_geometry']` also records the encoded pyramid level and its pixel size. There is no `var` metadata (`var_names` are positional strings) and no `layers`.
 
@@ -91,7 +91,7 @@ When the model is loaded, FOCUS checks that a readout covering a whole window re
 
 | Parameter | Type | Default | Description |
 |---|---|---|---|
-| `background_color` | string | `"white"` | `"white"` or `"black"`: the color counted toward the ≥99 % background test. Set it to the preprocessing `background_color`. |
+| `background_color` | string | `"white"` | `"white"` or `"black"`: the color counted toward the ≥99 % background test for an image that preprocessing did not fill. A filled image uses its recorded `focus_background_fill` instead. |
 | `force_recomputing` | bool | `false` | Recompute even if the cached output matches its inputs. |
 
 The window size is fixed by the encoder; there is no patch size setting.

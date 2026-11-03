@@ -100,7 +100,7 @@ The window is split into a display viewport (80% of the width) and a control pan
 **Display viewport**
 - Both modalities are drawn in the same viewport, the reference layer on top of the target layer
 - The reference layer moves; the target layer is fixed and defines the coordinate space
-- For image modalities, the lowest pyramid level of the OME-TIFF is displayed
+- For image modalities, the largest stored pyramid level of the OME-TIFF within 9 MP and 256 MiB of native samples (all channels) is displayed. A preprocessed microscopy image is rendered with its stored display windows: RGB as is, multichannel images as a coloured composite with one toggle per channel in the layer's panel section (the first four channels shown at start)
 - For spot modalities, spots are coloured by their `obs['cluster']` label
 - Native spot centers and sizes are retained at every observation count. Compact binary payloads, bounded GPU meshes and viewport culling replace display pooling. The acquisition lattice inferred from the coordinates preserves HD square orientation. The confirmed transform still applies to every original observation
 - Cluster filters show the saved labels and use the canvas colors. The fixed layer uses a warm palette and the moving layer a cool palette, extended without cycling; unassigned observations are neutral gray

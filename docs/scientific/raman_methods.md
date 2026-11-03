@@ -156,7 +156,7 @@ raises `RuntimeError` otherwise, even when its own cache exists.
    `cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))`. The result is the preview mosaic used below.
 4. **Otsu segmentation.** The preview mosaic is clipped at its 95th percentile and Otsu's threshold is
    computed on that copy (between-class-variance criterion, as in
-   [microscopy](microscopy_methods.md#3-background-removal-remove_background)). The threshold is
+   [microscopy](microscopy_methods.md#52-segmentation)). The threshold is
    multiplied by `otsu_threshold_factor` (default 0.7), truncated to an integer, and applied to the
    **unclipped** preview mosaic.
 5. **Morphological cleanup.**

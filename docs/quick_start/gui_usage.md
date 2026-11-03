@@ -81,13 +81,15 @@ field.
 **Modality-Specific Settings:**
 
 **Microscopy Image:**
-- **Input Format**: OME-TIFF, qpTIFF, TIFF, CZI, or ND2
-- **Color Enhancement**: Enable/disable gamma correction and contrast stretching
-- **Background Removal**: Enable/disable and choose the fill colour (white or black)
-- **Crop to Tissue**: Enable/disable with margin size
+- **Input Format**: OME-TIFF, BigTIFF, qpTIFF, SVS, NDPI, SCN, BIF, CZI or ND2 (one file per sample)
+- **Image Type** (`image_type`): Automatic (from the metadata), Brightfield (H&E, IHC, special stains) or Fluorescence (IF, confocal, multiplexed)
+- **Z Projection** (`z_projection`): Automatic, Maximum-intensity projection, Best-focus plane or Middle plane
+- **Crop to Tissue** (`crop_to_tissue`): Enable/disable; the margin is a fixed 100 µm. Off by default
+- **Remove Background** (`remove_background`): Enable/disable; the fill follows the image type (white for brightfield, 0 for fluorescence). Off by default
+- **Pixel Size** (`pixel_size`): µm per pixel, used only when the file metadata has none
 
 !!! note
-    The number of OME-TIFF pyramid levels is computed automatically from the image size and is not a GUI setting.
+    The output stores the source pixels losslessly; contrast is automatic and applied only for display. The number of OME-TIFF pyramid levels follows from the image size and is not a GUI setting.
 
 **MSI (Mass Spectrometry Imaging):**
 - **Intensity Normalization**: None/TIC/Log/CLR/TIC Mean Scaled/Median/Internal Standard
@@ -354,10 +356,11 @@ The JSON configuration file contains:
       "alignment_force_recomputing": false,
       "name": "microscopy",
       "processing_settings": {
-        "color_enhancement": true,
-        "remove_background": true,
-        "crop_to_tissue": true,
-        "gamma": 0.45,
+        "image_type": "brightfield",
+        "z_projection": "auto",
+        "crop_to_tissue": false,
+        "remove_background": false,
+        "pixel_size": null,
         "force_recomputing": false
       },
       "registration_settings": {},

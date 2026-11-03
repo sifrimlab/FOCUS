@@ -125,16 +125,71 @@ def load_ome_tiff_level(filename: str, level: int = 0) -> np.ndarray:
             if level > 0 or isinstance(levels[0], _ChannelStack)
             else tif.asarray()
         )
+        axes = str(getattr(levels[level], "axes", "") or "").upper()
 
-    # HWC layout: the channel dimension is the smallest one
-    if image_data.ndim == 3 and np.argmin(image_data.shape) == 0:
-        image_data = np.transpose(image_data, (1, 2, 0))
+    # HWC layout: channel-first levels (C, S or an unnamed leading axis) are moved last. Without
+    # axes the channel dimension is taken to be the smallest one.
+    if image_data.ndim == 3:
+        leading = (
+            axes[0] in "CSIQ" if len(axes) == 3 else np.argmin(image_data.shape) == 0
+        )
+        if leading:
+            image_data = np.transpose(image_data, (1, 2, 0))
 
     if np.issubdtype(image_data.dtype, np.integer):
         image_data = image_data.astype(np.float32) / np.iinfo(image_data.dtype).max
     elif image_data.dtype != np.float32:
         image_data = image_data.astype(np.float32)
     return image_data
+
+
+def read_display_settings(filename: str) -> dict[str, object] | None:
+    """The ``focus_display`` rendering (per-channel name, colour, window, visibility), or None.
+
+    Written by microscopy preprocessing since ``microscopy-3``; older files carry none.
+    """
+    import json
+
+    from focus.io.provenance import read_ome_annotations
+
+    value = (read_ome_annotations(filename) or {}).get("focus_display")
+    if not value:
+        return None
+    try:
+        settings = json.loads(value)
+    except json.JSONDecodeError:
+        return None
+    return settings if isinstance(settings, dict) else None
+
+
+def read_channel_names(filename: str) -> list[str]:
+    """Channel ``Name`` attributes of the first OME ``Pixels`` element, in order (may be empty)."""
+    import xml.etree.ElementTree as ET
+    import tifffile
+
+    try:
+        with tifffile.TiffFile(filename) as tif:
+            root = ET.fromstring(cast(tifffile.TiffPage, tif.pages[0]).description)
+    except Exception:
+        return []
+    pixels = next(
+        (e for e in root.iter() if e.tag.rsplit("}", 1)[-1] == "Pixels"), None
+    )
+    if pixels is None:
+        return []
+    return [
+        e.get("Name", f"Channel {i}")
+        for i, e in enumerate(
+            e for e in pixels if e.tag.rsplit("}", 1)[-1] == "Channel"
+        )
+    ]
+
+
+def read_image_type(filename: str) -> str | None:
+    """``focus_image_type`` (brightfield or fluorescence) of a preprocessed image, or None."""
+    from focus.io.provenance import read_ome_annotations
+
+    return (read_ome_annotations(filename) or {}).get("focus_image_type")
 
 
 _LENGTH_UNIT_TO_UM = {"m": 1e6, "cm": 1e4, "mm": 1e3, "µm": 1.0, "um": 1.0, "nm": 1e-3}

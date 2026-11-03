@@ -93,7 +93,7 @@ const updateContent = async () => {
   const { width, height } = app.screen;
 
   if (store.referenceMeta.modality_type === 'IMAGE') {
-    const url = URL.createObjectURL(store.referenceData as Blob);
+    const url = URL.createObjectURL((store.referenceImage ?? store.referenceData) as Blob);
     try {
       const img = new Image();
       img.src = url;
@@ -161,6 +161,13 @@ watch(() => [store.referenceData, store.referenceMeta], () => {
     }
   }
   updateContent();
+  if (app && app.renderer) app.render();
+});
+
+// Re-rendered channels: same image size, so the placement is unchanged.
+watch(() => store.referenceImage, async () => {
+  await updateContent();
+  const app = layer.app();
   if (app && app.renderer) app.render();
 });
 

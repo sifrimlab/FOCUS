@@ -4,7 +4,7 @@ from __future__ import annotations
 from focus.preprocessing.transcriptomics.parameters import StSampleSettings
 from focus.preprocessing.transcriptomics.matrix import _ensure_sparse_csr
 from focus.preprocessing.transcriptomics.counts import remove_controls
-from focus.preprocessing.transcriptomics.provenance import INPUT_SIGNATURE_KEY
+from focus.io.provenance import INPUT_SIGNATURE_KEY
 from focus.preprocessing.transcriptomics.qc import quality_control
 from focus.preprocessing.transcriptomics.technology import (
     AREA_COLUMNS,
