@@ -89,7 +89,7 @@ The MSI pipeline operates at the **dataset level**: all samples are processed to
    - Detect ion modes from the presence of a complete `.imzML` + `.ibd` pair in `pos/`, `neg/`, or both (an ion mode subdirectory holding neither file is treated as not acquired and ignored)
    - Parse imzML XML: extract data types, raster size (µm), pixel coordinates, and physical coordinates
    - Correct rotation error in physical coordinates via linear regression on the densest pixel column
-   - If double ion mode: pair each positive spectrum with the negative spectrum at the same stage position (pixel index when the files have no stage positions), remove unpaired spots, compute affine alignment between positive and negative physical coordinates, and average the two coordinate sets
+   - If double ion mode: register the positive positions onto the negative ones from the spectral content of both acquisitions (rotation, translation and, without stage positions, handedness), stop the sample when the pose cannot be verified, pair each mapped positive spectrum with the nearest negative one, remove unpaired spots, compute affine alignment between positive and negative physical coordinates, and average the two coordinate sets
    - Normalize physical coordinates to origin; shift to raster center
    - Compute raster bounding-box coordinates for each spot (in µm)
 

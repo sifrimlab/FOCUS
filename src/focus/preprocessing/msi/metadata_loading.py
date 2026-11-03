@@ -76,6 +76,10 @@ def _filter_corrupt_spectra(
     sample._metadata[mode][MsiMetadata.INTENSITIES_BINARY_METADATA] = sample._metadata[
         mode
     ][MsiMetadata.INTENSITIES_BINARY_METADATA][keep]
+    if MsiMetadata.PAIRING_BANDS in sample._metadata[mode]:
+        sample._metadata[mode][MsiMetadata.PAIRING_BANDS] = sample._metadata[mode][
+            MsiMetadata.PAIRING_BANDS
+        ][keep]
     get_reporter().warning(
         f"{str(mode).upper()} mode: filtered {len(corrupt_indices):,} corrupted datapoint(s) "
         f"({len(corrupt_indices) / n_total * 100:.1f}% of {n_total:,} spectra)"

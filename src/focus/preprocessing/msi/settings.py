@@ -28,7 +28,60 @@ def _step(index: int) -> tuple[int, int, str]:
 
 # Part of the preprocessing fingerprint: bump whenever the same input and settings produce a
 # different output, so cached results are rebuilt.
-METHOD_VERSION = "msi-14"
+METHOD_VERSION = "msi-15"
+
+
+# --- Dual polarity pairing (docs/scientific/msi_methods.md §2.2) ---
+
+# Log-spaced m/z bands summed per spectrum during the binary scan; their composition is the
+# content both polarities are registered on.
+_PAIRING_BAND_EDGES = np.geomspace(50.0, 3000.0, 49)
+
+# Principal components of the band composition per polarity, and the seeded subsample they are
+# fitted on.
+_PAIRING_COMPONENTS = 6
+
+_PAIRING_PCA_SPECTRA = 30_000
+
+# Coarse search grid: cells of this many pixel pitches (at least _PAIRING_MIN_CELLS across the
+# shorter footprint side) and rotations every _PAIRING_ANGLE_STEP degrees over the full circle.
+_PAIRING_COARSE_PITCHES = 4
+
+_PAIRING_MIN_CELLS = 24
+
+_PAIRING_ANGLE_STEP = 3.0
+
+# High-pass Gaussian sigma, in pixel pitches (at most a sixth of the shorter footprint side):
+# smooth fields correlate at any pose and are removed before scoring.
+_PAIRING_HIGHPASS_PITCHES = 8
+
+# A pose must overlap this fraction of the smaller footprint.
+_PAIRING_MIN_OVERLAP = 0.05
+
+# Verification: the best coarse score must exceed every competing pose (another translation more
+# than _PAIRING_PEAK_EXCLUSION coarse cells away, or another rotation more than
+# _PAIRING_ANGLE_EXCLUSION degrees away) by this factor, and the poses found with each half of the
+# components must land within _PAIRING_MAX_DISAGREEMENT coarse cells of the final pose.
+_PAIRING_MIN_MARGIN = 1.3
+
+_PAIRING_PEAK_EXCLUSION = 8
+
+_PAIRING_ANGLE_EXCLUSION = 10.0
+
+_PAIRING_MAX_DISAGREEMENT = 2.0
+
+# Final pose: the overlap is cut into square tiles of this many pixel pitches, each tile's shift is
+# searched within _PAIRING_TILE_RADIUS pitches, and the rotation and translation are fitted to the
+# tile shifts; tiles further than _PAIRING_TILE_OUTLIER pitches from the fit are dropped.
+_PAIRING_TILE_PITCHES = 24
+
+_PAIRING_TILE_RADIUS = 4
+
+_PAIRING_TILE_OUTLIER = 1.5
+
+# Lattice snap: the sub-pixel offset is applied when the nearest-neighbour displacements, taken
+# modulo the pitch, have at least this circular coherence on both axes (commensurate lattices).
+_PAIRING_SNAP_COHERENCE = 0.8
 
 
 # --- m/z recalibration (docs/scientific/msi_methods.md §4) ---

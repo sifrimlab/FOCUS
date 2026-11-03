@@ -52,3 +52,4 @@ class SampleMetadata(TypedDict, total=False):
     raster_coordinates: NDArray[np.int32]
     mz_binary_metadata: NDArray[np.int64]
     intensities_binary_metadata: NDArray[np.int64]
+    pairing_bands: NDArray[np.float32]

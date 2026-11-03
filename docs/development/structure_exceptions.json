@@ -49,11 +49,6 @@
     "category": "kernel",
     "reason": "Bounded binary-validation scan retains dtype/range checks, file-handle lifetime, chunk visitation and non-finite spectrum accumulation in the same order; truncation errors must precede downstream processing."
   },
-  "src/focus/preprocessing/msi/coordinates.py::MsiCoordinates._pair_by_pixel": {
-    "max_lines": 79,
-    "category": "kernel",
-    "reason": "Fallback polarity-pairing kernel evaluates acquisition orientation, raster alignment and stable intersection together; a different candidate or tie order changes paired spectra."
-  },
   "src/focus/preprocessing/msi/feature_metadata.py::feature_metadata": {
     "max_lines": 78,
     "category": "declaration",

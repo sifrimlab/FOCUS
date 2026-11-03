@@ -292,3 +292,71 @@ def write_imzml(
     )
     with open(os.path.join(directory, "data.imzML"), "w") as f:
         f.write(xml)
+
+
+class StructuredTissue:
+    """Smooth and sharp composition fields over a tissue frame (micrometres), seen by either polarity.
+
+    Four latent fields, each a sum of Gaussian blobs plus piecewise-constant Voronoi regions, set the
+    intensities of twelve peaks per polarity through polarity-specific loadings, so the two polarities
+    share anatomy but not intensity relations. Each spectrum also carries its tissue position as two
+    m/z values above the pairing bands (4000 + x/1000, 6000 + y/1000), never used for pairing.
+    """
+
+    POSITIVE_PEAKS = np.linspace(400.0, 1000.0, 12)
+    NEGATIVE_PEAKS = np.linspace(430.0, 1030.0, 12)
+
+    def __init__(self, extent: tuple[float, float], seed: int = 0) -> None:
+        """Draw the fields over [0, extent] with a margin, and the polarity loadings."""
+        rng = np.random.default_rng(seed)
+        width, height = extent
+        self.blobs = [
+            (
+                rng.uniform(-200, width + 200, 80),
+                rng.uniform(-200, height + 200, 80),
+                rng.uniform(15, 60, 80),
+                rng.normal(0, 1, 80),
+            )
+            for _ in range(4)
+        ]
+        self.seeds = np.column_stack(
+            [rng.uniform(-200, width + 200, 14), rng.uniform(-200, height + 200, 14)]
+        )
+        self.levels = rng.normal(0, 1, (14, 4))
+        self.loadings = {
+            "pos": rng.normal(0, 1, (12, 4)),
+            "neg": rng.normal(0, 1, (12, 4)),
+        }
+        self.rng = rng
+
+    def fields(self, xy: np.ndarray) -> np.ndarray:
+        """Latent field values (n, 4) at tissue positions ``xy``."""
+        out = np.zeros((len(xy), 4))
+        for k, (cx, cy, sigma, weight) in enumerate(self.blobs):
+            d2 = (xy[:, :1] - cx) ** 2 + (xy[:, 1:] - cy) ** 2
+            out[:, k] = (weight * np.exp(-d2 / (2 * sigma**2))).sum(axis=1)
+        region = np.argmin(
+            ((xy[:, None, :] - self.seeds[None]) ** 2).sum(axis=2), axis=1
+        )
+        return out + 0.7 * self.levels[region]
+
+    def spectra(
+        self, xy: np.ndarray, mode: str
+    ) -> tuple[list[np.ndarray], list[np.ndarray]]:
+        """Centroid spectra of one polarity at tissue positions ``xy``."""
+        peaks = self.POSITIVE_PEAKS if mode == "pos" else self.NEGATIVE_PEAKS
+        log_intensity = self.fields(xy) @ self.loadings[mode].T
+        log_intensity += self.rng.normal(0, 0.3, log_intensity.shape)
+        mz_list, intensity_list = [], []
+        for (x, y), row in zip(xy, log_intensity):
+            mz_list.append(np.concatenate([peaks, [4000 + x / 1000, 6000 + y / 1000]]))
+            intensity_list.append(np.concatenate([1e4 * np.exp(row), [1e3, 1e3]]))
+        return mz_list, intensity_list
+
+
+def tissue_position(mz: np.ndarray) -> tuple[float, float]:
+    """Tissue position (x, y) a StructuredTissue spectrum carries."""
+    return (
+        float((mz[(mz > 3500) & (mz < 5000)][0] - 4000) * 1000),
+        float((mz[mz > 5000][0] - 6000) * 1000),
+    )

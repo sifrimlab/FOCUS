@@ -83,47 +83,102 @@ This removes the scan-line tilt while preserving the centroid and all inter-spot
 When both ion modes are present the two acquisitions must be expressed in a single shared frame
 (`_filter_unpaired_spots`, `initialize_sample`).
 
-**1. Pairing by stage position.** When every spectrum of both imzML files carries its stage
-position (the `3DPositionX` and `3DPositionY` user parameters, read as the physical coordinates
-\(\mathbf{r}\), rotation-corrected as in §2.1), the spectra are paired by position
-(`_pair_by_stage`). Both acquisitions are in the instrument's stage frame and differ by one
-translation \(\mathbf{t}\): the second polarity is acquired a fraction of a pixel away from the first.
-With \(h\) the pixel pitch, the median distance from a positive spectrum to its nearest positive
-neighbour, \(\mathbf{t}\) is the most common displacement from a positive spectrum to its nearest
-negative spectrum, counted in cells of \(h/4\) and refined by the median of the displacements in the
-most populated cell. Each positive spectrum \(i\) is paired with
+**1. Content registration** (`pairing.register`). The positive positions are registered onto the
+negative ones from the spectral content of both acquisitions, so already paired acquisitions,
+stage frames shifted or rotated between the two runs (a reloaded slide) and partially overlapping
+scans are handled by one procedure. Stage positions (`3DPositionX`, `3DPositionY`, rotation-corrected
+as in §2.1) are the physical coordinates \(\mathbf{r}\) when every spectrum of both files carries
+them; otherwise the pixel grid scaled by the raster size is used, and the search also covers the
+mirrored handedness, because pixel axes can run in opposite directions in the two files.
+
+*Content.* During the binary scan (§1) every spectrum's intensity is summed in 48 log-spaced m/z
+bands from 50 to 3000. Per polarity the band composition \(\log(1 + 10^4\, b_k / \sum_k b_k)\) and the
+log total are standardized, and their first 6 principal components (fitted on a seeded subsample of
+30,000 spectra) are the channels of that polarity.
+
+*Images.* The channels are rasterized on a grid of cell \(c\): each spectrum is splatted bilinearly
+onto its four nearest cell centres, which leaves no moire of empty and doubled cells on a rotated
+lattice, and each image is high-passed by subtracting its masked Gaussian low-pass (normalized
+convolution[^knutsson1993], \(\sigma = \min(8h, L/6)\) with \(h\) the pixel pitch and \(L\) the shorter
+footprint side). Smooth fields correlate at any pose; fine structure correlates only at the true one.
+
+*Score.* For a rotation \(\theta\) (and handedness) of the positive positions about their centroid,
+every translation \(\mathbf{t}\) is scored at once in the Fourier domain by the masked normalized
+cross-correlation[^padfield2012] \(r_{ij}(\mathbf{t})\) between positive channel \(i\) and negative
+channel \(j\), computed only where both footprints overlap. The score is sign-invariant and
+multi-channel, because the two polarities share anatomy but not intensity relations (a region bright
+in one polarity can be dark in the other):
 
 \[
-j(i) = \arg\min_j \bigl\lVert \mathbf{r}_{\text{neg},j} - (\mathbf{r}_{\text{pos},i} + \mathbf{t}) \bigr\rVert ,
-\qquad \text{accepted when the distance is at most } h/2 ,
+z(\theta,\mathbf{t}) = \Bigl(\tfrac{1}{K^2}\textstyle\sum_{i,j} r_{ij}(\mathbf{t})^2\Bigr)^{1/2}
+\sqrt{n(\mathbf{t})/n_{\min}} ,
 \]
 
-and a negative spectrum claimed by two positive spectra goes to the closer one. Spectra without a
-partner are removed. FOCUS design choice: the pairing rule. Pixel indices are not used for pairing,
-because the two acquisitions can cover different areas and run their pixel axes in opposite
-directions; mirroring one mode's indices maps each pixel onto its counterpart only when both modes
-cover the same raster extent, and pairs spectra a constant distance apart otherwise. The cells of
-\(h/4\) keep an offset of half a pitch, where two neighbours are equally near, from averaging to 0.
-Each mode keeps its own pixel coordinates, which describe its own raster (scan lines in §4.2, pixel
-neighbourhoods).
+the root mean squared correlation over the \(K^2\) channel pairs (an RV-type association between
+the two channel sets[^robert1976]), weighted by the root of the overlap \(n\) relative to the smaller
+footprint \(n_{\min}\). The weight keeps the global search off small chance overlaps; poses
+overlapping less than 5% of the smaller footprint are not scored.
 
-**2. Pairing by pixel index** (`_pair_by_pixel`), when at least one file has no stage positions. A
-pixel→physical linear map is fitted for each mode by least squares,
-\(\mathbf{r} \approx [\,\mathbf{p}\ \ \mathbf{1}\,]\,T\), giving \(T\in\mathbb{R}^{2\times2}\) (the
-intercept row is discarded). The maps are normalized, \(\hat T = T/\lVert T\rVert_F\), and the
-axis-flip \((f_x,f_y)\in\{\pm1\}^2\) is chosen to minimize the Frobenius mismatch between the
-negative and positive maps,
+*Search.* (i) Coarse: cells of \(4h\) (at most \(L/24\)), every 3 degrees over the full circle.
+(ii) Rotation refinement on cells of \(2h\), \(\pm 3\) degrees every 0.25 degrees, translations within
+two coarse cells of the coarse pose and without the overlap weight (a local search compares poses of
+nearly equal overlap); the window follows the best angle while it lies on its edge, and a parabola
+through the best angle and its neighbours gives the final value. (iii) Tile fit at native resolution:
+the overlap is cut into tiles of \(24h\), each tile's residual shift is searched within \(4h\), and a
+rotation and translation are fitted to the tile shifts by weighted least squares (weights: tile peak
+scores); tiles further than \(1.5h\) from the fit are dropped and the fit repeated, up to three
+times. Whole-image angle sweeps are flat for small rotations; tile shifts constrain the angle by the
+lever arm across the overlap. (iv) Lattice snap: lattice offsets are periodic in the pitch, so in each tile the displacements
+from the mapped positive positions to their nearest negative ones are averaged as phases,
+\(\arg \langle e^{2\pi i\, d/h} \rangle\) per axis. When at least half the tiles (and at least
+three) have a phase coherence \(|\langle e^{2\pi i\, d/h}\rangle| \ge 0.8\) on both axes
+(commensurate lattices), the tile offsets are unwrapped against their nearest neighbours and a
+rotation and translation are fitted to them, twice. The snap lands commensurate lattices exactly on
+each other and settles a half-pitch displacement on one consistent side; rotated lattices are left
+at the tile-fit pose. On the MEL acquisition the content places the negative spots half a row
+(about 10 µm) from the positive ones although both files record the same stage positions; either
+neighbouring row is an equally valid partner, and the snap pairs every spectrum with the same one.
 
-\[
-(f_x,f_y)=\arg\min_{f}\;\bigl\lVert \operatorname{diag}(f)\,\hat T_{\text{neg}} - \hat T_{\text{pos}}\bigr\rVert_F .
-\]
+*Verification.* The coarse pose is accepted when its score exceeds by a factor 1.3 every competing
+pose: the best translation more than 8 coarse cells away at the same rotation, the best pose at any
+rotation more than 10 degrees away, and the best pose of the other handedness. The coarse search is
+repeated with the even and with the odd components; both poses must map the positive positions
+within 2 coarse cells (median) of the final pose. A pose failing either test stops the sample with
+`PolarityPairingError`: no pairing is produced rather than a wrong one. FOCUS design choice: the
+procedure, the band content, the score and the thresholds, calibrated in the table below.
 
-If a flip is selected, the negative-mode pixel coordinates are mirrored about their own range. Only
-pixel positions present in **both** modes are retained, and the negative indices are reordered so
-paired rows share the same pixel coordinate. This pairs the right spectra only when both modes cover
-the same raster extent; a difference in extent is reported as a warning.
+*Pairing* (`pairing.pair`). Each mapped positive spectrum is paired with the nearest negative
+spectrum within half a pixel diagonal; a negative spectrum claimed twice goes to the closer positive
+one. Spectra without a partner are removed. When stage positions are present and the registered pose
+moves the positive positions by more than one pitch, a detail line reports that the recorded stage
+frames are not shared. Each mode keeps its own pixel coordinates, which describe its own raster
+(scan lines in §4.2, pixel neighbourhoods).
 
-**3. Affine harmonization.** A 2D affine map is fitted from positive to negative physical
+Calibration on the two dual-polarity acquisitions of `test_data` (MEL: shared stage frame; MEL2: NEG
+stage frame recorded about 1.7 mm away, same raster and tissue pixels) and transformed copies of MEL.
+"Correct" counts pairs whose two spectra share the pixel index in the source data.
+
+| Case | Registered pose | Margin | Pairs | Consistent |
+|---|---|---|---|---|
+| MEL as acquired | 0.00 deg, (0.0, 0.0) µm | 4.49 | 182,865 | 100% |
+| MEL, NEG shifted by (+2500, −300) µm | 0.00 deg, (+2500.0, −300.0) µm | 4.49 | 182,865 | 100% |
+| MEL, NEG rotated 7 deg and shifted | 7.00 deg, (+800.0, +400.0) µm | 3.71 | 182,865 | 100% |
+| MEL, NEG rotated −90 deg | −90.00 deg, (+100.0, +50.0) µm | 4.75 | 182,865 | 100% |
+| MEL, 20% overlap, shifted | 0.00 deg, (−1200.0, +680.0) µm | 1.83 | 36,199 | 99.99% |
+| MEL, 40% overlap, rotated 3 deg | 3.00 deg | 2.93 | 73,032 | 100% |
+| MEL2 as acquired | 0.00 deg, (+1716.2, −116.0) µm | 3.03 | 131,282 | 100% |
+| MEL2, 30% overlap | 0.00 deg, (+1716.2, −116.0) µm | 2.15 | 38,707 | 100% |
+| MEL POS with MEL2 NEG (different tissue) | stopped | 1.17 | none | |
+| MEL2 POS with MEL NEG (different tissue) | stopped | 1.02 | none | |
+
+"Consistent" is the share of pairs with the most common pixel-index offset, so a half-row choice
+(MEL, 20% overlap: one row from the recorded offset) counts as consistent. The stage-position pairing
+used before paired 71,325 MEL2 spectra 172 pixels apart and dropped 46% of them. The rotated cases
+rotate both lattices; the tests (`tests/msi/test_dual_polarity_pairing.py`) also cover a tissue
+rotated under two axis-aligned rasters, where every pair lies within one pitch of the true partner.
+Registration adds 20 to 30 s per dual-polarity sample of 130,000 to 180,000 spectra.
+
+**2. Affine harmonization.** A 2D affine map is fitted from positive to negative physical
 coordinates on augmented inputs \(A=[\,\mathbf{r}_{\text{pos}}\ \ \mathbf{1}\,]\) (one least-squares
 fit per output axis), and applied to the positive coordinates. The shared coordinate is the
 midpoint of the transformed positive and the negative sets,
@@ -132,7 +187,7 @@ midpoint of the transformed positive and the negative sets,
 \mathbf{r}_i^{\text{shared}} = \tfrac{1}{2}\bigl(\mathcal{A}(\mathbf{r}_{\text{pos},i}) + \mathbf{r}_{\text{neg},i}\bigr).
 \]
 
-**4. Origin normalization and centering.** Coordinates are shifted so the minimum is the origin,
+**3. Origin normalization and centering.** Coordinates are shifted so the minimum is the origin,
 then offset to the raster-cell center by \(\mathbf{s}/2\) (a half-raster shift, restricted to the
 longer axis for non-square rasters).
 
@@ -854,3 +909,6 @@ Removed in `msi-13`, rejected by configuration validation with the reason: `dete
 [^palmer2017]: Palmer A, Phapale P, Chernyavsky I, et al. FDR-controlled metabolite annotation for high-resolution imaging mass spectrometry. *Nat Methods* 14:57-60 (2017). [doi:10.1038/nmeth.4072](https://doi.org/10.1038/nmeth.4072)
 [^bemis2015]: Bemis KD, Harry A, Eberlin LS, et al. Cardinal: an R package for statistical analysis of mass spectrometry-based imaging experiments. *Bioinformatics* 31:2418-2420 (2015). [doi:10.1093/bioinformatics/btv146](https://doi.org/10.1093/bioinformatics/btv146). Normalization as described in the package documentation (`normalize`, methods `tic` and `rms`).
 [^dempster1977]: Dempster AP, Laird NM, Rubin DB. Maximum likelihood from incomplete data via the EM algorithm. *J R Stat Soc B* 39:1-22 (1977). [doi:10.1111/j.2517-6161.1977.tb01600.x](https://doi.org/10.1111/j.2517-6161.1977.tb01600.x)
+[^padfield2012]: Padfield D. Masked object registration in the Fourier domain. *IEEE Trans Image Process* 21:2706-2718 (2012). [doi:10.1109/TIP.2011.2181402](https://doi.org/10.1109/TIP.2011.2181402)
+[^robert1976]: Robert P, Escoufier Y. A unifying tool for linear multivariate statistical methods: the RV-coefficient. *J R Stat Soc C* 25:257-265 (1976). [doi:10.2307/2347233](https://doi.org/10.2307/2347233)
+[^knutsson1993]: Knutsson H, Westin CF. Normalized and differential convolution. *Proc IEEE Conf Comput Vis Pattern Recognit*, 515-523 (1993). [doi:10.1109/CVPR.1993.341081](https://doi.org/10.1109/CVPR.1993.341081)

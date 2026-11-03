@@ -14,6 +14,16 @@ import concurrent.futures
 
 import focus.runtime.resources as resources
 from focus.config.keys import MsiMetadata
+from focus.preprocessing.msi.pairing_signal import band_sums
+from focus.preprocessing.msi.settings import _PAIRING_BAND_EDGES
+
+
+def _read(mm: mmap.mmap, dtype: type[np.generic], meta: np.ndarray) -> np.ndarray:
+    """Zero-copy view of one binary array; ``meta`` holds its value count and byte offset at 0 and 2."""
+    count = int(meta[0])
+    if count == 0:
+        return np.zeros(0, dtype=dtype)
+    return np.frombuffer(mm, dtype=dtype, count=count, offset=int(meta[2]))
 
 
 class BinaryValidator:
@@ -36,6 +46,9 @@ class BinaryValidator:
            flags those containing non-finite m/z or intensity values.  Corrupted
            spectra are returned as a set of indices so the caller can filter them
            out rather than aborting.
+
+        For a dual ion mode sample the same pass sums every spectrum's intensity in the pairing
+        m/z bands (``MsiMetadata.PAIRING_BANDS``), the content the two polarities are registered on.
 
         Returns
         -------
@@ -84,6 +97,12 @@ class BinaryValidator:
             range(i, min(i + chunk_size, n_spectra))
             for i in range(0, n_spectra, chunk_size)
         ]
+        # Each worker writes its own rows, so the shared array needs no lock.
+        bands = (
+            np.zeros((n_spectra, len(_PAIRING_BAND_EDGES) - 1), dtype=np.float32)
+            if self.sample.double_ion_mode
+            else None
+        )
 
         def _check_chunk(spec_range: range) -> tuple[dict[int, int], dict[int, int]]:
             """Scan the assigned IBD spectrum ranges and return non-finite value counts."""
@@ -93,31 +112,20 @@ class BinaryValidator:
                 mm = mmap.mmap(fh.fileno(), 0, access=mmap.ACCESS_READ)
                 try:
                     for idx in spec_range:
-                        count_mz = int(mz_meta[idx, 0])
-                        if count_mz > 0:
-                            arr = np.frombuffer(
-                                mm,
-                                dtype=mz_dtype,
-                                count=count_mz,
-                                offset=int(mz_meta[idx, 2]),
-                            )
-                            n_bad = int(np.sum(~np.isfinite(arr)))
-                            del arr  # release mmap reference before next read
-                            if n_bad:
-                                chunk_bad_mz[idx] = n_bad
-
-                        count_int = int(int_meta[idx, 0])
-                        if count_int > 0:
-                            arr = np.frombuffer(
-                                mm,
-                                dtype=int_dtype,
-                                count=count_int,
-                                offset=int(int_meta[idx, 2]),
-                            )
-                            n_bad = int(np.sum(~np.isfinite(arr)))
-                            del arr  # release mmap reference before next read
-                            if n_bad:
-                                chunk_bad_int[idx] = n_bad
+                        mz = _read(mm, mz_dtype, mz_meta[idx])
+                        intensity = _read(mm, int_dtype, int_meta[idx])
+                        n_bad_mz = int(np.sum(~np.isfinite(mz)))
+                        n_bad_int = int(np.sum(~np.isfinite(intensity)))
+                        if n_bad_mz:
+                            chunk_bad_mz[idx] = n_bad_mz
+                        if n_bad_int:
+                            chunk_bad_int[idx] = n_bad_int
+                        clean = not (n_bad_mz or n_bad_int) and len(mz) == len(
+                            intensity
+                        )
+                        if bands is not None and clean:
+                            bands[idx] = band_sums(mz, intensity)
+                        del mz, intensity  # release mmap references before next read
                 finally:
                     mm.close()
             return chunk_bad_mz, chunk_bad_int
@@ -142,4 +150,6 @@ class BinaryValidator:
                     bad_int.update(bi)
                     pbar.update(len(futures[future]))
 
+        if bands is not None:
+            meta[MsiMetadata.PAIRING_BANDS] = bands
         return set(bad_mz.keys()) | set(bad_int.keys())

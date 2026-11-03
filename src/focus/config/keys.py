@@ -44,6 +44,7 @@ class MsiMetadata(_AbstractEnum):
     INTENSITIES_BINARY_METADATA: Final = "intensities_binary_metadata"
     LINE_AXIS: Final = "line_axis"  # PIXEL_COORDINATES column indexing the scan lines (0: horizontal, 1: vertical)
     STAGE_COORDINATES: Final = "stage_coordinates"  # True when every spectrum carries its stage position (3DPositionX/Y)
+    PAIRING_BANDS: Final = "pairing_bands"  # per-spectrum m/z band sums, used to register the two polarities
 
 
 class ConfigParameters(_AbstractEnum):
