@@ -21,7 +21,7 @@ _SUPPORTED_EXTENSIONS = (
 
 
 # Bump whenever the same input and settings produce a different output image.
-METHOD_VERSION = "microscopy-1"
+METHOD_VERSION = "microscopy-2"
 
 
 # Plausible microscope pixel sizes; anything outside is a placeholder (e.g. a 72/300 dpi default).

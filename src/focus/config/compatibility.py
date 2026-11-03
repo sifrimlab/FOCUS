@@ -1,5 +1,6 @@
 """Compatibility checks in the established configuration-validation sequence."""
 
+from collections.abc import Mapping
 from typing import cast
 
 from focus.config.types import PipelineConfig, ModalityConfig
@@ -8,9 +9,19 @@ from focus.config.types import PipelineConfig, ModalityConfig
 from focus.config.keys import (
     ConfigParameters,
     ModalityParameters,
+    MsiPreprocessingParams,
     STPreprocessingParams,
+    ST_REMOVED_SETTINGS,
 )
-from focus.config.options import RegistrationType, AlignmentStrategy, SpotResolution
+from focus.config.options import (
+    AlignmentStrategy,
+    ModalityType,
+    RegistrationType,
+    SpotResolution,
+    StCapture,
+    StNormalization,
+    StUnit,
+)
 from focus.config.catalog import (
     REGISTRATION_COMPATIBILITY,
     ALIGNMENT_STRATEGY_COMPATIBILITY,
@@ -20,20 +31,47 @@ from focus.config.catalog import (
 
 
 def validate_resolution(config: PipelineConfig) -> None:
-    """Validate the existing spot-clustering resolution keys."""
+    """Validate the spot-clustering resolution of MSI and the technology settings of ST."""
 
-    # Validate the clustering resolution preset of every spot modality (also used by the GUI).
     for modality in config[ConfigParameters.MODALITIES]:
-        if modality[ModalityParameters.TYPE] in SPOT_MODALITY_TYPES:
-            settings = modality.get(ModalityParameters.PROCESSING_SETTINGS) or {}
+        settings = modality.get(ModalityParameters.PROCESSING_SETTINGS) or {}
+        name = modality[ModalityParameters.NAME]
+        if modality[ModalityParameters.TYPE] == ModalityType.ST:
+            validate_st_settings(name, settings)
+        elif modality[ModalityParameters.TYPE] in SPOT_MODALITY_TYPES:
             resolution = settings.get(
-                STPreprocessingParams.RESOLUTION, SpotResolution.STANDARD
+                MsiPreprocessingParams.RESOLUTION, SpotResolution.STANDARD
             )
             if resolution not in SpotResolution.list():
                 raise ValueError(
-                    f"Modality '{modality[ModalityParameters.NAME]}': resolution must be one of "
+                    f"Modality '{name}': resolution must be one of "
                     f"{SpotResolution.list()}, got {resolution!r}."
                 )
+
+
+def validate_st_settings(name: str, settings: Mapping[str, object]) -> None:
+    """Reject removed ST settings (naming their replacement) and unknown technology values."""
+    removed = [key for key in settings if key in ST_REMOVED_SETTINGS]
+    if removed:
+        replacements = ", ".join(
+            f"'{key}' (use '{ST_REMOVED_SETTINGS[key]}')" for key in removed
+        )
+        raise ValueError(
+            f"Modality '{name}': these ST settings were removed: {replacements}. "
+            "Quality control, the gene filter and normalization are now calibrated from "
+            "'capture' and 'unit'."
+        )
+    choices = {
+        STPreprocessingParams.CAPTURE: StCapture.list(),
+        STPreprocessingParams.UNIT: StUnit.list(),
+        STPreprocessingParams.NORMALIZATION: StNormalization.list(),
+    }
+    for key, options in choices.items():
+        value = settings.get(key, options[0])
+        if value not in options:
+            raise ValueError(
+                f"Modality '{name}': {key} must be one of {options}, got {value!r}."
+            )
 
 
 def validate_registration(config: PipelineConfig) -> None:

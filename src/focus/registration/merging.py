@@ -2,7 +2,7 @@
 
 from focus.registration.provenance import merged_fingerprint
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 
 import os
 
@@ -27,6 +27,7 @@ def merge_registered_samples(
     force_recomputing: bool = False,
     merged_file: str | None = None,
     extra_uns: Mapping[str, object] | None = None,
+    finalize: Callable[[anndata.AnnData], None] | None = None,
 ) -> dict[str, str]:
     """
     Concatenate per-sample registration files into the merged file.
@@ -35,7 +36,9 @@ def merge_registered_samples(
     sample order (a file without one contributes its stat signature), still matches.
     ``merged_file`` overrides the canonical path; ``extra_uns`` is stamped on the merged file.
     ``anndata.concat`` drops per-sample ``uns``, so the registration stamps are re-written:
-    the geometry stamp becomes a dict keyed by ``sample_id``.
+    the geometry stamp becomes a dict keyed by ``sample_id``. ``finalize`` is applied to the
+    merged AnnData before it is written (``extra_uns`` should name what it does, so the
+    fingerprint follows it).
     """
     sample_files = {k: v for k, v in registered_files.items() if k != "merged"}
     if not sample_files:
@@ -61,6 +64,8 @@ def merge_registered_samples(
         adata_list.append(adata)
 
     merged = anndata.concat(adata_list, merge="same")
+    if finalize is not None:
+        finalize(merged)
     stamp_registration(merged, registration_type, key, geometry)
     if extra_uns:
         merged.uns.update(extra_uns)

@@ -1,12 +1,20 @@
-"""Sample-level transcriptomic validation, QC, labels, and metadata."""
+"""Sample-level transcriptomic cleanup, QC, labels, and metadata (raw counts throughout)."""
 
 from __future__ import annotations
 from focus.preprocessing.transcriptomics.parameters import StSampleSettings
-from focus.preprocessing.transcriptomics.normalization import normalize_counts
 from focus.preprocessing.transcriptomics.matrix import _ensure_sparse_csr
-from focus.io.anndata import write_h5ad_compat
-from typing import TYPE_CHECKING
+from focus.preprocessing.transcriptomics.counts import remove_controls
+from focus.preprocessing.transcriptomics.provenance import INPUT_SIGNATURE_KEY
+from focus.preprocessing.transcriptomics.qc import quality_control
+from focus.preprocessing.transcriptomics.technology import (
+    AREA_COLUMNS,
+    AREA_KEY,
+    Technology,
+)
+from focus.io.anndata import write_h5ad_atomic
+from typing import TYPE_CHECKING, cast
 from anndata import AnnData
+from focus.config.options import StUnit
 from focus.runtime.reporting import StepReporter
 
 if TYPE_CHECKING:
@@ -21,67 +29,49 @@ from focus.preprocessing.transcriptomics.clustering import spot_cluster_labels
 from focus.spot_colors import cluster_colors, label_order
 
 
-def validate_spot_filters(
-    min_count_per_spot: int | None,
-    max_count_per_spot: int | None,
-    min_genes_per_spot: int | None,
-    max_genes_per_spot: int | None,
-) -> None:
-    """Validate opt-in spot thresholds without changing their error messages."""
+def unit_area(adata: AnnData, tech: Technology) -> np.ndarray | None:
+    """
+    Area of every observation, the denominator of area normalization.
 
-    # Validate filter parameters
-    if min_count_per_spot is not None and min_count_per_spot <= 0:
-        raise ValueError("min_count_per_spot must be greater than 0.")
-    if max_count_per_spot is not None and max_count_per_spot <= 0:
-        raise ValueError("max_count_per_spot must be greater than 0.")
-    if min_genes_per_spot is not None and min_genes_per_spot <= 0:
-        raise ValueError("min_genes_per_spot must be greater than 0.")
-    if max_genes_per_spot is not None and max_genes_per_spot <= 0:
-        raise ValueError("max_genes_per_spot must be greater than 0.")
+    Spots and bins share the sample's ``spot_size`` area; cells take the first area column of
+    ``AREA_COLUMNS`` found in ``obs``. None for cells without one.
+    """
+    if tech.unit != StUnit.CELL:
+        size = np.asarray(adata.uns["spot_size"], dtype=np.float64)
+        return np.full(adata.n_obs, float(size[0] * size[1]))
+    for column in AREA_COLUMNS:
+        if column in adata.obs:
+            return cast(np.ndarray, adata.obs[column].to_numpy(dtype=np.float64))
+    return None
 
 
-def filter_sample(
+def prepare_sample(
     sample: SpatialTranscriptomic,
-    min_count_per_spot: int | None,
-    max_count_per_spot: int | None,
-    min_genes_per_spot: int | None,
-    max_genes_per_spot: int | None,
-    remove_mitochondrial_genes: bool,
+    tech: Technology,
+    settings: StSampleSettings,
     reporter: StepReporter,
 ) -> AnnData:
-    """Load counts, apply spot QC, and assign sample-unique observation names."""
+    """Load counts, remove controls and low-quality spots, add QC, and name observations."""
+    adata = sample.load_data(reporter)
+    adata = remove_controls(adata, reporter)
 
-    # 1. Load and validate
-    adata = sample.load_data()
-    n_spots_total = adata.n_obs
-
-    # 2. Flag mitochondrial genes (case-insensitive 'MT-'/'MT.' prefix).
-    # Note: name-based detection; datasets keyed by Ensembl IDs won't be flagged.
+    # Case-insensitive 'MT-'/'MT.' prefix; name-based, so Ensembl-keyed panels are not flagged.
     adata.var["mt"] = adata.var_names.str.upper().str.match(r"^MT[-\.]")
 
-    # 3. Filter spots (all thresholds opt-in)
-    if min_count_per_spot is not None:
-        sc.pp.filter_cells(adata, min_counts=min_count_per_spot)
-    if max_count_per_spot is not None:
-        sc.pp.filter_cells(adata, max_counts=max_count_per_spot)
-    if min_genes_per_spot is not None:
-        sc.pp.filter_cells(adata, min_genes=min_genes_per_spot)
-    if max_genes_per_spot is not None:
-        sc.pp.filter_cells(adata, max_genes=max_genes_per_spot)
+    adata, removed = quality_control(adata, tech, settings["quality_control"], reporter)
+    adata.uns["focus_qc"] = {
+        "rule": tech.outlier_rule if settings["quality_control"] else "none",
+        "removed": removed,
+    }
 
-    # Report how many spots survived the (opt-in) spot filters, on every interface.
-    n_spots_retained = adata.n_obs
-    pct_retained = (100.0 * n_spots_retained / n_spots_total) if n_spots_total else 0.0
-    reporter.detail(
-        f"Retained {n_spots_retained} / {n_spots_total} spots ({pct_retained:.1f}%) after filtering"
-    )
-
-    # 4. QC metrics on the retained spots, with mitochondrial genes still present
-    # so pct_counts_mt is meaningful. percent_top=None keeps the output lean.
+    # QC metrics with mitochondrial genes still present, so pct_counts_mt is meaningful.
     sc.pp.calculate_qc_metrics(adata, qc_vars=["mt"], percent_top=None, inplace=True)
 
-    # 5. Optional QC-based gene filter: drop mitochondrial genes (opt-in).
-    if remove_mitochondrial_genes:
+    area = unit_area(adata, tech)
+    if area is not None:
+        adata.obs[AREA_KEY] = area.astype(np.float32)
+
+    if settings["remove_mitochondrial_genes"]:
         adata = adata[:, ~adata.var["mt"].to_numpy()].copy()
 
     # Make observation names unique across samples (vectorized; avoids per-spot Python loops)
@@ -116,8 +106,6 @@ def set_sample_metadata(
     adata: AnnData, sample: SpatialTranscriptomic, cluster_labels: np.ndarray
 ) -> None:
     """Store sample identifiers, cluster colors, and native coordinates."""
-
-    # 9. Set metadata
     adata.obs["sample_id"] = pd.Categorical([sample.sample_id] * adata.n_obs)
     categories = label_order(cluster_labels)
     adata.obs["cluster"] = pd.Categorical(cluster_labels, categories=categories)
@@ -128,50 +116,35 @@ def set_sample_metadata(
 
 def write_sample(
     sample: SpatialTranscriptomic,
+    tech: Technology,
     settings: StSampleSettings,
     reporter: StepReporter,
     cache_key: str,
+    signature: str,
     output_file: str,
 ) -> None:
-    """Validate filters, prepare counts/labels and write CSR data with gzip compression.
+    """Prepare counts and labels, then write CSR raw counts (gzip, atomic).
 
     Parameters
     ----------
     sample : SpatialTranscriptomic
-        Source sample, read after threshold validation. Source AnnData is not overwritten.
+        Source sample. The source AnnData is not overwritten.
+    tech : Technology
+        Calibration of the sample's capture and unit.
     settings : StSampleSettings
-        Spot filters, normalization flags and clustering resolution.
+        Technology, quality control and mitochondrial removal settings.
     reporter : StepReporter
         Receives retention and clustering diagnostics.
     cache_key : str
-        Stored preprocessing fingerprint, computed before validating thresholds.
+        Stored preprocessing fingerprint.
+    signature : str
+        Input stat signature and SHA-256 (JSON), stored so later runs skip re-hashing.
     output_file : str
         Processed H5AD destination; errors propagate without wrapping.
     """
-    validate_spot_filters(
-        settings["min_count_per_spot"],
-        settings["max_count_per_spot"],
-        settings["min_genes_per_spot"],
-        settings["max_genes_per_spot"],
-    )
-    adata = filter_sample(
-        sample,
-        settings["min_count_per_spot"],
-        settings["max_count_per_spot"],
-        settings["min_genes_per_spot"],
-        settings["max_genes_per_spot"],
-        settings["remove_mitochondrial_genes"],
-        reporter,
-    )
-    cluster_labels = label_sample(adata, settings["resolution"], reporter, cache_key)
-    normalize_counts(
-        adata,
-        settings["total_counts_normalize"],
-        settings["log1p_transform"],
-        sample._NORMALIZE_TARGET_SUM,
-    )
+    adata = prepare_sample(sample, tech, settings, reporter)
+    cluster_labels = label_sample(adata, tech.resolution, reporter, cache_key)
     set_sample_metadata(adata, sample, cluster_labels)
-
-    # Guarantee sparse CSR storage, then save with gzip compression
+    adata.uns[INPUT_SIGNATURE_KEY] = signature
     _ensure_sparse_csr(adata)
-    write_h5ad_compat(adata, output_file, compression=sample._H5AD_COMPRESSION)
+    write_h5ad_atomic(adata, output_file, compression=sample._H5AD_COMPRESSION)

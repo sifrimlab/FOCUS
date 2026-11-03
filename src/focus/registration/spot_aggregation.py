@@ -1,6 +1,7 @@
 """Sum target-spot features within transformed anchor footprints."""
 
 from functools import partial
+from typing import cast
 
 from focus.registration.types import RegistrationJob
 
@@ -16,10 +17,24 @@ import scipy.sparse
 
 from focus.config.options import RegistrationType
 from focus.registration.execution import register_target
+from focus.registration.targets import (
+    read_target,
+    target_normalization,
+    target_sources,
+)
+from focus.config.options import StNormalization
+from focus.preprocessing.transcriptomics.normalization import normalize
+from focus.preprocessing.transcriptomics.technology import AREA_KEY
 from focus.spatial.membership import footprint_membership
 from focus.runtime.reporter_context import get_reporter
 
 logger = logging.getLogger(__name__)
+
+
+def _normalize_merged(method: str, merged: AnnData) -> None:
+    """Normalize the merged footprint counts with the target's method (one global scale)."""
+    merged.X = merged.layers.pop("raw")
+    merged.uns["focus_normalization"] = normalize(merged, method)
 
 
 def _as_csr(matrix: np.ndarray | scipy.sparse.csr_matrix) -> scipy.sparse.csr_matrix:
@@ -68,12 +83,18 @@ class SpotAggregationRegistration:
     def _compute_sample(
         self,
         target_files: dict[str, str],
+        counts: bool,
         sample_id: str,
         anchor: AnchorArrays,
         geom: AnchorGeometry,
     ) -> tuple[AnnData | None, dict[str, object]]:
-        """Compute one sample's registered features and geometry metadata."""
-        target_adata = anndata.read_h5ad(target_files[sample_id])
+        """Compute one sample's registered features and geometry metadata.
+
+        With ``counts``, the target's ``layers['raw']`` is summed into ``.X`` and
+        ``layers['raw']`` (normalization follows on the merged file), and every footprint gets the
+        anchor spot area in ``obs['focus_area']``.
+        """
+        target_adata = read_target(target_files, sample_id)
         target_coords = np.asarray(target_adata.obsm["spatial"], dtype=np.float64)
         logger.debug(
             f"Anchor: {anchor.n_obs} spots, spot_size={anchor.spot_size}. "
@@ -83,6 +104,23 @@ class SpotAggregationRegistration:
         # (sparse-preserving); empty footprints become all-zero rows, dropped downstream by
         # the coverage mask. The same operator is applied to .X and every layer.
         membership = footprint_membership(geom, target_coords, weights="ones")
+        if counts:
+            summed = _as_csr(membership @ _as_csr(target_adata.layers["raw"]))
+            adata = anndata.AnnData(
+                X=summed,
+                obsm={"spatial": anchor.mapped.copy()},
+                obs={
+                    "sample_id": [sample_id] * anchor.n_obs,
+                    AREA_KEY: np.full(
+                        anchor.n_obs,
+                        float(anchor.spot_size[0] * anchor.spot_size[1]),
+                        dtype=np.float32,
+                    ),
+                },
+                layers={"raw": summed.copy()},
+            )
+            adata.var = target_adata.var.copy()
+            return adata, {}
         adata = anndata.AnnData(
             X=_as_csr(membership @ _as_csr(target_adata.X)),
             obsm={"spatial": anchor.mapped.copy()},
@@ -117,7 +155,8 @@ class SpotAggregationRegistration:
             {sample_id: h5ad_path}
         target_files : dict[str, str]
             Preprocessed target (non-reference) modality files, with ``obsm['spatial']`` in
-            the target frame and the feature matrix ``X``. {sample_id: h5ad_path}
+            the target frame and the feature matrix ``X``. {sample_id: h5ad_path}; each sample
+            is read from its rows of the "merged" entry when that file exists.
         anchor_name : str
             Name of the anchor (reference) modality.
         target_name : str
@@ -136,6 +175,11 @@ class SpotAggregationRegistration:
             set(anchor_files.keys()) & set(target_files.keys()) - {"merged"}
         )
         reporter = step_reporter or get_reporter()
+        sources = target_sources(target_files)
+        # A normalized ST target is aggregated on its raw counts, then normalized once on the
+        # merged file with the target's method: a sum of normalized values has no meaning.
+        method = target_normalization(sources)
+        counts = method is not None and method != StNormalization.NONE
 
         return register_target(
             RegistrationJob(
@@ -148,14 +192,18 @@ class SpotAggregationRegistration:
                     unit="sample",
                 ),
                 anchor_files=anchor_files,
-                target_files=target_files,
+                target_files=sources,
                 anchor_name=anchor_name,
                 target_name=target_name,
                 registration_type=self._REGISTRATION_TYPE,
                 settings={},
-                compute=partial(self._compute_sample, target_files),
+                compute=partial(self._compute_sample, sources, counts),
                 force_recomputing=force_recomputing,
                 reporter=reporter,
+                finalize_merged=partial(_normalize_merged, cast(str, method))
+                if counts
+                else None,
+                merged_uns={"focus_target_normalization": method} if counts else None,
             ),
             reporter,
         )

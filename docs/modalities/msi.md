@@ -147,7 +147,7 @@ If the database is omitted or set to `None`, FOCUS will process the data without
 
 ## Preprocessing Steps
 
-1. **Parse imzML metadata**: the imzML XML is parsed to extract pixel grid coordinates, physical stage coordinates (µm), raster size, per-spectrum binary offsets, and data types (`float32` or `float64`). Physical coordinates are read from the `3DPositionX`/`3DPositionY` user parameters when present; spots without them fall back to their pixel indices scaled by the raster size, so the result is still in µm. Raster size comes from the `pixel size x`/`pixel size y` scan settings and is parsed as an **integer** number of µm. It falls back to `[1, 1]` when absent or when the stated pixel size is below 1 µm.
+1. **Parse imzML metadata**: the imzML XML is parsed to extract pixel grid coordinates, physical stage coordinates (µm), raster size, per-spectrum binary offsets, and data types (`float32` or `float64`). Physical coordinates are read from the `3DPositionX`/`3DPositionY` user parameters when present; spots without them fall back to their pixel indices scaled by the raster size, so the result is still in µm. Raster size comes from the `pixel size x`/`pixel size y` scan settings and is parsed as an **integer** number of µm. It falls back to `[1, 1]` when absent or when the stated pixel size is below 1 µm. Compressed binary arrays and profile spectra raise `ValueError`: FOCUS reads uncompressed, centroided spectra.
 
 2. **Rotation correction**: a linear regression is fit to the stage coordinates of the most densely sampled pixel column, and the resulting slope angle is used to de-rotate all physical coordinates to align the scan with the Cartesian axes.
 

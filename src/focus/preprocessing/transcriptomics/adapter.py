@@ -7,7 +7,7 @@ from focus.pipeline.types import SampleFiles
 
 
 from focus.config.keys import STPreprocessingParams
-from focus.config.options import SpotResolution
+from focus.config.options import StCapture, StNormalization, StUnit
 
 from focus.preprocessing.registry import ModalityHandler, register_modality
 from focus.preprocessing.transcriptomics.sample import SpatialTranscriptomic
@@ -39,34 +39,15 @@ def _create_st_dataset(
 def _extract_st_settings(settings: ProcessingSettings) -> SpatialTranscriptomicSettings:
     """Read configured settings and apply the established modality defaults."""
     return {
-        "resolution": settings.get(
-            STPreprocessingParams.RESOLUTION, SpotResolution.STANDARD
+        "capture": settings.get(STPreprocessingParams.CAPTURE, StCapture.SEQUENCING),
+        "unit": settings.get(STPreprocessingParams.UNIT, StUnit.SPOT),
+        "normalization": settings.get(
+            STPreprocessingParams.NORMALIZATION, StNormalization.AUTO
         ),
-        "min_count_per_spot": settings.get(
-            STPreprocessingParams.MIN_COUNT_PER_SPOT, None
-        ),
-        "max_count_per_spot": settings.get(
-            STPreprocessingParams.MAX_COUNT_PER_SPOT, None
-        ),
-        "min_genes_per_spot": settings.get(
-            STPreprocessingParams.MIN_GENES_PER_SPOT, None
-        ),
-        "max_genes_per_spot": settings.get(
-            STPreprocessingParams.MAX_GENES_PER_SPOT, None
-        ),
-        "min_spots_per_gene": settings.get(
-            STPreprocessingParams.MIN_SPOTS_PER_GENE, None
-        ),
-        "min_count_spots_ratio_per_gene": settings.get(
-            STPreprocessingParams.MIN_COUNT_SPOTS_RATIO_PER_GENE, None
-        ),
+        "quality_control": settings.get(STPreprocessingParams.QUALITY_CONTROL, True),
         "remove_mitochondrial_genes": settings.get(
             STPreprocessingParams.REMOVE_MITOCHONDRIAL_GENES, False
         ),
-        "total_counts_normalize": settings.get(
-            STPreprocessingParams.TOTAL_COUNTS_NORMALIZE, False
-        ),
-        "log1p_transform": settings.get(STPreprocessingParams.LOG1P_TRANSFORM, False),
         "force_recomputing": settings.get(
             STPreprocessingParams.FORCE_RECOMPUTING, False
         ),

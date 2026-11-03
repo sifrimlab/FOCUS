@@ -1,5 +1,7 @@
 """Apply the original gamma and intensity-contrast operations to microscopy pixels."""
 
+import math
+
 import numpy as np
 
 
@@ -38,6 +40,11 @@ def enhance_contrast(
         values = channel[mask]
         if max_stat_pixels is not None and values.size > max_stat_pixels:
             stride = -(-values.size // max_stat_pixels)  # ceil division
+            # `values` interleaves the channels of an (H, W, C) array: a stride sharing a factor
+            # with C samples a subset of the channels only, so it is raised to the next coprime.
+            n_channels = channel.shape[-1] if channel.ndim == 3 else 1
+            while math.gcd(stride, n_channels) != 1:
+                stride += 1
             values = values[::stride]
 
         # Compute the pixels to saturate

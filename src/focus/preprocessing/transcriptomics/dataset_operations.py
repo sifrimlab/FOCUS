@@ -1,8 +1,7 @@
-"""Cross-sample transcriptomic readout, filtering, and metadata operations."""
+"""Cross-sample transcriptomic gene selection, merge, QC, and metadata operations."""
 
 from __future__ import annotations
-from focus.preprocessing.transcriptomics.gene_filter import filter_genes
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 from anndata import AnnData
 from focus.runtime.reporting import StepReporter
 
@@ -16,48 +15,61 @@ import scanpy as sc
 
 from focus.io.anndata import concat_on_disk_compat
 from focus.spot_colors import cluster_colors, label_order
-from focus.preprocessing.transcriptomics.sample import SpatialTranscriptomic
 from focus.preprocessing.transcriptomics.matrix import _ensure_sparse_csr
 
 
 def collect_sample_metadata(
     dataset: SpatialTranscriptomicDataset, processed_samples: dict[str, str]
-) -> tuple[dict[str, np.ndarray], dict[str, object]]:
-    """Read spot sizes and clustering provenance without loading count matrices."""
+) -> tuple[dict[str, np.ndarray], dict[str, object], dict[str, pd.Series]]:
+    """Read spot sizes, clustering provenance and per-gene detection without loading counts.
 
-    # ---- Collect per-sample spot sizes via backed reads (no .X materialized) ----
+    The detection counts are each sample's ``var['n_cells_by_counts']``, measured on its
+    retained spots.
+    """
     spot_sizes: dict[str, np.ndarray] = {}
     clustering_provenance: dict[str, object] = {}
+    detection: dict[str, pd.Series] = {}
     for sample in dataset.samples:
         a = sc.read_h5ad(processed_samples[sample.sample_id], backed="r")
-        spot_sizes[sample.sample_id] = np.asarray(
-            a.uns.get("spot_size", SpatialTranscriptomic._DEFAULT_SPOT_SIZE.copy()),
-            dtype=np.float32,
-        )
+        spot_sizes[sample.sample_id] = np.asarray(a.uns["spot_size"], dtype=np.float32)
         clustering_provenance[sample.sample_id] = dict(
             a.uns.get("focus_clustering", {})
         )
+        detection[sample.sample_id] = a.var["n_cells_by_counts"].copy()
         if a.file is not None:
             a.file.close()
-    return (spot_sizes, clustering_provenance)
+    return spot_sizes, clustering_provenance, detection
+
+
+def gene_mask(
+    var_names: pd.Index, detection: dict[str, pd.Series], min_observations: int
+) -> np.ndarray:
+    """
+    Genes of ``var_names`` detected in at least ``min_observations`` spots of at least one sample.
+
+    A gene confined to one sample is kept on the strength of that sample alone.
+    """
+    keep = np.zeros(len(var_names), dtype=bool)
+    for counts in detection.values():
+        observed = counts.reindex(var_names).fillna(0).to_numpy()
+        keep |= observed >= min_observations
+    return keep
 
 
 def read_combined(
     dataset: SpatialTranscriptomicDataset,
     processed_samples: dict[str, str],
     merged_file: str,
+    detection: dict[str, pd.Series],
+    min_observations: int,
     reporter: StepReporter,
 ) -> AnnData:
-    """Concatenate sample files and restore raw counts for cross-sample processing."""
+    """Concatenate the per-sample raw counts on the union panel and keep the selected genes."""
 
     reporter.detail(f"Concatenating {len(dataset.samples)} samples")
-    # Memory-efficient on-disk concatenation: streams each per-sample file instead of
-    # holding all of them plus the result in RAM simultaneously. Outer join preserves
-    # genes when panels differ across samples; absent genes are filled with 0 counts.
-    # uns is intentionally dropped (default uns_merge=None) so a per-sample 'log1p' flag
-    # can't suppress the merged log1p below; spot_size is rebuilt from the backed reads.
-    # The per-sample 'raw' layer (present only when those files were normalized) rides
-    # along the concat and is recovered below.
+    # Streams each per-sample file instead of holding all of them plus the result in RAM. The
+    # outer join builds the union panel; a gene absent from a sample is 0 there. uns is dropped
+    # (spot_size is rebuilt from the backed reads).
     sample_files = {
         s.sample_id: processed_samples[s.sample_id] for s in dataset.samples
     }
@@ -70,50 +82,28 @@ def read_combined(
         merge="same",
     )
     combined = sc.read_h5ad(merged_file)
-
-    # Recover raw counts for cross-sample filtering / normalization. When the per-sample
-    # files were normalized, raw lives in layers['raw']; otherwise .X already holds raw.
-    # NOTE: a stale per-sample cache from a run with different normalization flags could
-    # make this inconsistent — pair any flag change with force_recomputing=True.
-    combined.X = combined.layers.pop("raw", combined.X)
-    combined.uns.pop("log1p", None)
-
-    # Ensure .X is sparse CSR for efficient row-based filter operations (preserve dtype).
     _ensure_sparse_csr(combined)
+    n_union = combined.n_vars
+    keep = gene_mask(combined.var_names, detection, min_observations)
+    combined._inplace_subset_var(keep)
+    reporter.detail(
+        f"Kept {combined.n_vars} / {n_union} genes "
+        f"(detected in at least {min_observations} spots of one sample)"
+    )
     gc.collect()
     return combined
 
 
-def filter_combined(
-    dataset: SpatialTranscriptomicDataset,
-    combined: AnnData,
-    min_spots_per_gene: float | None,
-    min_count_spots_ratio_per_gene: float | None,
-    reporter: StepReporter,
-) -> AnnData:
-    """Apply cross-sample gene filters and recompute raw-count QC metrics."""
+def merged_qc(combined: AnnData) -> None:
+    """
+    Recompute the library-size and gene QC on the final panel.
 
-    # ---- Cross-sample gene filtering (single pass over per-sample submatrices) ----
-    reporter.detail(f"{combined.n_vars} genes before cross-sample filtering")
-    if min_spots_per_gene is not None or min_count_spots_ratio_per_gene is not None:
-        if min_spots_per_gene is not None:
-            reporter.detail(
-                f"Filtering genes by expression frequency (min_spots_per_gene={min_spots_per_gene})"
-            )
-        if min_count_spots_ratio_per_gene is not None:
-            reporter.detail(
-                f"Filtering genes by count/spot ratio (min_count_spots_ratio_per_gene={min_count_spots_ratio_per_gene})"
-            )
-        combined = filter_genes(
-            combined, min_spots_per_gene, min_count_spots_ratio_per_gene
-        )
-        reporter.detail(f"{combined.n_vars} genes after cross-sample filtering")
-
-    # Recompute QC metrics on the final merged matrix (raw counts) so .obs/.var QC
-    # reflect the retained spots and genes; per-sample QC predates cross-sample filtering.
+    ``total_counts``, ``n_genes_by_counts`` (and ``log1p_`` variants) and the var QC describe the
+    merged matrix. ``total_counts_mt``, ``pct_counts_mt`` and the control metrics keep the
+    per-sample values, measured before mitochondrial and control features were removed.
+    """
     combined.var["mt"] = combined.var_names.str.upper().str.match(r"^MT[-\.]")
-    sc.pp.calculate_qc_metrics(combined, qc_vars=["mt"], percent_top=None, inplace=True)
-    return combined
+    sc.pp.calculate_qc_metrics(combined, percent_top=None, inplace=True)
 
 
 def set_merged_metadata(
@@ -126,8 +116,6 @@ def set_merged_metadata(
 
     # Per-sample cluster labels are already in .obs["cluster"] from concatenation
     # (each sample was clustered independently to avoid batch effects)
-
-    # ---- Set output metadata ----
     combined.obs["sample_id"] = pd.Categorical(combined.obs["sample_id"])
     categories = label_order(combined.obs["cluster"].astype(str).to_numpy())
     combined.obs["cluster"] = pd.Categorical(
@@ -139,3 +127,4 @@ def set_merged_metadata(
     combined.uns["spot_size"] = {sid: ss.tolist() for sid, ss in spot_sizes.items()}
     combined.uns["focus_clustering"] = clustering_provenance
     combined.uns["focus_preprocessing_fingerprint"] = merged_key
+    cast(dict[str, object], combined.uns).pop("focus_input_signature", None)

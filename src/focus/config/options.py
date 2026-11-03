@@ -74,6 +74,34 @@ class SpotResolution(_AbstractEnum):
     SUB_CELLULAR: Final = "sub_cellular"  # weak sub-cellular spots: Visium HD, Xenium-derived, high-res MSI
 
 
+class StCapture(_AbstractEnum):
+    """How an ST technology reads transcripts; calibrates the gene filter and normalization."""
+
+    SEQUENCING: Final = "sequencing"  # Visium, Visium HD, Stereo-seq, Slide-seq
+    IMAGING: Final = "imaging"  # Xenium, MERFISH, CosMx, seqFISH
+
+
+class StUnit(_AbstractEnum):
+    """Observation unit of an ST sample; calibrates quality control and clustering."""
+
+    SPOT: Final = "spot"  # multicellular capture spots (Visium)
+    BIN: Final = (
+        "bin"  # sub-cellular square bins or beads (Visium HD, Stereo-seq, Slide-seq)
+    )
+    CELL: Final = "cell"  # segmented cells (Xenium, MERFISH, CosMx, Visium HD cells)
+
+
+class StNormalization(_AbstractEnum):
+    """Supported ST normalizations, applied once to the merged dataset."""
+
+    AUTO: Final = "auto"
+    NONE: Final = "none"
+    LOG_NORMALIZE: Final = "log_normalize"
+    CP10K_LOG: Final = "cp10k_log"
+    SIZE_FACTORS: Final = "size_factors"
+    AREA_LOG_NORMALIZE: Final = "area_log_normalize"
+
+
 class MsiIntensityNormalization(_AbstractEnum):
     """Supported msi intensity normalization values in declaration order."""
 

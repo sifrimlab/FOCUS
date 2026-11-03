@@ -27,7 +27,7 @@ from focus.spatial.units import describe_units, plan_spatial_units
 from focus.spatial.clusters import label_coherence, merge_unsupported_clusters
 from focus.spatial.smoothing import smoothing_operator, spatial_embedding
 
-METHOD_VERSION = "st-units-4"
+METHOD_VERSION = "st-5"
 # Shared by both resolution presets (CLUSTERING_PRESETS holds what differs). min_counts and
 # min_genes are per-unit display eligibility, not tissue QC.
 PARAMETERS: ClusteringParameters = {

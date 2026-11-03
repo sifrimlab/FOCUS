@@ -82,9 +82,9 @@ Key defaults to review:
 
 | Modality | Parameter | Default |
 |----------|-----------|---------|
-| `st` | `min_count_per_spot` | `null` (disabled) |
-| `st` | `total_counts_normalize` | `false` |
-| `st` | `log1p_transform` | `false` |
+| `st` | `capture` | `"sequencing"` |
+| `st` | `unit` | `"spot"` |
+| `st` | `normalization` | `"auto"` |
 | `msi` | `mass_tolerance` | `10` ppm |
 | `msi` | `intensity_normalization` | `"none"` |
 | `microscopy_image` | `gamma` | `0.45` |

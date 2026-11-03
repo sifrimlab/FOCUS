@@ -1,11 +1,13 @@
 """Validate one spatial count container and coordinate its cached preprocessing output."""
 
 from focus.preprocessing.transcriptomics.parameters import StSampleSettings
-from focus.preprocessing.transcriptomics.provenance import sample_fingerprint
+from focus.preprocessing.transcriptomics.counts import resolve_counts
+from focus.preprocessing.transcriptomics.provenance import (
+    input_signature,
+    sample_fingerprint,
+)
 from focus.preprocessing.transcriptomics.sample_operations import write_sample
-
-from focus.spatial.matrices import SparseStorage
-from typing import cast
+from focus.preprocessing.transcriptomics.technology import technology
 
 from numpy.typing import ArrayLike
 from focus.runtime.reporting import StepReporter
@@ -14,11 +16,9 @@ import os
 import anndata as ad
 import numpy as np
 import scanpy as sc
-import scipy.sparse as sp
 
 from focus.io.paths import preprocessed_file
-from focus.config.options import SpotResolution
-from focus.spatial.settings import clustering_preset
+from focus.config.options import StCapture, StUnit
 from focus.runtime.reporter_context import get_reporter
 from focus.io.provenance import cached_fingerprint
 from focus.preprocessing.base import SampleSource
@@ -26,14 +26,12 @@ from focus.preprocessing.base import SampleSource
 
 class SpatialTranscriptomic(SampleSource):
     """
-    Class for handling spot-based spatial transcriptomic data.
-    Supports any technology (Visium, Xenium, MERFISH, etc.) as long as
-    the input is an AnnData file with raw gene counts in .X and
-    spatial coordinates in .obsm["spatial"].
+    One spatial transcriptomics sample of any technology.
+
+    The input is one AnnData file holding raw counts (in ``.X``, ``layers['counts']``,
+    ``layers['raw']`` or ``.raw``), ``.obsm['spatial']`` in µm and ``.uns['spot_size']`` in µm.
     """
 
-    _NORMALIZE_TARGET_SUM = 1e4
-    _DEFAULT_SPOT_SIZE = np.array([1.0, 1.0], dtype=np.float32)
     _H5AD_COMPRESSION = "gzip"
 
     def __init__(self, source_path: str, sample_id: str, modality_name: str) -> None:
@@ -51,7 +49,7 @@ class SpatialTranscriptomic(SampleSource):
         self.input_path = os.path.join(source_path, sample_id, modality_name)
 
     def _input_file(self) -> str:
-        """Locate the sample's supported transcriptomics input file."""
+        """Locate the sample's single ``.h5ad`` input; raise when there is none or several."""
         files = sorted(
             os.path.join(self.input_path, f)
             for f in os.listdir(self.input_path)
@@ -59,66 +57,71 @@ class SpatialTranscriptomic(SampleSource):
         )
         if not files:
             raise FileNotFoundError(f"No .h5ad file found in {self.input_path}")
+        if len(files) > 1:
+            names = ", ".join(os.path.basename(f) for f in files)
+            raise ValueError(
+                f"Sample {self.sample_id}: {len(files)} .h5ad files in {self.input_path} "
+                f"({names}); keep exactly one"
+            )
         return files[0]
 
-    def load_data(self) -> ad.AnnData:
+    def load_data(self, reporter: StepReporter | None = None) -> ad.AnnData:
         """
-        Load spatial transcriptomic data from the source path.
-        The first .h5ad file in sorted filename order in the sample directory is loaded.
-        Validates that .obsm["spatial"] exists and normalizes .uns["spot_size"].
+        Load and validate the sample's AnnData.
+
+        Requires finite ``.obsm['spatial']`` of shape (n_obs, 2) and ``.uns['spot_size']``
+        (normalized to a positive float32 ``(2,)`` array). The raw counts are resolved into a
+        CSR ``.X`` (``resolve_counts``); every other input matrix is dropped. Duplicate gene names
+        are made unique.
 
         Returns
         -------
         adata : ad.AnnData
-            The loaded and validated AnnData object.
+            The validated AnnData, raw counts in ``.X``.
         """
-
+        reporter = reporter or get_reporter()
         adata = sc.read_h5ad(self._input_file())
 
-        # Validate spatial coordinates
         if "spatial" not in adata.obsm:
             raise ValueError(
                 f"Sample {self.sample_id}: AnnData is missing .obsm['spatial']. "
                 "Spatial coordinates are required for spatial transcriptomics preprocessing."
             )
         adata.obsm["spatial"] = np.asarray(adata.obsm["spatial"], dtype=np.float32)
-
         coords = adata.obsm["spatial"]
         if coords.shape != (adata.n_obs, 2) or not np.isfinite(coords).all():
             raise ValueError(
                 "ST spatial coordinates must be finite with shape (n_obs, 2)"
             )
 
-        # Normalize spot_size to a float32 array of shape (2,)
-        adata.uns["spot_size"] = self._normalize_spot_size(
-            adata.uns.get("spot_size", None)
-        )
-
+        if "spot_size" not in adata.uns:
+            raise ValueError(
+                f"Sample {self.sample_id}: AnnData is missing .uns['spot_size'] "
+                "(spot, bin or cell diameter [x, y] in µm)."
+            )
+        adata.uns["spot_size"] = self._normalize_spot_size(adata.uns["spot_size"])
         if not np.isfinite(adata.uns["spot_size"]).all() or np.any(
             adata.uns["spot_size"] <= 0
         ):
             raise ValueError("spot_size must contain positive finite dimensions")
 
-        # Ensure .X is sparse CSR for memory efficiency (preserve dtype; convert CSC/COO too)
-        if not sp.issparse(adata.X):
-            adata.X = sp.csr_matrix(adata.X)
-        elif cast(SparseStorage, adata.X).format != "csr":
-            adata.X = cast(SparseStorage, adata.X).tocsr()
-
+        adata = resolve_counts(adata, self.sample_id)
+        if not adata.var_names.is_unique:
+            n_duplicated = int(adata.var_names.duplicated().sum())
+            adata.var_names_make_unique()
+            reporter.warning(
+                f"{n_duplicated} duplicated gene names were made unique with a numeric suffix"
+            )
         return adata
 
     @staticmethod
     def _normalize_spot_size(spot_size: ArrayLike) -> np.ndarray:
         """
         Normalize spot_size to a float32 array of shape (2,).
-        - None → [1.0, 1.0]
         - scalar → [val, val]
         - array of 1 → [val, val]
         - array of 2 → as-is
         """
-        if spot_size is None:
-            return np.array([1.0, 1.0], dtype=np.float32)
-
         if isinstance(spot_size, (int, float)):
             return np.array([float(spot_size), float(spot_size)], dtype=np.float32)
 
@@ -134,73 +137,42 @@ class SpatialTranscriptomic(SampleSource):
 
     def preprocess_data(
         self,
-        min_count_per_spot: int | None = None,
-        max_count_per_spot: int | None = None,
-        min_genes_per_spot: int | None = None,
-        max_genes_per_spot: int | None = None,
+        capture: str = StCapture.SEQUENCING,
+        unit: str = StUnit.SPOT,
+        quality_control: bool = True,
         remove_mitochondrial_genes: bool = False,
-        total_counts_normalize: bool = False,
-        log1p_transform: bool = False,
-        resolution: str = SpotResolution.STANDARD,
         force_recomputing: bool = False,
         step_reporter: StepReporter | None = None,
     ) -> str:
         """
-        Preprocess a single spatial transcriptomic sample.
+        Preprocess a single spatial transcriptomic sample; the output keeps raw counts.
 
-        Pipeline:
-        1. Load and validate data
-        2. Flag mitochondrial genes (.var["mt"])
-        3. Filter spots by count/gene thresholds (opt-in)
-        4. Compute QC metrics (scanpy.pp.calculate_qc_metrics) on the retained spots
-        5. Optionally remove mitochondrial genes (opt-in, uses the .var["mt"] QC flag)
-        6. Alignment labels on a clustering-only normalized/HVG copy, on native spots or (large or
-           sparse samples) lattice blocks / Voronoi supercells; eligibility and provenance are
-           persisted, analytical intermediates and units discarded
-        7. Store filtered raw counts in .layers["raw"] (only when normalization is applied;
-           otherwise .X already holds the raw counts, so the layer is omitted to avoid a duplicate)
-        8. Normalize .X (total counts + log1p, both opt-in)
-        9. Save (sparse CSR, gzip-compressed)
-
-        Output AnnData structure:
-        - .X: counts (raw unless total_counts_normalize / log1p_transform are set; sparse CSR)
-        - .layers["raw"]: filtered, post-feature-selection raw counts (sparse CSR); present only
-          when .X was normalized (when .X is left raw, it doubles as the raw counts)
-        - .obs["sample_id"]: categorical sample identifier
-        - .obs["cluster"]: categorical cluster labels (used for alignment colouring)
-        - .obs QC metrics (total_counts, n_genes_by_counts, pct_counts_mt, ...) from
-          scanpy.pp.calculate_qc_metrics
-        - .obsm["spatial"]: float32 spatial coordinates
-        - .uns["spot_size"]: float32 array of shape (2,)
+        Pipeline (``docs/scientific/st_methods.md`` §3):
+        1. Load and validate; resolve the raw counts; make gene names unique
+        2. Remove control features, recording their share in ``obs['pct_counts_control']``
+        3. Flag mitochondrial genes (``.var['mt']``)
+        4. Quality control: out-of-tissue and zero-count spots, then the technology's outliers
+           (``quality_control``)
+        5. QC metrics (``scanpy.pp.calculate_qc_metrics``) with mitochondrial genes present
+        6. Spot or cell area in ``obs['focus_area']`` (for area normalization)
+        7. Optional mitochondrial gene removal
+        8. Alignment cluster labels with the unit's preset
+        9. Save (sparse CSR, gzip, atomic). Normalization is applied to the merged dataset only.
 
         Parameters
         ----------
-        min_count_per_spot : int | None
-            Minimum total counts per spot to retain.
-        max_count_per_spot : int | None
-            Maximum total counts per spot to retain.
-        min_genes_per_spot : int | None
-            Minimum genes detected per spot to retain.
-        max_genes_per_spot : int | None
-            Maximum genes detected per spot to retain.
+        capture : str
+            ``sequencing`` or ``imaging`` (``StCapture``).
+        unit : str
+            ``spot``, ``bin`` or ``cell`` (``StUnit``).
+        quality_control : bool
+            Remove the technology's outlier spots (structural cleanup always runs).
         remove_mitochondrial_genes : bool
-            When True, drop mitochondrial genes (flagged in .var["mt"] by an
-            ``MT-``/``MT.`` name prefix, case-insensitive) from the feature set.
-            Off by default: in spatial data a high mitochondrial fraction can be a
-            genuine biological signal rather than a low-quality artefact.
-        total_counts_normalize : bool
-            Whether to normalize total counts per spot.
-        log1p_transform : bool
-            Whether to apply log1p transformation.
-        resolution : str
-            SpotResolution preset for the alignment clustering: 'standard' (multicellular spots)
-            or 'sub_cellular' (weak high-resolution spots: coarser units, wider smoothing).
+            Drop the genes flagged in ``.var['mt']`` (``MT-`` / ``MT.`` prefix, any case).
         force_recomputing : bool
             Whether to force recomputing even if output exists.
         step_reporter : StepReporter | None
-            Unified reporter for console / log-file / GUI output. When None, a default
-            StepReporter (no GUI callback) is used so the sample can be preprocessed
-            standalone while still logging to the console / log file.
+            Unified reporter for console / log-file / GUI output.
 
         Returns
         -------
@@ -213,23 +185,20 @@ class SpatialTranscriptomic(SampleSource):
             self.source_path, self.sample_id, self.modality_name, "h5ad"
         )
 
-        clustering_preset(resolution)  # validate before any work
+        tech = technology(capture, unit)  # validate before any work
         settings: StSampleSettings = {
-            "min_count_per_spot": min_count_per_spot,
-            "max_count_per_spot": max_count_per_spot,
-            "min_genes_per_spot": min_genes_per_spot,
-            "max_genes_per_spot": max_genes_per_spot,
+            "capture": capture,
+            "unit": unit,
+            "quality_control": quality_control,
             "remove_mitochondrial_genes": remove_mitochondrial_genes,
-            "total_counts_normalize": total_counts_normalize,
-            "log1p_transform": log1p_transform,
-            "resolution": resolution,
         }
-        cache_key = sample_fingerprint(self, settings)
+        signature = input_signature(self._input_file(), output_file)
+        cache_key = sample_fingerprint(self, settings, signature)
         self.preprocessing_changed = (
             force_recomputing or cached_fingerprint(output_file) != cache_key
         )
         if not self.preprocessing_changed:
             reporter.cached()
             return output_file
-        write_sample(self, settings, reporter, cache_key, output_file)
+        write_sample(self, tech, settings, reporter, cache_key, signature, output_file)
         return output_file

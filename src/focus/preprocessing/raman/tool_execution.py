@@ -94,8 +94,12 @@ def wait_for_output(output_file: str) -> None:
         time.sleep(poll_interval)
 
 
-def stitch_tiles(output_path: str, align_channel: int, env_name: str) -> None:
-    """Run ASHLAR through the original quoted bash command, removing MPLBACKEND only."""
+def stitch_tiles(output_path: str, align_channels: list[int], env_name: str) -> None:
+    """Run ASHLAR through the original quoted bash command, removing MPLBACKEND only.
+
+    ``align_channels`` holds one alignment channel per cycle, each an index into that cycle's
+    channels; it is passed comma-separated.
+    """
     main_script = os.path.join(_TOOLS_DIR, "ASHLAR", "main.py")
     if not os.path.isfile(main_script):
         raise FileNotFoundError(f"ASHLAR main script not found at {main_script}")
@@ -109,7 +113,7 @@ def stitch_tiles(output_path: str, align_channel: int, env_name: str) -> None:
         "-u",
         main_script,
         output_path,
-        str(align_channel),
+        ",".join(str(channel) for channel in align_channels),
     ]
     cmd = " ".join(shlex.quote(part) for part in cmd_parts)
 

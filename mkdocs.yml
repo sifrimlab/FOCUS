@@ -120,6 +120,7 @@ nav:
 
   - Development:
     - Architecture and Verification: development/refactoring.md
+    - Preprocessing Audit: development/preprocessing_audit.md
 
   - Troubleshooting: troubleshooting.md
   - FAQ: faq.md

@@ -104,6 +104,53 @@ class ImzmlReader:
             "has_physical_coordinates": has_physical_coordinates,
         }
 
+    @staticmethod
+    def _check_encoding(root: ET.Element, filename: str) -> None:
+        """
+        Reject binary encodings the IBD reader does not decode.
+
+        The IBD arrays are read as uncompressed floats and every (m/z, intensity) pair is taken as
+        a peak, so compressed arrays and profile spectra are refused instead of being decoded into
+        wrong values. The cvParams are read from the file description, the referenceable parameter
+        groups and the first spectrum, where exporters declare them.
+        """
+        scopes: list[ET.Element] = []
+        for key in (
+            ImzMLFileParser.FILE_DESCRIPTION,
+            ImzMLFileParser.REFERENCEABLE_PARAM_GROUP_LIST,
+        ):
+            element = root.find(key)
+            if element is not None:
+                scopes.append(element)
+        run = root.find(ImzMLFileParser.RUN_KEY)
+        spectrum_list = (
+            run.find(ImzMLFileParser.SPECTRUM_LIST_KEY) if run is not None else None
+        )
+        first = (
+            spectrum_list.find(ImzMLFileParser.SPECTRUM_KEY)
+            if spectrum_list is not None
+            else None
+        )
+        if first is not None:
+            scopes.append(first)
+        names = {
+            cv_param.attrib.get("name", "")
+            for scope in scopes
+            for cv_param in scope.iter(ImzMLFileParser.CV_PARAM)
+        }
+        compression = sorted(
+            name for name in names if "compression" in name and name != "no compression"
+        )
+        if compression:
+            raise ValueError(
+                f"{filename}: compressed binary arrays ({', '.join(compression)}) are not supported; "
+                "export the imzML without compression"
+            )
+        if "profile spectrum" in names and "centroid spectrum" not in names:
+            raise ValueError(
+                f"{filename}: profile spectra are not supported; export centroided (peak-picked) spectra"
+            )
+
     def _parse_imzml(self, filename: str) -> SampleMetadata:
         """
         Parse the imzML files to extract the relevant metadata and the M/Z values.
@@ -150,6 +197,8 @@ class ImzmlReader:
             raise KeyError(
                 "Could not find the data types for mz and intensities in the imzML file. Check the metadata name"
             )
+
+        self._check_encoding(root, filename)
 
         # Extract the raster size in micrometers
         raster_size = np.array([0, 0], dtype=np.int16)
@@ -219,13 +268,14 @@ class ImzmlReader:
         # Where physical coordinates were absent, the fallback stored raw pixel indices.
         # Scale those entries by raster_size so the inter-spot spacing is in micrometers,
         # consistent with the downstream normalization and raster_size/2 centering shift.
+        # PIXEL_COORDINATES is (y, x) and raster_size is (x, y): the pixel grid is reordered to
+        # (x, y) before scaling, matching the (x, y) order of physical_coordinates.
         has_physical = np.array([m["has_physical_coordinates"] for m in parsed_spectra])
+        pixel_xy = pixel_coordinates[:, ::-1].astype(np.float32)
         if not has_physical.any():
-            physical_coordinates = pixel_coordinates.astype(np.float32) * raster_size
+            physical_coordinates = pixel_xy * raster_size
         elif not has_physical.all():
-            physical_coordinates[~has_physical] = (
-                pixel_coordinates[~has_physical].astype(np.float32) * raster_size
-            )
+            physical_coordinates[~has_physical] = pixel_xy[~has_physical] * raster_size
 
         # Align MSI laser grid to the axes using linear regression
         physical_coordinates = self.sample.coordinates._correct_rotation_error(

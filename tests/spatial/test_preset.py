@@ -35,16 +35,16 @@ class TestPreset:
                 sp.csr_matrix(np.ones((20, 3))), list("abc"), np.zeros((20, 2)), "ultra"
             )
         with tempfile.TemporaryDirectory() as root:
-            Path(root, "s1", "ST").mkdir(parents=True)
+            Path(root, "s1", "MSI").mkdir(parents=True)
             config: PipelineConfig = {
                 "dataset_path": root,
-                "reference_modality": "ST",
+                "reference_modality": "MSI",
                 "perform_alignment": False,
                 "perform_registration": False,
                 "modalities": [
                     {
-                        "name": "ST",
-                        "type": "st",
+                        "name": "MSI",
+                        "type": "msi",
                         "alignment_strategy": "manual",
                         "registration_type": "none",
                         "processing_settings": {

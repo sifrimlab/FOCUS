@@ -41,6 +41,8 @@ def register_target(job: RegistrationJob, reporter: StepReporter) -> dict[str, s
         job.target_name,
         job.registration_type,
         force_recomputing=job.force_recomputing,
+        extra_uns=job.merged_uns,
+        finalize=job.finalize_merged,
     )
 
 

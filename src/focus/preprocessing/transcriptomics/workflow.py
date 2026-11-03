@@ -4,19 +4,29 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 import os
 import gc
+
+import numpy as np
+from anndata import AnnData
+
+from focus.config.options import StNormalization
 from focus.preprocessing.transcriptomics.run_settings import StRunSettings
 from focus.preprocessing.transcriptomics.dataset_operations import (
     collect_sample_metadata,
+    merged_qc,
     read_combined,
-    filter_combined,
     set_merged_metadata,
 )
-from focus.preprocessing.transcriptomics.normalization import normalize_counts
+from focus.preprocessing.transcriptomics.normalization import normalize
 from focus.preprocessing.transcriptomics.matrix import _ensure_sparse_csr
 from focus.preprocessing.transcriptomics.clustering import METHOD_VERSION
+from focus.preprocessing.transcriptomics.technology import (
+    AREA_KEY,
+    Technology,
+    technology,
+)
 from focus.io.paths import merged_preprocessed_file
 from focus.io.provenance import fingerprint, cached_fingerprint
-from focus.io.anndata import write_h5ad_compat
+from focus.io.anndata import write_h5ad_atomic
 from focus.runtime.reporting import StepReporter
 
 if TYPE_CHECKING:
@@ -34,14 +44,10 @@ def preprocess_samples(
         dataset.samples, 1, 2, "Processing samples", unit="sample"
     ):
         processed_samples[sample.sample_id] = sample.preprocess_data(
-            min_count_per_spot=settings.min_count_per_spot,
-            max_count_per_spot=settings.max_count_per_spot,
-            min_genes_per_spot=settings.min_genes_per_spot,
-            max_genes_per_spot=settings.max_genes_per_spot,
+            capture=settings.capture,
+            unit=settings.unit,
+            quality_control=settings.quality_control,
             remove_mitochondrial_genes=settings.remove_mitochondrial_genes,
-            total_counts_normalize=settings.total_counts_normalize,
-            log1p_transform=settings.log1p_transform,
-            resolution=settings.resolution,
             force_recomputing=settings.force_recomputing,
             step_reporter=reporter,
         )
@@ -54,6 +60,7 @@ def execute_dataset(
     reporter: StepReporter,
 ) -> dict[str, str]:
     """Process sample outputs and reuse or rebuild the cross-sample container."""
+    tech = technology(settings.capture, settings.unit)
     processed_samples = preprocess_samples(dataset, settings, reporter)
     reporter.step(2, 2, "Building combined dataset")
 
@@ -69,10 +76,8 @@ def execute_dataset(
         {
             "method": METHOD_VERSION,
             "samples": sample_keys,
-            "min_spots_per_gene": settings.min_spots_per_gene,
-            "min_count_spots_ratio_per_gene": settings.min_count_spots_ratio_per_gene,
-            "total_counts_normalize": settings.total_counts_normalize,
-            "log1p_transform": settings.log1p_transform,
+            "normalization": settings.normalization,
+            "min_gene_observations": tech.min_gene_observations,
         }
     )
     samples_changed = any(
@@ -87,44 +92,67 @@ def execute_dataset(
         processed_samples["merged"] = merged_file
         return processed_samples
     write_combined(
-        dataset, settings, processed_samples, merged_file, merged_key, reporter
+        dataset, tech, settings, processed_samples, merged_file, merged_key, reporter
     )
     processed_samples["merged"] = merged_file
     return processed_samples
 
 
+def resolve_normalization(
+    combined: AnnData, tech: Technology, requested: str, reporter: StepReporter
+) -> str:
+    """
+    The method to apply: ``auto`` resolved by the technology.
+
+    ``auto`` falls back from area normalization to ``log_normalize``, with a warning, when some
+    spot has no finite positive area (segmented cells without an area column).
+    """
+    method = tech.normalization(requested)
+    if (
+        requested == StNormalization.AUTO
+        and method == StNormalization.AREA_LOG_NORMALIZE
+    ):
+        area = (
+            combined.obs[AREA_KEY].to_numpy(dtype=np.float64)
+            if AREA_KEY in combined.obs
+            else np.full(combined.n_obs, np.nan)
+        )
+        if not np.all(np.isfinite(area) & (area > 0)):
+            reporter.warning(
+                "Some cells have no area column: log_normalize is used instead of area normalization"
+            )
+            method = StNormalization.LOG_NORMALIZE
+    return method
+
+
 def write_combined(
     dataset: SpatialTranscriptomicDataset,
+    tech: Technology,
     settings: StRunSettings,
     processed_samples: dict[str, str],
     merged_file: str,
     merged_key: str,
     reporter: StepReporter,
 ) -> None:
-    """Filter raw merged counts, normalize opt-in outputs, persist, then release them."""
-    spot_sizes, clustering_provenance = collect_sample_metadata(
+    """Merge raw counts on the selected union panel, normalize globally, persist, release."""
+    spot_sizes, clustering_provenance, detection = collect_sample_metadata(
         dataset, processed_samples
     )
-    combined = read_combined(dataset, processed_samples, merged_file, reporter)
-    combined = filter_combined(
+    combined = read_combined(
         dataset,
-        combined,
-        settings.min_spots_per_gene,
-        settings.min_count_spots_ratio_per_gene,
+        processed_samples,
+        merged_file,
+        detection,
+        tech.min_gene_observations,
         reporter,
     )
-    normalize_counts(
-        combined,
-        settings.total_counts_normalize,
-        settings.log1p_transform,
-        dataset._NORMALIZE_TARGET_SUM,
-        reporter,
-    )
+    merged_qc(combined)
+    method = resolve_normalization(combined, tech, settings.normalization, reporter)
+    combined.uns["focus_normalization"] = normalize(combined, method, reporter)
     set_merged_metadata(combined, spot_sizes, clustering_provenance, merged_key)
 
-    # Guarantee sparse CSR storage, then save with gzip compression
     reporter.detail("Saving combined dataset")
     _ensure_sparse_csr(combined)
-    write_h5ad_compat(combined, merged_file, compression=dataset._H5AD_COMPRESSION)
+    write_h5ad_atomic(combined, merged_file, compression=dataset._H5AD_COMPRESSION)
     del combined
     gc.collect()

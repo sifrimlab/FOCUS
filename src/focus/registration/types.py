@@ -58,3 +58,7 @@ class RegistrationJob:
     compute: RegistrationComputer
     force_recomputing: bool = False
     reporter: StepReporter | None = None
+    # Applied to the merged registered AnnData before it is written; merged_uns is stamped on it
+    # and enters its fingerprint.
+    finalize_merged: Callable[[AnnData], None] | None = None
+    merged_uns: Mapping[str, object] | None = None

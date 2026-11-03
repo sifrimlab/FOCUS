@@ -9,6 +9,9 @@ from focus.config.options import (
     RegistrationType,
     SegmentationBackgroundColor,
     SpotResolution,
+    StCapture,
+    StNormalization,
+    StUnit,
 )
 
 
@@ -83,6 +86,17 @@ DISPLAY_NAMES: dict[str, str] = {
     # Spot resolution
     SpotResolution.STANDARD: "Standard",
     SpotResolution.SUB_CELLULAR: "Sub-cellular",
+    # ST technology and normalization
+    StCapture.SEQUENCING: "Sequencing (Visium, Visium HD, Stereo-seq, Slide-seq)",
+    StCapture.IMAGING: "Imaging (Xenium, MERFISH, CosMx)",
+    StUnit.SPOT: "Multicellular spots",
+    StUnit.BIN: "Sub-cellular bins",
+    StUnit.CELL: "Segmented cells",
+    StNormalization.AUTO: "Automatic (technology default)",
+    StNormalization.LOG_NORMALIZE: "Log-normalize (median depth)",
+    StNormalization.CP10K_LOG: "Log-normalize (10,000 counts)",
+    StNormalization.SIZE_FACTORS: "Size factors (median depth, linear)",
+    StNormalization.AREA_LOG_NORMALIZE: "Log-normalize (area)",
     # Annotation file types
     AnnotationFileType.GEOJSON: "GeoJSON",
 }

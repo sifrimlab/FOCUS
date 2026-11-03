@@ -22,6 +22,16 @@ _DETECTION_BLUR_KERNEL_SIZE = 25  # ~0.8% of the ~3000px canvas width; odd
 # Speck-noise filter: remove_small_objects(max_size=...) drops every component of at most this
 # area (inclusive); min_object_coverage does the real area filtering.
 _DETECTION_MAX_OBJECT_SIZE = 50
+# The min_object_coverage threshold is capped at this fraction of the largest detected object, so
+# the largest object and pieces of comparable size are kept on slides with small tissue (TMA cores,
+# biopsies). Sections larger than 10% of the canvas keep the plain min_object_coverage threshold.
+_DETECTION_MIN_LARGEST_FRACTION = 0.1
+# Brightfield padding: border-connected regions whose channels are all at most this 8-bit value
+# are background. Gamma 0.45 and the contrast stretch lift 8-bit padding noise of 1 to 5 to about
+# 25 before detection.
+_DETECTION_BLACK_LEVEL = 32
+# Fluorescence polarity: the border median must be below this fraction of the 99th-percentile luma.
+_DETECTION_DARK_BORDER_RATIO = 1 / 3
 
 # Maps the resolved on-disk storage dtype to the OME-XML Pixels "type" attribute.
 # ome_types expects the OME PixelType spelling ("float", not "float32").

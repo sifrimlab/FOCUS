@@ -48,7 +48,7 @@ def test_stitch_command_and_cache(tmp_path: Path) -> None:
     default_output = Path(sample.output_path) / "ashlar_output.ome.tiff"
     tifffile.imwrite(default_output, mosaic)
     with (
-        patch.object(sample.stitcher, "_prepare_for_ashlar", return_value=3),
+        patch.object(sample.stitcher, "_prepare_for_ashlar", return_value=[3, 0]),
         patch(
             "focus.preprocessing.raman.tool_execution.subprocess.run",
             return_value=subprocess.CompletedProcess("command", 0),
@@ -66,7 +66,7 @@ def test_stitch_command_and_cache(tmp_path: Path) -> None:
             "-u",
             str(Path(_TOOLS_DIR) / "ASHLAR" / "main.py"),
             sample.output_path,
-            "3",
+            "3,0",
         ]
         assert {key: keywords[key] for key in ("shell", "check", "executable")} == {
             "shell": True,
@@ -78,3 +78,25 @@ def test_stitch_command_and_cache(tmp_path: Path) -> None:
         assert run.call_count == 1
     assert not default_output.exists()
     np.testing.assert_array_equal(cast(np.ndarray, sample.mosaic), mosaic, strict=True)
+
+
+def test_alignment_channel_is_chosen_per_cycle(tmp_path: Path) -> None:
+    """Each cycle gets its brightest channel, indexed within that cycle's own file."""
+    from focus.preprocessing.raman.metadata import RamanMetadata
+
+    sample = RamanImage(str(tmp_path), "sample", "raman")
+    metadata = RamanMetadata()
+    metadata.pixel_size = np.array([0.5, 0.5], dtype=np.float32)
+    sample._metadata = metadata
+    sample._spectra_slices = [(0, 4), (5, 7)]
+    tiles = np.full((2, 8, 16, 16), 0.1, dtype=np.float32)
+    tiles[:, 2] = 0.9
+    tiles[:, 6] = 0.8
+    coordinates = np.zeros((2, 2, 2), dtype=np.float32)
+    coordinates[1, :, 0] = 8.0
+    assert sample.stitcher._prepare_for_ashlar(tiles, coordinates) == [2, 1]
+    for cycle, channels in ((1, 5), (2, 3)):
+        written = tifffile.imread(
+            Path(sample.output_path) / f"ashlar_input_cycle_{cycle}.ome.tiff"
+        )
+        assert written.shape[-3] == channels

@@ -247,7 +247,10 @@ Applicable modality types: `msi`, `st`.
 
 ### 3.1 Geometric setup
 
-The target points \(t_j\) are the target modality's `obsm['spatial']`. The footprint
+The target points \(t_j\) are the target modality's `obsm['spatial']`, read from the sample's rows
+of the merged preprocessed target file. That file carries the cross-sample feature filter, the union
+feature panel and the merged normalization, so every registered sample has the same features; the
+per-sample preprocessed file is read only when no merged file exists. The footprint
 \(\mathcal{N}_i\) of anchor \(i\) holds the targets whose mapped centres lie inside it (§1.1 to §1.3).
 
 ### 3.2 Kernel and interpolation

@@ -57,19 +57,19 @@ In both cases the full-resolution level is at index `0` and higher indices are p
 
 | Attribute | Type | Shape | Description |
 |-----------|------|-------|-------------|
-| `.X` | sparse CSR | $(n_\text{spots},\ n_\text{genes})$ | Expression counts. Raw unless `total_counts_normalize` or `log1p_transform` was enabled; dtype follows the input file |
-| `.layers['raw']` | sparse CSR | $(n_\text{spots},\ n_\text{genes})$ | Raw counts before normalization. **Present only when `.X` was normalized** |
+| `.X` | sparse CSR | $(n_\text{spots},\ n_\text{genes})$ | Per sample: raw counts. Merged: normalized float32 (raw counts with `normalization: none`) |
+| `.layers['raw']` | sparse CSR | $(n_\text{spots},\ n_\text{genes})$ | Merged file only: raw counts. **Present only when `.X` was normalized** |
 | `.obsm['spatial']` | float32 ndarray | $(n_\text{spots},\ 2)$ | Spot coordinates in µm $(x, y)$ |
 | `.obs_names` | object | $(n_\text{spots},)$ | Spot names, prefixed `<sample_id>_` |
 | `.obs['sample_id']` | categorical | $(n_\text{spots},)$ | Sample identifier |
 | `.obs['cluster']` | categorical | $(n_\text{spots},)$ | Per-sample cluster label, used only for spot colouring in the alignment GUI |
-| `.obs` QC | float / int | $(n_\text{spots},)$ | `total_counts`, `n_genes_by_counts`, `total_counts_mt`, `pct_counts_mt` and their `log1p_` variants |
+| `.obs` QC | float / int | $(n_\text{spots},)$ | `total_counts`, `n_genes_by_counts`, `total_counts_mt`, `pct_counts_mt`, `total_counts_control`, `pct_counts_control` and their `log1p_` variants |
 | `.var['mt']` | bool | $(n_\text{genes},)$ | `True` for mitochondrial genes (case-insensitive `MT-` / `MT.` name prefix) |
 | `.var` QC | float / int | $(n_\text{genes},)$ | `n_cells_by_counts`, `mean_counts`, `total_counts`, `pct_dropout_by_counts` and their `log1p_` variants |
-| `.uns['spot_size']` | float32 ndarray | $(2,)$ | Spot diameter $[x,\ y]$ in µm, read from the input AnnData's `.uns['spot_size']`; defaults to `[1.0, 1.0]` µm when absent. In the **merged** file this is instead a `dict` keyed by `sample_id` |
+| `.uns['spot_size']` | float32 ndarray | $(2,)$ | Spot diameter $[x,\ y]$ in µm, read from the input AnnData's `.uns['spot_size']` (required). In the **merged** file this is instead a `dict` keyed by `sample_id` |
 
 !!! note "spot_size"
-    For ST modalities, `spot_size` is read from the input AnnData file's `.uns['spot_size']` field during preprocessing, in the same units as `.obsm['spatial']`. If this field is absent, FOCUS applies the default `[1.0, 1.0]`. When ST is the reference modality, it defines the registration footprint of every reference spot; ensure your input ST AnnData has the correct spot diameter.
+    For ST modalities, `spot_size` is read from the input AnnData file's `.uns['spot_size']` field during preprocessing, in the same units as `.obsm['spatial']` (µm). A missing field raises `ValueError`. When ST is the reference modality, it defines the registration footprint of every reference spot; ensure your input ST AnnData has the correct spot diameter.
 
 ---
 

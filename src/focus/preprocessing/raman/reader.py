@@ -147,6 +147,10 @@ class RamanReader:
 
         target_val = wavenumbers[break_idx]
         left_slice = wavenumbers[:break_idx]
+        # The next scan overlaps only when it starts inside the range already scanned; a disjoint
+        # window (e.g. the CH region followed by the fingerprint region) is kept whole.
+        if not left_slice.min() <= target_val <= left_slice.max():
+            return None, None
         closest_idx = int(np.argmin(np.abs(left_slice - target_val)))
 
         return break_idx, closest_idx

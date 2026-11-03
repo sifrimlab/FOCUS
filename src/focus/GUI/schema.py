@@ -14,6 +14,9 @@ from focus.config.options import (
     MsiIntensityNormalization,
     MsiSampleType,
     SpotResolution,
+    StCapture,
+    StNormalization,
+    StUnit,
     AnnotationFileType,
 )
 from focus.config.catalog import (
@@ -153,50 +156,26 @@ def _build_schema() -> dict[str, object]:
                 },
             },
             ModalityType.ST: {
-                STPreprocessingParams.RESOLUTION: {
+                STPreprocessingParams.CAPTURE: {
                     "type": "enum",
-                    "options": SpotResolution.list(),
-                    "default": SpotResolution.STANDARD,
+                    "options": StCapture.list(),
+                    "default": StCapture.SEQUENCING,
                 },
-                STPreprocessingParams.MIN_COUNT_PER_SPOT: {
-                    "type": "int",
-                    "default": None,
-                    "nullable": True,
+                STPreprocessingParams.UNIT: {
+                    "type": "enum",
+                    "options": StUnit.list(),
+                    "default": StUnit.SPOT,
                 },
-                STPreprocessingParams.MAX_COUNT_PER_SPOT: {
-                    "type": "int",
-                    "default": None,
-                    "nullable": True,
+                STPreprocessingParams.NORMALIZATION: {
+                    "type": "enum",
+                    "options": StNormalization.list(),
+                    "default": StNormalization.AUTO,
                 },
-                STPreprocessingParams.MIN_GENES_PER_SPOT: {
-                    "type": "int",
-                    "default": None,
-                    "nullable": True,
-                },
-                STPreprocessingParams.MAX_GENES_PER_SPOT: {
-                    "type": "int",
-                    "default": None,
-                    "nullable": True,
-                },
-                STPreprocessingParams.MIN_SPOTS_PER_GENE: {
-                    "type": "float",
-                    "default": None,
-                    "nullable": True,
-                },
-                STPreprocessingParams.MIN_COUNT_SPOTS_RATIO_PER_GENE: {
-                    "type": "float",
-                    "default": None,
-                    "nullable": True,
+                STPreprocessingParams.QUALITY_CONTROL: {
+                    "type": "bool",
+                    "default": True,
                 },
                 STPreprocessingParams.REMOVE_MITOCHONDRIAL_GENES: {
-                    "type": "bool",
-                    "default": False,
-                },
-                STPreprocessingParams.TOTAL_COUNTS_NORMALIZE: {
-                    "type": "bool",
-                    "default": False,
-                },
-                STPreprocessingParams.LOG1P_TRANSFORM: {
                     "type": "bool",
                     "default": False,
                 },

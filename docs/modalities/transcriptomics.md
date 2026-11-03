@@ -2,51 +2,48 @@
 
 ## Overview
 
-FOCUS accepts any spatially resolved gene expression dataset as long as it is provided in AnnData `.h5ad` format with raw count data and spatial coordinates. The modality type is agnostic to the capture technology: Visium (10x Genomics), Xenium, MERFISH, Slide-seq, HDST, and any pipeline that outputs an AnnData object with the required fields are all supported.
+FOCUS accepts spatially resolved gene expression from any technology, provided as one AnnData `.h5ad` file per sample with raw counts, `.obsm['spatial']` and `.uns['spot_size']`. Two settings describe the technology: `capture` (sequencing or imaging) and `unit` (multicellular spots, sub-cellular bins or segmented cells). They select the quality control, the gene rule, the default normalization and the clustering preset, so no numeric threshold is configured.
 
-The preprocessing pipeline validates the input, flags mitochondrial genes, computes QC metrics, optionally filters spots, optionally removes mitochondrial genes, derives per-sample cluster labels, and optionally normalises expression. It then concatenates the samples, optionally applies cross-sample gene filtering, recomputes QC metrics, optionally normalises again, and writes a unified multi-sample AnnData alongside the per-sample files. Every filtering and normalisation step is opt-in: with default settings `.X` is left as the raw counts from the input file.
+Each sample is validated, cleaned of control features and low-quality spots, given QC metrics and alignment cluster labels, and written with raw counts. The samples are then merged on the union of their genes, restricted to the genes the technology rule keeps, and normalized once with one global scale. The merged file is the dataset used by registration and compilation.
 
 ---
 
 ## Input Requirements
 
-The input `.h5ad` file must satisfy the following:
-
 | Field | Required | Description |
 |-------|----------|-------------|
-| `.X` | Yes | Gene expression matrix (sparse CSR recommended; raw integer counts preferred) |
-| `.obsm['spatial']` | Yes | Spot coordinates in µm, shape `(N_spots, 2)` |
-| `.var` | Yes | Gene metadata; gene names must be the index |
-| `.uns['spot_size']` | No | Spot diameter `[x, y]`, in the same units as `.obsm['spatial']` (µm). **FOCUS reads this field automatically.** If missing, defaults to `[1.0, 1.0]`. |
+| Raw counts | Yes | Non-negative integer counts in `.X`, `.layers['counts']`, `.layers['raw']` or `.raw.X`; the first of these that holds counts is used, and every other matrix of the input is dropped |
+| `.obsm['spatial']` | Yes | Spot or cell centres in µm, finite, shape `(N, 2)` |
+| `.uns['spot_size']` | Yes | Spot, bin or cell diameter `[x, y]` in µm. A scalar or 1-element array is broadcast to `[v, v]`; more than 2 values, a non-positive value or a missing field raise `ValueError` |
+| `.var_names` | Yes | Gene names. Duplicated names are made unique with a numeric suffix and reported |
+| `.var['feature_types']` | No | When present, features other than `Gene Expression` are removed as controls |
+| `.obs['in_tissue']` | No | When present, spots with `in_tissue == 0` are removed |
+| `.obs` cell area | No | For `unit: cell`, the first of `cell_area`, `area_um2`, `area`, `Area`, `volume` is the area used by area normalization |
 
 !!! tip "spot_size"
-    When ST is the reference modality, `spot_size` sets the footprint of every reference spot in all registration modes (`spot_interpolation`, `spot_aggregation`, `raman_pixel_interpolation`, `feature_extraction`), so it should match your technology (see the table below). As a registration target, ST contributes its spot centres; the footprint is the reference's.
-    FOCUS reads it during preprocessing and normalises it: a scalar or 1-element array is broadcast to `[v, v]`, a 2-element array is kept as-is, and more than 2 values raises `ValueError`.
-    If your input file is missing `.uns['spot_size']`, FOCUS applies the default `[1.0, 1.0]` µm.
+    When ST is the reference modality, `spot_size` sets the footprint of every reference spot in all registration modes (`spot_interpolation`, `spot_aggregation`, `raman_pixel_interpolation`, `feature_extraction`), so it must match the technology (see the table below). As a registration target, ST contributes its spot centres; the footprint is the reference's.
 
 ---
 
 ## Typical Spot Sizes by Technology
 
-Reference values for common spatial transcriptomics acquisition technologies. These are approximate typical sizes; always verify the exact specifications for your data:
+Approximate values; check the specification of the data.
 
-| Technology | Vendor/Platform | Typical Spot Size (µm) | Notes |
-|-----------|-----------------|---------------------|-------|
-| Visium | 10x Genomics | 55 | Full resolution; ~65 µm sometimes quoted including edge padding |
-| Visium HD | 10x Genomics | 2 | High-density capture; 16x higher resolution than standard Visium |
-| Xenium | 10x Genomics | 0.2-1 | Single-cell or sub-cellular resolution; exact size depends on clustering |
-| MERFISH | Various | 0.05-0.2 | Multiplexed error-robust FISH; subcellular spatial resolution |
-| seqFISH | Multiple vendors | 0.05-0.5 | Sequential hybridization; subcellular to near-cellular resolution |
-| Slide-seq | Various | 0.5-1 | High-resolution slide-based capture arrays |
-| HDST | Harvard | 0.01-0.1 | Highly dense spatial transcriptomics; near-diffraction-limited resolution |
-
-Ensure `.uns['spot_size']` in your input AnnData matches your technology's specifications for accurate spatial integration with FOCUS.
+| Technology | `capture` | `unit` | Typical `spot_size` (µm) |
+|-----------|-----------|--------|--------------------------|
+| Visium | `sequencing` | `spot` | 55 |
+| Visium HD (2, 8 or 16 µm bins) | `sequencing` | `bin` | bin size |
+| Visium HD segmented cells | `sequencing` | `cell` | median cell diameter |
+| Stereo-seq (binned) | `sequencing` | `bin` | bin size (0.5 µm per DNB times the bin width) |
+| Slide-seq V2 | `sequencing` | `bin` | 10 |
+| Xenium, MERFISH, CosMx (segmented cells) | `imaging` | `cell` | median cell diameter |
+| Xenium, CosMx (transcripts binned into squares) | `imaging` | `bin` | bin size |
 
 ---
 
 ## Directory Layout
 
-Place one `.h5ad` file per sample inside `<sample_id>/<modality_name>/`:
+Place exactly one `.h5ad` file per sample inside `<sample_id>/<modality_name>/`; a folder with several `.h5ad` files raises `ValueError`.
 
 ```
 dataset_root/
@@ -64,100 +61,69 @@ dataset_root/
 
 ### Per-sample steps
 
-Run by `SpatialTranscriptomic.preprocess_data()`. A cached file is reused only when its input-content, effective settings, method and software fingerprint matches; legacy outputs are rebuilt. `force_recomputing=True` always rebuilds.
+Run by `SpatialTranscriptomic.preprocess_data()`. A cached file is reused only when its fingerprint (input SHA-256, settings, technology constants, method and software versions) matches; `force_recomputing=True` always rebuilds. The input SHA-256 is stored in the output and reused while the input's path, size and modification time are unchanged, so an unchanged input is not re-hashed.
 
-1. **Load and validate**: the first `.h5ad` file in sorted filename order is loaded (provide one file per sample to avoid ambiguity). A missing `.obsm['spatial']` raises `ValueError`; present coordinates are cast to `float32`. The spot size is read from `.uns['spot_size']` and normalised to a `(2,)` `float32` array: a scalar or 1-element array is broadcast to `[v, v]`, a 2-element array is kept, anything longer raises `ValueError`, and a missing value becomes `[1.0, 1.0]`. `.X` is converted to sparse CSR if it is not already, preserving dtype.
-
-2. **Mitochondrial flag**: `.var['mt']` is set by a case-insensitive `MT-`/`MT.` name prefix. Detection is name-based, so datasets keyed by Ensembl IDs are not flagged.
-
-3. **Spot filtering**: the four count/gene thresholds are applied in order (`min_count_per_spot`, `max_count_per_spot`, `min_genes_per_spot`, `max_genes_per_spot`) with `scanpy.pp.filter_cells`. Each is skipped when `None`; a value of `0` or less raises `ValueError`. The number and percentage of retained spots is reported.
-
-4. **QC metrics**: `scanpy.pp.calculate_qc_metrics(qc_vars=['mt'], percent_top=None)` runs on the retained spots, with mitochondrial genes still present. This writes `total_counts`, `n_genes_by_counts`, `total_counts_mt`, `pct_counts_mt` and their `log1p_` variants to `.obs`, and `n_cells_by_counts`, `mean_counts`, `total_counts`, `pct_dropout_by_counts` and `log1p_` variants to `.var`.
-
-5. **Mitochondrial gene removal (optional)**: when `remove_mitochondrial_genes=True`, the genes flagged in `.var['mt']` are dropped from the feature set. Because this runs after step 4, the QC metrics in `.obs`, including `pct_counts_mt`, still describe the matrix as it was before removal.
-
-6. **Observation names**: prefixed with `<sample_id>_`, unless every name already carries that prefix.
-
-7. **Cluster labels**: computed on clustering units chosen by the `resolution` preset (see [Clustering settings](#clustering-settings)). Spots are clustered one by one, or grouped into k x k blocks of the acquisition lattice inferred from `.obsm['spatial']` (Voronoi supercells when the spots form no lattice) when the sample exceeds 250,000 spots or, for `"sub_cellular"`, its median spot holds fewer than 1,000 UMIs; every spot takes its unit's label. A clustering-only copy is normalized to 10,000 counts, log-transformed and restricted to highly variable genes before PCA; each unit's PCs are joined to the mean PCs of its spatial neighbourhood before neighbors → Leiden, and adjacent Leiden clusters that no density valley separates are merged. Eligibility is 50 UMIs and 20 detected genes per unit; spots of ineligible units remain in the output as `unassigned`, with `.obs['clustering_eligible']=False`. These are display-analysis thresholds, not tissue QC cutoffs. Zero-count units never form clusters. See [the scientific methods](../scientific/st_methods.md#36-per-sample-clustering) for the exact procedure and provenance.
-
-8. **Raw counts layer**: `.layers['raw']` is written with a copy of `.X` **only when** `total_counts_normalize` or `log1p_transform` is enabled. With both off, `.X` already holds the raw counts and no layer is created.
-
-9. **Normalisation (both optional)**: when `total_counts_normalize=True`, `scanpy.pp.normalize_total` scales each spot to 10 000 total counts (`target_sum=1e4`); when `log1p_transform=True`, `scanpy.pp.log1p` is then applied. With both off, `.X` stays as raw counts.
-
-10. **Write**: `.obs['sample_id']` and `.obs['cluster']` are stored as categoricals, `.obsm['spatial']` as `float32`. `.X` and every layer are guaranteed sparse CSR, and the file is written gzip-compressed.
+1. **Load and validate**: see [Input Requirements](#input-requirements). `.X` becomes the raw counts in sparse CSR.
+2. **Control features**: features matched by `var['feature_types']` or by a control name prefix (`NegControlProbe_`, `NegControlCodeword_`, `NegPrb`, `BLANK_`, `Blank-`, `UnassignedCodeword_`, `DeprecatedCodeword_`, `Intergenic_`, `SystemControl`) are counted into `obs['total_counts_control']` and `obs['pct_counts_control']`, then removed.
+3. **Mitochondrial flag**: `.var['mt']` from a case-insensitive `MT-`/`MT.` name prefix. Ensembl-keyed panels are not flagged.
+4. **Quality control**: spots outside the tissue (`in_tissue == 0`) and spots without counts are always removed. With `quality_control: true`, the outlier rule of the unit follows (see [Technology calibration](#technology-calibration)). The retained spots and the number removed per reason are reported, and the counts are stored in `.uns['focus_qc']`.
+5. **QC metrics**: `scanpy.pp.calculate_qc_metrics(qc_vars=['mt'], percent_top=None)` with mitochondrial genes present: `total_counts`, `n_genes_by_counts`, `total_counts_mt`, `pct_counts_mt` and `log1p_` variants in `.obs`, gene metrics in `.var`.
+6. **Area**: `obs['focus_area']` holds the area used by area normalization: the `spot_size` area for spots and bins, the cell area column for cells.
+7. **Mitochondrial gene removal (optional)**: with `remove_mitochondrial_genes: true`, the flagged genes are dropped. The QC metrics of step 5 still describe the matrix before removal.
+8. **Observation names**: prefixed with `<sample_id>_`, unless every name already carries that prefix.
+9. **Cluster labels**: alignment-only labels with the clustering preset of the unit (`spot`: standard; `bin`, `cell`: sub-cellular). See [the scientific methods](../scientific/st_methods.md#36-per-sample-clustering).
+10. **Write**: raw counts in `.X` (no layer), sparse CSR, gzip, written to a temporary file and renamed, so an interrupted run never leaves a truncated cache.
 
 ### Dataset-level steps
 
-Run by `SpatialTranscriptomicDataset.process_dataset()` after every sample has been through the steps above. If `force_recomputing` is `False`, no sample was rebuilt in this run, **and** the merged file's `.uns['focus_preprocessing_fingerprint']` matches the per-sample fingerprints (which fix the active sample set) and the gene-filter and normalization settings, the cached merged file is returned instead.
+Run by `SpatialTranscriptomicDataset.process_dataset()`. The cached merged file is reused when no sample was rebuilt, `force_recomputing` is `False`, and its fingerprint (sample fingerprints, normalization, gene rule) matches.
 
-1. **Collect spot sizes**: read from each per-sample file with a backed read, so `.X` is never materialised.
-
-2. **Concatenate on disk**: `anndata.concat_on_disk` with `axis=0`, `join="outer"`, `fill_value=0`, so genes absent from a sample become zero counts. `.uns` is dropped during the concat and `spot_size` is rebuilt from step 1.
-
-3. **Recover raw counts**: `.X` is replaced by `.layers['raw']` when that layer is present (it is carried over only from samples that were normalised); otherwise `.X` already holds raw counts. Cross-sample filtering and normalisation therefore always operate on raw counts.
-
-4. **Cross-sample gene filtering (optional)**: see [Gene-level filters](#gene-level-filters-dataset-level-only). Skipped entirely when both thresholds are `None`. Gene counts before and after are reported.
-
-5. **Recompute QC metrics**: `.var['mt']` is re-derived and `calculate_qc_metrics` re-runs on the merged raw matrix, so the merged QC reflects the retained spots and genes rather than the per-sample values that predate cross-sample filtering.
-
-6. **Raw counts layer and normalisation**: same rule and same parameters as per-sample steps 8 and 9, applied to the merged matrix.
-
-7. **Write**: `.obs['sample_id']` and `.obs['cluster']` as categoricals (the per-sample cluster labels carried through the concat are kept as-is), `.obsm['spatial']` as `float32`, `.uns['spot_size']` as a `{sample_id: [x, y]}` dictionary, sparse CSR, gzip-compressed.
+1. **Gene rule**: from each sample's `var['n_cells_by_counts']` (spots in which the gene is detected), a gene is kept when it reaches the technology's minimum in at least one sample.
+2. **Concatenate on disk**: `anndata.concat_on_disk` with an outer join and `fill_value=0` builds the union panel; the genes that fail the rule are then removed. Spots are never removed at this level, so the merged rows match the per-sample files.
+3. **QC**: `total_counts`, `n_genes_by_counts` and the gene metrics are recomputed on the final panel. `total_counts_mt`, `pct_counts_mt` and the control metrics keep the per-sample values.
+4. **Normalization**: the selected method runs once on the merged counts (see [Normalization](#normalization)). The counts move to `.layers['raw']` and `.X` is `float32`.
+5. **Write**: `.obs['sample_id']` and `.obs['cluster']` as categoricals, `.uns['spot_size']` as `{sample_id: [x, y]}`, `.uns['focus_normalization']` with the method and its scale, sparse CSR, gzip, atomic write.
 
 ---
 
 ## Processing Parameters
 
-### Spot-level filters
-
 | Name | Type | Default | Description |
 |------|------|---------|-------------|
-| `min_count_per_spot` | `int` or `None` | `None` | Minimum total UMI counts per spot |
-| `max_count_per_spot` | `int` or `None` | `None` | Maximum total UMI counts per spot |
-| `min_genes_per_spot` | `int` or `None` | `None` | Minimum number of genes detected per spot |
-| `max_genes_per_spot` | `int` or `None` | `None` | Maximum number of genes detected per spot |
-
-### Gene-level filters (dataset-level only)
-
-| Name | Type | Default | Description |
-|------|------|---------|-------------|
-| `min_spots_per_gene` | `float` or `None` | `None` | Minimum fraction of a sample's spots that must express a gene for that sample to count as passing. Must satisfy `0 < value < 1` |
-| `min_count_spots_ratio_per_gene` | `float` or `None` | `None` | Minimum ratio of a gene's total counts to the number of spots expressing it, per sample. Must be `> 0` |
-| `remove_mitochondrial_genes` | `bool` | `False` | Drop the genes flagged in `.var['mt']`. Applied per sample, before merging |
-
-Both gene filters are evaluated per sample, and a gene is retained when it passes in **at least one** sample. How many samples a gene is detected in does not affect whether it is kept. A gene confined to a single sample survives on the strength of that sample alone. When both thresholds are set, a gene must satisfy each of them in at least one sample, not necessarily the same one.
-
-For the ratio criterion, samples in which a gene is not expressed at all are neither counted as passing nor as failing. There is no highly-variable-gene selection: whatever survives these filters is carried through to registration.
-
-### Normalisation and transform
-
-| Name | Type | Default | Description |
-|------|------|---------|-------------|
-| `total_counts_normalize` | `bool` | `False` | Normalise each spot to 10 000 total counts |
-| `log1p_transform` | `bool` | `False` | Apply log(x + 1) transform after normalisation |
-
-### Clustering settings
-
-One setting, `resolution`, selects the clustering preset for the alignment labels. It does not delete observations or genes from `.X`.
-
-| Value | Intended data | Units | Spatial neighbourhood |
-|------|---------|---------|---------|
-| `"standard"` (default) | Multicellular spots (Visium) | Native spots up to 250,000 spots; lattice blocks or Voronoi supercells above | 1 ring |
-| `"sub_cellular"` | Weak high-resolution spots (Visium HD, Xenium-derived bins) | Lattice blocks or Voronoi supercells grown until the median unit holds 1,000 UMIs (and at most 250,000 units) | 2 rings |
-
-All other values are fixed: eligibility of 50 UMIs and 20 detected genes per unit, 2,000 HVGs, 50 PCs, 15 neighbours, Leiden resolution 0.5, merge cutoff 0.8, seed 0. The units and their neighbourhoods are derived from `.obsm['spatial']` alone; `array_row` / `array_col` are not required. See [the scientific methods](../scientific/st_methods.md#36-per-sample-clustering) for the procedure and its calibration.
-HVG selection follows Scanpy's dispersion implementation and can include ties at the target cutoff.
-
-### Other
-
-| Name | Type | Default | Description |
-|------|------|---------|-------------|
+| `capture` | `str` | `"sequencing"` | `"sequencing"` (Visium, Visium HD, Stereo-seq, Slide-seq) or `"imaging"` (Xenium, MERFISH, CosMx) |
+| `unit` | `str` | `"spot"` | `"spot"` (multicellular capture spots), `"bin"` (sub-cellular square bins or beads) or `"cell"` (segmented cells) |
+| `normalization` | `str` | `"auto"` | Method applied to the merged dataset (see [Normalization](#normalization)) |
+| `quality_control` | `bool` | `True` | Remove the outlier spots of the unit's rule. Out-of-tissue and zero-count spots are removed in every case |
+| `remove_mitochondrial_genes` | `bool` | `False` | Drop the genes flagged in `.var['mt']`, per sample |
 | `force_recomputing` | `bool` | `False` | Reprocess even if cached output files already exist |
 
-!!! note "Where the filters apply"
-    The spot-level filters, `remove_mitochondrial_genes` and both normalisation flags are passed to each sample and applied per sample. `min_spots_per_gene` and `min_count_spots_ratio_per_gene` are dataset-level only. They are not parameters of `SpatialTranscriptomic.preprocess_data()` and act on the merged matrix.
+!!! warning "Removed settings"
+    `resolution`, `min_count_per_spot`, `max_count_per_spot`, `min_genes_per_spot`, `max_genes_per_spot`, `min_spots_per_gene`, `min_count_spots_ratio_per_gene`, `total_counts_normalize` and `log1p_transform` are no longer ST settings. A configuration that sets one raises `ValueError` naming its replacement. The old `total_counts_normalize: true` with `log1p_transform: true` corresponds to `normalization: cp10k_log`.
 
-    The defaults listed above are the same in the settings extractor (`_extract_st_settings`) and in the `preprocess_data()` / `process_dataset()` signatures, so config runs and direct Python calls agree.
+### Technology calibration
+
+| | `spot` | `bin` | `cell` |
+|---|---|---|---|
+| Outlier rule (`quality_control: true`) | Local outliers against the 36 nearest spots: low library size, low detected genes, high mitochondrial percent | None | Global low-tail outliers of library size and detected genes (5 MADs) |
+| Clustering preset | standard | sub-cellular | sub-cellular |
+
+| | `sequencing` | `imaging` |
+|---|---|---|
+| Gene rule | Detected in at least 20 spots of at least one sample | Every detected gene (designed panels) |
+| `normalization: auto` | `log_normalize` | `area_log_normalize` (`log_normalize`, with a warning, when a cell has no area) |
+
+The rules and their sources are described in [the scientific methods](../scientific/st_methods.md#3-per-sample-preprocessing-pipeline).
+
+### Normalization
+
+| Value | Result in `.X` |
+|-------|----------------|
+| `auto` | The technology's default (table above) |
+| `none` | Raw counts; no `raw` layer |
+| `log_normalize` | `log1p(counts / s)`, `s` = library size divided by the median library size of all spots of all samples |
+| `cp10k_log` | `log1p(10,000 × counts / library size)` (Seurat LogNormalize) |
+| `size_factors` | `counts / s`, linear |
+| `area_log_normalize` | `log1p(counts / a)`, `a` = area divided by the median area of all spots of all samples |
 
 ---
 
@@ -197,7 +163,7 @@ The reference modality defines the output coordinate space and the number of obs
 | Registration type | Supported | Notes |
 |-------------------|-----------|-------|
 | `spot_interpolation` | Yes | ST registers onto a reference via Gaussian-weighted average of the ST spots in each anchor footprint |
-| `spot_aggregation` | Yes | ST registers onto a reference by **summing** (not averaging) the ST spots in each anchor footprint, with no normalization. Used for subcellular-resolution data (e.g. Visium HD) |
+| `spot_aggregation` | Yes | ST registers onto a reference by **summing** (not averaging) the ST spots in each anchor footprint. Used for subcellular-resolution data (e.g. Visium HD). When the merged ST file is normalized, the raw counts are summed and the merged registered file is normalized once with the same method |
 | `none` | Yes | No registration; ST coordinates are used as-is (valid when ST is the reference) |
 | `feature_extraction` | No | Not compatible with spot-based modalities |
 
@@ -219,38 +185,40 @@ Path: `<sample_id>/preprocessing/<modality_name>/<modality_name>_<sample_id>_pro
 
 | Slot | Content |
 |------|---------|
-| `.X` | Expression matrix, sparse CSR. Raw counts unless `total_counts_normalize` or `log1p_transform` was enabled |
-| `.layers['raw']` | Raw counts before normalisation, sparse CSR. **Present only when `.X` was normalised** |
+| `.X` | Raw counts of the retained spots and genes, sparse CSR |
 | `.obs_names` | Spot names, prefixed `<sample_id>_` |
-| `.var_names` | Gene names, carried from the input file |
-| `.var['mt']` | Boolean mitochondrial flag (all `False` when `remove_mitochondrial_genes` was enabled) |
+| `.var_names` | Gene names (unique), controls removed |
+| `.var['mt']` | Boolean mitochondrial flag |
 | `.obsm['spatial']` | Spot coordinates in µm, `float32 (N_spots, 2)` |
 | `.obs['sample_id']` | Sample identifier (categorical) |
 | `.obs['cluster']` | Per-spot labels (each spot carries its clustering unit's label), including `unassigned` |
 | `.obs['clustering_eligible']` | Eligibility for the clustering analysis |
-| `.uns['focus_clustering']` | Parameters, version, clustering units (`units`), selected features, cluster sizes and PCA/count-depth diagnostics |
+| `.obs['focus_area']` | Area used by area normalization (absent for cells without an area column) |
+| `.obs` QC | `total_counts`, `n_genes_by_counts`, `total_counts_mt`, `pct_counts_mt`, `total_counts_control`, `pct_counts_control` and `log1p_` variants |
+| `.var` QC | `n_cells_by_counts`, `mean_counts`, `total_counts`, `pct_dropout_by_counts` and `log1p_` variants |
+| `.uns['focus_qc']` | Outlier rule and spots removed per reason |
+| `.uns['focus_clustering']` | Clustering parameters, units, selected features and diagnostics |
 | `.uns['cluster_colors']` | Colors in categorical cluster order |
-| `.uns['focus_preprocessing_fingerprint']` | Input/settings/method/software cache fingerprint |
-| `.obs` QC | `total_counts`, `n_genes_by_counts`, `total_counts_mt`, `pct_counts_mt`, plus `log1p_total_counts`, `log1p_n_genes_by_counts`, `log1p_total_counts_mt` |
-| `.var` QC | `n_cells_by_counts`, `mean_counts`, `total_counts`, `pct_dropout_by_counts`, plus `log1p_mean_counts`, `log1p_total_counts` |
+| `.uns['focus_preprocessing_fingerprint']` | Cache fingerprint |
+| `.uns['focus_input_signature']` | Input stat signature and SHA-256 (JSON) |
 | `.uns['spot_size']` | `float32` array `[x_µm, y_µm]` |
 
 ### Merged dataset
 
 Path: `merged/preprocessing/<modality_name>_merged_processed.h5ad`
 
-Same slots as above, with two differences:
+Same slots as above, with these differences:
 
-- `.uns['spot_size']` is a dictionary `{sample_id: [x_µm, y_µm]}` rather than a single array.
-- QC metrics and `.var['mt']` are recomputed on the merged matrix, so they reflect the retained spots and genes after cross-sample gene filtering.
-
-Samples are concatenated with an outer join on genes, and a gene absent from a sample is filled with 0 counts.
+- `.var_names` is the union panel restricted to the technology's gene rule.
+- `.X` is normalized (`float32`) and `.layers['raw']` holds the counts, unless `normalization: none`.
+- `.uns['focus_normalization']` records the method and its scale (`median_library_size`, `median_area` or `target_sum`).
+- `.uns['spot_size']` is a dictionary `{sample_id: [x_µm, y_µm]}`.
 
 ---
 
 ## Config Example
 
-=== "ST as reference"
+=== "Visium (reference)"
 
     ```yaml
     reference_modality: visium
@@ -259,15 +227,12 @@ Samples are concatenated with an outer join on genes, and a gene absent from a s
       - name: visium
         type: st
         processing_settings:
-          min_count_per_spot: 500
-          min_genes_per_spot: 200
-          min_spots_per_gene: 0.05
-          total_counts_normalize: true
-          log1p_transform: true
+          capture: sequencing
+          unit: spot
         registration_type: none
     ```
 
-=== "ST as non-reference"
+=== "Visium HD bins (non-reference)"
 
     ```yaml
     reference_modality: lipidomics
@@ -279,14 +244,24 @@ Samples are concatenated with an outer join on genes, and a gene absent from a s
           mass_tolerance: 10
           intensity_normalization: tic
         registration_type: none
-        
-      - name: visium
+
+      - name: visium_hd
         type: st
         processing_settings:
-          min_count_per_spot: 500
-          min_genes_per_spot: 200
-          min_spots_per_gene: 0.05
-          total_counts_normalize: true
-          log1p_transform: true
+          capture: sequencing
+          unit: bin
+        registration_type: spot_aggregation
+    ```
+
+=== "Xenium cells"
+
+    ```yaml
+    modalities:
+      - name: xenium
+        type: st
+        processing_settings:
+          capture: imaging
+          unit: cell
+          normalization: auto
         registration_type: spot_interpolation
     ```

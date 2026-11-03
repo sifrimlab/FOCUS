@@ -41,14 +41,9 @@ The example below covers all three supported modality types and uses every avail
       "alignment_strategy": "manual",
       "name": "st",
       "processing_settings": {
-        "min_count_per_spot": 200,
-        "max_count_per_spot": null,
-        "min_genes_per_spot": 50,
-        "max_genes_per_spot": null,
-        "min_spots_per_gene": null,
-        "min_count_spots_ratio_per_gene": null,
-        "total_counts_normalize": true,
-        "log1p_transform": true,
+        "capture": "sequencing",
+        "unit": "spot",
+        "normalization": "auto",
         "force_recomputing": false
       },
       "registration_settings": {},
@@ -213,19 +208,14 @@ Additional settings for the chosen registration method. May be an empty object w
 
     | Parameter | Type | Description |
     |-----------|------|-------------|
-    | `resolution` | string | Clustering preset for the alignment colours: `"standard"` (default; multicellular spots such as Visium) or `"sub_cellular"` (weak high-resolution spots such as Visium HD or Xenium-derived bins). |
-    | `min_count_per_spot` | int or null | Minimum total UMI count to retain a spot. |
-    | `max_count_per_spot` | int or null | Maximum total UMI count (outlier removal). |
-    | `min_genes_per_spot` | int or null | Minimum number of detected genes per spot. |
-    | `max_genes_per_spot` | int or null | Maximum number of detected genes per spot. |
-    | `min_spots_per_gene` | float or null | Minimum **fraction** of a sample's spots that must express a gene for that sample to count as passing. Must satisfy `0 < value < 1`. Dataset-level only. Default `null`. |
-    | `min_count_spots_ratio_per_gene` | float or null | Minimum ratio of a gene's total counts to the number of spots expressing it, per sample. Must be `> 0`. Dataset-level only. Default `null`. |
+    | `capture` | string | `"sequencing"` (default; Visium, Visium HD, Stereo-seq, Slide-seq) or `"imaging"` (Xenium, MERFISH, CosMx). Sets the gene rule and the `auto` normalization. |
+    | `unit` | string | `"spot"` (default; multicellular spots), `"bin"` (sub-cellular bins or beads) or `"cell"` (segmented cells). Sets the outlier rule and the clustering preset. |
+    | `normalization` | string | `"auto"` (default), `"none"`, `"log_normalize"`, `"cp10k_log"`, `"size_factors"` or `"area_log_normalize"`, applied once to the merged dataset. |
+    | `quality_control` | bool | Remove the outlier spots of the unit's rule. Out-of-tissue and zero-count spots are removed in every case. Default `true`. |
     | `remove_mitochondrial_genes` | bool | Drop the genes flagged in `.var['mt']` (case-insensitive `MT-`/`MT.` name prefix) from the feature set. Applied per sample, before merging. Default `false`. |
-    | `total_counts_normalize` | bool | Normalize each spot to a total count of 10,000. Default `false`. |
-    | `log1p_transform` | bool | Apply log1p transformation after normalisation. Default `false`. |
     | `force_recomputing` | bool | Reprocess even if output already exists. Default `false`. |
 
-    Both gene-level filters are evaluated per sample, and a gene survives when it passes in at least one sample; with both thresholds set it must satisfy each in at least one sample. Every filtering and normalisation step is opt-in, so with defaults `.X` holds the raw counts from the input file.
+    The settings `resolution`, `min_count_per_spot`, `max_count_per_spot`, `min_genes_per_spot`, `max_genes_per_spot`, `min_spots_per_gene`, `min_count_spots_ratio_per_gene`, `total_counts_normalize` and `log1p_transform` were removed and fail validation. See [Spatial Transcriptomics](../modalities/transcriptomics.md#processing-parameters).
 
 === "Mass Spectrometry Imaging (`msi`)"
 

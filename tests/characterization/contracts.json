@@ -194,53 +194,40 @@
         }
       },
       "st": {
-        "resolution": {
+        "capture": {
           "type": "enum",
           "options": [
-            "standard",
-            "sub_cellular"
+            "sequencing",
+            "imaging"
           ],
-          "default": "standard"
+          "default": "sequencing"
         },
-        "min_count_per_spot": {
-          "type": "int",
-          "default": null,
-          "nullable": true
+        "unit": {
+          "type": "enum",
+          "options": [
+            "spot",
+            "bin",
+            "cell"
+          ],
+          "default": "spot"
         },
-        "max_count_per_spot": {
-          "type": "int",
-          "default": null,
-          "nullable": true
+        "normalization": {
+          "type": "enum",
+          "options": [
+            "auto",
+            "none",
+            "log_normalize",
+            "cp10k_log",
+            "size_factors",
+            "area_log_normalize"
+          ],
+          "default": "auto"
         },
-        "min_genes_per_spot": {
-          "type": "int",
-          "default": null,
-          "nullable": true
-        },
-        "max_genes_per_spot": {
-          "type": "int",
-          "default": null,
-          "nullable": true
-        },
-        "min_spots_per_gene": {
-          "type": "float",
-          "default": null,
-          "nullable": true
-        },
-        "min_count_spots_ratio_per_gene": {
-          "type": "float",
-          "default": null,
-          "nullable": true
+        "quality_control": {
+          "type": "bool",
+          "default": true
         },
         "remove_mitochondrial_genes": {
-          "type": "bool",
-          "default": false
-        },
-        "total_counts_normalize": {
-          "type": "bool",
-          "default": false
-        },
-        "log1p_transform": {
           "type": "bool",
           "default": false
         },
@@ -277,6 +264,16 @@
       "microgrid": "Microgrid",
       "standard": "Standard",
       "sub_cellular": "Sub-cellular",
+      "sequencing": "Sequencing (Visium, Visium HD, Stereo-seq, Slide-seq)",
+      "imaging": "Imaging (Xenium, MERFISH, CosMx)",
+      "spot": "Multicellular spots",
+      "bin": "Sub-cellular bins",
+      "cell": "Segmented cells",
+      "auto": "Automatic (technology default)",
+      "log_normalize": "Log-normalize (median depth)",
+      "cp10k_log": "Log-normalize (10,000 counts)",
+      "size_factors": "Size factors (median depth, linear)",
+      "area_log_normalize": "Log-normalize (area)",
       "geojson": "GeoJSON"
     },
     "registration_params": {
@@ -728,12 +725,19 @@
           "black"
         ],
         "display_names": {
+          "area_log_normalize": "Log-normalize (area)",
+          "auto": "Automatic (technology default)",
+          "bin": "Sub-cellular bins",
           "black": "Black",
+          "cell": "Segmented cells",
           "clr": "CLR",
+          "cp10k_log": "Log-normalize (10,000 counts)",
           "feature_extraction": "Feature Extraction",
           "geojson": "GeoJSON",
+          "imaging": "Imaging (Xenium, MERFISH, CosMx)",
           "internal_standard": "Internal Standard",
           "log": "Log",
+          "log_normalize": "Log-normalize (median depth)",
           "manual": "Manual",
           "median": "Median",
           "microgrid": "Microgrid",
@@ -743,6 +747,9 @@
           "pre_aligned": "Pre-Aligned",
           "raman": "Raman",
           "raman_pixel_interpolation": "Raman Pixel Interpolation",
+          "sequencing": "Sequencing (Visium, Visium HD, Stereo-seq, Slide-seq)",
+          "size_factors": "Size factors (median depth, linear)",
+          "spot": "Multicellular spots",
           "spot_aggregation": "Spot Aggregation",
           "spot_interpolation": "Spot Interpolation",
           "st": "Spatial Transcriptomics",
@@ -908,59 +915,46 @@
             }
           },
           "st": {
+            "capture": {
+              "default": "sequencing",
+              "options": [
+                "sequencing",
+                "imaging"
+              ],
+              "type": "enum"
+            },
             "force_recomputing": {
               "default": false,
               "type": "bool"
             },
-            "log1p_transform": {
-              "default": false,
+            "normalization": {
+              "default": "auto",
+              "options": [
+                "auto",
+                "none",
+                "log_normalize",
+                "cp10k_log",
+                "size_factors",
+                "area_log_normalize"
+              ],
+              "type": "enum"
+            },
+            "quality_control": {
+              "default": true,
               "type": "bool"
-            },
-            "max_count_per_spot": {
-              "default": null,
-              "nullable": true,
-              "type": "int"
-            },
-            "max_genes_per_spot": {
-              "default": null,
-              "nullable": true,
-              "type": "int"
-            },
-            "min_count_per_spot": {
-              "default": null,
-              "nullable": true,
-              "type": "int"
-            },
-            "min_count_spots_ratio_per_gene": {
-              "default": null,
-              "nullable": true,
-              "type": "float"
-            },
-            "min_genes_per_spot": {
-              "default": null,
-              "nullable": true,
-              "type": "int"
-            },
-            "min_spots_per_gene": {
-              "default": null,
-              "nullable": true,
-              "type": "float"
             },
             "remove_mitochondrial_genes": {
               "default": false,
               "type": "bool"
             },
-            "resolution": {
-              "default": "standard",
+            "unit": {
+              "default": "spot",
               "options": [
-                "standard",
-                "sub_cellular"
+                "spot",
+                "bin",
+                "cell"
               ],
               "type": "enum"
-            },
-            "total_counts_normalize": {
-              "default": false,
-              "type": "bool"
             }
           }
         },

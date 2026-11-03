@@ -76,7 +76,7 @@ The wavenumber axis is used as the spectral axis for the RamanSPy pipeline in st
 
 When a `.lif` holds more than one tile-scan element, their tile arrays are concatenated along the channel axis in file order, their wavenumber vectors are concatenated in the same order, their tile coordinates are stacked per scan, and their pixel sizes are averaged. Each element's channel range is recorded as a *spectra slice*; those slices are the blocks that step `4/5` cleans independently and that step `5/5` writes as separate ASHLAR cycles. Concatenation requires all elements to share the same tile count and tile size.
 
-If the concatenated wavenumber vector is not monotonic, the scans overlap spectrally. FOCUS locates the first break in monotonicity, finds the channel in the preceding block whose wavenumber is closest to the wavenumber at the break, and drops every channel from that index up to the break, removing it from the wavenumber vector, from the tile array, and from the recorded slice boundaries. It prints `Detected overlapping wavenumbers at index N. Removing overlapping region.` One such region is removed per file.
+If the concatenated wavenumber vector is not monotonic, FOCUS locates the first break in monotonicity. The scans overlap spectrally when the wavenumber at the break lies within the range of the preceding channels; a disjoint window (for example the CH region followed by the fingerprint region) is kept whole. For an overlap, FOCUS finds the channel in the preceding block whose wavenumber is closest to the wavenumber at the break, and drops every channel from that index up to the break, removing it from the wavenumber vector, from the tile array, and from the recorded slice boundaries. It prints `Detected overlapping wavenumbers at index N. Removing overlapping region.` One such region is removed per file.
 
 ### Intensity scaling on load
 
@@ -155,11 +155,11 @@ Work units are dispatched with `joblib.Parallel(n_jobs=max_workers)`. The cleane
 
 The cleaned tiles are prepared for stitching: tile *y* coordinates are mirrored within their own range (Leica → OME-TIFF convention), `NaN` values are replaced by 0, and the data is scaled by 255 and cast to `uint8`.
 
-The alignment channel is chosen from the first spectra slice: for each channel in that slice, FOCUS takes the largest per-tile mean intensity across tiles, and picks the channel where that value is highest. It is reported as `5/5 - Stitching tiles with ASHLAR using channel <n> as reference`.
+One alignment channel is chosen per spectra slice: for each channel in the slice, FOCUS takes the largest per-tile mean intensity across tiles, and picks the channel where that value is highest. The index is counted within the slice, since each slice is a separate cycle file with its own channels. The channels are reported as `Reference channel per cycle <n1>, <n2>, …` and passed to ASHLAR comma-separated.
 
 Each spectra slice is then written as one ASHLAR cycle file, `ashlar_input_cycle_<n>.ome.tiff`, holding one image per tile with `PhysicalSizeX`/`PhysicalSizeY` in µm and per-plane `PositionX`/`PositionY` in µm, zlib-compressed.
 
-`tools/ASHLAR/main.py` runs through `conda run -n FOCUS_ASHLAR`. It sorts the cycle files by name, aligns the tiles of the first cycle with `reg.EdgeAligner` (`max_shift=15` µm) on the chosen channel, aligns every further cycle onto that result with `reg.LayerAligner`, and writes all cycles as one pyramid with `reg.PyramidWriter`. The number of pyramid levels is derived from the mosaic size so the smallest level holds at most 9,000,000 pixels (3000 × 3000). The cycle input files are deleted afterwards, and FOCUS renames `ashlar_output.ome.tiff` to the final output name.
+`tools/ASHLAR/main.py` runs through `conda run -n FOCUS_ASHLAR`. It sorts the cycle files by cycle number, aligns the tiles of the first cycle with `reg.EdgeAligner` (`max_shift=15` µm) on that cycle's channel, aligns every further cycle onto that result with `reg.LayerAligner` on its own channel, and writes all cycles as one pyramid with `reg.PyramidWriter`. The number of pyramid levels is derived from the mosaic size so the smallest level holds at most 9,000,000 pixels (3000 × 3000). The cycle input files are deleted afterwards, and FOCUS renames `ashlar_output.ome.tiff` to the final output name.
 
 !!! note "Square pixels"
     ASHLAR reads the physical pixel size from the cycle files and rejects inputs whose `PhysicalSizeX` and `PhysicalSizeY` differ by more than a relative tolerance of `1e-4`, with `Can't handle non-square pixels`.

@@ -90,7 +90,7 @@ Runs when `color_enhancement=true`, in this order:
 1. **Gamma correction**: `I ← I^gamma`, elementwise, in place. With the default `gamma=0.45` (below 1) midtones are brightened.
 2. **Contrast stretching**: the pixels greater than 0 across the **whole image, all channels pooled**, give one pair of percentiles: `contrast_saturation` and `100 − contrast_saturation` (by default the 0.35th and 99.65th). The image is clipped to that interval and linearly rescaled to `[0, 1]`. The same pair is applied to every channel, and the rescale is skipped when the two percentiles are equal.
 
-When more than 9,000,000 pixels are non-zero, the two percentiles are estimated from a strided subsample of those values. The clip and rescale are still applied to every pixel.
+When more than 9,000,000 pixels are non-zero, the two percentiles are estimated from a strided subsample of those values, with a stride coprime with the channel count so every channel is sampled. The clip and rescale are still applied to every pixel.
 
 ### 3/5: Tissue detection and background removal
 
@@ -98,16 +98,16 @@ Detection runs on a proxy of the image downscaled (area interpolation) so it hol
 
 On that proxy:
 
-1. Convert to `uint8` and, when the image has fewer than 3 channels, promote it to 3 (replicated single channel, or a zero-padded third channel).
-2. Determine the polarity, then reduce to a grayscale in which **tissue is the bright class**:
-    - **Bright background** (always taken for 3-channel input): every pixel that is 0 in all channels is set to white, then the image is converted to grayscale and inverted.
-    - **Dark background**: the image is converted to grayscale and used as is, with neither the black-pixel step nor the inversion.
+1. When the image has fewer than 3 channels, promote it to 3 (replicated single channel, or a zero-padded third channel).
+2. Determine the polarity, then reduce to a `uint8` grayscale in which **tissue is the bright class**:
+    - **Bright background**: the image is converted to `uint8`; every pixel that is 0 in all channels, and every near-black region (all channels at most 32) that touches the image border, is set to white; the image is then converted to grayscale and inverted. Near-black regions enclosed by tissue (pigment) are kept.
+    - **Dark background**: the grayscale is scaled so its 99.9th percentile maps to 255 and used as is, with neither the black-pixel step nor the inversion.
 
-    The polarity is only probed for the promoted 1- and 2-channel images: the median of a border frame (the outer 5% of the shorter side) is compared with the median of the whole grayscale, and the background counts as dark when the border is strictly darker. A scan filled edge to edge with tissue gives equal medians and takes the bright-background path.
+    The polarity is probed for every channel count on the floating-point grayscale: the median of a border frame (the outer 5% of the shorter side) is compared with the median of the whole grayscale, and the background counts as dark when the border is strictly darker and below a third of the 99th-percentile value. A scan filled edge to edge with tissue gives equal medians and takes the bright-background path.
 3. Clip the grayscale at its `clip_percentile` percentile and apply a 25 × 25 Gaussian blur.
 4. Compute Otsu's threshold on the blurred image and apply it to the **unblurred, unclipped** grayscale. The blur therefore shapes only the histogram the threshold value is derived from; the mask itself is cut at full detail.
 5. Remove connected components of 50 pixels or fewer, then fill holes.
-6. Keep the external contours whose area is at least `min_object_coverage × (proxy height × proxy width)` and fill them; this is the tissue mask. If no contour is found at all, `Warning: No contours found; cannot refine background mask.` is printed and the unrefined mask from sub-step 5 is kept.
+6. Keep the external contours whose area is at least `min_object_coverage × (proxy height × proxy width)`, capped at a tenth of the largest contour's area, and fill them; this is the tissue mask. If no contour is found at all, `Warning: No contours found; cannot refine background mask.` is printed and the unrefined mask from sub-step 5 is kept.
 
 When `remove_background=true`, the mask is upsampled back to full resolution with nearest-neighbour interpolation and applied: tissue pixels are kept, every other pixel is set to `background_color` (`white` → 1, `black` → 0, in every channel; any other value raises `ValueError`).
 
@@ -141,7 +141,7 @@ Set under `processing_settings` for the modality. Absent values fall back to the
 | `remove_background` | `bool` | `true` | `3/5` | Fill non-tissue pixels with `background_color` |
 | `background_color` | `str` | `"white"` | `3/5` | `"white"` or `"black"`; any other value raises `ValueError` when background removal runs. Not tied to the detected polarity; pick `"black"` for dark-background acquisitions |
 | `clip_percentile` | `int` | `99` | `3/5` | Percentile at which the inverted grayscale is clipped before the blur and Otsu threshold |
-| `min_object_coverage` | `float` | `0.01` | `3/5` | Minimum area of a tissue contour, as a fraction of the detection-proxy area |
+| `min_object_coverage` | `float` | `0.01` | `3/5` | Minimum area of a tissue contour, as a fraction of the detection-proxy area; capped at a tenth of the largest contour's area |
 | `crop_to_tissue` | `bool` | `true` | `4/5` | Crop to the tissue bounding box |
 | `crop_margin` | `int` | `250` | `4/5` | Full-resolution pixels added on each side of the bounding box |
 | `force_recomputing` | `bool` | `false` | all | Reprocess even when the output file already exists |
@@ -149,7 +149,7 @@ Set under `processing_settings` for the modality. Absent values fall back to the
 Apart from `background_color`, none of these values are checked. They are passed straight to the processing code, so an out-of-range value either raises there (a `clip_percentile` above 100 fails inside `numpy.percentile`) or changes the result, instead of being reported during configuration validation.
 
 !!! note "Not parameters"
-    The number of pyramid levels, the 9,000,000-pixel detection-proxy cap, the 25 px Gaussian blur kernel and the 50 px speck-removal size are internal constants. There is no `pyramid_levels`, `gaussian_blur_kernel_size` or `min_object_size` field for this modality.
+    The number of pyramid levels, the 9,000,000-pixel detection-proxy cap, the 25 px Gaussian blur kernel, the 50 px speck-removal size, the near-black padding level (32), the largest-object fraction (0.1) and the dark-border ratio (1/3) are internal constants. There is no `pyramid_levels`, `gaussian_blur_kernel_size` or `min_object_size` field for this modality.
 
 ---
 

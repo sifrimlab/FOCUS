@@ -87,7 +87,10 @@ carry several acquisitions with different spectral ranges.
 
 **Overlap trimming** (`_check_wavenumbers_overlaps`). Within one scan the wavelength axis is a
 `linspace`, so the wavenumber axis is monotonic; a concatenation of scans that re-cover part of the
-spectrum is not. The first index \(b\) where monotonicity breaks is located, the index
+spectrum is not. The first index \(b\) where monotonicity breaks is located. The scans overlap only
+when \(\min_{i<b}\tilde\nu_i \le \tilde\nu_b \le \max_{i<b}\tilde\nu_i\); a disjoint window is returned
+untouched, since the nearest channel of a range that does not contain \(\tilde\nu_b\) is its first one
+and trimming from it would delete the whole preceding scan. For an overlap, the index
 \(c=\arg\min_{i<b}\lvert\tilde\nu_i-\tilde\nu_b\rvert\) marks where the overlap starts in the preceding
 block, and channels \([c, b)\) are dropped from the wavenumber vector and from the tile array. The
 slice boundaries are re-indexed by the shift \(b-c\): slices before the affected one are unchanged, the
@@ -222,21 +225,22 @@ The cleaned stack is cached to `raman_corrected_tiles.npy`.
 - mirror the tile \(y\) coordinates within their own range per scan,
   \(y' = \max y + \min y - y\) (Leica → OME-TIFF convention);
 - `np.nan_to_num`, then scale by 255 and cast to `uint8`;
-- choose the alignment channel from the first spectra slice: take each channel's per-tile mean over
-  the tile's pixels, reduce over tiles with a maximum, and select the `argmax` over channels;
+- choose one alignment channel per spectra slice: take each channel's per-tile mean over the tile's
+  pixels, reduce over tiles with a maximum, and select the `argmax` over the slice's channels; the
+  index is counted within the slice, because each slice is written as its own cycle file;
 - write one `ashlar_input_cycle_{n}.ome.tiff` per spectra slice, one OME image per tile, zlib
   compressed, carrying `PhysicalSizeX`/`PhysicalSizeY` in µm, per-plane `PositionX`/`PositionY` in µm,
   and channel names `Channel_0 … Channel_{C-1}`.
 
 `ashlar_stitch()` then runs `conda run -n FOCUS_ASHLAR python -u tools/ASHLAR/main.py {output_path}
-{align_channel}` with `check=True`, so a non-zero exit propagates as `CalledProcessError`. The script:
+{align_channels}` (comma-separated, one per cycle) with `check=True`, so a non-zero exit propagates as `CalledProcessError`. The script:
 
-1. sorts the `ashlar_input*` files by name;
+1. sorts the `ashlar_input*` files by cycle number;
 2. builds a Bio-Formats reader per file (hence the Java dependency) and calls
    `process_axis_flip(reader, False, False)`, which leaves the tile positions as written;
-3. runs `reg.EdgeAligner` on the first cycle with `channel=align_channel` and `max_shift=15` µm
+3. runs `reg.EdgeAligner` on the first cycle with that cycle's channel and `max_shift=15` µm
    (`do_make_thumbnail=False` when there is only one cycle), then a `reg.LayerAligner` per further
-   cycle against that result, with the same `channel` and `max_shift`;
+   cycle against that result, with the cycle's own channel and the same `max_shift`;
 4. writes every cycle's mosaic through `reg.PyramidWriter`, with `peak_size` computed so the smallest
    pyramid level holds at most \(3000\times3000 = 9\times10^6\) pixels;
 5. deletes the cycle input files.

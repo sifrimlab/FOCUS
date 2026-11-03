@@ -167,8 +167,14 @@ class RamanStitcher:
 
         return tiles
 
-    def _prepare_for_ashlar(self, tiles: np.ndarray, coordinates: np.ndarray) -> int:
-        """Prepare tiles and coordinates for ASHLAR stitching. Returns the alignment channel index."""
+    def _prepare_for_ashlar(
+        self, tiles: np.ndarray, coordinates: np.ndarray
+    ) -> list[int]:
+        """Prepare tiles and coordinates for ASHLAR stitching.
+
+        Returns the alignment channel of every cycle, as an index into that cycle's own channels
+        (ASHLAR reads each cycle file separately).
+        """
         # Flip y-axis (Leica → OME TIFF convention)
         for s, _ in enumerate(self.sample._spectra_slices):
             coordinates[:, s, 1] = np.max(coordinates[:, s, 1]) - (
@@ -178,12 +184,13 @@ class RamanStitcher:
         tiles = np.nan_to_num(tiles, nan=0.0)
         tiles = (tiles * 255).astype(np.uint8)
 
-        # Find highest-intensity channel in cycle 0 for alignment
-        start_ch_0, end_ch_0 = self.sample._spectra_slices[0]
-        tiles_cycle_0 = tiles[:, start_ch_0 : end_ch_0 + 1, :, :]
-        mean_per_tile_channel = tiles_cycle_0.mean(axis=(2, 3))
-        max_avg = mean_per_tile_channel.max(axis=0)
-        highest_intensity_channel = start_ch_0 + int(np.argmax(max_avg))
+        # Alignment channel of each cycle: the channel with the highest per-tile mean intensity
+        align_channels = []
+        for start_ch, end_ch in self.sample._spectra_slices:
+            mean_per_tile_channel = tiles[:, start_ch : end_ch + 1, :, :].mean(
+                axis=(2, 3)
+            )
+            align_channels.append(int(np.argmax(mean_per_tile_channel.max(axis=0))))
 
         # Write OME-TIFF input files for each cycle
         for cycle, (start_ch, end_ch) in enumerate(self.sample._spectra_slices):
@@ -247,7 +254,7 @@ class RamanStitcher:
                         compression="zlib",
                     )
 
-        return highest_intensity_channel
+        return align_channels
 
     def ashlar_stitch(self, force_recomputing: bool = False) -> str:
         """
@@ -273,7 +280,7 @@ class RamanStitcher:
 
             env_name = "FOCUS_ASHLAR"
 
-            align_channel = self._prepare_for_ashlar(
+            align_channels = self._prepare_for_ashlar(
                 tiles=self.sample.corrected,
                 coordinates=copy.deepcopy(
                     cast(np.ndarray, self.sample.tiles_coordinates)
@@ -281,9 +288,12 @@ class RamanStitcher:
             )
             _reporter = getattr(self.sample, "_step_reporter", None) or get_reporter()
             _reporter.step(5, 5, "Stitching with ASHLAR")
-            _reporter.detail(f"Reference channel {align_channel}")
+            _reporter.detail(
+                "Reference channel per cycle "
+                + ", ".join(str(channel) for channel in align_channels)
+            )
 
-            stitch_tiles(self.sample.output_path, align_channel, env_name)
+            stitch_tiles(self.sample.output_path, align_channels, env_name)
 
             default_output = os.path.join(
                 self.sample.output_path, "ashlar_output.ome.tiff"

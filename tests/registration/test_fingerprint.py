@@ -106,3 +106,73 @@ class TestFingerprint:
             np.testing.assert_allclose(
                 out.X[i].toarray().ravel(), target.X[inside].sum(0).A1
             )
+
+    def test_targets_are_read_from_the_merged_panel(self) -> None:
+        """Samples with different panels register onto the merged union panel."""
+        panels = {
+            "s1": ["g0", "g1", "g2", "g3", "g4"],
+            "s2": ["g0", "g1", "g2", "g3", "g5"],
+        }
+        parts = []
+        for sid, genes in panels.items():
+            target = ad.read_h5ad(self.target_files[sid])
+            target.var_names = genes
+            target.obs_names = [f"{sid}_{i}" for i in range(target.n_obs)]
+            target.obs["sample_id"] = sid
+            target.write_h5ad(self.target_files[sid])
+            parts.append(target)
+        merged = ad.concat(parts, join="outer", fill_value=0)
+        merged_path = os.path.join(self.root, "merged_target.h5ad")
+        merged.write_h5ad(merged_path)
+        files = SpotInterpolationRegistration(self.root).register_dataset(
+            self.anchor_files, {**self.target_files, "merged": merged_path}, "ref", "st"
+        )
+        union = ["g0", "g1", "g2", "g3", "g4", "g5"]
+        assert list(ad.read_h5ad(files["merged"]).var_names) == union
+        s2 = ad.read_h5ad(files["s2"])
+        assert list(s2.var_names) == union
+        np.testing.assert_array_equal(np.asarray(s2[:, "g4"].X).ravel(), 0)
+
+    def test_aggregation_of_a_normalized_target_sums_counts_then_normalizes(
+        self,
+    ) -> None:
+        """Footprints sum the raw counts; the merged file is normalized once, globally."""
+        from focus.preprocessing.transcriptomics.normalization import normalize
+
+        parts = []
+        for sid in ("s1", "s2"):
+            target = ad.read_h5ad(self.target_files[sid])
+            target.obs_names = [f"{sid}_{i}" for i in range(target.n_obs)]
+            target.obs["sample_id"] = sid
+            parts.append(target)
+        merged = ad.concat(parts)
+        merged.uns["focus_normalization"] = normalize(merged, "log_normalize")
+        merged_path = os.path.join(self.root, "merged_target.h5ad")
+        merged.write_h5ad(merged_path)
+        files = SpotAggregationRegistration(self.root).register_dataset(
+            self.anchor_files, {**self.target_files, "merged": merged_path}, "ref", "st"
+        )
+        sample = ad.read_h5ad(files["s1"])
+        target = ad.read_h5ad(self.target_files["s1"])
+        anchor = ad.read_h5ad(self.anchor_files["s1"])
+        cx, cy = anchor.obsm["spatial"][37]
+        xy = target.obsm["spatial"]
+        inside = (np.abs(xy[:, 0] - cx) <= 10) & (np.abs(xy[:, 1] - cy) <= 10)
+        np.testing.assert_allclose(
+            sample.X[37].toarray().ravel(), target.X[inside].sum(0).A1
+        )
+        out = ad.read_h5ad(files["merged"])
+        raw = out.layers["raw"].toarray()
+        library = raw.sum(axis=1)
+        median = np.median(library[library > 0])
+        factors = np.divide(library, median)
+        expected = np.log1p(
+            np.divide(
+                raw,
+                factors[:, None],
+                out=np.zeros_like(raw),
+                where=factors[:, None] > 0,
+            )
+        )
+        np.testing.assert_allclose(out.X.toarray(), expected, rtol=1e-5)
+        assert out.uns["focus_normalization"]["method"] == "log_normalize"

@@ -362,69 +362,29 @@ Example:
 
 | Field | Type | Default |
 |---|---|---|
-| `resolution` | string | `"standard"` |
-| `min_count_per_spot` | int or null | `null` |
-| `max_count_per_spot` | int or null | `null` |
-| `min_genes_per_spot` | int or null | `null` |
-| `max_genes_per_spot` | int or null | `null` |
-| `min_spots_per_gene` | float or null | `null` |
-| `min_count_spots_ratio_per_gene` | float or null | `null` |
+| `capture` | string | `"sequencing"` |
+| `unit` | string | `"spot"` |
+| `normalization` | string | `"auto"` |
+| `quality_control` | bool | `true` |
 | `remove_mitochondrial_genes` | bool | `false` |
-| `total_counts_normalize` | bool | `false` |
-| `log1p_transform` | bool | `false` |
 | `force_recomputing` | bool | `false` |
 
-- `resolution`: clustering preset for the alignment colours. `"standard"` (multicellular spots such as Visium) clusters spots at native resolution below 250,000 spots and joins each spot's PCs with the mean of its adjacent spots. `"sub_cellular"` (weak high-resolution spots such as Visium HD or Xenium-derived bins) also groups spots into lattice blocks until the median block holds 1,000 UMIs and uses a 2-ring neighbourhood. Units below 50 UMIs or 20 genes are retained as `unassigned`. No other clustering value is configurable. See [ST clustering settings](../modalities/transcriptomics.md#clustering-settings).
-- `remove_mitochondrial_genes`: when `true`, drops mitochondrial genes (flagged by a case-insensitive `MT-`/`MT.` name prefix) from the feature set. Applied per sample, before merging, and after QC metrics are computed, so `pct_counts_mt` still describes the matrix before removal.
-- `min_spots_per_gene`: minimum fraction of a sample's spots that must express a gene for that sample to count as passing. Must satisfy `0 < value < 1`.
-- `min_count_spots_ratio_per_gene`: minimum ratio of a gene's total counts to the number of spots expressing it, per sample. Must be `> 0`. Samples where the gene is unexpressed count as neither pass nor fail.
-- Both gene filters act on the merged matrix only, and are ignored when `null`. Each is evaluated per sample, and a gene is retained when it passes in at least one sample; with both set it must satisfy each in at least one sample, not necessarily the same one.
-- `total_counts_normalize` / `log1p_transform`: when either is enabled, the pre-normalisation counts are copied to `.layers['raw']`. With both off, `.X` holds the raw counts and no layer is written.
+- `capture`: `"sequencing"` (Visium, Visium HD, Stereo-seq, Slide-seq) or `"imaging"` (Xenium, MERFISH, CosMx). Sets the gene rule (sequencing: detected in at least 20 spots of one sample; imaging: every detected gene) and the `auto` normalization.
+- `unit`: `"spot"` (multicellular spots), `"bin"` (sub-cellular square bins or beads) or `"cell"` (segmented cells). Sets the outlier rule of `quality_control` and the clustering preset of the alignment colours.
+- `normalization`: `"auto"`, `"none"`, `"log_normalize"`, `"cp10k_log"`, `"size_factors"` or `"area_log_normalize"`, applied once to the merged dataset. Any value but `"none"` keeps the counts in `.layers['raw']`. See [ST normalization](../modalities/transcriptomics.md#normalization).
+- `quality_control`: removes the outlier spots of the unit's rule (local outliers for spots, global outliers for cells, none for bins). Out-of-tissue and zero-count spots and control features are removed in every case.
+- `remove_mitochondrial_genes`: when `true`, drops mitochondrial genes (flagged by a case-insensitive `MT-`/`MT.` name prefix) from the feature set. Applied per sample, after QC metrics are computed, so `pct_counts_mt` still describes the matrix before removal.
+- The settings `resolution`, `min_count_per_spot`, `max_count_per_spot`, `min_genes_per_spot`, `max_genes_per_spot`, `min_spots_per_gene`, `min_count_spots_ratio_per_gene`, `total_counts_normalize` and `log1p_transform` were removed; a configuration that sets one fails validation and names the replacement.
 
 Example:
 
 ```json
 "processing_settings": {
-  "min_count_per_spot": 200,
-  "max_count_per_spot": null,
-  "min_genes_per_spot": 50,
-  "max_genes_per_spot": null,
-  "min_spots_per_gene": null,
-  "min_count_spots_ratio_per_gene": null,
+  "capture": "sequencing",
+  "unit": "bin",
+  "normalization": "auto",
+  "quality_control": true,
   "remove_mitochondrial_genes": false,
-  "total_counts_normalize": true,
-  "log1p_transform": true,
-  "force_recomputing": false
-}
-```
-
----
-
-## Registration Settings
-
-### `feature_extraction`
-
-Compatible modality type: `microscopy_image`, and only when that image is an **H&E-stained
-brightfield RGB section**: the encoder (Prov-GigaPath) is pretrained on tiles from H&E whole-slide
-images. FOCUS does not verify the stain. A fluorescence or other-stain image is encoded without
-error and yields embeddings that carry no morphological meaning. Use `"none"` for those modalities.
-See [Registration](../pipeline/registration.md#feature_extraction).
-
-| Field | Type | Default |
-|---|---|---|
-| `background_color` | string | `"white"` |
-| `force_recomputing` | bool | `false` |
-
-- `background_color`: `"white"` or `"black"`. This is the colour counted by the background test: an encoder token whose pixels match it in at least 99% of positions is never read, and a reference spot whose footprint holds only such tokens is stored as an all-zero embedding. Set it to the `background_color` used in the modality's `processing_settings`.
-- `force_recomputing`: recompute even when the cached registration matches its inputs.
-
-The encoder window and the encoded pyramid level are not settings: the window is the encoder's input size and the level is the one closest to 0.5 µm per pixel. A `patch_size` key is ignored with a warning.
-
-Example:
-
-```json
-"registration_settings": {
-  "background_color": "white",
   "force_recomputing": false
 }
 ```
@@ -447,7 +407,7 @@ Example:
 
 ### `spot_aggregation`
 
-Compatible modality types: `msi`, `st`. Sums the target spots inside each anchor footprint instead of averaging them, with no normalization. Intended for subcellular-resolution data (e.g. Visium HD). See [Registration](../pipeline/registration.md#spot_aggregation).
+Compatible modality types: `msi`, `st`. Sums the target spots inside each anchor footprint instead of averaging them. A normalized ST target is summed on its raw counts and the merged registered file is normalized once with the target's method. Intended for subcellular-resolution data (e.g. Visium HD). See [Registration](../pipeline/registration.md#spot_aggregation).
 
 | Field | Type | Default |
 |---|---|---|
@@ -499,14 +459,9 @@ Example:
       "alignment_strategy": "manual",
       "registration_type": "none",
       "processing_settings": {
-        "min_count_per_spot": 200,
-        "max_count_per_spot": null,
-        "min_genes_per_spot": 50,
-        "max_genes_per_spot": null,
-        "min_spots_per_gene": null,
-        "min_count_spots_ratio_per_gene": null,
-        "total_counts_normalize": true,
-        "log1p_transform": true,
+        "capture": "sequencing",
+        "unit": "spot",
+        "normalization": "auto",
         "force_recomputing": false
       },
       "registration_settings": {}

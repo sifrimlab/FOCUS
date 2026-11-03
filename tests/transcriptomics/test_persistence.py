@@ -48,7 +48,7 @@ class TestPersistence:
         self.sample.preprocess_data()
         assert not self.sample.preprocessing_changed
         assert mtime == Path(path).stat().st_mtime_ns
-        self.sample.preprocess_data(resolution="sub_cellular")
+        self.sample.preprocess_data(unit="bin")
         assert first != cached_fingerprint(path)
         output = ad.read_h5ad(path)
         assert (output.X != self.adata.X).nnz == 0
@@ -59,23 +59,26 @@ class TestPersistence:
         changed = cached_fingerprint(path)
         self.adata.X.data[0] += 1
         self.adata.write_h5ad(self.input)
-        self.sample.preprocess_data(resolution="sub_cellular")
+        self.sample.preprocess_data(unit="bin")
         assert changed != cached_fingerprint(path)
 
     def test_output_normalization_does_not_change_clusters_and_merged_provenance_survives(
         self,
     ) -> None:
-        """Verify output normalization does not change clusters and merged provenance survives."""
+        """Normalization touches the merged matrix only; samples keep raw counts and clusters."""
         dataset = SpatialTranscriptomicDataset(str(self.root), [self.sample])
-        files = dataset.process_dataset()
+        files = dataset.process_dataset(normalization="none")
         plain = ad.read_h5ad(files["sample"])
-        files = dataset.process_dataset(
-            total_counts_normalize=True, log1p_transform=True
-        )
-        normalized = ad.read_h5ad(files["sample"])
-        np.testing.assert_array_equal(plain.obs["cluster"], normalized.obs["cluster"])
-        assert (normalized.layers["raw"] != self.adata.X).nnz == 0
+        files = dataset.process_dataset(normalization="cp10k_log")
+        assert not self.sample.preprocessing_changed
+        sample = ad.read_h5ad(files["sample"])
+        np.testing.assert_array_equal(plain.obs["cluster"], sample.obs["cluster"])
+        assert not sample.layers and (sample.X != self.adata.X).nnz == 0
         merged = ad.read_h5ad(files["merged"])
+        kept = self.adata[:, merged.var_names]
+        assert (merged.layers["raw"] != kept.X).nnz == 0
+        assert merged.X.dtype == np.float32
+        assert merged.uns["focus_normalization"]["method"] == "cp10k_log"
         assert "sample" in merged.uns["focus_clustering"]
         assert "selected_genes" in merged.uns["focus_clustering"]["sample"]
 

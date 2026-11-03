@@ -500,67 +500,56 @@ class SpatialTranscriptomic(SampleSource):
 **`load_data()`**
 
 ```python
-def load_data(self) -> anndata.AnnData:
+def load_data(self, reporter=None) -> anndata.AnnData:
     ...
 ```
 
-Loads the first `.h5ad` file found in the sample directory. Validates that `.obsm["spatial"]` is present and normalizes `.uns["spot_size"]` to a float32 `(2,)` array. Returns the loaded `AnnData`.
+Loads the single `.h5ad` file of the sample directory (several raise `ValueError`). Requires finite `.obsm["spatial"]` of shape `(N, 2)` and `.uns["spot_size"]` (normalized to a float32 `(2,)` array; missing raises `ValueError`). The raw counts are the first non-negative integer matrix among `.X`, `.layers["counts"]`, `.layers["raw"]` and `.raw.X`; every other input matrix is dropped. Duplicated gene names are made unique. Returns the `AnnData` with raw counts in a CSR `.X`.
 
 **`preprocess_data()`**
 
 ```python
 def preprocess_data(
     self,
-    min_count_per_spot: int | None = None,
-    max_count_per_spot: int | None = None,
-    min_genes_per_spot: int | None = None,
-    max_genes_per_spot: int | None = None,
+    capture: str = "sequencing",
+    unit: str = "spot",
+    quality_control: bool = True,
     remove_mitochondrial_genes: bool = False,
-    total_counts_normalize: bool = False,
-    log1p_transform: bool = False,
-    resolution: str = "standard",
     force_recomputing: bool = False,
     step_reporter=None,
 ) -> str:
     ...
 ```
 
-Reuses a cached file only when its content/settings/method/software fingerprint matches and `force_recomputing` is false. Legacy outputs are rebuilt.
+Reuses a cached file only when its fingerprint (input SHA-256, settings, technology constants, method and software versions) matches and `force_recomputing` is false. The input SHA-256 is reused while the input file's path, size and modification time are unchanged.
 
-Pipeline: load → flag mito genes in `.var["mt"]` → spot filtering → QC metrics → optional mito-gene removal → prefix `.obs_names` with `<sample_id>_` → cluster labels → store `.layers["raw"]` (only if normalizing) → optional normalize/log1p → save as gzip-compressed `.h5ad`.
+Pipeline: load → control features recorded and removed → flag mito genes in `.var["mt"]` → quality control (out-of-tissue and zero-count spots; the unit's outlier rule when `quality_control`) → QC metrics → `obs["focus_area"]` → optional mito-gene removal → prefix `.obs_names` with `<sample_id>_` → cluster labels → atomic gzip-compressed `.h5ad` with raw counts.
 
 Output AnnData structure:
 
-- `.X`: sparse CSR; raw counts unless `total_counts_normalize`/`log1p_transform` are set
-- `.layers["raw"]`: raw counts before normalization; **present only when `.X` was normalized**
+- `.X`: raw counts, sparse CSR (no layers)
 - `.obs_names`: spot names prefixed `<sample_id>_`
 - `.var["mt"]`: boolean mitochondrial flag
 - `.obs["sample_id"]`: categorical sample identifier
 - `.obs["cluster"]`: categorical per-spot labels (each spot carries its clustering unit's label), including `unassigned`
 - `.obs['clustering_eligible']`: clustering-only eligibility, with no observation deletion
+- `.obs["focus_area"]`: area used by area normalization
+- `.obs` QC: `total_counts`, `n_genes_by_counts`, `total_counts_mt`, `pct_counts_mt`, `total_counts_control`, `pct_counts_control` and `log1p_` variants
+- `.var` QC: `n_cells_by_counts`, `mean_counts`, `total_counts`, `pct_dropout_by_counts` and their `log1p_` variants
+- `.uns['focus_qc']`: outlier rule and spots removed per reason
 - `.uns['focus_clustering']`: method/settings/software, clustering units (`units`), selected genes, cluster sizes and PCA/count-depth diagnostics
 - `.uns['cluster_colors']`: colors in categorical cluster order
-- `.uns['focus_preprocessing_fingerprint']`: cache key
-- `.obs` QC: `total_counts`, `n_genes_by_counts`, `total_counts_mt`, `pct_counts_mt` and their `log1p_` variants
-- `.var` QC: `n_cells_by_counts`, `mean_counts`, `total_counts`, `pct_dropout_by_counts` and their `log1p_` variants
+- `.uns['focus_preprocessing_fingerprint']`, `.uns['focus_input_signature']`: cache stamps
 - `.obsm["spatial"]`: float32 spatial coordinates
 - `.uns["spot_size"]`: float32 array of shape `(2,)`
 
-Cluster labels are computed on `.X` before normalization, so they always read raw counts. `calculate_qc_metrics` runs before the optional mito-gene removal, so `pct_counts_mt` describes the matrix prior to removal.
-
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `min_count_per_spot` | `int` or `None` | `None` | Minimum total counts per spot to retain. |
-| `max_count_per_spot` | `int` or `None` | `None` | Maximum total counts per spot to retain. |
-| `min_genes_per_spot` | `int` or `None` | `None` | Minimum genes detected per spot to retain. |
-| `max_genes_per_spot` | `int` or `None` | `None` | Maximum genes detected per spot to retain. |
-| `remove_mitochondrial_genes` | `bool` | `False` | Drop mitochondrial genes (`MT-`/`MT.` prefix) from the feature set. |
-| `total_counts_normalize` | `bool` | `False` | Normalize counts to 10,000 per spot. |
-| `log1p_transform` | `bool` | `False` | Apply log1p transformation after normalization. |
-| `force_recomputing` | `bool` | `False` | Re-run even if output already exists. |
-
-Output filtering/normalization steps are opt-in; the method-signature defaults match the
-config extractor defaults, so direct calls and config-driven runs behave identically.
+| `capture` | `str` | `"sequencing"` | `"sequencing"` or `"imaging"` (`StCapture`) |
+| `unit` | `str` | `"spot"` | `"spot"`, `"bin"` or `"cell"` (`StUnit`); selects the outlier rule and the clustering preset |
+| `quality_control` | `bool` | `True` | Remove the outlier spots of the unit's rule |
+| `remove_mitochondrial_genes` | `bool` | `False` | Drop mitochondrial genes (`MT-`/`MT.` prefix) from the feature set |
+| `force_recomputing` | `bool` | `False` | Re-run even if output already exists |
 
 ---
 
@@ -572,16 +561,11 @@ class SpatialTranscriptomicDataset(DatasetState):
 
     def process_dataset(
         self,
-        min_count_per_spot: int | None = None,
-        max_count_per_spot: int | None = None,
-        min_genes_per_spot: int | None = None,
-        max_genes_per_spot: int | None = None,
-        min_spots_per_gene: float | None = None,
-        min_count_spots_ratio_per_gene: float | None = None,
+        capture: str = "sequencing",
+        unit: str = "spot",
+        normalization: str = "auto",
+        quality_control: bool = True,
         remove_mitochondrial_genes: bool = False,
-        total_counts_normalize: bool = False,
-        log1p_transform: bool = False,
-        resolution: str = "standard",
         force_recomputing: bool = False,
         step_reporter=None,
     ) -> dict[str, str]:
@@ -590,30 +574,20 @@ class SpatialTranscriptomicDataset(DatasetState):
 
 Dataset-level pipeline:
 
-1. Preprocess each sample individually via `preprocess_data()` (the two gene-level thresholds are **not** forwarded; they are dataset-level only)
-2. Return the cached merged file when `force_recomputing` is `False`, no sample was rebuilt in this run, and its `.uns["focus_preprocessing_fingerprint"]` matches the fingerprint of the per-sample fingerprints (which fix the active sample set) and the gene-filter and normalization settings
-3. Read each per-sample `.uns["spot_size"]` with a backed read (`.X` never materialized)
-4. Concatenate on disk (`anndata.concat_on_disk`, `axis=0`, `join="outer"`, `fill_value=0`); `.uns` is dropped by the concat
-5. Recover raw counts: `.X = .layers.pop("raw", .X)`, so the layer is used when the per-sample files were normalized and `.X` otherwise
-6. Cross-sample gene filtering, skipped entirely when both thresholds are `None`
-7. Recompute `.var["mt"]` and QC metrics on the merged raw matrix
-8. Store `.layers["raw"]` (only if normalizing), then optionally normalize / log1p-transform
-9. Keep the per-sample `.obs["cluster"]` labels carried through the concat
-10. Build `.uns["spot_size"]` as `{sample_id: [float, float]}`
-11. Save as gzip-compressed sparse CSR `.h5ad`
-
-Additional parameters beyond per-sample ones:
+1. Preprocess each sample via `preprocess_data()`
+2. Return the cached merged file when `force_recomputing` is `False`, no sample was rebuilt in this run, and its fingerprint (sample fingerprints, normalization, gene rule) matches
+3. Read each per-sample `spot_size` and `var["n_cells_by_counts"]` with a backed read
+4. Concatenate on disk (`anndata.concat_on_disk`, `join="outer"`, `fill_value=0`) and keep the genes detected in at least 20 (`sequencing`) or 1 (`imaging`) spots of at least one sample
+5. Recompute library-size and gene QC on the final panel
+6. Normalize once with `normalization` (`auto` resolves by `capture`), counts in `.layers["raw"]`, float32 `.X`, method and scale in `.uns["focus_normalization"]`
+7. Keep the per-sample `.obs["cluster"]` labels; build `.uns["spot_size"]` as `{sample_id: [float, float]}`
+8. Save atomically as gzip-compressed sparse CSR `.h5ad`
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `min_spots_per_gene` | `float` or `None` | `None` | Minimum fraction of a sample's spots expressing a gene for that sample to count as passing. Must satisfy `0 < value < 1`. |
-| `min_count_spots_ratio_per_gene` | `float` or `None` | `None` | Minimum ratio of a gene's total counts to the number of spots expressing it, per sample. Must be `> 0`. |
+| `normalization` | `str` | `"auto"` | `"auto"`, `"none"`, `"log_normalize"`, `"cp10k_log"`, `"size_factors"` or `"area_log_normalize"` (`StNormalization`) |
 
-Both are evaluated per sample; a gene is retained when it passes in **at least one** sample, and when both are set it must satisfy each in at least one sample (not necessarily the same one). For the ratio criterion, samples where the gene is unexpressed count as neither pass nor fail.
-
-(`remove_mitochondrial_genes` is shared with the per-sample method and applied per sample, before merging.)
-
-Returns `dict[str, str]` with sample IDs and a `"merged"` key. The merged file differs from the per-sample files in that `.uns["spot_size"]` is a dict keyed by `sample_id`.
+The other parameters are those of `preprocess_data()`. Returns `dict[str, str]` with sample IDs and a `"merged"` key.
 
 **Example**
 
@@ -635,14 +609,7 @@ samples = [
 
 dataset = SpatialTranscriptomicDataset(path="/data/experiment_01", samples=samples)
 
-results = dataset.process_dataset(
-    min_count_per_spot=200,
-    min_genes_per_spot=100,
-    min_spots_per_gene=0.05,
-    total_counts_normalize=True,
-    log1p_transform=True,
-    force_recomputing=False,
-)
+results = dataset.process_dataset(capture="sequencing", unit="bin", normalization="auto")
 # results == {
 #   "sample_001": ".../st_sample_001_processed.h5ad",
 #   "sample_002": ".../st_sample_002_processed.h5ad",
@@ -650,8 +617,4 @@ results = dataset.process_dataset(
 # }
 ```
 
-`resolution` (`"standard"` or `"sub_cellular"`) is accepted by both per-sample and dataset
-methods and selects the clustering preset described in the
-[ST clustering settings](../modalities/transcriptomics.md#clustering-settings). Both modalities
-cluster on at most 2,000 highly variable features (`N_TOP_FEATURES`); the selection uses an
-analytical copy and never filters exported expression features.
+See [Spatial Transcriptomics](../modalities/transcriptomics.md#technology-calibration) for the technology calibration. Clustering uses at most 2,000 highly variable features (`N_TOP_FEATURES`) on an analytical copy and never filters exported expression features.

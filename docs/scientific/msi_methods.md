@@ -29,7 +29,15 @@ physical coordinate reconstructed from the pixel grid scaled to micrometers,
 
 applied either to the whole dataset (no spectrum carries physical coordinates) or only to the
 affected spectra (mixed case). This keeps the inter-spot spacing physically consistent with the
-half-raster centering applied later (§2.2). Prior to any processing the IBD payload is validated:
+half-raster centering applied later (§2.2). The pixel index is stored as \((p_y, p_x)\) and is
+reordered to \((p_x, p_y)\) before the product, so each axis takes its own raster size.
+
+**Encoding check.** The IBD arrays are read as uncompressed floats and every (m/z, intensity) pair is
+taken as a peak. A file whose file description, referenceable parameter groups or first spectrum
+declare a binary compression other than `no compression` (zlib, MS-Numpress), or `profile spectrum`
+without `centroid spectrum`, raises `ValueError`[^schramm2012].
+
+Prior to any processing the IBD payload is validated:
 a truncated file (smaller than the largest `offset + length × itemsize`) raises `ValueError`, and
 spectra containing non-finite m/z or intensity values are dropped.
 

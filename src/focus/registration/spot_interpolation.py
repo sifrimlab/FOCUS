@@ -15,6 +15,7 @@ import numpy as np
 
 from focus.config.options import RegistrationType
 from focus.registration.execution import register_target
+from focus.registration.targets import read_target, target_sources
 from focus.spatial.membership import footprint_membership, row_normalize
 from focus.runtime.reporter_context import get_reporter
 from focus.registration.matrix import _dense
@@ -61,7 +62,7 @@ class SpotInterpolationRegistration:
         geom: AnchorGeometry,
     ) -> tuple[AnnData | None, dict[str, object]]:
         """Compute one sample's registered features and geometry metadata."""
-        target_adata = anndata.read_h5ad(target_files[sample_id])
+        target_adata = read_target(target_files, sample_id)
         target_coords = np.asarray(target_adata.obsm["spatial"], dtype=np.float64)
         weights = row_normalize(
             footprint_membership(geom, target_coords, weights="gaussian")
@@ -107,7 +108,8 @@ class SpotInterpolationRegistration:
         anchor_files : dict[str, str]
                 Aligned anchor (reference) modality files. {sample_id: h5ad_path}
         target_files : dict[str, str]
-                Preprocessed target (non-reference) modality files. {sample_id: h5ad_path}
+                Preprocessed target (non-reference) modality files. {sample_id: h5ad_path}; each
+                sample is read from its rows of the "merged" entry when that file exists.
         anchor_name : str
                 Name of the anchor (reference) modality.
         target_name : str
@@ -126,6 +128,7 @@ class SpotInterpolationRegistration:
             set(anchor_files.keys()) & set(target_files.keys()) - {"merged"}
         )
         reporter = step_reporter or get_reporter()
+        sources = target_sources(target_files)
 
         return register_target(
             RegistrationJob(
@@ -138,12 +141,12 @@ class SpotInterpolationRegistration:
                     unit="sample",
                 ),
                 anchor_files=anchor_files,
-                target_files=target_files,
+                target_files=sources,
                 anchor_name=anchor_name,
                 target_name=target_name,
                 registration_type=self._REGISTRATION_TYPE,
                 settings={},
-                compute=partial(self._compute_sample, target_files),
+                compute=partial(self._compute_sample, sources),
                 force_recomputing=force_recomputing,
                 reporter=reporter,
             ),

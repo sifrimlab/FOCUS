@@ -1,24 +1,15 @@
-"""Ordered dataset threshold checks for transcriptomics."""
+"""Dataset settings checks for transcriptomics."""
 
+from focus.config.options import StNormalization
 from focus.preprocessing.transcriptomics.run_settings import StRunSettings
+from focus.preprocessing.transcriptomics.technology import technology
 
 
-def validate_thresholds(settings: StRunSettings) -> None:
-    """Raise the existing threshold errors in their original validation order."""
-    if settings.min_count_per_spot is not None and settings.min_count_per_spot <= 0:
-        raise ValueError("min_count_per_spot must be greater than 0.")
-    if settings.max_count_per_spot is not None and settings.max_count_per_spot <= 0:
-        raise ValueError("max_count_per_spot must be greater than 0.")
-    if settings.min_genes_per_spot is not None and settings.min_genes_per_spot <= 0:
-        raise ValueError("min_genes_per_spot must be greater than 0.")
-    if settings.max_genes_per_spot is not None and settings.max_genes_per_spot <= 0:
-        raise ValueError("max_genes_per_spot must be greater than 0.")
-    if settings.min_spots_per_gene is not None and not (
-        0 < settings.min_spots_per_gene < 1
-    ):
-        raise ValueError("min_spots_per_gene must be between 0 and 1.")
-    if (
-        settings.min_count_spots_ratio_per_gene is not None
-        and settings.min_count_spots_ratio_per_gene <= 0
-    ):
-        raise ValueError("min_count_spots_ratio_per_gene must be greater than 0.")
+def validate_settings(settings: StRunSettings) -> None:
+    """Raise ValueError for an unknown capture, unit or normalization."""
+    technology(settings.capture, settings.unit)
+    if settings.normalization not in StNormalization.list():
+        raise ValueError(
+            f"normalization must be one of {StNormalization.list()}, "
+            f"got {settings.normalization!r}"
+        )

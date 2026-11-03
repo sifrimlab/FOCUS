@@ -45,3 +45,13 @@ def test_lif_readout_matches_baseline(tmp_path: Path) -> None:
         metadata.tile_number,
         metadata.lambda_steps,
     ] == contract["shape"]
+
+
+def test_only_overlapping_windows_are_trimmed(tmp_path: Path) -> None:
+    """A rescanned range is located; disjoint windows, in either order, are kept whole."""
+    sample = RamanImage(str(tmp_path), "sample", "raman")
+    check = sample.reader._check_wavenumbers_overlaps
+    fingerprint, ch = np.linspace(1000, 1800, 5), np.linspace(2800, 3100, 5)
+    assert check(np.concatenate([fingerprint, np.linspace(1600, 2400, 5)])) == (5, 3)
+    assert check(np.concatenate([ch, fingerprint])) == (None, None)
+    assert check(np.concatenate([fingerprint[::-1], ch[::-1]])) == (None, None)

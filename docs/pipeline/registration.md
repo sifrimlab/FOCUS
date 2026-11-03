@@ -147,7 +147,7 @@ Internally this is built as a sparse `(N_ref, N_target)` 0/1 membership matrix `
 Key differences from `spot_interpolation`:
 
 - **Sum, not weighted average.** There is no Gaussian kernel and no weighting; every in-footprint target contributes equally.
-- **No normalization is applied.** The summed values are kept as-is; they are not divided by the number of contributing spots. `.X` and every `layer` are aggregated the same way.
+- **Sum of counts.** The summed values are not divided by the number of contributing spots. A target without a normalization (MSI, or ST with `normalization: none`) has `.X` and every layer aggregated the same way. A normalized ST target is aggregated on its `layers['raw']` counts, and the merged registered file is then normalized once with the target's method (`uns['focus_normalization']`), with the anchor footprint area as the area; a sum of log-normalized values has no meaning.
 - Footprints may **overlap**, so a single target spot can contribute to several reference spots.
 - The output `X` stays **sparse (CSR)**, unlike `spot_interpolation`, which returns a dense matrix.
 
@@ -207,7 +207,7 @@ When no footprint reaches the image, meaning the anchor spots do not overlap the
 
 ## Caching
 
-- **Per sample:** every registered output carries a fingerprint (`uns['focus_registration_fingerprint']`) of everything it was computed from: the registration mode and method version, the reference coordinates in both frames, the reference `spot_size`, the identity of the target input (the pixel digest of a preprocessed image, the preprocessing fingerprint of an AnnData, otherwise the file's size and modification time) and the mode's settings. A cached file is reused only when its fingerprint equals the one computed from the current inputs; a file without a fingerprint, or from a different mode, is recomputed. A re-alignment that moves the reference spots, a changed `spot_size` or a re-preprocessed target therefore recomputes the registration.
+- **Per sample:** every registered output carries a fingerprint (`uns['focus_registration_fingerprint']`) of everything it was computed from: the registration mode and method version, the reference coordinates in both frames, the reference `spot_size`, the identity of the target input (the pixel digest of a preprocessed image, the preprocessing fingerprint of an AnnData, otherwise the file's size and modification time; a spot target is read from its merged preprocessed file, so the merged fingerprint identifies it) and the mode's settings. A cached file is reused only when its fingerprint equals the one computed from the current inputs; a file without a fingerprint, or from a different mode, is recomputed. A re-alignment that moves the reference spots, a changed `spot_size` or a re-preprocessed target therefore recomputes the registration.
 - **Merged:** the merged file is reused only when its fingerprint, built from the per-sample fingerprints in sample order, still matches.
 - Outputs are written to a temporary file and renamed into place, so an interrupted run leaves no partial file.
 - `force_recomputing: true` bypasses both caches for that modality. Forcing the modality's alignment (directly or through the preprocessing cascade) also forces its registration.

@@ -65,6 +65,12 @@ Merged annotated reference file:
 {dataset_path}/merged/annotations/{reference_name}_merged_annotated.h5ad
 ```
 
+It is a copy of the merged preprocessed reference with `obs['spatial_annotation']` added, matched
+to the per-sample labels by sample and observation name, so it keeps the cross-sample feature
+filter, the union panel, the merged normalization and `uns['spot_size']`. Without a merged
+preprocessed reference, the annotated per-sample files are concatenated (features shared by every
+sample only) and a warning is reported.
+
 MuData compilation promotes labels to top-level:
 
 ```python

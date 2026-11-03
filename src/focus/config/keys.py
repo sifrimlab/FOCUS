@@ -9,6 +9,7 @@ class ImzMLFileParser(_AbstractEnum):
     """Serialized keys for imz mlfile parser."""
 
     SCAN_SETTINGS_LIST: Final = "{http://psi.hupo.org/ms/mzml}scanSettingsList"
+    FILE_DESCRIPTION: Final = "{http://psi.hupo.org/ms/mzml}fileDescription"
     REFERENCEABLE_PARAM_GROUP_LIST: Final = (
         "{http://psi.hupo.org/ms/mzml}referenceableParamGroupList"
     )
@@ -124,14 +125,24 @@ class RamanPreprocessingParams(_AbstractEnum):
 class STPreprocessingParams(_AbstractEnum):
     """Serialized keys for stpreprocessing params."""
 
-    RESOLUTION: Final = "resolution"
-    MIN_COUNT_PER_SPOT: Final = "min_count_per_spot"
-    MAX_COUNT_PER_SPOT: Final = "max_count_per_spot"
-    MIN_GENES_PER_SPOT: Final = "min_genes_per_spot"
-    MAX_GENES_PER_SPOT: Final = "max_genes_per_spot"
-    MIN_SPOTS_PER_GENE: Final = "min_spots_per_gene"
-    MIN_COUNT_SPOTS_RATIO_PER_GENE: Final = "min_count_spots_ratio_per_gene"
+    CAPTURE: Final = "capture"
+    UNIT: Final = "unit"
+    NORMALIZATION: Final = "normalization"
+    QUALITY_CONTROL: Final = "quality_control"
     REMOVE_MITOCHONDRIAL_GENES: Final = "remove_mitochondrial_genes"
-    TOTAL_COUNTS_NORMALIZE: Final = "total_counts_normalize"
-    LOG1P_TRANSFORM: Final = "log1p_transform"
     FORCE_RECOMPUTING: Final = "force_recomputing"
+
+
+# ST settings removed in st-5, with the setting that replaces each one (config validation
+# rejects them and names the replacement).
+ST_REMOVED_SETTINGS: dict[str, str] = {
+    "resolution": "unit",
+    "min_count_per_spot": "quality_control",
+    "max_count_per_spot": "quality_control",
+    "min_genes_per_spot": "quality_control",
+    "max_genes_per_spot": "quality_control",
+    "min_spots_per_gene": "capture",
+    "min_count_spots_ratio_per_gene": "capture",
+    "total_counts_normalize": "normalization",
+    "log1p_transform": "normalization",
+}

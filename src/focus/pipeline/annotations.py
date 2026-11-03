@@ -9,13 +9,20 @@ from focus.pipeline.types import ModalityFiles
 from focus.config.types import PipelineConfig
 
 import os
+import shutil
 import anndata
+import h5py
 import numpy as np
 import pandas as pd
 
 from focus.config.keys import ConfigParameters, AnnotationsParameters
 from focus.io.paths import annotation_file, merged_annotation_file
-from focus.io.anndata import write_h5ad_compat, concat_on_disk_compat
+from anndata.io import read_elem, write_elem
+from focus.io.anndata import (
+    _compat_strings,
+    concat_on_disk_compat,
+    write_h5ad_compat,
+)
 from focus.runtime.resources import release_memory
 from focus.runtime.reporting import StepReporter
 from focus.runtime.reporter_context import get_reporter
@@ -32,9 +39,12 @@ def _run_annotation_transfer(
     Transfer spatial annotations from the annotation modality to the reference modality spots.
 
     Annotations are transferred per sample (using per-sample aligned coordinates as the
-    reliable source), then the annotated per-sample files are concatenated into a merged
-    annotated file.  This avoids any dependency on the merged aligned file, which may be
-    absent or incomplete if a previous run was interrupted before its merge step.
+    reliable source), avoiding any dependency on the merged aligned file, which may be
+    absent or incomplete if a previous run was interrupted before its merge step. The merged
+    annotated file is the merged preprocessed reference with the per-sample labels added, so it
+    keeps the cross-sample gene filter, the union panel, the merged normalization and
+    ``uns['spot_size']``. Without a merged preprocessed file the annotated per-sample files are
+    concatenated instead.
 
     Returns
     -------
@@ -69,6 +79,7 @@ class AnnotationStage:
         self.source = annotation[AnnotationsParameters.MODALITY_NAME]
         self.reporter = reporter or get_reporter()
         self.result: dict[str, str] = {}
+        self.labels: dict[str, pd.Series] = {}
         self.samples = [
             sample for sample in files[self.reference] if sample != "merged"
         ]
@@ -92,7 +103,15 @@ class AnnotationStage:
             self.reporter.step(2, 2, "Merging annotated samples")
             merged = merged_annotation_file(self.path, self.reference, "h5ad")
             os.makedirs(os.path.dirname(merged), exist_ok=True)
-            concat_on_disk_compat(outputs, merged, merge="same", uns_merge="same")
+            source = self.files[self.reference].get("merged")
+            if source is not None and os.path.exists(source):
+                self.label_merged(source, merged)
+            else:
+                self.reporter.warning(
+                    f"No merged file for the reference '{self.reference}': "
+                    "the annotated samples are concatenated (shared features only)"
+                )
+                concat_on_disk_compat(outputs, merged, merge="same", uns_merge="same")
             self.result["merged"] = merged
             logger.debug(f"Annotated merged reference saved to {merged}")
         release_memory(gpu=False)
@@ -119,12 +138,45 @@ class AnnotationStage:
             count = int(np.sum(labels != None))  # noqa: E711
             self.reporter.detail(f"{count}/{len(coordinates)} spots annotated")
             reference.obs["spatial_annotation"] = pd.Categorical(labels)
+            self.labels[sample] = pd.Series(
+                labels, index=reference.obs_names.copy(), dtype=object
+            )
             output = annotation_file(self.path, sample, self.reference, "h5ad")
             os.makedirs(os.path.dirname(output), exist_ok=True)
             write_h5ad_compat(reference, output)
             return output
         finally:
             close_backed(annotation, reference)
+
+    def label_merged(self, source: str, output: str) -> None:
+        """Copy the merged reference to ``output`` and add the per-sample labels to its ``obs``.
+
+        Only ``obs`` is rewritten, so the matrices are never loaded. Rows are matched within each
+        sample by observation name; merged rows of a sample without labels stay unlabelled.
+        """
+        temporary = os.path.join(
+            os.path.dirname(output), f".{os.getpid()}.tmp.{os.path.basename(output)}"
+        )
+        try:
+            shutil.copyfile(source, temporary)
+            with h5py.File(temporary, "r+") as handle:
+                obs = cast(pd.DataFrame, read_elem(handle["obs"]))
+                values = np.full(obs.shape[0], None, dtype=object)
+                sample_ids = obs["sample_id"].astype(str).to_numpy()
+                for sample, labels in self.labels.items():
+                    rows = np.flatnonzero(sample_ids == sample)
+                    names = obs.index[rows]
+                    if not labels.index.equals(names):
+                        labels = labels.reindex(names)
+                    values[rows] = labels.to_numpy()
+                obs["spatial_annotation"] = pd.Categorical(values)
+                del handle["obs"]
+                anndata.settings.allow_write_nullable_strings = True
+                write_elem(handle, "obs", _compat_strings(obs))
+            os.replace(temporary, output)
+        finally:
+            if os.path.exists(temporary):
+                os.remove(temporary)
 
 
 def discover_annotations(path: str, source: str, samples: list[str]) -> dict[str, str]:

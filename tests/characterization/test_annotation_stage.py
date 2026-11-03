@@ -115,3 +115,25 @@ def test_annotation_failure_closes_backed_inputs(tmp_path: Path) -> None:
             _run_annotation_transfer(config, files, aligned)
     assert len(opened) == 2
     assert all(not data.file.is_open for data in opened)
+
+
+def test_merged_annotation_keeps_the_merged_reference(tmp_path: Path) -> None:
+    """The merged annotated file is the merged reference (panel, spot sizes) plus the labels."""
+    config, files, aligned = annotation_inputs(tmp_path, False)
+    parts = [ad.read_h5ad(files["st"][sample]) for sample in ("A", "B")]
+    parts[1].var_names = ["g0", "g2"]
+    parts[0].var_names = ["g0", "g1"]
+    merged = ad.concat(parts, join="outer", fill_value=0)
+    merged.uns["spot_size"] = {"A": [1.0, 1.0], "B": [1.0, 1.0]}
+    merged_path = tmp_path / "merged-reference.h5ad"
+    merged.write_h5ad(merged_path)
+    files["st"]["merged"] = str(merged_path)
+    outputs = _run_annotation_transfer(config, files, aligned)
+    result = ad.read_h5ad(outputs["merged"])
+    assert list(result.var_names) == ["g0", "g1", "g2"]
+    assert dict(result.uns["spot_size"]).keys() == {"A", "B"}
+    np.testing.assert_array_equal(result.X.toarray(), merged.X.toarray(), strict=True)
+    values = result.obs["spatial_annotation"].tolist()
+    assert values[0:2] == ["region", "region"] and values[3:5] == ["region", "region"]
+    assert pd.isna(values[2]) and pd.isna(values[5])
+    assert "spatial_annotation" not in ad.read_h5ad(merged_path).obs

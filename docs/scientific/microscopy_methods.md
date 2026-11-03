@@ -7,7 +7,7 @@ while processing a sample are caught, printed as `Error processing sample <id>: 
 loop moves to the next sample.
 
 FOCUS design choice: the output is reused by content fingerprint. `process_image()` computes the
-SHA-256 fingerprint of the method version (`microscopy-1`), the source file (its size and the
+SHA-256 fingerprint of the method version (`microscopy-2`), the source file (its size and the
 SHA-256 of its first and last 8 MiB, or of the whole file up to 16 MiB), the sample and modality
 names, every processing setting, the internal detection and pyramid constants, and the versions of
 NumPy, OpenCV, scikit-image, SciPy and tifffile. When the output OME-TIFF carries that fingerprint
@@ -82,7 +82,10 @@ the remainder across the full range.
 
 When more than `_DETECTION_MAX_PIXELS` (\(9\times10^6\)) pixels are non-zero, \(p_\text{lo}\) and
 \(p_\text{hi}\) are estimated from a strided subsample of the non-zero values rather than the full
-population. The clip/rescale above is still applied to every pixel.
+population. The non-zero values of an \((H, W, C)\) image interleave its channels, so the stride
+\(\lceil n/9\times10^6\rceil\) is raised to the next integer coprime with \(C\); a stride sharing a
+factor with \(C\) would sample a subset of the channels only. The clip/rescale above is still
+applied to every pixel.
 
 ---
 
@@ -94,18 +97,20 @@ Detection (`_detect_tissue_mask`, orchestrated by `_compute_tissue_mask`) and ap
 
 **Detection**, on a downsampled proxy (see "Detection resolution" below):
 
-1. Convert to uint8 and, when the channel count is not 3, promote to 3 channels
-   (`_as_detection_rgb`) so `cv2.COLOR_RGB2GRAY` accepts the array.
-2. Resolve the polarity (see "Background polarity" below) and reduce to a grayscale whose bright
-   class is the tissue: the bright-background branch replaces pixels that are 0 in every channel by
-   white (artifact guard), converts with `cv2.COLOR_RGB2GRAY` and inverts; the dark-background branch
-   converts and stops there.
+1. When the channel count is not 3, promote to 3 channels (`_as_detection_rgb`) so
+   `cv2.COLOR_RGB2GRAY` accepts the array.
+2. Resolve the polarity on the float luma (see "Background polarity" below) and reduce to a uint8
+   grayscale whose bright class is the tissue. The bright-background branch converts to uint8,
+   replaces the pixels that are 0 in every channel and the border padding (see "Padding guard"
+   below) by white, converts with `cv2.COLOR_RGB2GRAY` and inverts. The dark-background branch
+   scales the luma so its 99.9th percentile maps to 255 and stops there.
 3. Clip the grayscale at `clip_percentile` (default 99).
 4. Apply Gaussian blur (`_DETECTION_BLUR_KERNEL_SIZE`, fixed at 25 px, `sigma=0`).
 5. Compute the **Otsu threshold** on the blurred image; apply it to the original grayscale,
    unblurred and unclipped.
 6. Remove small connected components (`_DETECTION_MAX_OBJECT_SIZE`, fixed at 50 px) and fill holes.
-7. Contour area filtering using `min_object_coverage` fraction of the (proxy) image area.
+7. Contour area filtering using `min_object_coverage` fraction of the (proxy) image area, capped at
+   a fraction of the largest object (see "Contour area filtering" below).
 
 Only steps 3-7 are shared by both polarities; everything from the percentile clip onwards assumes
 tissue is the bright class.
@@ -117,19 +122,28 @@ nothing). This mirrors the alignment GUI's display conversion
 from the same composite the alignment overlay shows. The luma of a replicated single channel is that
 channel exactly (the BGR weights sum to 1), and the zero third channel of a 2-channel image only
 scales the luma uniformly, which leaves Otsu's split unchanged. Promotion happens before the artifact
-guard: the replicated and padded channels are zero exactly where the source channels are, so
-`np.all(... == 0, axis=-1)` selects the same pixels either way.
+guard: the replicated and padded channels are near-black exactly where the source channels are, so
+the guard selects the same pixels either way.
+
+**Padding guard** (`_border_padding`). Unscanned slide padding is near-black rather than exactly 0
+after compression, and becomes the brightest class after inversion. Pixels whose channels are all at
+most `_DETECTION_BLACK_LEVEL` (32 on the 8-bit scale) form near-black regions (8-connectivity); the
+regions that touch the image border are padding and are set to white with the exactly-black pixels.
+The level covers 8-bit padding noise of 1 to 5 after gamma 0.45 and the contrast stretch (about 25).
+Near-black regions enclosed by tissue, such as melanin, are not padding and are kept.
 
 **Background polarity** (`_has_dark_background`). The bright-background assumption (invert, then keep
 the darkest pixels) is correct for brightfield but selects the background on a fluorescence image
-whose dark background carries any noise (the artifact guard only catches exactly-zero pixels). The
-polarity is therefore probed on the promoted grayscale: with \(k=\max(1,\ \operatorname{round}(0.05
-\cdot \min(H,W)))\), the median of the border frame (the outer \(k\) rows and columns) is compared
-with the median of the whole grayscale, and the background counts as dark when the border median is
-strictly lower. A scan filled edge to edge with tissue gives equal medians and takes the
-bright-background branch. The probe runs **only when the image was promoted** (1 or 2 channels), so
-3-channel input always follows the bright-background branch and its result is bit-identical to the
-behaviour before promotion existed.
+whose dark background carries any noise. The polarity is therefore probed for every channel count on
+the float luma of the promoted image: with \(k=\max(1,\ \operatorname{round}(0.05 \cdot
+\min(H,W)))\), the median of the border frame (the outer \(k\) rows and columns) is compared with
+the median of the whole luma, and the background counts as dark when the border median is strictly
+lower and below `_DETECTION_DARK_BORDER_RATIO` (1/3) of the 99th-percentile luma. A scan filled edge
+to edge with tissue gives equal medians, and a brightfield border is not dark relative to its bright
+content, so both take the bright-background branch. The probe works on float values because the
+8-bit values of a low-range scan (12-bit data in a 16-bit container without colour enhancement) are
+all near 0 and tie; the 99.9th-percentile scaling of the dark-background branch restores the 8-bit
+resolution Otsu's threshold needs on such scans.
 
 **Application**: the resulting boolean mask is upsampled (nearest-neighbor) back to full resolution
 and used to fill background with the selected `background_color`. That value is a scalar `1.0`
@@ -174,8 +188,12 @@ boolean mask with 4-connectivity and removes every component of **at most** 50 (
 pixels; `max_size` is inclusive. Hole filling (`scipy.ndimage.binary_fill_holes`) follows.
 
 **Contour area filtering.** External contours (`cv2.RETR_EXTERNAL`) are kept only when their area is
-at least `min_object_coverage` × (proxy image area); the retained contours are filled to form the
-tissue mask. When `cv2.findContours` returns nothing, a warning is printed and the unrefined mask
+at least \(\min(\)`min_object_coverage` × proxy image area, `_DETECTION_MIN_LARGEST_FRACTION` × largest
+contour area\()\), with `_DETECTION_MIN_LARGEST_FRACTION` = 0.1; the retained contours are filled to
+form the tissue mask. A section covering more than 10% of the proxy keeps the plain
+`min_object_coverage` threshold. On slides with small tissue (TMA cores, biopsies) the cap keeps the
+largest object and the pieces of at least a tenth of its area, so the mask is never emptied of every
+contour. When `cv2.findContours` returns nothing, a warning is printed and the unrefined mask
 from the previous step is kept.
 
 ---

@@ -180,16 +180,15 @@ No. At most **one** non-reference modality may use `"alignment_strategy": "pre_a
 
 ### I don't want to normalize my ST data. How do I disable it?
 
-Set both normalization flags to `false` in the ST modality's `processing_settings`:
+Set `normalization` to `"none"` in the ST modality's `processing_settings`:
 
 ```json
 "processing_settings": {
-  "total_counts_normalize": false,
-  "log1p_transform": false
+  "normalization": "none"
 }
 ```
 
-Both default to `false`, so omitting them also disables normalization.
+The merged `.X` then holds the raw counts and no `raw` layer is written. The default, `"auto"`, normalizes with the method of the technology set by `capture`.
 
 ---
 

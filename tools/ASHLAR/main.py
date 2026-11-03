@@ -3,6 +3,7 @@
 from typing import cast
 import sys
 import os
+import re
 import math
 
 _MAX_PYRAMID_PIXELS = (
@@ -20,24 +21,33 @@ def _compute_peak_size(H: int, W: int) -> int:
     return cast(int, max(1, math.ceil(max(H, W) / (2 ** (n_levels - 1)))))
 
 
+def _cycle_key(path: str) -> tuple[int, str]:
+    """Sort key of an ``ashlar_input_cycle_<n>.ome.tiff`` file: its cycle number, then its name."""
+    match = re.search(r"cycle_(\d+)", os.path.basename(path))
+    return (int(match.group(1)) if match else 0, path)
+
+
 def main() -> int:
     """Parse command-line arguments and execute the requested workflow."""
     if len(sys.argv) != 3:
         print(
-            "Usage: python main_ashlar.py <data_directory> <align_channel>", flush=True
+            "Usage: python main_ashlar.py <data_directory> <align_channel>[,<align_channel>...]",
+            flush=True,
         )
         return 1
 
     data_dir = sys.argv[1]
-    align_channel = int(sys.argv[2])
+    align_channels = [int(channel) for channel in sys.argv[2].split(",")]
 
     try:
+        # Cycle order (numeric, so cycle 10 follows cycle 9) matches the alignment channel order.
         input_files = sorted(
             [
                 os.path.join(data_dir, f)
                 for f in os.listdir(data_dir)
                 if "ashlar_input" in f and f.endswith(".ome.tiff")
-            ]
+            ],
+            key=_cycle_key,
         )
         if not input_files:
             raise FileNotFoundError(
@@ -46,7 +56,7 @@ def main() -> int:
 
         output_file = os.path.join(data_dir, "ashlar_output.ome.tiff")
 
-        stitch_files(input_files, output_file, align_channel)
+        stitch_files(input_files, output_file, align_channels)
         remove_tiles(input_files)
 
     except FileNotFoundError as e:
@@ -60,13 +70,26 @@ def main() -> int:
     return 0
 
 
-def stitch_files(input_files: list[str], output_file: str, align_channel: int) -> None:
-    """Align ordered OME cycles and write the original ASHLAR multiresolution mosaic."""
+def stitch_files(
+    input_files: list[str], output_file: str, align_channels: list[int]
+) -> None:
+    """Align ordered OME cycles and write the original ASHLAR multiresolution mosaic.
+
+    ``align_channels`` holds one channel per cycle, indexed within that cycle's file; a single
+    value applies to every cycle.
+    """
     from ashlar.scripts.ashlar import build_reader, process_axis_flip
     from ashlar import reg
 
+    if len(align_channels) == 1:
+        align_channels = align_channels * len(input_files)
+    if len(align_channels) != len(input_files):
+        raise ValueError(
+            f"{len(align_channels)} alignment channels for {len(input_files)} cycle files"
+        )
+
     ea_args = {
-        "channel": align_channel,
+        "channel": align_channels[0],
         "verbose": True,
         "max_shift": 15,
     }
@@ -81,10 +104,10 @@ def stitch_files(input_files: list[str], output_file: str, align_channel: int) -
 
     mosaics = [reg.Mosaic(edge_aligner, mshape)]
 
-    la_args = {"channel": align_channel, "verbose": True, "max_shift": 15}
-    for filepath in input_files[1:]:
+    for filepath, channel in zip(input_files[1:], align_channels[1:]):
         reader = build_reader(filepath)
         process_axis_flip(reader, False, False)
+        la_args = {"channel": channel, "verbose": True, "max_shift": 15}
         la = reg.LayerAligner(reader, edge_aligner, **la_args)
         la.run()
         mosaics.append(reg.Mosaic(la, mshape))

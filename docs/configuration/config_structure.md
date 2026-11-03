@@ -100,7 +100,7 @@ This page documents the **canonical structure** and the set of config fields tha
 | `none` | Skip registration for this modality | all |
 | `feature_extraction` | One Prov-GigaPath embedding per reference spot, restricted to the image inside its footprint | `microscopy_image` |
 | `spot_interpolation` | Gaussian-weighted average of the target spots in each anchor footprint | `msi`, `st` |
-| `spot_aggregation` | Equal-weight **sum** of the target spots in each anchor footprint (no normalization); for subcellular-resolution data (e.g. Visium HD) | `msi`, `st` |
+| `spot_aggregation` | Equal-weight **sum** of the target spots in each anchor footprint; a normalized ST target is summed on its raw counts and the merged result normalized with the same method; for subcellular-resolution data (e.g. Visium HD) | `msi`, `st` |
 | `raman_pixel_interpolation` | Gaussian-weighted pixel interpolation over the hyperspectral OME-TIFF | `raman` |
 
 ---
@@ -157,15 +157,11 @@ This page documents the **canonical structure** and the set of config fields tha
 
 ```json
 {
-  "min_count_per_spot": null,
-  "max_count_per_spot": null,
-  "min_genes_per_spot": null,
-  "max_genes_per_spot": null,
-  "min_spots_per_gene": null,
-  "min_count_spots_ratio_per_gene": null,
+  "capture": "sequencing",
+  "unit": "spot",
+  "normalization": "auto",
+  "quality_control": true,
   "remove_mitochondrial_genes": false,
-  "total_counts_normalize": false,
-  "log1p_transform": false,
   "force_recomputing": false
 }
 ```
@@ -229,14 +225,9 @@ This page documents the **canonical structure** and the set of config fields tha
       "alignment_strategy": "manual",
       "registration_type": "none",
       "processing_settings": {
-        "min_count_per_spot": 200,
-        "max_count_per_spot": null,
-        "min_genes_per_spot": 50,
-        "max_genes_per_spot": null,
-        "min_spots_per_gene": null,
-        "min_count_spots_ratio_per_gene": null,
-        "total_counts_normalize": true,
-        "log1p_transform": true,
+        "capture": "sequencing",
+        "unit": "spot",
+        "normalization": "auto",
         "force_recomputing": false
       },
       "registration_settings": {}

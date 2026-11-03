@@ -42,12 +42,33 @@ class TissueMask:
         return image_uint8
 
     @staticmethod
+    def _border_padding(image_uint8: np.ndarray) -> np.ndarray:
+        """Boolean (H, W) mask of the near-black connected regions that touch the image border.
+
+        A pixel is near-black when every channel is at most _DETECTION_BLACK_LEVEL.
+        """
+        near_black = cast(
+            np.ndarray,
+            np.all(image_uint8 <= _settings._DETECTION_BLACK_LEVEL, axis=-1),
+        )
+        if not near_black.any():
+            return near_black
+        _, labels = cv2.connectedComponents(near_black.astype(np.uint8), connectivity=8)
+        border = np.unique(
+            np.concatenate([labels[0], labels[-1], labels[:, 0], labels[:, -1]])
+        )
+        border = border[border != 0]
+        return cast(np.ndarray, np.isin(labels, border))
+
+    @staticmethod
     def _has_dark_background(gray: np.ndarray) -> bool:
         """True when `gray`'s background is darker than its content (fluorescence-like).
 
         The border frame of a slide scan is background, so its median is compared against the
         median of the whole image. Ties (a scan filled edge to edge with tissue) report False,
-        which keeps the bright-background handling below.
+        which keeps the bright-background handling below. The border must also be dark relative
+        to the bright content (below _DETECTION_DARK_BORDER_RATIO of the 99th percentile), so a
+        brightfield scan whose tissue reaches the border is not taken for fluorescence.
         """
         h, w = gray.shape[:2]
         k = max(1, round(0.05 * min(h, w)))
@@ -59,7 +80,12 @@ class TissueMask:
                 gray[:, -k:].ravel(),
             ]
         )
-        return float(np.median(border)) < float(np.median(gray))
+        border_level = float(np.median(border))
+        bright_level = float(np.percentile(gray, 99))
+        return (
+            border_level < float(np.median(gray))
+            and border_level < _settings._DETECTION_DARK_BORDER_RATIO * bright_level
+        )
 
     def _detect_tissue_mask(
         self,
@@ -77,7 +103,7 @@ class TissueMask:
 
         Everything from the percentile clip onwards expects tissue to be the *bright* class.
         Brightfield input reaches that state by inversion; an image with a dark background
-        (only detected for 1-/2-channel input, see below) is already in it.
+        (fluorescence-like, any channel count) is already in it.
 
         Parameters
         ----------
@@ -85,7 +111,9 @@ class TissueMask:
                 Input float32 image of shape (H, W, C) in [0, 1]. C may be 1, 2 or 3; fewer than
                 3 channels are promoted to RGB for the grayscale conversion only.
         min_object_coverage : float
-                Minimum tissue area relative to image area.
+                Minimum tissue area relative to image area. The threshold is capped at
+                _DETECTION_MIN_LARGEST_FRACTION of the largest object, so the largest object and
+                the pieces of comparable size are always kept (TMA cores, small biopsies).
         clip_percentile : int
                 Percentile for intensity clipping before thresholding.
 
@@ -94,33 +122,39 @@ class TissueMask:
         np.ndarray
                 Boolean tissue mask, same (H, W) as `image`.
         """
-        # Convert to uint8 for mask computation (avoids float intermediaries)
-        image_uint8 = (image * 255).astype(np.uint8)
-
-        # Promote to 3 channels for cv2's RGB->gray conversion. Done before the black-pixel guard
-        # below, which is equivalent to doing it after: replicated/padded channels are zero exactly
-        # where the source channels are, so `np.all(... == 0)` selects the same pixels either way.
-        promoted = image_uint8.shape[2] != 3
-        image_uint8 = self._as_detection_rgb(image_uint8)
-
         # Polarity: brightfield scans have a bright background and are inverted below so tissue
-        # becomes the bright class. A promoted (1-/2-channel) image may instead be fluorescence-like,
-        # with tissue already bright on a dark background - inverting that would segment the
-        # background instead. Probed only for promoted input, so 3-channel behaviour (and its single
-        # grayscale conversion) is unchanged; when the background is dark this grayscale is final and
-        # is reused as is.
-        gray = cv2.cvtColor(image_uint8, cv2.COLOR_RGB2GRAY) if promoted else None
-        dark_background = promoted and self._has_dark_background(cast(np.ndarray, gray))
+        # becomes the bright class. A fluorescence-like image instead has tissue already bright on
+        # a dark background; inverting it would segment the background. The probe runs on the
+        # float luma: the 8-bit values of a low-range scan (12-bit data in a 16-bit container, no
+        # colour enhancement) are all near 0 and would tie.
+        luma = cv2.cvtColor(self._as_detection_rgb(image), cv2.COLOR_RGB2GRAY)
+        dark_background = self._has_dark_background(luma)
 
-        if not dark_background:
-            # Replace black pixels with white to avoid thresholding artifacts
+        if dark_background:
+            # Stretch to the bright content so a low-range scan keeps the 8-bit resolution Otsu needs.
+            bright_level = float(np.percentile(luma, 99.9))
+            scale = 255.0 / bright_level if bright_level > 0 else 255.0
+            gray = np.clip(luma * scale, 0, 255).astype(np.uint8)
+            del luma
+        else:
+            del luma
+            # Convert to uint8 for mask computation (avoids float intermediaries). Promoted to 3
+            # channels for cv2's RGB->gray conversion: replicated/padded channels are near-black
+            # exactly where the source channels are, so the guard below selects the same pixels.
+            image_uint8 = self._as_detection_rgb((image * 255).astype(np.uint8))
+
+            # Replace black pixels, and the near-black regions connected to the image border
+            # (unscanned padding, compression noise included), with white, so the padding does not
+            # become the brightest class after inversion. Near-black regions inside the tissue
+            # (pigment) are kept.
             black_pixels = np.all(image_uint8 == 0, axis=-1)
+            black_pixels |= self._border_padding(image_uint8)
             image_uint8[black_pixels] = 255
 
             # Grayscale → invert (white bg becomes black)
             gray = cv2.cvtColor(image_uint8, cv2.COLOR_RGB2GRAY)
             gray = cv2.bitwise_not(gray)
-        del image_uint8  # Free the uint8 RGB copy
+            del image_uint8  # Free the uint8 RGB copy
 
         # Clip at percentile to reduce oversaturation impact
         clip_value = np.percentile(cast(np.ndarray, gray), clip_percentile)
@@ -159,9 +193,13 @@ class TissueMask:
 
         if contours:
             image_area = seg_uint8.shape[0] * seg_uint8.shape[1]
-            area_threshold = min_object_coverage * image_area
+            areas = [cv2.contourArea(c) for c in contours]
+            area_threshold = min(
+                min_object_coverage * image_area,
+                _settings._DETECTION_MIN_LARGEST_FRACTION * max(areas),
+            )
             large_contours = [
-                c for c in contours if cv2.contourArea(c) >= area_threshold
+                c for c, area in zip(contours, areas) if area >= area_threshold
             ]
 
             tissue_mask = np.zeros_like(seg_uint8)

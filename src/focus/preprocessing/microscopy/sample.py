@@ -160,6 +160,9 @@ class MicroscopyImage(SampleSource):
                     "detection_max_pixels": _settings._DETECTION_MAX_PIXELS,
                     "detection_blur_kernel_size": _settings._DETECTION_BLUR_KERNEL_SIZE,
                     "detection_max_object_size": _settings._DETECTION_MAX_OBJECT_SIZE,
+                    "detection_min_largest_fraction": _settings._DETECTION_MIN_LARGEST_FRACTION,
+                    "detection_black_level": _settings._DETECTION_BLACK_LEVEL,
+                    "detection_dark_border_ratio": _settings._DETECTION_DARK_BORDER_RATIO,
                 },
                 "software": {
                     "numpy": np.__version__,
