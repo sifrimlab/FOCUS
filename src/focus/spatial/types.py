@@ -41,11 +41,12 @@ class UnitInfo(TypedDict, total=False):
 
 
 class ClusteringPreset(TypedDict):
-    """Clustering mode and the signal sub_cellular aggregation grows units for."""
+    """Clustering mode, the signal sub_cellular aggregation grows units for, and the neighbourhood."""
 
     mode: str
     signal: str | None
     signal_target: float | None
+    rings: int
 
 
 class ClusteringParameters(TypedDict, total=False):
@@ -56,7 +57,7 @@ class ClusteringParameters(TypedDict, total=False):
     n_top_features: int
     n_pcs: int
     n_neighbors: int
-    leiden_resolution: float
+    leiden_clusters: int
     min_cluster_units: int
     merge_valley_ratio: float
     gradient_bins: int
@@ -65,6 +66,7 @@ class ClusteringParameters(TypedDict, total=False):
     mode: str
     signal: str | None
     signal_target: float | None
+    rings: int
 
 
 class MergeInfo(TypedDict, total=False):

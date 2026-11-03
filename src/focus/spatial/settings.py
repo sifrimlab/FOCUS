@@ -23,15 +23,14 @@ _MIN_UNITS = 1_000
 _LLOYD_ITERATIONS = 5
 
 
-# Leiden resolution of the partition, four times that of the former smoothed clustering (0.5):
-# Leiden overclusters every domain, and merge_unsupported_clusters joins the splits that no density
-# valley separates. A partition at a low resolution joins distinct domains before the valley test
-# can see them. Calibrated on synthetic lattices and a Visium HD sample
-# (docs/scientific/spatial_clustering.md section 8).
-_OVERCLUSTER_RESOLUTION = 2.0
+# Leiden overclusters the units into about this many clusters (the resolution is searched for it),
+# and merge_unsupported_clusters joins the splits that no density valley separates. The number of
+# clusters at a fixed resolution grows with the number of units (MALDI-TOF samples of 71k and 183k
+# spectra and Visium HD samples of 25k blocks needed resolutions 0.5 to 2.0); every sample that
+# matched its domains had 22 to 29 Leiden clusters (docs/scientific/spatial_clustering.md section 8).
+_LEIDEN_CLUSTERS = 25
 
-# The resolution halves (down to a quarter) while the median Leiden cluster holds fewer units than
-# this. On two halves of a cut Gaussian, the valley ratio falls below 0.8 in 25 % of cases at 50
+# The Leiden target is capped so the mean cluster holds at least this many units. On two halves of a cut Gaussian, the valley ratio falls below 0.8 in 25 % of cases at 50
 # units per cluster, 8 % at 200, 4 % at 300 and 1 % at 500, and such false valleys keep fragments
 # of one domain apart.
 _MIN_CLUSTER_UNITS = 300
@@ -46,6 +45,20 @@ _VALLEY_BINS = 512
 # Share of each tail of a projection left out of the density range of _valley_ratio, so a few
 # outlying units cannot compress the density into a few bins and hide a valley.
 _VALLEY_TAIL = 0.005
+
+# Weight of the neighbourhood mean in the clustering embedding [sqrt(1 - w) * own PCs, sqrt(w) *
+# neighbourhood mean PCs], the weighting BANKSY uses for domain segmentation (lambda = 0.8). Keeping
+# each unit's own PCs matters: with the neighbourhood mean alone, adjacent units get near-identical
+# embeddings, the kNN graph copies the spatial grid, and Leiden tiles homogeneous tissue into
+# compact patches.
+_NEIGHBOURHOOD_WEIGHT = 0.8
+
+# Neighbourhood rings of the embedding under each resolution (similarity_operator). Calibrated on
+# Visium HD and MALDI-TOF samples (docs/scientific/spatial_clustering.md section 8).
+NEIGHBOURHOOD_RINGS: dict[str, int] = {
+    SpotResolution.STANDARD: 1,
+    SpotResolution.SUB_CELLULAR: 2,
+}
 
 # Ordered levels of a gradient map (mode "gradient").
 _GRADIENT_BINS = 8
@@ -78,7 +91,7 @@ PARAMETERS: ClusteringParameters = {
     "n_top_features": N_TOP_FEATURES,
     "n_pcs": 50,
     "n_neighbors": 15,
-    "leiden_resolution": _OVERCLUSTER_RESOLUTION,
+    "leiden_clusters": _LEIDEN_CLUSTERS,
     "min_cluster_units": _MIN_CLUSTER_UNITS,
     "merge_valley_ratio": _MERGE_VALLEY_RATIO,
     "gradient_bins": _GRADIENT_BINS,
@@ -91,7 +104,8 @@ def clustering_preset(mode: str, resolution: str, signal: str) -> ClusteringPres
     """Preset of a clustering ``mode`` under a ``resolution`` setting.
 
     ``sub_cellular`` grows units until the median unit reaches ``SIGNAL_TARGETS[signal]``;
-    ``standard`` keeps native units below the cap. The foreground mode never aggregates.
+    ``standard`` keeps native units below the cap. ``rings`` sets the edge-preserving
+    neighbourhood of the embedding. The foreground mode never aggregates and has no neighbourhood.
     Raises ValueError for an unknown mode, resolution or signal.
     """
     if mode not in (DOMAINS, GRADIENT, FOREGROUND):
@@ -107,4 +121,5 @@ def clustering_preset(mode: str, resolution: str, signal: str) -> ClusteringPres
         "mode": mode,
         "signal": signal if grow else None,
         "signal_target": SIGNAL_TARGETS[signal] if grow else None,
+        "rings": 0 if mode == FOREGROUND else NEIGHBOURHOOD_RINGS[resolution],
     }

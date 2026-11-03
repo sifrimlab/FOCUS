@@ -738,6 +738,9 @@ in the alignment GUI only. MSI runs the clustering shared with ST, described in
 - **Aggregation.** `resolution: standard` clusters native pixels (summed into k x k raster blocks
   only above 250,000 spectra); `resolution: sub_cellular` sums pixels into raster blocks until the
   median block detects 200 features. `microgrid` never aggregates.
+- **Neighbourhood.** 1 ring for `resolution: standard`, 2 rings for `sub_cellular`, edge-preserving
+  ([Alignment Clustering §4](spatial_clustering.md#4-neighbourhood-embedding-and-partition));
+  none for `microgrid`.
 - **Representation.** The normalized spectra `.X` (§9) averaged over each unit, then `log1p`;
   `intensity_normalization: none` divides each summed spectrum by the median of its nonzero
   features instead ([Alignment Clustering §3](spatial_clustering.md#3-representation)).

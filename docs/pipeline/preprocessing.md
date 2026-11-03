@@ -156,7 +156,7 @@ The MSI pipeline operates at the **dataset level**: all samples are processed to
     - Only foreground spectra take part; background spectra are labelled `unassigned`
     - `resolution="sub_cellular"` sums pixels into k x k blocks of the acquisition raster until the median block detects 200 features; `"standard"` clusters native pixels (blocks only above 250,000 spectra)
     - Representation: the normalized spectra averaged over each unit, then `log1p` (`intensity_normalization="none"`: each summed spectrum divided by the median of its nonzero features)
-    - Up to 2,000 most variable features → PCA → neighbour graph → Leiden at an overclustering resolution → merging of adjacent clusters that no density valley separates; no spatial smoothing ([Alignment Clustering](../scientific/spatial_clustering.md))
+    - Up to 2,000 most variable features → PCA → each unit's components joined to an edge-preserving neighbourhood mean (1 ring; 2 rings for `sub_cellular`) → neighbour graph → Leiden at the resolution giving about 25 clusters → merging of adjacent clusters that no density valley separates ([Alignment Clustering](../scientific/spatial_clustering.md))
     - Labels stored in `obs["cluster"]`, eligibility in `obs["clustering_eligible"]`, provenance in `uns["focus_clustering"]`; units, PCA and graphs are discarded
 
 11. **Save Per-Sample AnnData and Merge**

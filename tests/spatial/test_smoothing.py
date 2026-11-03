@@ -6,7 +6,7 @@ import numpy as np
 
 from focus.spatial.clusters import label_coherence
 from focus.spatial.units import plan_spatial_units
-from focus.spatial.smoothing import smoothing_operator
+from focus.spatial.smoothing import similarity_operator, smoothing_operator
 from tests.spatial.data import lattice
 
 
@@ -59,3 +59,26 @@ class TestSmoothing:
         shuffled = np.random.default_rng(0).permutation(halves)
         assert abs(label_coherence(shuffled, units) or 0.0) < 0.1
         assert label_coherence(np.zeros(len(xy)).astype(str), units) is None
+
+    def test_similarity_operator_does_not_average_across_a_sharp_boundary(self) -> None:
+        """Neighbours across a sharp expression boundary weigh almost nothing; rows sum to 1."""
+        xy, ij = lattice(30, 30, [16, 0], [0, 16])
+        right = ij[:, 1] >= 15
+        rng = np.random.default_rng(4)
+        pcs = rng.normal(0, 0.1, (len(xy), 5))
+        pcs[right, 0] += 10
+        units = plan_spatial_units(xy)
+        keep = np.ones(len(xy), dtype=bool)
+        op = similarity_operator(units, 1, keep, pcs)
+        np.testing.assert_allclose(np.asarray(op.sum(axis=1)).ravel(), 1, rtol=1e-5)
+        boundary = np.flatnonzero((ij[:, 1] == 14) & (ij[:, 0] == 15))[0]
+        row = op.getrow(boundary)
+        across = right[row.indices]
+        assert row.data[across].sum() < 1e-3
+        smoothed = op @ pcs
+        assert smoothed[~right, 0].max() < 1 and smoothed[right, 0].min() > 9
+        # Within a domain every neighbour contributes (a typical one weighs about e^-1 of the
+        # unit itself, the scale being the median neighbour distance).
+        inner = op.getrow(np.flatnonzero((ij[:, 1] == 5) & (ij[:, 0] == 15))[0])
+        assert len(inner.indices) == 9
+        assert inner.data.min() > 0.01

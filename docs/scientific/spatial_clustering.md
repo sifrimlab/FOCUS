@@ -14,27 +14,28 @@ is the preprocessing fingerprint.
 ## 1. Presets
 
 The clustering mode comes from the modality preset; the `resolution` setting decides whether units
-are aggregated for signal.
+are aggregated for signal and sets the neighbourhood of the embedding (§4).
 
-| Modality preset | Mode | Aggregation signal under `sub_cellular` |
-|---|---|---|
-| ST `unit: spot` | domains | none (`resolution` is `standard`) |
-| ST `unit: bin`, `unit: cell` | domains | summed counts, median unit at least 1,000 UMIs |
-| MSI `sample_type: tissue`, `tissue_noisy` | domains | detected features, median unit at least 200 |
-| MSI `sample_type: cell_culture` | gradient | detected features, median unit at least 200 |
-| MSI `sample_type: microgrid` | foreground | none (`resolution` is not used) |
+| Modality preset | Mode | Aggregation signal under `sub_cellular` | Neighbourhood |
+|---|---|---|---|
+| ST `unit: spot` | domains | none (`resolution` is `standard`) | 1 ring |
+| ST `unit: bin`, `unit: cell` | domains | summed counts, median unit at least 1,000 UMIs | 2 rings |
+| MSI `sample_type: tissue`, `tissue_noisy` | domains | detected features, median unit at least 200 | 1 ring (`standard`), 2 rings (`sub_cellular`) |
+| MSI `sample_type: cell_culture` | gradient | detected features, median unit at least 200 | 1 ring (`standard`), 2 rings (`sub_cellular`) |
+| MSI `sample_type: microgrid` | foreground | none (`resolution` is not used) | none |
 
 ST derives `resolution` from `unit` (`spot`: `standard`; `bin`, `cell`: `sub_cellular`). MSI reads
 the modality setting `resolution` (default `standard`).
 
-- **domains**: tissue domains. Leiden overclusters the units, and adjacent clusters that no density
-  valley separates are merged (§4, §5).
+- **domains**: tissue domains. Leiden overclusters the units on an edge-preserving neighbourhood
+  embedding, and adjacent clusters that no density valley separates are merged (§4, §5).
 - **gradient**: signal that changes along smooth gradients rather than between discrete domains.
   The labels are ordered levels of the first principal component (§6).
 - **foreground**: isolated cells of about one pixel on a background matrix. The labels separate the
   foreground from the background, without clustering (§7).
 
-No mode smooths the representation or the labels spatially.
+The representation (§3) and the labels are never smoothed; space enters the clustering embedding
+only (§4).
 
 ## 2. Clustering units
 
@@ -119,18 +120,39 @@ features keep the 2,000 most variable ones by normalized dispersion[^satija2015]
 exported matrix. Sparse centered PCA then gives min(50, n_units - 1, n_features - 1) components,
 with seed 0.
 
-## 4. Partition
+## 4. Neighbourhood embedding and partition
+
+A single unit carries sampling noise (ST) and detection dropout (MSI) that a clustering of the units
+alone reads as structure: on a Visium HD sample the domains of the tissue did not separate even on
+80 µm blocks, and on a MALDI-TOF sample ions detected at random in 81 % of the spectra split one
+region into interleaved clusters (§8). Each unit's clustering embedding is therefore
+`[sqrt(1 - w) * own PCs, sqrt(w) * neighbourhood mean PCs]` with w = 0.8, the weighting BANKSY uses
+for domain segmentation[^singhal2024]. The unit's own PCs are kept because a neighbourhood mean
+alone makes adjacent units nearly identical; the neighbour graph then reproduces the spatial grid,
+and Leiden divides homogeneous tissue into compact patches.
+
+The neighbourhood mean is edge-preserving (`similarity_operator`): over the units of the
+neighbourhood (lattice layouts: grid offsets of physical length at most (r + 0.5) times the longest
+grid step, 8 units on square grids and 6 on hexagonal grids for r = 1; irregular layouts: the
+3r(r + 1) nearest unit centroids), a neighbour weighs exp(-(d / h)²), where d is the Euclidean
+distance of the two units' principal components and h the median of d over all neighbour pairs of
+the sample; the unit itself weighs 1. A typical neighbour weighs about e⁻¹ of the unit, and a
+neighbour across a sharp expression boundary weighs almost nothing, so the mean does not average two
+domains and produces no clusters one unit wide along their boundary. This is a bilateral filter on
+the unit lattice[^tomasi1998]. FOCUS adaptation: BANKSY averages the neighbours with Gaussian
+weights in physical distance[^singhal2024]; here the weights are set by expression similarity, and
+the azimuthal Gabor term of BANKSY is not used. Expression itself is never smoothed.
 
 In `domains` mode, a neighbour graph (15 neighbours, seed 0, approximate for large inputs) on the
-principal components and Leiden[^traag2019] (`flavor="igraph"`, `n_iterations=2`,
-`directed=False`, seed 0) partition the eligible units. The resolution starts at 2.0 and halves,
-down to 0.5, while the median Leiden cluster holds fewer than 300 units. FOCUS design choice: the
-resolution is set high so that Leiden splits every domain into several clusters, and the merge of
-§5 joins the splits; a partition at a low resolution joins distinct domains before any test can
-separate them. The lower bound on the cluster size keeps the merge test reliable: on two halves of a
+embedding and Leiden[^traag2019] (`flavor="igraph"`, `n_iterations=2`, `directed=False`, seed 0)
+partition the eligible units into about 25 clusters: the resolution is searched by geometric
+bisection between 0.05 and 8 (at most eight runs) for the partition closest to that count. The
+target is capped so the mean cluster holds at least 300 units. FOCUS design choice: Leiden splits
+every domain into several clusters and the merge of §5 joins the splits; the number of clusters at
+a fixed resolution grows with the number of units (the samples of §8 needed resolutions 0.5 to 2.2),
+so the target is a cluster count. The size bound keeps the merge test reliable: on two halves of a
 cut 20-dimensional Gaussian, the valley ratio of §5 falls below 0.8 in 25 % of cases at 50 units
-per cluster, 8 % at 200, 4 % at 300 and 1 % at 500 (200 repetitions each), and such false valleys
-keep fragments of one domain apart.
+per cluster, 8 % at 200, 4 % at 300 and 1 % at 500 (200 repetitions each).
 
 ## 5. Merging splits without a density valley
 
@@ -146,12 +168,12 @@ FOCUS adaptation: Hennig computes the ratio along the ridgeline of two fitted Ga
 The clusters here are a hard Leiden partition, so the ratio is computed on the empirical density of
 the units, and merged groups are scored from their input clusters:
 
-- **Pair ratio.** Every pair of Leiden clusters that the neighbour graph of §4 joins is projected on
-  its discriminant axis, the difference of the two means weighted by the inverse pooled
+- **Pair ratio.** Every pair of Leiden clusters that the neighbour graph of §4 joins is projected,
+  in the embedding of §4, on its discriminant axis: the difference of the two means weighted by the inverse pooled
   within-cluster covariance (Fisher's linear discriminant[^fisher1936]). The covariance pools every
   Leiden cluster around its own mean, so it rests on all units, and it is shrunk toward the scaled
   identity with the Ledoit-Wolf estimator[^ledoit2004]. FOCUS design choice: a covariance estimated
-  from the two clusters alone overfits small clusters in 50 dimensions and shows valleys that the
+  from the two clusters alone overfits small clusters in 100 dimensions and shows valleys that the
   data does not have.
 - **Density.** A 512-bin histogram of the projection over its 0.5 % to 99.5 % quantile range is
   smoothed with a Gaussian kernel at the normal-reference bandwidth
@@ -172,14 +194,16 @@ the units, and merged groups are scored from their input clusters:
   0.8 (FOCUS design choice, §8).
 
 Groups are relabelled `0`, `1`, ... by decreasing size. Merging only removes clusters, so a sample
-never has more clusters than Leiden found. Known limit: two populations whose pair ratios have no
-valley are merged even when their means differ; a small domain with weak markers next to a large
-one is merged into it.
+never has more clusters than Leiden found. Known limits: two populations whose pair ratios have no
+valley are merged even when their means differ, so a small domain with weak markers next to a large
+one is merged into it. The neighbourhood embedding correlates adjacent units, so a smooth expression
+field or gradient inside a domain is kept as a few spatially coherent bands instead of one cluster
+(§8); no band mixes two domains.
 
 ## 6. Gradient levels
 
-In `gradient` mode the first principal component of the eligible units is cut at its 1/8, ..., 7/8
-quantiles into eight levels, labelled `0` (lowest) to `7`. The sign of the component is set so its
+In `gradient` mode the neighbourhood mean (§4) of the first principal component of the eligible
+units is cut at its 1/8, ..., 7/8 quantiles into eight levels, labelled `0` (lowest) to `7`. The sign of the component is set so its
 largest absolute loading is positive, which makes the order deterministic. Tied quantiles collapse,
 so a component with few distinct values gives fewer levels. FOCUS design choice: a culture whose
 signal changes along a gradient has no density valley, so the merge of §5 would return a single
@@ -205,47 +229,55 @@ agree). MSI also records the sample type. The merged file keeps the per-sample p
 `.uns['focus_clustering'][sample_id]`, and `.uns['cluster_colors']` follows the merged categories.
 Intermediate matrices, embeddings and graphs are discarded.
 
-The resolution, the merge rule and cutoff, and the removal of the neighbourhood embedding were
-calibrated on synthetic square lattices of 120 x 120 spots with Poisson counts over 300 genes and
-known domains, at two depths: about 2,000 UMIs per spot, clustered as native `spot` units, and about
-130 UMIs per spot, clustered as `bin` units (3 x 3 blocks, about 1,100 UMIs per block). The former
-routine (`clusters-1`: neighbourhood embedding of 1 ring for `spot` and 2 rings for `bin`, Leiden
-0.5, union scores with a veto on input pairs separated by a valley) is listed for comparison. ARI:
-adjusted Rand index against the simulated domains, on eligible spots. Boundary clusters: clusters
-with at least 80 % of their spots within one step of a domain boundary.
+The method was calibrated on synthetic square lattices of 120 x 120 spots with Poisson counts over
+300 genes and known domains, at two depths (about 2,000 UMIs per spot, clustered as native `spot`
+units; about 130 UMIs per spot, clustered as `bin` units of 3 x 3 spots), and on four real samples:
+two Visium HD 16 µm melanoma sections (MEL and MEL2, `sequencing` + `bin`) and two MALDI-TOF
+acquisitions of the same tissue (10 x 20 µm pixels; MEL in positive mode with `tic`, MEL2 in both
+polarities with `none`). The former routine (`clusters-1`: plain neighbourhood mean of 1 ring for
+`spot` and 2 rings for `bin`, Leiden 0.5, union scores with a veto on input pairs separated by a
+valley) is listed for comparison. ARI: adjusted Rand index against the simulated domains, on
+eligible spots. Boundary clusters: clusters with at least 80 % of their spots within one step of a
+domain boundary.
 
 | Data | Former, 2,000 UMIs | Current, 2,000 UMIs | Former, 130 UMIs | Current, 130 UMIs |
 |---|---|---|---|---|
-| 3 domains under a smooth field | 7 clusters, ARI 0.94, 3 boundary clusters | 4, ARI 0.98 | 3, ARI 0.95 | 4, ARI 0.87 |
-| One domain with a gradient | 1 | 1 | 1 | 1 |
+| 3 domains under a smooth field | 7 clusters, ARI 0.94, 3 boundary clusters | 9, ARI 0.66 | 3, ARI 0.95 | 5, ARI 0.87 |
+| One domain with a gradient | 1 | 4 bands | 1 | 4 bands |
 | 2 domains, sharp boundary | 4, ARI 0.97, 2 boundary clusters | 2, ARI 1.00 | 4, ARI 0.90 | 2, ARI 1.00 |
-| 6 domains, markers of decreasing strength | 11, ARI 0.97, 1 boundary cluster | 6, ARI 1.00 | 6, ARI 0.96 | 6, ARI 0.95 |
-| A domain covering 2 % of the sample, under a field | 2, ARI 1.00 | 2, ARI 1.00 | 2, ARI 0.89 | 2, ARI 0.90 |
+| 6 domains, markers of decreasing strength | 11, ARI 0.97, 1 boundary cluster | 6, ARI 1.00 | 6, ARI 0.96 | 6, ARI 0.96 |
+| A domain covering 2 % of the sample, under a field | 2, ARI 1.00 | 2, ARI 1.00 | 2, ARI 0.89 | 3, ARI 0.27 |
 | 2 weak domains | 4, ARI 0.97, 2 boundary clusters | 2, ARI 1.00 | 2, ARI 1.00 | 2, ARI 1.00 |
 
-No current result has a boundary cluster. Cutoffs of 0.7 and 0.8 gave the same results except
-under the smooth field at 130 UMIs (3 and 4 clusters); 0.9 left a gradient in 3 clusters and lost
-the 2 % domain. Without the neighbourhood embedding, single spots at 130 UMIs do not separate the
-domains (ARI 0.1 to 0.35 on native spots); the `sub_cellular` aggregation supplies that signal.
-Scores from the union of two groups recovered the synthetic samples but merged the Visium HD sample
-below to one cluster. Scores from the minimum or the unweighted mean of the pair ratios kept a
-gradient in 2 to 3 bands and lost the 2 % domain.
+No current result has a boundary cluster. The losses are the smooth field and the gradient, kept
+as bands (§5), and the 2 % domain at 130 UMIs, which the field bands absorb. Scores from the union
+of two groups instead of their pair ratios merged the MEL Visium HD sample (without neighbourhood)
+to one cluster; scores from the minimum or the unweighted mean of the pair ratios kept a gradient in
+2 to 3 bands and lost the 2 % domain.
 
-Real data, against the former routine:
+| Data | Former | Without neighbourhood | Current |
+|---|---|---|---|
+| MEL2 Visium HD, 98,728 bins (2 x 2 blocks, 24,188 units) | 5 clusters, coherence 0.87 | 36 Leiden clusters, 2 after merging, coherence 0.81 | 27 Leiden clusters (resolution 2.18), 8 after merging, coherence 0.83, 19 s |
+| MEL Visium HD, 125,467 bins (2 x 2 blocks, 25,834 units) | 7, coherence 0.81 | 18, 7 after merging, coherence 0.51 | 23 (resolution 1.30), 14 after merging, coherence 0.76, 6 s |
+| MEL2 MALDI-TOF, both polarities, 71,325 spectra, `none` | 15 | 31, 18 after merging, coherence 0.57 | 26 (resolution 0.63), 21 after merging, coherence 0.89, 17 s |
+| MEL MALDI-TOF, positive mode, 182,865 spectra, `tic` | 13 | 29, 11 after merging, coherence 0.77 | 27 (resolution 0.47), 17 after merging, coherence 0.91, 36 s |
 
-| Data | Former | Current |
-|---|---|---|
-| Visium HD 16 µm melanoma, 125,467 bins, `sequencing` + `bin` (2 x 2 blocks, 31,562 units) | 12 Leiden clusters, 7 after merging, coherence 0.81, 18 s | 18 at resolution 2.0, 7 after merging, coherence 0.51, 20 s |
-| Same sample as native 16 µm spots (`unit: spot`, 124,985 units) | | 27, 9 after merging, coherence 0.37, 24 s |
-| MALDI-TOF tissue, positive mode, 182,865 spectra of 10 x 20 µm, `tissue`, `tic` | 13 clusters, 41 s | 29 at resolution 2.0, 11 after merging, coherence 0.77, 45 s |
-| Same, `intensity_normalization: none` (median fallback) | | 36, 14 after merging, coherence 0.73, 30 s |
+Without the neighbourhood, the MEL2 Visium HD labels kept a single mass and its margin: on 2 x 2,
+3 x 3 and 5 x 5 blocks (1,000, 3,000 and 10,000 UMIs per block) the merge returned 2, 4 and 2
+clusters, while the former labels showed 5 domains. The MEL2 MALDI-TOF labels were interleaved at
+the scale of single pixels; the clusters differed mainly by the detection of m/z 747.50 and its
+isotopes (detected in 91 % and 44 % of the spectra of two interleaved clusters, Moran's I of the
+detection 0.18), and 1,397 of the 1,430 features detected in 20 % to 95 % of the spectra had a
+detection Moran's I below 0.3. Per-polarity TIC or median normalization, fewer components, more
+neighbours and the removal of those features left the coherence between 0.51 and 0.69. A plain
+neighbourhood mean (1 ring) at the Leiden resolution 2.0 split the MEL2 MALDI-TOF sample into 48
+compact patches. Leiden targets of 10 and 15 clusters gave 4 and 6 clusters on MEL2 Visium HD and 10
+on MEL2 MALDI-TOF, fewer domains than the former labels; 25 gave 8 and 21. One or two rings changed
+the MALDI-TOF results little (16 and 19 clusters at resolution 0.5); two rings recovered more of the
+Visium HD domains (9 against 5 clusters at resolution 2.0).
 
-On the Visium HD sample the current labels keep the domains of the former ones without the clusters
-one unit wide that outlined every domain; without the neighbourhood embedding they are speckled at
-the scale of single blocks, which lowers the coherence. On the MALDI-TOF sample they resolve small
-structures that the former labels joined into large regions.
-
-The MSI features target was calibrated on the same MALDI-TOF acquisition (median 291 detected
+The MSI features target was calibrated before the neighbourhood embedding was added, on the MEL
+MALDI-TOF acquisition (median 291 detected
 features per spectrum), with intensities thinned to emulate smaller pixels: each intensity was read
 as a count of detection quanta (the 5th percentile of the nonzero intensities) and thinned
 binomially, so weak peaks fall below detection first.
@@ -269,4 +301,6 @@ level; the full acquisition stays native under it.
 [^satija2015]: Satija R, Farrell JA, Gennert D, Schier AF, Regev A. Spatial reconstruction of single-cell gene expression data. *Nat Biotechnol* 33:495-502 (2015). [doi:10.1038/nbt.3192](https://doi.org/10.1038/nbt.3192)
 [^wolf2018]: Wolf FA, Angerer P, Theis FJ. SCANPY: large-scale single-cell gene expression data analysis. *Genome Biol* 19:15 (2018). [doi:10.1186/s13059-017-1382-0](https://doi.org/10.1186/s13059-017-1382-0)
 [^deininger2011]: Deininger S-O, Cornett DS, Paape R, et al. Normalization in MALDI-TOF imaging datasets of proteins: practical considerations. *Anal Bioanal Chem* 401:167-181 (2011). [doi:10.1007/s00216-011-4929-z](https://doi.org/10.1007/s00216-011-4929-z)
+[^singhal2024]: Singhal V, Chou N, Lee J, et al. BANKSY unifies cell typing and tissue domain segmentation for scalable spatial omics data analysis. *Nat Genet* 56:431-441 (2024). [doi:10.1038/s41588-024-01664-3](https://doi.org/10.1038/s41588-024-01664-3)
+[^tomasi1998]: Tomasi C, Manduchi R. Bilateral filtering for gray and color images. *Proc. Sixth International Conference on Computer Vision (ICCV)*, 839-846 (1998). [doi:10.1109/ICCV.1998.710815](https://doi.org/10.1109/ICCV.1998.710815)
 [^lloyd1982]: Lloyd SP. Least squares quantization in PCM. *IEEE Trans Inf Theory* 28:129-137 (1982). [doi:10.1109/TIT.1982.1056489](https://doi.org/10.1109/TIT.1982.1056489)

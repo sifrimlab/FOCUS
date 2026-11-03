@@ -28,6 +28,7 @@ from focus.spatial.settings import (
     FEATURES,
     FOREGROUND,
     GRADIENT,
+    NEIGHBOURHOOD_RINGS,
     SIGNAL_TARGETS,
     clustering_preset,
 )
@@ -85,11 +86,13 @@ class TestPreset:
             "mode": DOMAINS,
             "signal": None,
             "signal_target": None,
+            "rings": NEIGHBOURHOOD_RINGS[SpotResolution.STANDARD],
         }
         assert clustering_preset(DOMAINS, SpotResolution.SUB_CELLULAR, COUNTS) == {
             "mode": DOMAINS,
             "signal": COUNTS,
             "signal_target": SIGNAL_TARGETS[COUNTS],
+            "rings": NEIGHBOURHOOD_RINGS[SpotResolution.SUB_CELLULAR],
         }
         modes = {t: sample_profile(t).clustering_mode for t in MsiSampleType.list()}
         assert modes == {
@@ -101,7 +104,7 @@ class TestPreset:
         culture = clustering_preset(GRADIENT, SpotResolution.SUB_CELLULAR, FEATURES)
         assert culture["signal"] == FEATURES
         grid = clustering_preset(FOREGROUND, SpotResolution.SUB_CELLULAR, FEATURES)
-        assert grid["signal"] is None
+        assert grid["signal"] is None and grid["rings"] == 0
 
     def test_sub_cellular_coarsens_sparse_data_and_labels_reach_every_spot(
         self,

@@ -146,6 +146,8 @@ shared with MSI, described in [Alignment Clustering](spatial_clustering.md), thr
   `unit: cell` sum spots into lattice blocks or Voronoi supercells until the median unit holds
   1,000 UMIs (`resolution: sub_cellular`), on the raw counts of the retained spots and genes.
 - **Eligibility.** A unit needs at least 50 UMIs and 20 detected genes.
+- **Neighbourhood.** 1 ring for `spot`, 2 rings for `bin` and `cell`, edge-preserving
+  ([Alignment Clustering §4](spatial_clustering.md#4-neighbourhood-embedding-and-partition)).
 - **Representation.** The configured normalization (§3.5) applied in memory to the summed counts of
   the eligible units; `none` uses the technology's `auto` method, and `size_factors` is followed by
   `log1p` ([Alignment Clustering §3](spatial_clustering.md#3-representation)). The normalization

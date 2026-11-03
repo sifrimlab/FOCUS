@@ -13,7 +13,8 @@ import scipy.sparse as sp
 from focus.runtime.reporter_context import get_reporter
 from focus.runtime.reporting import StepReporter
 from focus.spatial.clusters import label_coherence
-from focus.spatial.partition import partition
+from focus.spatial.partition import Neighbourhood, partition
+from focus.spatial.smoothing import similarity_operator
 from focus.spatial.settings import (
     COUNTS,
     FOREGROUND,
@@ -123,14 +124,17 @@ def cluster_spots(
        normalized, log-scale matrix: raw values are never clustered.
     5. Up to ``n_top_features`` highly variable features (Scanpy, Seurat dispersion flavor) and
        sparse PCA.
-    6. ``domains`` mode: kNN graph on the PCs, Leiden at an overclustering resolution (lowered
+    6. ``domains`` mode: kNN graph on the spatial embedding, Leiden at an overclustering resolution (lowered
        while the median cluster is too small for the valley test, :func:`_overcluster`), then
        :func:`merge_unsupported_clusters` joins adjacent clusters without a density valley.
-       ``gradient`` mode: ordered quantile levels of the first principal component.
+       ``gradient`` mode: ordered quantile levels of the neighbourhood mean of the first component.
     7. Every spot takes its unit's label; spots of ineligible units and excluded spots are
        ``'unassigned'``.
 
-    No spatial smoothing enters the representation or the labels. Units and every intermediate
+    Space enters through the clustering embedding only: each unit's components are joined to their
+    mean over its spatial neighbourhood (``preset['rings']``), weighted by expression similarity so
+    the mean does not cross sharp boundaries (:func:`similarity_operator`). The representation and
+    the labels are never smoothed. Units and every intermediate
     live in memory only. Deterministic (seeded PCA, neighbours and Leiden).
 
     Parameters
@@ -196,7 +200,8 @@ def cluster_spots(
         info["status"] = "insufficient_features"
         return _finish(labels, eligible, info)
     depth = np.log1p(np.asarray(summed[kept].sum(axis=1), dtype=np.float64).ravel())
-    unit_labels = partition(sub, preset["mode"], params, depth, info)
+    neighbourhood = _neighbourhood(units, unit_ok, preset["rings"])
+    unit_labels = partition(sub, preset["mode"], params, depth, info, neighbourhood)
     del sub
     gc.collect()
     if unit_labels is None:
@@ -211,6 +216,15 @@ def cluster_spots(
         info["label_coherence"] = coherence
     reporter.detail(_summary(info, preset["mode"]))
     return _finish(labels, eligible, info)
+
+
+def _neighbourhood(
+    units: SpatialUnits, unit_ok: np.ndarray, rings: int
+) -> Neighbourhood | None:
+    """Edge-preserving neighbourhood of the eligible units, built from their components."""
+    if rings == 0:
+        return None
+    return lambda pcs: similarity_operator(units, rings, unit_ok, pcs)
 
 
 def _new_info(
@@ -329,8 +343,9 @@ def _summary(info: ClusterInfo, mode: str) -> str:
         )
     )
     coherence = info.get("label_coherence")
+    rings = info["parameters"].get("rings", 0)
     return (
         f"Clustering: {info['representation']}, {info['n_selected_features']} features, "
-        f"{info['n_pcs']} PCs, {partition}, "
+        f"{info['n_pcs']} PCs, neighbourhood {rings} rings, {partition}, "
         f"coherence {'n/a' if coherence is None else f'{coherence:.2f}'}"
     )

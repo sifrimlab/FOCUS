@@ -71,7 +71,7 @@ Run by `SpatialTranscriptomic.preprocess_data()`. A cached file is reused only w
 6. **Area**: `obs['focus_area']` holds the area used by area normalization: the `spot_size` area for spots and bins, the cell area column for cells.
 7. **Mitochondrial gene removal (optional)**: with `remove_mitochondrial_genes: true`, the flagged genes are dropped. The QC metrics of step 5 still describe the matrix before removal.
 8. **Observation names**: prefixed with `<sample_id>_`, unless every name already carries that prefix.
-9. **Cluster labels**: alignment-only labels computed on the configured normalization (`none`: the technology's `auto` method), without spatial smoothing. `spot` clusters native spots; `bin` and `cell` sum spots into blocks of 1,000 UMIs. See [the scientific methods](../scientific/st_methods.md#36-per-sample-clustering) and [Alignment Clustering](../scientific/spatial_clustering.md).
+9. **Cluster labels**: alignment-only labels computed on the configured normalization (`none`: the technology's `auto` method), with an edge-preserving neighbourhood in the clustering embedding (1 ring for `spot`, 2 rings for `bin` and `cell`). `spot` clusters native spots; `bin` and `cell` sum spots into blocks of 1,000 UMIs. See [the scientific methods](../scientific/st_methods.md#36-per-sample-clustering) and [Alignment Clustering](../scientific/spatial_clustering.md).
 10. **Write**: raw counts in `.X` (no layer), sparse CSR, gzip, written to a temporary file and renamed, so an interrupted run never leaves a truncated cache.
 
 ### Dataset-level steps

@@ -364,7 +364,7 @@ Out of scope, still open:
 ## 10. Alignment clustering redesign
 
 ST and MSI labels for the alignment GUI now come from one routine, `focus.spatial.clustering.cluster_spots`,
-configured by the modality presets, without spatial smoothing. Method version `clusters-2`, with
+configured by the modality presets, with an edge-preserving neighbourhood embedding. Method version `clusters-2`, with
 ST `st-6` and MSI `msi-14`: every ST and MSI output is rebuilt once, and every ST and MSI
 alignment pair is aligned again once (the alignment key is still the preprocessing fingerprint).
 See `docs/scientific/spatial_clustering.md`.
@@ -374,21 +374,20 @@ See `docs/scientific/spatial_clustering.md`.
 | Two parallel pipelines (ST `native_cluster_labels`, MSI `compute_cluster_labels`) | One routine; the modality supplies the spots that take part, the unit eligibility and the representation. MSI gains eligibility, provenance and colours like ST. |
 | Labels computed on raw counts with an internal normalization | Labels follow the configured normalization (ST: applied in memory per sample; MSI: the normalized spectra). `none` falls back to the ST technology's `auto` method or the MSI nonzero median. The ST normalization enters the sample fingerprint. |
 | Presets ignored by the clustering | Modes: `domains` (ST, MSI tissue), ordered `gradient` levels (MSI `cell_culture`), `foreground` without clustering (MSI `microgrid`). MSI background spectra are `unassigned`. MSI `resolution: sub_cellular` aggregates pixels until the median block detects 200 features. |
-| Neighbourhood embedding distorts domains; clusters one unit wide at sharp boundaries (3.3) | Embedding removed; Leiden overclusters (resolution 2.0, halved while the median cluster holds fewer than 300 units) and the merge joins the splits. No boundary cluster in the synthetic calibration; the Visium HD sample keeps its domains without the outlining clusters. |
+| Neighbourhood embedding distorts domains; clusters one unit wide at sharp boundaries (3.3) | The neighbourhood mean is weighted by expression similarity (bilateral), so it does not average across sharp boundaries; Leiden overclusters into about 25 clusters (resolution searched, at least 300 units per cluster) and the merge joins the splits. No boundary cluster in the synthetic calibration. Removing the neighbourhood altogether was tried and rejected: MEL2 Visium HD merged to 2 clusters and the MEL2 MALDI-TOF labels were speckled by detection dropout. |
 | Valley-ratio histogram on the min-max range (2.2) | Range from the 0.5 % to 99.5 % quantiles; an outlier no longer hides a valley (test). |
 | Merge axis between centroids, docstring says discriminant (3.3) | Fisher discriminant axis with the pooled within-cluster covariance, Ledoit-Wolf shrunk. |
 | Union scores with a veto | Groups are scored by the contact-weighted mean of their input pair ratios. Union scores merged the Visium HD sample to one cluster; the veto kept 4 to 22 fragments of overclustered synthetic domains. |
 
-Verified on the MEL Visium HD 16 µm sample (`sequencing`, `bin`: 7 clusters as before, in 20 s)
-and on the positive-mode MALDI-TOF acquisition in `test_data/MSI` (`tissue`, `tic`: 11 clusters
-against 13, finer structures resolved). The suite passes with 254 tests.
+Verified on the MEL and MEL2 Visium HD 16 µm samples (`sequencing`, `bin`: 14 and 8 clusters,
+against 7 and 5) and on the MEL and MEL2 MALDI-TOF acquisitions in `test_data` (17 and 21 clusters
+against 13 and 15, neighbour coherence 0.91 and 0.89). The suite passes with 255 tests.
 
 Out of scope, still open:
 
 - A small domain with weak markers beside a large one is merged into it (no density valley between
   them).
-- Without smoothing, labels of weak units are speckled at the scale of one unit; the Visium HD
-  neighbour coherence falls from 0.81 to 0.51.
+- A smooth expression field or gradient inside a domain shows as a few coherent bands.
 - Alignment keyed on geometry instead of the preprocessing fingerprint (section 4).
 
 [^xu2024]: Xu H. et al. A whole-slide foundation model for digital pathology from real-world data. *Nature* 630, 181-188 (2024). [doi:10.1038/s41586-024-07441-w](https://doi.org/10.1038/s41586-024-07441-w)

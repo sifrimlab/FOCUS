@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 import numpy as np
 import scipy.sparse as sp
-from sklearn.metrics import adjusted_rand_score
+from sklearn.metrics import adjusted_rand_score, homogeneity_score
 
 from focus.preprocessing.transcriptomics.clustering import (
     clustering_normalization,
@@ -133,7 +133,8 @@ class TestNativeClustering:
         ]:
             labels, _, info = spot_cluster_labels(X, names, grid(120), SPOT, requested)
             assert info["representation"] == expected
-            assert adjusted_rand_score(np.arange(120) >= 60, labels) > 0.9, requested
+            # No cluster mixes the two domains.
+            assert homogeneity_score(np.arange(120) >= 60, labels) > 0.99, requested
         _, _, info = spot_cluster_labels(
             X, names, grid(120), imaging, "auto", np.full(120, 30.0)
         )
