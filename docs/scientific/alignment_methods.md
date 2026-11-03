@@ -126,7 +126,7 @@ lift that to the target's full resolution.
 
 Every spot is displayed at its original center and footprint. There is no observation-count
 threshold for display pooling and no majority-vote label grid. The acquisition lattice inferred
-from `.obsm['spatial']` ([ST §3.6.1](st_methods.md#361-clustering-units)) sets the axes of the
+from `.obsm['spatial']` ([Alignment Clustering §2](spatial_clustering.md#2-clustering-units)) sets the axes of the
 square footprints when its axes are approximately orthogonal and its steps match `spot_size`.
 Other layouts retain generic rectangular footprints.
 

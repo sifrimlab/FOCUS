@@ -61,7 +61,7 @@ class TransformationType(_AbstractEnum):
 
 
 class MsiSampleType(_AbstractEnum):
-    """MSI experiment type; calibrates foreground detection, its spatial cleanup and the clustering."""
+    """MSI experiment type; calibrates foreground detection, its spatial cleanup and the clustering mode."""
 
     TISSUE: Final = "tissue"  # tissue section on a clean or empty background
     TISSUE_NOISY: Final = (
@@ -93,10 +93,12 @@ class MicroscopyZProjection(_AbstractEnum):
 
 
 class SpotResolution(_AbstractEnum):
-    """Spot modality resolution class; selects the clustering preset (CLUSTERING_PRESETS)."""
+    """Spot modality resolution class; sets the unit aggregation of the alignment clustering."""
 
-    STANDARD: Final = "standard"  # multicellular spots: Visium, MALDI-MSI
-    SUB_CELLULAR: Final = "sub_cellular"  # weak sub-cellular spots: Visium HD, Xenium-derived, high-res MSI
+    STANDARD: Final = (
+        "standard"  # multicellular spots, clustered natively: Visium, MALDI-MSI
+    )
+    SUB_CELLULAR: Final = "sub_cellular"  # weak spots, summed into blocks: Visium HD, Xenium-derived, high-res MSI
 
 
 class StCapture(_AbstractEnum):

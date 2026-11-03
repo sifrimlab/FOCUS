@@ -86,8 +86,8 @@ DISPLAY_NAMES: dict[str, str] = {
     MsiSampleType.CELL_CULTURE: "Cell culture (gradient domains)",
     MsiSampleType.MICROGRID: "Microgrid (isolated single cells)",
     # Spot resolution
-    SpotResolution.STANDARD: "Standard",
-    SpotResolution.SUB_CELLULAR: "Sub-cellular",
+    SpotResolution.STANDARD: "Standard (native pixels)",
+    SpotResolution.SUB_CELLULAR: "Sub-cellular (aggregate weak pixels)",
     # ST technology and normalization
     StCapture.SEQUENCING: "Sequencing (Visium, Visium HD, Stereo-seq, Slide-seq)",
     StCapture.IMAGING: "Imaging (Xenium, MERFISH, CosMx)",

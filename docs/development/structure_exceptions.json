@@ -144,11 +144,6 @@
     "category": "kernel",
     "reason": "Preview mosaic kernel keeps channel-to-scan placement, weighted overlap accumulation, division and PCA/CLAHE visualization together; this preview controls subsequent Raman background segmentation."
   },
-  "src/focus/preprocessing/transcriptomics/clustering.py::native_cluster_labels": {
-    "max_lines": 128,
-    "category": "kernel",
-    "reason": "Analytical clustering kernel retains raw-count validation, feature selection, normalization, PCA/neighbours/Leiden and optional spatial merging in their original random-state and numerical order."
-  },
   "src/focus/preprocessing/transcriptomics/clustering.py::spot_cluster_labels": {
     "max_lines": 53,
     "category": "kernel",
@@ -189,10 +184,10 @@
     "category": "kernel",
     "reason": "Generator protocol kernel keeps sample contexts, cancellation checks, progress increments and finally cleanup around each yield. Extracting the yield lifecycle risks changing close and interruption semantics."
   },
-  "src/focus/spatial/clustering.py::compute_cluster_labels": {
-    "max_lines": 72,
+  "src/focus/spatial/clustering.py::cluster_spots": {
+    "max_lines": 66,
     "category": "kernel",
-    "reason": "Shared MSI analytical-label kernel retains native-count copies, spatial-unit aggregation, normalization, PCA/neighbours/Leiden and cluster merging in the existing deterministic order."
+    "reason": "Shared clustering orchestration: each step's early exit (foreground mode, too few spots, units, features or components) returns the same label array and provenance, which the steps fill in order; the steps themselves are separate functions."
   },
   "src/focus/spatial/clusters.py::merge_unsupported_clusters": {
     "max_lines": 64,

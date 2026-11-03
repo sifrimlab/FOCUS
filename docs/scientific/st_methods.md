@@ -31,7 +31,7 @@ Two settings describe the technology and select every calibrated value (§3.3, �
 | Calibrated value | Rule |
 |---|---|
 | Outlier rule | `spot`: local (§3.3.2); `cell`: global (§3.3.3); `bin`: none |
-| Clustering preset | `spot`: `standard`; `bin`, `cell`: `sub_cellular` (§3.6) |
+| Clustering aggregation | `spot`: native (`standard`); `bin`, `cell`: blocks of 1,000 UMIs (`sub_cellular`) (§3.6) |
 | Gene rule | `sequencing`: 20 observations in one sample; `imaging`: 1 (§4.1) |
 | `auto` normalization | `sequencing`: `log_normalize`; `imaging`: `area_log_normalize` (§4.3) |
 
@@ -137,173 +137,23 @@ retained spots, **with mitochondrial genes still present**: `total_counts`, `n_g
 
 ### 3.6 Per-sample clustering
 
-Cluster labels (`.obs['cluster']`) are consumed only by the alignment GUI for spot
-colouring. They are computed on the raw counts of the retained spots and genes.
+Cluster labels (`.obs['cluster']`) colour spots in the alignment GUI only. ST runs the clustering
+shared with MSI, described in [Alignment Clustering](spatial_clustering.md), through
+`spot_cluster_labels`:
 
-ST uses `spot_cluster_labels`. It chooses the analytical units (§3.6.1), sums the raw counts
-of each unit, clusters the units with steps 1 to 6, and gives every spot the label and
-eligibility of its unit. Only `.obsm['spatial']` defines the units and their neighbourhoods;
-no other metadata (such as `array_row` / `array_col`) is read.
+- **Mode.** `domains` for every unit.
+- **Aggregation.** `unit: spot` clusters native spots (`resolution: standard`); `unit: bin` and
+  `unit: cell` sum spots into lattice blocks or Voronoi supercells until the median unit holds
+  1,000 UMIs (`resolution: sub_cellular`), on the raw counts of the retained spots and genes.
+- **Eligibility.** A unit needs at least 50 UMIs and 20 detected genes.
+- **Representation.** The configured normalization (§3.5) applied in memory to the summed counts of
+  the eligible units; `none` uses the technology's `auto` method, and `size_factors` is followed by
+  `log1p` ([Alignment Clustering §3](spatial_clustering.md#3-representation)). The normalization
+  is part of the sample fingerprint.
 
-The `unit` setting selects one of two presets (`spot`: `standard`; `bin` and `cell`:
-`sub_cellular`). Everything else is shared.
-
-| Preset | Intended data | Neighbourhood | Unit growth for signal |
-|---|---|---|---|
-| `standard` | Multicellular spots (Visium) | 1 ring | None; native spots below the cap |
-| `sub_cellular` | Weak sub-cellular units (Visium HD bins, segmented cells, imaging bins) | 2 rings | Until the median unit holds 1,000 UMIs |
-
-Shared values: at most 250,000 units, eligibility of 50 UMIs and 20 detected genes per unit,
-2,000 HVGs, 50 PCs, 15 neighbours, Leiden resolution 0.5, merge cutoff 0.8, seed 0. MSI uses the
-same feature budget and merging ([MSI §10](msi_methods.md#10-per-sample-clustering)).
-
-1. **Clustering eligibility.** A unit needs at least 50 UMIs and 20 detected genes. These
-   alignment-only thresholds are not universal biological QC cutoffs. Spots of ineligible
-   units remain in the exported matrix with the label `unassigned` and a neutral display
-   color. Zero-count units are always unassigned.
-2. **Analytical representation.** On an independent sparse copy of eligible raw counts,
-   remove unexpressed genes, normalize to 10,000 counts, apply `log1p`, select up to 2,000
-   highly variable genes with Scanpy's Seurat dispersion method, and compute sparse centered
-   PCA (up to 50 PCs). This feature selection never subsets the output expression matrix.
-   Dataset-level gene filters run later and do not redefine these per-sample alignment labels.
-3. **Spatial embedding.** Each eligible unit is represented by its own PCs joined to the mean
-   PCs of its neighbourhood (§3.6.2).
-4. **Partition.** A neighbor graph (up to 15 neighbors) on the spatial embedding and Leiden[^traag2019]
-   (`resolution=0.5`, `flavor='igraph'`, `n_iterations=2`, `directed=False`) run on the
-   eligible units. PCA, neighbor construction and Leiden receive seed 0. Scanpy uses
-   approximate neighbor construction for large inputs.
-5. **Merging.** Adjacent Leiden clusters that no density valley separates are merged (§3.6.3).
-6. **Insufficient information.** Fewer than three eligible units or fewer than two usable PCs
-   yields unassigned labels, with the reason recorded in provenance.
-
-`.obs['clustering_eligible']` records eligibility; `.uns['focus_clustering']` records the
-preset, method version, parameters, software versions, units, selected genes, cluster sizes,
-the number of Leiden clusters (`n_leiden_clusters`), the number and ratios of merges
-(`n_merges`, `merge_ratios`), PCA variance, PC/count-depth correlations and `label_coherence`:
-the agreement of each unit's label with its 1-ring neighbours, corrected for chance (0 for
-labels placed at random, 1 when all neighbours agree). Intermediate expression, embeddings and graphs are discarded.
-Count-depth correlation is descriptive and is not automatically regressed out.
-
-#### 3.6.1 Clustering units
-
-`plan_spatial_units` keeps the spots as units unless one of two criteria applies:
-
-- **Cap.** The sample has more than 250,000 spots.
-- **Signal** (`sub_cellular` only). The sample has more than 1,000 spots and the median spot
-  holds fewer than 1,000 UMIs.
-
-Otherwise spots are grouped into coarser units. A grid whose cell size is not an integer
-multiple of the acquisition step, or whose cells are not aligned to the acquisition lattice,
-gives cells with periodically varying spot counts, which appear as a grid pattern in the
-labels. Units are therefore built from the acquisition lattice, inferred from the coordinates:
-
-- **Lattice inference** (`infer_lattice`). On a seeded sample of at most 20,000 spots, the 8
-  nearest displacements of each spot give two basis vectors: the dominant direction among
-  nearest-shell displacements, and the shortest displacement cluster more than 25 degrees
-  away from it. Spots within 20 steps of the most central spot are rounded to lattice indices
-  and the basis and origin are refitted by least squares; the radius triples until it covers
-  every spot, so a small basis error cannot accumulate over thousands of steps. The lattice is
-  accepted when the 99th percentile residual is at most 0.1 step, the maximum residual is at
-  most 0.45 step, and every spot has its own lattice site. This covers square lattices at any
-  rotation (Visium HD), hexagonal lattices (standard Visium, in a 60 degree basis) and
-  rectangular rasters. The lattice step comes from the coordinates; `spot_size` is the spot
-  footprint and can differ from it (55 µm spots at a 100 µm pitch on standard Visium).
-- **Blocks.** The unit of a spot is the block (i // k, j // k) of its lattice indices (i, j),
-  counted from the smallest index. Every interior block holds exactly k² sites (a
-  parallelogram on hexagonal lattices), so block occupancy has no periodic component, and
-  the blocks follow the lattice, not the image axes. k is the smallest integer for which the
-  number of occupied blocks is at most the cap and, under the signal criterion, the median
-  block total reaches 1,000 UMIs. The signal criterion stops growing k before fewer than
-  1,000 blocks would remain; the provenance then records `signal_limited` and a warning is
-  reported.
-- **Voronoi supercells.** Layouts without a lattice (segmented cells, beads) are grouped into
-  m tiles. m spots drawn with the seeded random generator are the initial seeds, every spot
-  is assigned to its nearest seed, and five Lloyd iterations move each seed to the centroid
-  of its tile. Seeds follow spot density, and tiles hold similar spot counts with no periodic
-  structure. m is the cap, reduced to n / s under the signal criterion, where
-  s = ⌈1,000 / median spot count⌉, and never below 1,000.
-
-Units exist only in memory. `.uns['focus_clustering']['units']` records the method
-(`native`, `lattice` or `voronoi`), the layout (`lattice` or `irregular`), the lattice step,
-the number of units, the criterion that set their size (`cap`, `signal` or both) and, for
-blocks, `k` and the block size in coordinate units. Per-spot cluster sizes and eligible-spot
-counts are recorded next to the per-unit values.
-
-#### 3.6.2 Neighbourhood embedding
-
-Expression of a single sub-cellular unit is dominated by sampling noise, so labels computed
-from each unit alone scatter at the scale of single units. Each unit's clustering embedding
-is therefore `[sqrt(1 - w) * own PCs, sqrt(w) * neighbourhood mean PCs]` with w = 0.8, the
-weighting BANKSY uses for domain segmentation. The neighbourhood mean averages the unit with
-its eligible neighbours:
-
-- **Lattice layouts:** the units whose grid offset has a physical length of at most
-  (r + 0.5) times the longest grid step, for r rings: 8 units on square grids and 6 on
-  hexagonal grids for r = 1. The neighbourhood is isotropic in physical space.
-- **Irregular layouts:** the 3r(r + 1) nearest unit centroids (6 for r = 1).
-
-The unit's own PCs are kept because a neighbourhood mean alone makes adjacent units nearly
-identical; the neighbor graph then reproduces the spatial grid, and Leiden divides
-homogeneous tissue into compact patches. On a synthetic two-domain lattice with weak
-per-spot signal, the 2-ring mean alone gave 15 to 17 patches, while the weighted embedding
-recovered the two domains (adjusted Rand index 0.99). Expression itself is never smoothed.
-
-The presets were calibrated on a Visium HD sample with 16 µm bins (median 539 UMIs per bin)
-and on data derived from it. Neighbour coherence was:
-
-| Data | Setting | Coherence |
-|---|---|---|
-| 16 µm bins, unchanged | Labels from each bin alone | 0.47 |
-| 16 µm bins, unchanged | `sub_cellular` (2 x 2 blocks, 2 rings) | 0.81 |
-| Counts thinned 64 times, emulating 2 µm bins | Signal target of 50 UMIs | 0.06 |
-| Counts thinned 64 times, emulating 2 µm bins | Signal target of 1,000 UMIs | 0.71 |
-| 3 x 3 sums at 96 µm pitch, emulating standard Visium | No neighbourhood | 0.37 |
-| 3 x 3 sums at 96 µm pitch, emulating standard Visium | `standard` (1 ring) | 0.67 |
-
-#### 3.6.3 Merging splits without a density valley
-
-Leiden at a fixed resolution also divides continuous variation, such as a gradient or a smooth
-expression program, into bands, and the number of bands grows with the number of units.
-`merge_unsupported_clusters` merges these splits after the partition. It follows the
-hierarchical merging of Hennig[^hennig2010]: the pair of clusters whose union is closest to
-unimodal is merged, the criterion is recomputed for the merged cluster, and merging stops at a
-cutoff. The criterion is Hennig's ridgeline ratio: the density minimum between the two clusters
-divided by the smaller of the two density maxima on either side of it.
-
-FOCUS adaptation: Hennig computes the ratio along the ridgeline of two fitted Gaussian components.
-The clusters here are a hard Leiden partition, so the ratio is computed on the empirical density
-of the units:
-
-- **Adjacency.** Two groups are candidates only when the neighbor graph of step 4 joins them.
-- **Projection.** The units of both groups are projected on the axis between the two group
-  centroids in the clustering embedding.
-- **Density.** A 512-bin histogram of the projection is smoothed with a Gaussian kernel at the
-  normal-reference bandwidth 0.9 · min(sd, IQR / 1.34) · n^(-1/5)[^silverman1986]. The valley is
-  the density minimum between the two group medians; the ratio divides it by the smaller of the
-  density maxima on either side. The ratio is 1 for any unimodal density and tends to 0 for a
-  clean gap.
-- **Merge rule.** The candidate pair with the highest ratio is merged while that ratio is at
-  least 0.8. FOCUS design choice: a merge is refused when an adjacent pair of the Leiden
-  clusters across the two groups has a ratio below 0.8. Without this rule, a merged group that a
-  large mixed cluster dominates can absorb a cluster it was separated from, and the merges
-  cascade; on the weak-domain sample below, down to a single cluster.
-
-Groups are relabelled `0`, `1`, ... by decreasing size. Merging only removes clusters, so a sample
-never has more clusters than Leiden found. The cutoff 0.8 is a FOCUS design choice, calibrated on
-synthetic square lattices with Poisson counts and 1-ring smoothing (ARI: adjusted Rand index
-against the simulated domains):
-
-| Data | Units | Leiden clusters | After merging |
-|---|---|---|---|
-| 3 domains under a smooth expression field and a depth field | 102,400 | 6 (ARI 0.79) | 3 (ARI 1.00) |
-| One domain with a gradient | 102,400 | 3 | 1 |
-| 2 domains joined by a 12-unit mixed boundary | 102,400 | 3 (ARI 0.98) | 3 (ARI 0.98) |
-| 3 weak domains under a stronger continuous field | 102,400 | 5 (ARI 0.46) | 3 (ARI 0.18) |
-| A domain covering 1.9% of the sample | 22,500 | 2 | 2 (ratio 0.01) |
-
-Cutoffs of 0.7 and 0.8 gave the same result on the first sample; 0.9 left 4 clusters. In the
-weak-domain sample the domains are not separable in the embedding, and merging cannot recover them. Merging
-takes a fraction of a second on these samples, while the neighbor graph takes about 20 s.
+`.obs['clustering_eligible']` records eligibility and `.uns['focus_clustering']` the provenance
+([Alignment Clustering §8](spatial_clustering.md#8-provenance-and-calibration)). The per-sample
+matrix keeps raw counts.
 
 ### 3.7 Output metadata and persistence
 
@@ -452,6 +302,3 @@ and registration caches.
 [^wolf2018]: Wolf FA, Angerer P, Theis FJ. SCANPY: large-scale single-cell gene expression data analysis. *Genome Biol* 19:15 (2018). [doi:10.1186/s13059-017-1382-0](https://doi.org/10.1186/s13059-017-1382-0)
 [^lause2021]: Lause J, Berens P, Kobak D. Analytic Pearson residuals for normalization of single-cell RNA-seq UMI data. *Genome Biol* 22:258 (2021). [doi:10.1186/s13059-021-02451-7](https://doi.org/10.1186/s13059-021-02451-7)
 [^osta]: Bioconductor. *Orchestrating Spatial Transcriptomics Analysis with Bioconductor* (OSTA), chapter "Normalization". [bioconductor.org/books/release/OSTA](https://bioconductor.org/books/release/OSTA/)
-[^traag2019]: Traag VA, Waltman L, van Eck NJ. From Louvain to Leiden: guaranteeing well-connected communities. *Sci Rep* 9:5233 (2019). [doi:10.1038/s41598-019-41695-z](https://doi.org/10.1038/s41598-019-41695-z)
-[^hennig2010]: Hennig C. Methods for merging Gaussian mixture components. *Adv Data Anal Classif* 4:3-34 (2010). [doi:10.1007/s11634-010-0058-3](https://doi.org/10.1007/s11634-010-0058-3). Hierarchical merging and the ridgeline ratio, as implemented in the fpc package (`mergenormals`, method `ridge.ratio`).
-[^silverman1986]: Silverman BW. *Density Estimation for Statistics and Data Analysis*. Chapman and Hall, London (1986). [doi:10.1201/9781315140919](https://doi.org/10.1201/9781315140919). Normal-reference rule-of-thumb bandwidth.

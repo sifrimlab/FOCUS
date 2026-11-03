@@ -30,6 +30,18 @@ def reference_offsets(
     return dict(zip(np.round(nearest, 4), (references - nearest) / nearest * 1e6))
 
 
+def assert_merged_clustering(merged: ad.AnnData, representation: str) -> None:
+    """Per-sample alignment labels: provenance per sample, colours of the merged categories."""
+    assert sorted(merged.uns["focus_clustering"]) == ["A", "B"]
+    for sample_id in ("A", "B"):
+        info = merged.uns["focus_clustering"][sample_id]
+        assert info["representation"] == representation
+        assert info["mode"] == "domains"
+    categories = list(merged.obs["cluster"].cat.categories)
+    assert len(merged.uns["cluster_colors"]) == len(categories)
+    assert merged.obs["clustering_eligible"].dtype == bool
+
+
 class TestProcessDataset:
     """End to end on two synthetic samples with different drift (a sample-level batch)."""
 
@@ -70,6 +82,7 @@ class TestProcessDataset:
             outputs = run()
             merged = ad.read_h5ad(outputs["merged"])
             assert "focus_preprocessing_fingerprint" in merged.uns
+            assert_merged_clustering(merged, "median + log1p")
             assert "recalibration_ppm_pos" in merged.obs
             assert np.all(np.isfinite(merged.obs["recalibration_ppm_pos"]))
 
@@ -221,6 +234,11 @@ class TestMicrogridDataset:
             # Pixel (line, col) is spectrum line * 40 + col.
             foreground = np.flatnonzero(adata.obs["foreground"].astype(bool).to_numpy())
             assert {(int(i) // 40, int(i) % 40) for i in foreground} == self.CELLS
+            # Alignment labels: the cells, without clustering.
+            labels = adata.obs["cluster"].astype(str).to_numpy()
+            assert set(labels[foreground]) == {"0"}
+            assert set(np.delete(labels, foreground)) == {"unassigned"}
+            assert adata.uns["focus_clustering"]["status"] == "foreground_only"
             # Without internal standards the sample keeps its own mass scale (its mean drift): the
             # cell ions sit where the calibrants do.
             mz = adata.var["mz"].to_numpy(dtype=np.float64)

@@ -726,62 +726,27 @@ The normalized matrix is `.X`.
 
 ## 10. Per-sample clustering
 
-After normalization, per-sample cluster labels are computed (`compute_cluster_labels`) and stored in
-`.obs['cluster']`. They are consumed only by the alignment GUI for categorical spot colouring, and no
-downstream algorithm uses them numerically. The routine therefore computes a fast Leiden-*like*
-partition instead of an exact Leiden over every spot.
+After normalization, per-sample cluster labels are stored in `.obs['cluster']`. They colour spots
+in the alignment GUI only. MSI runs the clustering shared with ST, described in
+[Alignment Clustering](spatial_clustering.md), through `label_sample`:
 
-`compute_cluster_labels` groups spots with the unit planner shared with ST
-([ST §3.6.1](st_methods.md#361-clustering-units)), using the cap criterion only, and builds
-the same neighbourhood embedding ([ST §3.6.2](st_methods.md#362-neighbourhood-embedding)).
-The modality setting `resolution` sets the neighbourhood: 1 ring for `standard`
-(multicellular pixels, such as MALDI-MSI at tens of micrometres) and 2 rings for
-`sub_cellular` (weak high-resolution pixels). `sample_type: microgrid` uses no neighbourhood (0
-rings). FOCUS design choice: a microgrid cell covers about one pixel, and the mean of its
-neighbourhood is background. ST clusters the units with its own steps
-([ST §3.6](st_methods.md#36-per-sample-clustering)). The alignment GUI renders native spots
-in both cases
+- **Mode.** From `sample_type`: `domains` for `tissue` and `tissue_noisy`, ordered `gradient` levels
+  for `cell_culture`, `foreground` for `microgrid`
+  ([Alignment Clustering §1](spatial_clustering.md#1-presets)).
+- **Spectra.** Foreground spectra with at least one peak (§4); background spectra are
+  `unassigned` and take no part in any unit.
+- **Aggregation.** `resolution: standard` clusters native pixels (summed into k x k raster blocks
+  only above 250,000 spectra); `resolution: sub_cellular` sums pixels into raster blocks until the
+  median block detects 200 features. `microgrid` never aggregates.
+- **Representation.** The normalized spectra `.X` (§9) averaged over each unit, then `log1p`;
+  `intensity_normalization: none` divides each summed spectrum by the median of its nonzero
+  features instead ([Alignment Clustering §3](spatial_clustering.md#3-representation)).
+
+`.obs['clustering_eligible']` records eligibility, `.uns['focus_clustering']` the provenance
+(including `sample_type`) and `.uns['cluster_colors']` the colours of the categories. The merged
+file keeps the per-sample provenance in `.uns['focus_clustering'][sample_id]` and the colours of
+the merged categories. The alignment GUI renders native spots
 ([Alignment §4b](alignment_methods.md#4b-native-spot-display-and-compact-transport)).
-
-The input is the raw binned matrix `.layers['raw']`, whatever the `intensity_normalization`. For a
-sample with \(n\) spots and cap \(C = 250{,}000\):
-
-- **\(n > C\)**: the spots are coarsened, which also aggregates the weak signal of an individual
-  ultra-high-resolution MSI spot into a signal where PCA/Leiden can resolve structure. MSI
-  coordinates are rotation-corrected raster centres, so the acquisition raster is inferred from
-  `.obsm['spatial']` alone, and spots are grouped into k x k raster blocks with the
-  smallest k that gives at most \(C\) occupied blocks. Interior blocks hold exactly k² spots, so
-  block occupancy has no periodic component. When the coordinates do not sit on raster nodes,
-  Voronoi supercells are used instead. All spots of a unit are **summed** into one pseudo-spot.
-- **\(n \le C\)**: no coarsening; Leiden runs on every spot.
-
-Each row of that matrix (spot or pseudo-spot) is divided by the median of its nonzero values, then
-`log1p`-transformed. Median normalization is more robust than TIC normalization against a few intense
-signals[^deininger2011], and `log1p` is the transform the ST clustering applies to its counts
-([ST §3.6](st_methods.md#36-per-sample-clustering)). FOCUS design choice: without the transform, the
-principal components of raw intensities follow the absolute intensity of the few most abundant ions,
-and the clusters slice their intensity levels. The median sets the `log1p` offset at a typical peak of
-the row, so the transform does not depend on the instrument's intensity scale. The raw matrix is used
-because every `intensity_normalization` (`none`, `tic`, `median`, `rms`, `internal_standard`) only
-rescales rows, which the median normalization replaces. The row normalization also removes the number of spots
-a pseudo-spot holds.
-
-Then feature selection, PCA, the neighbourhood embedding (each unit's PCs joined to the mean PCs of its
-neighbourhood, weights 0.2 and 0.8), kNN and Leiden on that matrix. As in ST, at most 2,000 features
-enter the PCA. They are the most variable ones by mean-binned normalized dispersion (Scanpy's
-`highly_variable_genes`, `flavor="cell_ranger"`)[^zheng2017]. Samples with 2,000 features or fewer
-keep them all. Then
-\(n_\text{pcs} = \min(50,\, n_\text{run}-1,\, n_\text{selected}-1)\),
-`n_neighbors = min(15, n_run - 1)`, and Leiden[^traag2019] at `resolution=0.5`, `flavor="igraph"`,
-`n_iterations=2`, `directed=False`. Adjacent clusters that no density valley separates are then
-merged as in ST, with the same cutoff of 0.8
-([ST §3.6.3](st_methods.md#363-merging-splits-without-a-density-valley)). Each unit's label then
-propagates back to every spot of the unit.
-
-The summed matrix, PCA and neighbourhood embeddings and neighbour graph live on a throwaway `AnnData` and are never
-persisted; only the per-spot label array is. Samples with fewer than 2 run-rows or fewer than 2
-usable PCs, and samples resolving to a single cluster after merging, receive the single label `'0'`. PCA and Leiden
-run with `random_state=0`.
 
 ---
 
@@ -877,8 +842,6 @@ Removed in `msi-13`, rejected by configuration validation with the reason: `dete
 [^fonville2012]: Fonville JM, Carter C, Cloarec O, et al. Robust data processing and normalization strategy for MALDI mass spectrometric imaging. *Anal Chem* 84:1310-1319 (2012). [doi:10.1021/ac201767g](https://doi.org/10.1021/ac201767g)
 [^barry2019]: Barry JA, Ait-Belkacem R, Hardesty WM, et al. Multicenter validation study of quantitative imaging mass spectrometry. *Anal Chem* 91:6266-6274 (2019). [doi:10.1021/acs.analchem.9b01016](https://doi.org/10.1021/acs.analchem.9b01016)
 [^aitchison1982]: Aitchison J. The statistical analysis of compositional data. *J R Stat Soc B* 44:139-160 (1982). [doi:10.1111/j.2517-6161.1982.tb01195.x](https://doi.org/10.1111/j.2517-6161.1982.tb01195.x)
-[^zheng2017]: Zheng GXY, Terry JM, Belgrader P, et al. Massively parallel digital transcriptional profiling of single cells. *Nat Commun* 8:14049 (2017). [doi:10.1038/ncomms14049](https://doi.org/10.1038/ncomms14049). Dispersion normalization within mean bins as implemented in Scanpy (Wolf FA, Angerer P, Theis FJ. *Genome Biol* 19:15, 2018).
-[^traag2019]: Traag VA, Waltman L, van Eck NJ. From Louvain to Leiden: guaranteeing well-connected communities. *Sci Rep* 9:5233 (2019). [doi:10.1038/s41598-019-41695-z](https://doi.org/10.1038/s41598-019-41695-z)
 [^long1983]: Long GL, Winefordner JD. Limit of detection: a closer look at the IUPAC definition. *Anal Chem* 55:712A-724A (1983). [doi:10.1021/ac00258a724](https://doi.org/10.1021/ac00258a724)
 [^schwarz1978]: Schwarz G. Estimating the dimension of a model. *Ann Stat* 6:461-464 (1978). [doi:10.1214/aos/1176344136](https://doi.org/10.1214/aos/1176344136)
 [^ashman1994]: Ashman KM, Bird CM, Zepf SE. Detecting bimodality in astronomical datasets. *Astron J* 108:2348 (1994). [doi:10.1086/117248](https://doi.org/10.1086/117248)

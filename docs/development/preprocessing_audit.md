@@ -208,6 +208,7 @@ Verification labels: **R** reproduced by a controlled run, **A** reproduced by a
 | ST items of 2.2, 2.3, 3.2 and 4 | Fixed, see section 7 |
 | Microscopy items of 2.2, 3.1, 3.6 and 4 | Fixed, see section 8 |
 | MSI items of 1.2, 2.2, 2.3, 3.4 and 4 | Fixed, see section 9 |
+| Shared clustering items of 2.2 and 3.3 | Fixed, see section 10 |
 | Other items of 2.2, 2.3, 3, 4 | Open |
 
 Not verified: Raman on real `.lif` files, the real LAS X LIF tree layout, and the physically correct
@@ -359,6 +360,36 @@ Out of scope, still open:
 - Isotope, adduct and FDR-controlled annotation.
 - Peak memory is dominated by the spectra held per sample (about 4.7 GB of IBD here) and their
   recalibrated copies; streaming the binning per block of spectra would bound it.
+
+## 10. Alignment clustering redesign
+
+ST and MSI labels for the alignment GUI now come from one routine, `focus.spatial.clustering.cluster_spots`,
+configured by the modality presets, without spatial smoothing. Method version `clusters-2`, with
+ST `st-6` and MSI `msi-14`: every ST and MSI output is rebuilt once, and every ST and MSI
+alignment pair is aligned again once (the alignment key is still the preprocessing fingerprint).
+See `docs/scientific/spatial_clustering.md`.
+
+| Item | Resolution |
+|---|---|
+| Two parallel pipelines (ST `native_cluster_labels`, MSI `compute_cluster_labels`) | One routine; the modality supplies the spots that take part, the unit eligibility and the representation. MSI gains eligibility, provenance and colours like ST. |
+| Labels computed on raw counts with an internal normalization | Labels follow the configured normalization (ST: applied in memory per sample; MSI: the normalized spectra). `none` falls back to the ST technology's `auto` method or the MSI nonzero median. The ST normalization enters the sample fingerprint. |
+| Presets ignored by the clustering | Modes: `domains` (ST, MSI tissue), ordered `gradient` levels (MSI `cell_culture`), `foreground` without clustering (MSI `microgrid`). MSI background spectra are `unassigned`. MSI `resolution: sub_cellular` aggregates pixels until the median block detects 200 features. |
+| Neighbourhood embedding distorts domains; clusters one unit wide at sharp boundaries (3.3) | Embedding removed; Leiden overclusters (resolution 2.0, halved while the median cluster holds fewer than 300 units) and the merge joins the splits. No boundary cluster in the synthetic calibration; the Visium HD sample keeps its domains without the outlining clusters. |
+| Valley-ratio histogram on the min-max range (2.2) | Range from the 0.5 % to 99.5 % quantiles; an outlier no longer hides a valley (test). |
+| Merge axis between centroids, docstring says discriminant (3.3) | Fisher discriminant axis with the pooled within-cluster covariance, Ledoit-Wolf shrunk. |
+| Union scores with a veto | Groups are scored by the contact-weighted mean of their input pair ratios. Union scores merged the Visium HD sample to one cluster; the veto kept 4 to 22 fragments of overclustered synthetic domains. |
+
+Verified on the MEL Visium HD 16 µm sample (`sequencing`, `bin`: 7 clusters as before, in 20 s)
+and on the positive-mode MALDI-TOF acquisition in `test_data/MSI` (`tissue`, `tic`: 11 clusters
+against 13, finer structures resolved). The suite passes with 254 tests.
+
+Out of scope, still open:
+
+- A small domain with weak markers beside a large one is merged into it (no density valley between
+  them).
+- Without smoothing, labels of weak units are speckled at the scale of one unit; the Visium HD
+  neighbour coherence falls from 0.81 to 0.51.
+- Alignment keyed on geometry instead of the preprocessing fingerprint (section 4).
 
 [^xu2024]: Xu H. et al. A whole-slide foundation model for digital pathology from real-world data. *Nature* 630, 181-188 (2024). [doi:10.1038/s41586-024-07441-w](https://doi.org/10.1038/s41586-024-07441-w)
 [^singhal2024]: Singhal V. et al. BANKSY unifies cell typing and tissue domain segmentation for scalable spatial omics data analysis. *Nature Genetics* 56, 431-441 (2024). [doi:10.1038/s41588-024-01664-3](https://doi.org/10.1038/s41588-024-01664-3)

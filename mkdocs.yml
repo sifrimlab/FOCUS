@@ -109,6 +109,7 @@ nav:
     - Raman Preprocessing: scientific/raman_methods.md
     - Microscopy Preprocessing: scientific/microscopy_methods.md
     - Spatial Transcriptomics Preprocessing: scientific/st_methods.md
+    - Alignment Clustering: scientific/spatial_clustering.md
     - Alignment Methods: scientific/alignment_methods.md
     - Registration Methods: scientific/registration_methods.md
     - Annotation Transfer: scientific/annotation_transfer.md

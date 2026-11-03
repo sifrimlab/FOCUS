@@ -5,7 +5,7 @@ from typing import cast
 import numpy as np
 
 from focus.spatial.settings import _MIN_UNITS
-from focus.spatial.units import _voronoi_units, plan_spatial_units
+from focus.spatial.units import _voronoi_units, plan_spatial_units, summed_signal
 from tests.spatial.data import lattice, same_partition
 
 
@@ -58,7 +58,9 @@ class TestUnitPlan:
         """Verify signal target grows blocks and rich spots stay native."""
         xy, _ = lattice(300, 300, [2, 0], [0, 2])
         counts = np.random.default_rng(1).poisson(3, len(xy))
-        units = plan_spatial_units(xy, counts=counts, min_median_counts=50)
+        units = plan_spatial_units(
+            xy, unit_signal=summed_signal(counts), signal_target=50
+        )
         assert (units.info["method"], units.info["k"], units.info["driver"]) == (
             "lattice",
             5,
@@ -68,14 +70,18 @@ class TestUnitPlan:
             np.median(np.bincount(cast(np.ndarray, units.bin_ids), weights=counts))
             >= 50
         )
-        native = plan_spatial_units(xy, counts=counts * 0 + 100, min_median_counts=50)
+        native = plan_spatial_units(
+            xy, unit_signal=summed_signal(counts * 0 + 100), signal_target=50
+        )
         assert native.bin_ids is None
         assert (native.info["method"], native.info["layout"]) == ("native", "lattice")
 
     def test_signal_target_keeps_a_minimum_number_of_units(self) -> None:
         """Verify signal target keeps a minimum number of units."""
         xy, _ = lattice(300, 300, [2, 0], [0, 2])
-        units = plan_spatial_units(xy, counts=np.zeros(len(xy)), min_median_counts=50)
+        units = plan_spatial_units(
+            xy, unit_signal=summed_signal(np.zeros(len(xy))), signal_target=50
+        )
         assert units.info["signal_limited"]
         assert units.info["k"] == 9
         assert units.n_units >= _MIN_UNITS
@@ -102,6 +108,31 @@ class TestUnitPlan:
     def test_sparse_irregular_spots_get_supercells_from_the_signal_target(self) -> None:
         """Verify sparse irregular spots get supercells from the signal target."""
         xy = np.random.default_rng(4).uniform(0, 3000, (40_000, 2))
-        units = plan_spatial_units(xy, counts=np.full(len(xy), 5), min_median_counts=50)
+        units = plan_spatial_units(
+            xy, unit_signal=summed_signal(np.full(len(xy), 5)), signal_target=50
+        )
         assert (units.info["method"], units.info["driver"]) == ("voronoi", "signal")
         assert units.n_units <= 4_000
+
+    def test_non_additive_signal_grows_blocks_until_the_median_unit_reaches_it(
+        self,
+    ) -> None:
+        """A detected-feature signal is evaluated on each block plan, not summed over spots."""
+        xy, _ = lattice(200, 200, [5, 0], [0, 5])
+        rng = np.random.default_rng(6)
+        present = rng.random((len(xy), 400)) < 0.02  # about 8 of 400 features per pixel
+
+        def detected(flat: np.ndarray) -> np.ndarray:
+            """Features present in at least one spot of each occupied unit."""
+            _, inverse = np.unique(flat, return_inverse=True)
+            union = np.zeros((inverse.max() + 1, present.shape[1]), dtype=bool)
+            np.logical_or.at(union, inverse, present)
+            return union.sum(axis=1).astype(np.float64)
+
+        units = plan_spatial_units(xy, unit_signal=detected, signal_target=100)
+        assert (units.info["method"], units.info["driver"]) == ("lattice", "signal")
+        assert np.median(detected(cast(np.ndarray, units.bin_ids))) >= 100
+        k = units.info["k"]
+        assert k > 1
+        smaller = plan_spatial_units(xy, unit_signal=detected, signal_target=100 * 0.5)
+        assert smaller.info["k"] < k

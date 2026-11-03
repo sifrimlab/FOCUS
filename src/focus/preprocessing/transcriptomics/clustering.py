@@ -1,46 +1,25 @@
-"""ST clustering for alignment colors. Analytical copies never alter exported counts."""
+"""ST adapter of the shared alignment clustering. Analytical copies never alter exported counts."""
 
-from typing import cast
-from focus.spatial.types import ClusterInfo
-from focus.spatial.units import SpatialUnits
 from collections.abc import Iterable
-from focus.spatial.types import Matrix, ClusteringParameters
-from focus.runtime.reporting import StepReporter
 
-from importlib.metadata import version
-
-import anndata as ad
 import numpy as np
-import scanpy as sc
 import scipy.sparse as sp
-from scipy.stats import spearmanr
 
-from focus.config.options import SpotResolution
-from focus.spatial.settings import (
-    N_TOP_FEATURES,
-    _MERGE_VALLEY_RATIO,
-    _SPATIAL_CAP,
-    clustering_preset,
+from focus.config.options import StNormalization
+from focus.preprocessing.transcriptomics.normalization import (
+    _log1p,
+    normalized_matrix,
 )
-from focus.spatial.clustering import _bin_sum_matrix
-from focus.spatial.units import describe_units, plan_spatial_units
-from focus.spatial.clusters import label_coherence, merge_unsupported_clusters
-from focus.spatial.smoothing import smoothing_operator, spatial_embedding
+from focus.preprocessing.transcriptomics.technology import Technology
+from focus.runtime.reporting import StepReporter
+from focus.spatial.clustering import cluster_spots
+from focus.spatial.settings import COUNTS, DOMAINS, clustering_preset
+from focus.spatial.types import ClusterInfo, ClusteringParameters, Matrix
+from focus.spatial.units import SpatialUnits
 
-METHOD_VERSION = "st-5"
-# Shared by both resolution presets (CLUSTERING_PRESETS holds what differs). min_counts and
-# min_genes are per-unit display eligibility, not tissue QC.
-PARAMETERS: ClusteringParameters = {
-    "min_counts": 50,
-    "min_genes": 20,
-    "n_top_genes": N_TOP_FEATURES,
-    "n_pcs": 50,
-    "n_neighbors": 15,
-    "leiden_resolution": 0.5,
-    "merge_valley_ratio": _MERGE_VALLEY_RATIO,
-    "random_state": 0,
-    "max_units": _SPATIAL_CAP,
-}
+METHOD_VERSION = "st-6"
+# Per-unit display eligibility of the alignment labels, not tissue QC.
+PARAMETERS: ClusteringParameters = {"min_counts": 50, "min_genes": 20}
 
 
 def _check_raw_counts(X: sp.csr_matrix, chunk: int = 50_000_000) -> None:
@@ -58,213 +37,83 @@ def _check_raw_counts(X: sp.csr_matrix, chunk: int = 50_000_000) -> None:
             )
 
 
+def clustering_normalization(
+    tech: Technology, requested: str, area: np.ndarray | None
+) -> str:
+    """The normalization the labels are computed on: the configured one, never raw counts.
+
+    ``none`` falls back to the technology's ``auto`` method, and area normalization falls back to
+    ``log_normalize`` when some spot has no finite positive area, as the merged normalization does
+    for ``auto``.
+    """
+    method = tech.normalization(
+        StNormalization.AUTO if requested == StNormalization.NONE else requested
+    )
+    if method == StNormalization.AREA_LOG_NORMALIZE and (
+        area is None or not np.all(np.isfinite(area) & (area > 0))
+    ):
+        method = StNormalization.LOG_NORMALIZE
+    return method
+
+
 def spot_cluster_labels(
     X: Matrix,
     gene_names: Iterable[str],
     coords: np.ndarray,
-    resolution: str = SpotResolution.STANDARD,
+    tech: Technology,
+    normalization: str = StNormalization.AUTO,
+    area: np.ndarray | None = None,
     reporter: StepReporter | None = None,
     params: ClusteringParameters | None = None,
 ) -> tuple[np.ndarray, np.ndarray, ClusterInfo]:
-    """Per-spot labels, eligibility and provenance, with bounded cost at any spot count.
+    """Per-spot labels, eligibility and provenance of one sample (raw counts in ``X``).
 
-    ``resolution`` selects the preset (:data:`focus.spatial.settings.CLUSTERING_PRESETS`).
-    :func:`focus.spatial.units.plan_spatial_units` reads the layout from ``coords`` and
-    keeps the spots as they are, or groups them into k x k lattice blocks (Voronoi supercells
-    without a lattice) when the sample exceeds the unit cap or, for the sub-cellular preset, its
-    median spot holds fewer than the preset's ``signal_target`` counts. Unit counts are summed,
-    :func:`native_cluster_labels` clusters the units with the preset's smoothing, and every spot
-    takes its unit's label and eligibility. Units are never persisted. ``params`` overrides
-    :data:`PARAMETERS` (tests only).
+    :func:`focus.spatial.clustering.cluster_spots` in ``domains`` mode. ``tech.resolution`` sets
+    the unit growth (``sub_cellular``: until the median unit holds 1,000 UMIs). A unit is
+    eligible with at least 50 UMIs and 20 detected genes. The summed counts of the eligible units
+    are normalized with :func:`clustering_normalization` (``area``: per-spot area for area
+    normalization) and log-transformed (``size_factors`` is linear, so ``log1p`` follows).
+    ``params`` overrides the shared and ST parameters (tests only).
     """
-    preset = clustering_preset(resolution)
     params = {**PARAMETERS, **(params or {})}
     X = sp.csr_matrix(X)
     _check_raw_counts(X)
-    target = preset["signal_target"]
-    counts = np.asarray(X.sum(axis=1)).ravel() if target else None
-    units = plan_spatial_units(
+    method = clustering_normalization(tech, normalization, area)
+
+    def unit_eligible(summed: sp.csr_matrix) -> np.ndarray:
+        """Units with enough counts and detected genes."""
+        counts = np.asarray(summed.sum(axis=1)).ravel()
+        detected: np.ndarray = np.diff(summed.indptr)
+        return (counts >= params["min_counts"]) & (detected >= params["min_genes"])
+
+    def represent(
+        summed: sp.csr_matrix, units: SpatialUnits, kept: np.ndarray
+    ) -> tuple[sp.csr_matrix, str]:
+        """Configured normalization of the summed unit counts, on a log scale."""
+        unit_area = None
+        if method == StNormalization.AREA_LOG_NORMALIZE:
+            spot_area = np.asarray(area, dtype=np.float64)
+            unit_area = (
+                spot_area
+                if units.bin_ids is None
+                else np.bincount(
+                    units.bin_ids, weights=spot_area, minlength=units.n_units
+                )
+            )[kept]
+        normalized, _ = normalized_matrix(summed, method, unit_area)
+        if method == StNormalization.SIZE_FACTORS:
+            return _log1p(normalized), f"{method} + log1p"
+        return normalized, method
+
+    labels, eligible, info = cluster_spots(
+        X,
         coords,
-        cap=params["max_units"],
-        counts=counts,
-        min_median_counts=target,
-        seed=params["random_state"],
+        clustering_preset(DOMAINS, tech.resolution, COUNTS),
+        represent,
+        feature_names=np.asarray(list(gene_names), dtype=str),
+        unit_eligible=unit_eligible,
+        params=params,
+        reporter=reporter,
     )
-    if reporter:
-        reporter.detail(describe_units(X.shape[0], units.info))
-        if units.info.get("signal_limited"):
-            reporter.warning(
-                f"Clustering: median unit stays below {target} counts at the coarsest "
-                f"allowed size; labels may be noisy"
-            )
-    rows = (
-        X if units.bin_ids is None else _bin_sum_matrix(X, units.bin_ids, units.n_units)
-    )
-    unit_labels, unit_eligible, info = native_cluster_labels(
-        rows,
-        gene_names,
-        params,
-        reporter,
-        units=units,
-        rings=preset["smoothing_rings"],
-        checked=True,
-    )
-    if units.bin_ids is None:
-        labels, eligible = unit_labels, unit_eligible
-    else:
-        labels, eligible = unit_labels[units.bin_ids], unit_eligible[units.bin_ids]
-    info["resolution"] = resolution
-    info["parameters"] = {**params, **preset}
-    info["units"] = units.info
-    info["n_spots"] = X.shape[0]
-    info["n_eligible_spots"] = int(eligible.sum())
-    if info["status"] == "complete":
-        unique, sizes = np.unique(labels[eligible], return_counts=True)
-        info["cluster_sizes"] = dict(zip(unique.tolist(), sizes.tolist()))
-    return labels, eligible, info
-
-
-def native_cluster_labels(
-    X: Matrix,
-    gene_names: Iterable[str],
-    params: ClusteringParameters | None = None,
-    reporter: StepReporter | None = None,
-    units: SpatialUnits | None = None,
-    rings: int = 0,
-    checked: bool = False,
-) -> tuple[np.ndarray, np.ndarray, ClusterInfo]:
-    """Return labels, eligibility and provenance for exactly the supplied rows (spots or units).
-
-    Eligibility defaults (50 UMIs / 20 detected genes) are alignment-only display thresholds,
-    not universal tissue QC. Without ``units`` no spatial information enters the model. With
-    ``units`` (the geometry of the rows, see :func:`spot_cluster_labels`) and ``rings > 0``, each
-    eligible row's PCs are joined by the mean PCs of its spatial neighbourhood
-    (:func:`focus.spatial.smoothing.spatial_embedding`) before the kNN graph, so labels follow
-    tissue domains instead of per-row noise. Expression is never smoothed. Adjacent Leiden clusters
-    that no density valley separates are merged
-    (:func:`focus.spatial.clusters.merge_unsupported_clusters`).
-    """
-    params = {**PARAMETERS, **(params or {})}
-    X = sp.csr_matrix(X)
-    if not checked:
-        _check_raw_counts(X)
-    counts = np.asarray(X.sum(axis=1)).ravel()
-    detected = np.asarray((X > 0).sum(axis=1)).ravel()
-    eligible = (
-        (counts > 0)
-        & (counts >= params["min_counts"])
-        & (detected >= params["min_genes"])
-    )
-    labels = np.full(X.shape[0], "unassigned", dtype=object)
-    info: ClusterInfo = {
-        "method": METHOD_VERSION,
-        "parameters": params,
-        "software_versions": {
-            name: version(name)
-            for name in ("scanpy", "numpy", "scipy", "scikit-learn", "igraph")
-        },
-        "n_input": X.shape[0],
-        "n_eligible": int(eligible.sum()),
-        "n_selected_genes": 0,
-        "selected_genes": np.array([], dtype=str),
-        "n_clusters": 0,
-        "status": "insufficient_observations",
-    }
-    if reporter:
-        reporter.detail(f"Clustering: {eligible.sum()}/{len(eligible)} eligible units")
-    if eligible.sum() < 3:
-        return labels, eligible, info
-    # Explicit count-based eligibility can admit a one-gene spot, but it cannot create a
-    # meaningful embedding when the entire retained panel has fewer than three genes.
-    sub = ad.AnnData(X=X[eligible].astype(np.float32))
-    sub.var_names = np.asarray(gene_names, dtype=str)
-    expressed = np.asarray((sub.X > 0).sum(axis=0)).ravel() > 0
-    sub = sub[:, expressed].copy()
-    if sub.n_vars < 3:
-        info["status"] = "insufficient_genes"
-        return labels, eligible, info
-    sc.pp.normalize_total(sub, target_sum=1e4)
-    sc.pp.log1p(sub)
-    n_top = min(params["n_top_genes"], sub.n_vars)
-    # Seurat dispersion selection consumes log-normalized data and needs no extra dependency.
-    sc.pp.highly_variable_genes(sub, flavor="seurat", n_top_genes=n_top)
-    mask = sub.var["highly_variable"].to_numpy()
-    sub = sub[:, mask].copy()
-    info["selected_genes"] = sub.var_names.to_numpy(dtype=str)
-    info["n_selected_genes"] = sub.n_vars
-    n_pcs = min(params["n_pcs"], sub.n_obs - 1, sub.n_vars - 1)
-    if n_pcs < 2:
-        info["status"] = "insufficient_features"
-        return labels, eligible, info
-    seed = params["random_state"]
-    rings = rings if units is not None else 0
-    try:
-        # Sparse centered PCA; never materialize an n_obs x n_genes dense matrix.
-        sc.pp.pca(sub, n_comps=n_pcs, random_state=seed, svd_solver="arpack")
-        sub.obsm["X_spatial"] = (
-            spatial_embedding(
-                sub.obsm["X_pca"],
-                smoothing_operator(cast(SpatialUnits, units), rings, eligible),
-            )
-            if rings
-            else sub.obsm["X_pca"]
-        )
-        # Scanpy uses approximate neighbor construction on large samples.
-        sc.pp.neighbors(
-            sub,
-            n_neighbors=min(params["n_neighbors"], sub.n_obs - 1),
-            use_rep="X_spatial",
-            random_state=seed,
-        )
-        sc.tl.leiden(
-            sub,
-            resolution=params["leiden_resolution"],
-            key_added="cluster",
-            flavor="igraph",
-            n_iterations=2,
-            directed=False,
-            random_state=seed,
-        )
-    except MemoryError as error:
-        raise MemoryError(
-            "ST clustering exceeded available memory; use the sub-cellular resolution "
-            "preset for very large samples."
-        ) from error
-    merged, merge_info = merge_unsupported_clusters(
-        sub.obsm["X_spatial"],
-        sub.obs["cluster"].to_numpy(),
-        sub.obsp["connectivities"],
-        params["merge_valley_ratio"],
-    )
-    labels[eligible] = merged
-    info.update(cast(ClusterInfo, merge_info))
-    info["n_clusters"] = int(np.unique(merged).size)
-    info["status"] = "complete"
-    info["n_pcs"] = n_pcs
-    info["smoothing_rings"] = rings
-    info["pc_variance_ratio"] = sub.uns["pca"]["variance_ratio"]
-    depth = np.log1p(counts[eligible])
-    correlations = []
-    for pc in sub.obsm["X_pca"].T:
-        correlations.append(
-            float(spearmanr(pc, depth).statistic)
-            if np.ptp(pc) > 0 and np.ptp(depth) > 0
-            else 0.0
-        )
-    info["pc_log_counts_spearman"] = np.asarray(correlations)
-    coherence = (
-        label_coherence(labels[eligible].astype(str), units, eligible)
-        if units is not None
-        else None
-    )
-    if coherence is not None:
-        info["label_coherence"] = coherence
-    unique, sizes = np.unique(labels[eligible], return_counts=True)
-    info["cluster_sizes"] = dict(zip(unique.tolist(), sizes.tolist()))
-    if reporter:
-        reporter.detail(
-            f"Clustering: {sub.n_vars} HVGs, {n_pcs} PCs, smoothing {rings} rings, "
-            f"{info['n_leiden_clusters']} -> {info['n_clusters']} clusters, coherence {'n/a' if coherence is None else f'{coherence:.2f}'}; "
-            f"|PC1-UMI rho|={abs(correlations[0]):.3f}"
-        )
+    info["resolution"] = tech.resolution
     return labels, eligible, info

@@ -1,19 +1,47 @@
-"""Compute analytical display labels on independent spatial-unit expression copies."""
+"""Alignment display labels of spot modalities (ST, MSI), shared by both and driven by presets."""
 
-from typing import cast
-from focus.spatial.units import SpatialUnits
-from focus.spatial.types import Matrix
+from collections.abc import Callable
+from importlib.metadata import version
+from typing import TypeAlias, cast
 
 import gc
 
+import anndata as ad
 import numpy as np
 import scipy.sparse as sp
 
 from focus.runtime.reporter_context import get_reporter
-from focus.spatial.settings import N_TOP_FEATURES, _SPATIAL_CAP
-from focus.spatial.units import describe_units, plan_spatial_units
-from focus.spatial.clusters import label_coherence, merge_unsupported_clusters
-from focus.spatial.smoothing import smoothing_operator, spatial_embedding
+from focus.runtime.reporting import StepReporter
+from focus.spatial.clusters import label_coherence
+from focus.spatial.partition import partition
+from focus.spatial.settings import (
+    COUNTS,
+    FOREGROUND,
+    GRADIENT,
+    PARAMETERS,
+)
+from focus.spatial.types import (
+    ClusterInfo,
+    ClusteringParameters,
+    ClusteringPreset,
+    Matrix,
+)
+from focus.spatial.units import (
+    SpatialUnits,
+    UnitSignal,
+    describe_units,
+    plan_spatial_units,
+)
+
+# Version of the shared clustering method, recorded in every sample's provenance.
+CLUSTERING_VERSION = "clusters-2"
+
+# (summed raw rows of the kept units, units, kept unit ids) -> (log-scale rows, description)
+Represent: TypeAlias = Callable[
+    [sp.csr_matrix, SpatialUnits, np.ndarray], tuple[sp.csr_matrix, str]
+]
+# summed raw rows of the units -> eligible units
+UnitEligibility: TypeAlias = Callable[[sp.csr_matrix], np.ndarray]
 
 
 def _bin_sum_matrix(X: Matrix, bin_ids: np.ndarray, n_bins: int) -> Matrix:
@@ -32,156 +60,277 @@ def _bin_sum_matrix(X: Matrix, bin_ids: np.ndarray, n_bins: int) -> Matrix:
     return cast(Matrix, A @ X)
 
 
-def _divide_rows_by_nonzero_median(X: Matrix) -> sp.csr_matrix:
-    """``X`` with every row divided by the median of its nonzero values (rows without any stay 0)."""
+def unit_mean(
+    X: Matrix, units: SpatialUnits, kept: np.ndarray, include: np.ndarray
+) -> sp.csr_matrix:
+    """Mean of the included rows of ``X`` within each kept unit (``X`` itself for native units)."""
     X = sp.csr_matrix(X, dtype=np.float32)
-    X.eliminate_zeros()
-    medians = np.ones(X.shape[0], dtype=np.float32)
-    for row in range(X.shape[0]):
-        values = X.data[X.indptr[row] : X.indptr[row + 1]]
-        if values.size:
-            medians[row] = np.median(values)
-    return cast(sp.csr_matrix, sp.diags(1.0 / medians).astype(np.float32) @ X)
+    if units.bin_ids is None:
+        return cast(sp.csr_matrix, X[kept])
+    weights = include.astype(np.float32)
+    sums = sp.csr_matrix(
+        _bin_sum_matrix(sp.diags(weights) @ X, units.bin_ids, units.n_units)
+    )
+    size = np.bincount(units.bin_ids, weights=weights, minlength=units.n_units)[kept]
+    return cast(sp.csr_matrix, sp.diags(1.0 / size).astype(np.float32) @ sums[kept])
 
 
-def compute_cluster_labels(
-    X: Matrix,
+def _unit_signal(raw: sp.csr_matrix, include: np.ndarray, signal: str) -> UnitSignal:
+    """Signal of every unit holding an included spot: summed counts or detected features.
+
+    Detected features are counted on the summed rows of a unit, so they are not additive over
+    its spots and are recomputed for every candidate unit plan.
+    """
+    rows = cast(sp.csr_matrix, raw[include])
+    totals = np.asarray(rows.sum(axis=1), dtype=np.float64).ravel()
+
+    def unit_signal(flat: np.ndarray) -> np.ndarray:
+        """Signal of every unit id of ``flat`` that holds an included spot."""
+        _, inverse = np.unique(flat[include], return_inverse=True)
+        n_units = int(inverse.max()) + 1
+        if signal == COUNTS:
+            return np.bincount(inverse, weights=totals, minlength=n_units)
+        summed = sp.csr_matrix(_bin_sum_matrix(rows, inverse, n_units))
+        summed.eliminate_zeros()
+        return cast(np.ndarray, np.diff(summed.indptr).astype(np.float64))
+
+    return unit_signal
+
+
+def cluster_spots(
+    raw: Matrix,
+    coords: np.ndarray,
+    preset: ClusteringPreset,
+    represent: Represent,
     *,
-    leiden_resolution: float,
-    normalize_target_sum: float | None,
-    coordinates: np.ndarray | None = None,
-    smoothing_rings: int = 1,
-    cap: int = _SPATIAL_CAP,
-    n_pcs_cap: int = 50,
-    random_state: int = 0,
-) -> np.ndarray:
-    """Compute per-spot cluster labels for alignment-stage spot colouring, scalably.
+    feature_names: np.ndarray,
+    include: np.ndarray | None = None,
+    unit_eligible: UnitEligibility | None = None,
+    params: ClusteringParameters | None = None,
+    reporter: StepReporter | None = None,
+) -> tuple[np.ndarray, np.ndarray, ClusterInfo]:
+    """Per-spot display labels, eligibility and provenance of one sample.
 
-    The labels are consumed only by the alignment GUI for categorical colouring (no
-    downstream algorithm uses them numerically), so the goal is a fast, "Leiden-like"
-    partition rather than an exact Leiden over every spot — which does not scale to
-    millions of points. Large samples are *coarsened* instead of subsampled, which also
-    aggregates the weak per-spot signal of ultra-high-resolution modalities:
+    The labels colour spots in the alignment GUI only; no algorithm reads them. Steps:
 
-    1. When ``n_obs > cap`` (and ``coordinates`` are given), :func:`plan_spatial_units` groups
-       the spots into at most ``cap`` units: k x k blocks of the acquisition raster (inferred
-       from ``coordinates``) or Voronoi supercells when no raster is found. Every spot of a unit
-       is SUMMED into one pseudo-spot (:func:`_bin_sum_matrix`). Smaller samples run on every spot.
-    2. Normalize and log1p the run matrix (see ``normalize_target_sum``), keep the
-       ``N_TOP_FEATURES`` most variable features (as ST does), run PCA, append each unit's
-       ``smoothing_rings`` neighbourhood mean to its PCs (:func:`spatial_embedding`), then
-       ``neighbors -> leiden``, bounded by ``cap`` rows.
-    3. Merge adjacent clusters that no density valley separates
-       (:func:`merge_unsupported_clusters`).
-    4. Propagate each unit's label back to every spot of the unit (identity when no
-       coarsening happened). No per-spot projection.
+    1. ``foreground`` mode: the included spots are ``'0'``, the rest ``'unassigned'``; no clustering.
+    2. :func:`plan_spatial_units` keeps native spots, or groups them into k x k lattice blocks
+       (Voronoi supercells without a lattice) above the unit cap or, under the sub_cellular
+       resolution, until the median unit reaches the preset's signal target.
+    3. The raw rows of the included spots are summed per unit. A unit is eligible when it holds an
+       included spot and passes ``unit_eligible`` (default: any nonzero feature).
+    4. ``represent`` (from the modality) turns the summed raw rows of the eligible units into a
+       normalized, log-scale matrix: raw values are never clustered.
+    5. Up to ``n_top_features`` highly variable features (Scanpy, Seurat dispersion flavor) and
+       sparse PCA.
+    6. ``domains`` mode: kNN graph on the PCs, Leiden at an overclustering resolution (lowered
+       while the median cluster is too small for the valley test, :func:`_overcluster`), then
+       :func:`merge_unsupported_clusters` joins adjacent clusters without a density valley.
+       ``gradient`` mode: ordered quantile levels of the first principal component.
+    7. Every spot takes its unit's label; spots of ineligible units and excluded spots are
+       ``'unassigned'``.
 
-    ``X`` is never mutated and the summed / normalized matrix lives only on a throwaway
-    ``AnnData`` that is discarded — none of these internal intermediates are persisted; the
-    function returns only the per-spot label array. Fully deterministic (binning is RNG-free;
-    PCA / Leiden seeded via ``random_state``).
+    No spatial smoothing enters the representation or the labels. Units and every intermediate
+    live in memory only. Deterministic (seeded PCA, neighbours and Leiden).
 
     Parameters
     ----------
-    X : scipy.sparse matrix | np.ndarray
-            Raw, non-negative counts or intensities, shape (n_obs, n_vars).
-    leiden_resolution : float
-            Resolution for the Leiden run on the (binned or full) run matrix.
-    normalize_target_sum : float | None
-            Normalization of every row of the run matrix before log1p and PCA. A float (spatial
-            transcriptomics counts): total-count normalization to this target. ``None`` (MSI
-            intensities): division by the median of the row's nonzero values, which a few intense
-            ions cannot dominate the way they dominate the total, and which puts the log1p offset at a
-            typical peak of the row whatever the instrument's intensity scale.
-    coordinates : np.ndarray | None
-            (n_obs, 2) spatial coordinates enabling coarsening. When ``None``, no coarsening is
-            done and Leiden runs on every spot regardless of ``cap``.
-    smoothing_rings : int
-            Neighbourhood of the embedding smoothing (``CLUSTERING_PRESETS``); 0 disables it.
-    cap : int
-            Maximum number of rows Leiden runs on (= maximum number of units). Samples at or
-            below this are clustered directly.
-    n_pcs_cap : int
-            Upper bound on the number of principal components.
-    random_state : int
-            Seed for PCA / Leiden.
-
-    Returns
-    -------
-    np.ndarray
-            Length-n_obs array of string cluster labels (dtype object). All ``'0'`` when the
-            sample is too small to cluster or resolves to a single cluster.
+    raw : scipy.sparse matrix | np.ndarray
+            (n_spots, n_features) raw counts or intensities; not modified.
+    coords : np.ndarray
+            (n_spots, 2) spot coordinates (``obsm['spatial']``).
+    preset : ClusteringPreset
+            From :func:`focus.spatial.settings.clustering_preset`.
+    represent : Represent
+            Normalization and log transform of the summed raw rows of the eligible units.
+    feature_names : np.ndarray
+            (n_features,) names, recorded for the selected features.
+    include : np.ndarray | None
+            (n_spots,) spots taking part (MSI foreground); default every spot.
+    unit_eligible : UnitEligibility | None
+            Eligibility of the units from their summed raw rows (ST counts and genes).
+    params : ClusteringParameters | None
+            Overrides of :data:`focus.spatial.settings.PARAMETERS`.
+    reporter : StepReporter | None
+            Receives the unit plan and the clustering summary.
     """
-    import anndata as ad
-    import scanpy as sc
-
-    n_obs, n_vars = X.shape
-
-    # 1. Build the matrix Leiden runs on: summed units for large samples, else all spots.
-    units, bin_ids = None, None
-    if coordinates is not None:
-        units = plan_spatial_units(coordinates, cap=cap, seed=random_state)
-        bin_ids = units.bin_ids
-        get_reporter().detail(describe_units(n_obs, units.info))
-    if bin_ids is not None:
-        X_run = _bin_sum_matrix(
-            X, bin_ids, cast(SpatialUnits, units).n_units
-        )  # (n_units, n_vars); sparse-preserving, throwaway
-    else:
-        X_run = X.copy()  # copy: normalize_total/log1p mutate in place
-
-    n_run = X_run.shape[0]
-    if n_run < 2 or n_vars < 3:
-        return np.array(["0"] * n_obs, dtype=object)
-
-    # 2. Normalize the run matrix, then pca -> neighbors -> leiden on the bounded matrix. The row
-    # normalization also washes out how many spots a summed unit holds.
-    if normalize_target_sum is None:
-        X_run = _divide_rows_by_nonzero_median(X_run)
-    sub = ad.AnnData(X=X_run)
-    if normalize_target_sum is not None:
-        sc.pp.normalize_total(sub, target_sum=normalize_target_sum, inplace=True)
-    sc.pp.log1p(sub)
-    # Same feature budget as ST; the 'cell_ranger' flavor ranks mean-binned normalized dispersion.
-    if sub.n_vars > N_TOP_FEATURES:
-        sc.pp.highly_variable_genes(
-            sub, flavor="cell_ranger", n_top_genes=N_TOP_FEATURES
+    reporter = reporter or get_reporter()
+    params = {**PARAMETERS, **(params or {})}
+    raw = sp.csr_matrix(raw, dtype=np.float32)
+    n_spots = raw.shape[0]
+    include = (
+        np.ones(n_spots, dtype=bool)
+        if include is None
+        else np.asarray(include, dtype=bool)
+    )
+    labels = np.full(n_spots, "unassigned", dtype=object)
+    info = _new_info(preset, params, n_spots)
+    if preset["mode"] == FOREGROUND:
+        labels[include] = "0"
+        info["status"] = "foreground_only"
+        info["n_clusters"] = int(include.any())
+        reporter.detail(
+            f"Clustering: foreground only, {int(include.sum())}/{n_spots} foreground spots"
         )
-        sub = sub[:, sub.var["highly_variable"].to_numpy()].copy()
-    n_pcs = min(n_pcs_cap, n_run - 1, sub.n_vars - 1)
-    if n_pcs < 2:
-        return np.array(["0"] * n_obs, dtype=object)
-    sc.pp.pca(sub, n_comps=n_pcs)  # random_state=0 by default
-    sub.obsm["X_spatial"] = (
-        spatial_embedding(sub.obsm["X_pca"], smoothing_operator(units, smoothing_rings))
-        if units is not None and smoothing_rings > 0
-        else sub.obsm["X_pca"]
+        return _finish(labels, include.copy(), info)
+    if include.sum() < 3:
+        return _finish(labels, include & False, info)
+
+    units = _plan_units(raw, coords, include, preset, params, reporter)
+    summed, unit_ok = _eligible_units(raw, units, include, unit_eligible)
+    bin_ids = np.arange(n_spots) if units.bin_ids is None else units.bin_ids
+    kept = np.flatnonzero(unit_ok)
+    eligible = include & unit_ok[bin_ids]
+    info["units"] = units.info
+    info["n_input"] = units.n_units
+    info["n_eligible"] = len(kept)
+    reporter.detail(f"Clustering: {len(kept)}/{units.n_units} eligible units")
+    if len(kept) < 3:
+        return _finish(labels, eligible, info)
+
+    X, info["representation"] = represent(
+        cast(sp.csr_matrix, summed[kept]), units, kept
     )
-    sc.pp.neighbors(sub, n_neighbors=min(15, sub.n_obs - 1), use_rep="X_spatial")
-    sc.tl.leiden(
-        sub,
-        resolution=leiden_resolution,
-        key_added="leiden",
-        flavor="igraph",
-        n_iterations=2,
-        directed=False,
-    )
-    # 3. Merge the splits of continuous variation.
-    run_labels, merged = merge_unsupported_clusters(
-        sub.obsm["X_spatial"], sub.obs["leiden"].to_numpy(), sub.obsp["connectivities"]
-    )
+    sub = _selected_features(X, feature_names, params["n_top_features"], info)
+    if sub is None:
+        info["status"] = "insufficient_features"
+        return _finish(labels, eligible, info)
+    depth = np.log1p(np.asarray(summed[kept].sum(axis=1), dtype=np.float64).ravel())
+    unit_labels = partition(sub, preset["mode"], params, depth, info)
     del sub
     gc.collect()
-    if units is not None:
-        coherence = label_coherence(run_labels, units)
-        get_reporter().detail(
-            f"Clustering: {merged['n_leiden_clusters']} -> {np.unique(run_labels).size} clusters, "
-            f"smoothing {smoothing_rings} rings, coherence {'n/a' if coherence is None else f'{coherence:.2f}'}"
+    if unit_labels is None:
+        info["status"] = "insufficient_features"
+        return _finish(labels, eligible, info)
+
+    info["status"] = "complete"
+    info["n_clusters"] = int(np.unique(unit_labels).size)
+    labels[eligible] = unit_labels[np.searchsorted(kept, bin_ids[eligible])]
+    coherence = label_coherence(unit_labels, units, unit_ok)
+    if coherence is not None:
+        info["label_coherence"] = coherence
+    reporter.detail(_summary(info, preset["mode"]))
+    return _finish(labels, eligible, info)
+
+
+def _new_info(
+    preset: ClusteringPreset, params: ClusteringParameters, n_spots: int
+) -> ClusterInfo:
+    """Provenance of a clustering before any step has run."""
+    return {
+        "method": CLUSTERING_VERSION,
+        "mode": preset["mode"],
+        "parameters": {**params, **preset},
+        "software_versions": {
+            name: version(name)
+            for name in ("scanpy", "numpy", "scipy", "scikit-learn", "igraph")
+        },
+        "n_spots": n_spots,
+        "n_clusters": 0,
+        "status": "insufficient_observations",
+    }
+
+
+def _finish(
+    labels: np.ndarray, eligible: np.ndarray, info: ClusterInfo
+) -> tuple[np.ndarray, np.ndarray, ClusterInfo]:
+    """Record per-spot eligibility and cluster sizes; return labels, eligibility, provenance."""
+    info["n_eligible_spots"] = int(eligible.sum())
+    unique, sizes = np.unique(labels[eligible].astype(str), return_counts=True)
+    info["cluster_sizes"] = dict(zip(unique.tolist(), sizes.tolist()))
+    return labels, eligible, info
+
+
+def _plan_units(
+    raw: sp.csr_matrix,
+    coords: np.ndarray,
+    include: np.ndarray,
+    preset: ClusteringPreset,
+    params: ClusteringParameters,
+    reporter: StepReporter,
+) -> SpatialUnits:
+    """Unit plan of the preset (cap, and the signal target under sub_cellular), reported."""
+    signal = preset["signal"]
+    units = plan_spatial_units(
+        coords,
+        cap=params["max_units"],
+        unit_signal=None if signal is None else _unit_signal(raw, include, signal),
+        signal_target=preset["signal_target"],
+        seed=params["random_state"],
+    )
+    reporter.detail(describe_units(raw.shape[0], units.info))
+    if units.info.get("signal_limited"):
+        reporter.warning(
+            f"Clustering: median unit stays below {preset['signal_target']:g} {signal} at the "
+            f"coarsest allowed size; labels may be noisy"
         )
+    return units
 
-    if np.unique(run_labels).shape[0] == 1:
-        return np.array(["0"] * n_obs, dtype=object)
 
-    # 4. Propagate: each spot inherits its unit's label (identity when no coarsening happened).
-    labels = run_labels if bin_ids is None else run_labels[bin_ids]
-    return labels.astype(str).astype(object)
+def _eligible_units(
+    raw: sp.csr_matrix,
+    units: SpatialUnits,
+    include: np.ndarray,
+    unit_eligible: UnitEligibility | None,
+) -> tuple[sp.csr_matrix, np.ndarray]:
+    """Summed raw rows of the included spots of every unit, and the eligible units.
+
+    A unit is eligible when it holds an included spot, has a nonzero feature and passes
+    ``unit_eligible``.
+    """
+    bin_ids = np.arange(raw.shape[0]) if units.bin_ids is None else units.bin_ids
+    if units.bin_ids is None and include.all():
+        summed = raw.copy()
+    else:
+        summed = sp.csr_matrix(
+            _bin_sum_matrix(
+                sp.diags(include.astype(np.float32)) @ raw, bin_ids, units.n_units
+            )
+        )
+    summed.eliminate_zeros()
+    present = np.bincount(bin_ids, weights=include, minlength=units.n_units) > 0
+    unit_ok = present & (np.diff(summed.indptr) > 0)
+    if unit_eligible is not None:
+        unit_ok &= unit_eligible(summed)
+    return summed, unit_ok
+
+
+def _selected_features(
+    X: sp.csr_matrix, feature_names: np.ndarray, n_top: int, info: ClusterInfo
+) -> ad.AnnData | None:
+    """Expressed features of the represented units, at most ``n_top`` highly variable ones.
+
+    None when fewer than three features are expressed.
+    """
+    import scanpy as sc
+
+    sub = ad.AnnData(X=sp.csr_matrix(X, dtype=np.float32))
+    sub.var_names = np.asarray(feature_names, dtype=str)
+    sub = sub[:, np.diff(sp.csc_matrix(sub.X).indptr) > 0].copy()
+    if sub.n_vars < 3:
+        return None
+    if sub.n_vars > n_top:
+        # Seurat dispersion selection consumes log-scale data and needs no extra dependency.
+        sc.pp.highly_variable_genes(sub, flavor="seurat", n_top_genes=n_top)
+        sub = sub[:, sub.var["highly_variable"].to_numpy()].copy()
+    info["selected_features"] = sub.var_names.to_numpy(dtype=str)
+    info["n_selected_features"] = sub.n_vars
+    return sub
+
+
+def _summary(info: ClusterInfo, mode: str) -> str:
+    """One reporter line for a completed clustering."""
+    partition = (
+        f"{info['n_clusters']} gradient levels"
+        if mode == GRADIENT
+        else (
+            f"Leiden {info['leiden_resolution']:g}: {info['n_leiden_clusters']} -> "
+            f"{info['n_clusters']} clusters"
+        )
+    )
+    coherence = info.get("label_coherence")
+    return (
+        f"Clustering: {info['representation']}, {info['n_selected_features']} features, "
+        f"{info['n_pcs']} PCs, {partition}, "
+        f"coherence {'n/a' if coherence is None else f'{coherence:.2f}'}"
+    )

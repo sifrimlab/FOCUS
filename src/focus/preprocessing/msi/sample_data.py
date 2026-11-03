@@ -11,17 +11,24 @@ if TYPE_CHECKING:
 
 import numpy as np
 import scipy.sparse as sp
-from focus.spatial.clustering import compute_cluster_labels
-from focus.spatial.settings import clustering_preset
 import anndata as ad
 import pandas as pd
 import gc
 
 from focus.config.keys import MsiMetadata
-from focus.config.options import MsiIonMode
+from focus.config.options import (
+    MsiIntensityNormalization,
+    MsiIonMode,
+    SpotResolution,
+)
 from focus.io.paths import preprocessed_file
 from focus.preprocessing.msi.normalization import normalize_intensities
 from focus.preprocessing.msi.technology import SampleProfile
+from focus.runtime.reporter_context import get_reporter
+from focus.spatial.clustering import Represent, cluster_spots, unit_mean
+from focus.spatial.settings import FEATURES, FOREGROUND, clustering_preset
+from focus.spatial.units import SpatialUnits
+from focus.spot_colors import cluster_colors, label_order
 
 
 def interpolate_sample(
@@ -210,28 +217,86 @@ def prepare_sample(
         },
     )
 
-    # Per-sample cluster labels for alignment colouring (unit aggregation + Leiden), from the
-    # raw binned intensities: every linear normalization of .X is undone by the clustering's
-    # own total normalization anyway, and log1p needs non-negative input (CLR is not). Large
-    # samples are coarsened into k x k blocks of the acquisition raster (Voronoi supercells
-    # if no raster is recovered) and the spots of a unit are summed. Only obs['cluster'] is
-    # produced; the summed/normalized matrix and PCA / neighbour intermediates are
-    # throwaway, never written to the AnnData.
-    adata.obs["cluster"] = pd.Categorical(
-        compute_cluster_labels(
-            adata.layers["raw"],
-            leiden_resolution=dataset._LEIDEN_RESOLUTION,
-            normalize_target_sum=None,
-            coordinates=adata.obsm.get("spatial"),
-            smoothing_rings=(
-                profile.smoothing_rings
-                if profile.smoothing_rings is not None
-                else clustering_preset(resolution)["smoothing_rings"]
-            ),
-        )
+    label_sample(
+        adata,
+        dataset.foreground_masks[sample.sample_id],
+        intensity_normalization,
+        resolution,
+        profile,
     )
 
     output_file = preprocessed_file(
         dataset.dataset_source_path, sample.sample_id, sample.modality_name, "h5ad"
     )
     return adata, output_file, stored_reference
+
+
+def label_sample(
+    adata: ad.AnnData,
+    foreground: np.ndarray,
+    intensity_normalization: str,
+    resolution: str,
+    profile: SampleProfile,
+) -> None:
+    """Alignment display labels of one sample, with eligibility and provenance, in ``adata``.
+
+    :func:`focus.spatial.clustering.cluster_spots` in the mode of the sample type. Only foreground
+    spectra with a peak take part; background spectra are ``'unassigned'``. The representation is
+    the normalized ``.X`` averaged over each unit (``none``: the summed raw rows divided by their
+    nonzero median), then ``log1p``: raw intensities are never clustered. Only ``obs['cluster']``,
+    ``obs['clustering_eligible']``, ``uns['cluster_colors']`` and ``uns['focus_clustering']`` are
+    written; units and every intermediate are discarded.
+    """
+    raw = sp.csr_matrix(adata.layers["raw"])
+    include = np.asarray(foreground, dtype=bool) & (np.diff(raw.indptr) > 0)
+    if (
+        profile.clustering_mode == FOREGROUND
+        and resolution == SpotResolution.SUB_CELLULAR
+    ):
+        get_reporter().detail(
+            f"Clustering: {profile.sample_type} keeps native pixels; resolution is not used"
+        )
+
+    labels, eligible, info = cluster_spots(
+        raw,
+        np.asarray(adata.obsm["spatial"]),
+        clustering_preset(profile.clustering_mode, resolution, FEATURES),
+        _representation(adata.X, include, intensity_normalization),
+        feature_names=adata.var_names.to_numpy(dtype=str),
+        include=include,
+    )
+    info["resolution"] = resolution
+    info["sample_type"] = profile.sample_type
+    categories = label_order(labels)
+    adata.obs["clustering_eligible"] = eligible
+    adata.obs["cluster"] = pd.Categorical(labels, categories=categories)
+    colors = cluster_colors(categories)
+    adata.uns["cluster_colors"] = [colors[label] for label in categories]
+    adata.uns["focus_clustering"] = info
+
+
+def _representation(
+    X: sp.csr_matrix, include: np.ndarray, normalization: str
+) -> Represent:
+    """MSI representation of the clustering units: normalized intensities on a log scale.
+
+    The mean of the normalized spectra ``X`` of a unit's included spots; ``none`` divides each
+    summed raw spectrum by the median of its nonzero features instead.
+    """
+
+    def represent(
+        summed: sp.csr_matrix, units: SpatialUnits, kept: np.ndarray
+    ) -> tuple[sp.csr_matrix, str]:
+        """Normalized intensities of the kept units on a log scale."""
+        if normalization == MsiIntensityNormalization.NONE:
+            method = MsiIntensityNormalization.MEDIAN
+            rows = normalize_intensities(summed, method)
+            label = f"{method} (fallback for none) + log1p"
+        else:
+            rows = unit_mean(X, units, kept, include)
+            label = f"{normalization} + log1p"
+        rows = sp.csr_matrix(rows, dtype=np.float32, copy=True)
+        np.log1p(rows.data, out=rows.data)
+        return rows, label
+
+    return represent

@@ -5,7 +5,8 @@ from numpy.typing import NDArray
 from typing import cast
 from focus.spatial.types import UnitInfo
 
-from typing import NamedTuple
+from collections.abc import Callable
+from typing import NamedTuple, TypeAlias
 
 import numpy as np
 
@@ -83,43 +84,64 @@ def _unit_centroids(
     )
 
 
+UnitSignal: TypeAlias = Callable[[np.ndarray], np.ndarray]
+
+
+def summed_signal(values: np.ndarray) -> UnitSignal:
+    """Unit signal summing a per-spot value (counts) over the spots of each occupied unit."""
+    values = np.asarray(values, dtype=np.float64)
+
+    def signal(flat: np.ndarray) -> np.ndarray:
+        """Summed value of every occupied unit id in ``flat``."""
+        return cast(np.ndarray, _unit_sizes_and_sums(flat, values)[1])
+
+    return signal
+
+
 def plan_spatial_units(
     coords: np.ndarray,
     *,
     cap: int = _SPATIAL_CAP,
-    counts: np.ndarray | None = None,
-    min_median_counts: float | None = None,
+    unit_signal: UnitSignal | None = None,
+    signal_target: float | None = None,
     seed: int = 0,
 ) -> SpatialUnits:
     """Choose the units spot clustering runs on, bounding its cost without a periodic imprint.
 
     The layout is read from the coordinates (:func:`infer_lattice`). Spots are clustered as they
-    are unless the sample has more than ``cap`` spots or (when ``counts`` and
-    ``min_median_counts`` are given, ST sub-cellular) the median spot holds fewer than
-    ``min_median_counts``. Otherwise spots are grouped into units; the caller sums each unit's
-    expression (:func:`_bin_sum_matrix`) and every spot inherits its unit's label.
+    are unless the sample has more than ``cap`` spots or (when ``unit_signal`` and
+    ``signal_target`` are given, sub_cellular resolution) the median spot signal is below
+    ``signal_target``. ``unit_signal`` maps a per-spot unit id to the signal of every unit that
+    holds signal (summed counts, :func:`summed_signal`, or the features a summed unit detects,
+    which is not additive). Otherwise spots are grouped into units; the caller sums each unit's
+    rows (:func:`focus.spatial.clustering._bin_sum_matrix`) and every spot inherits its unit's label.
 
     - **lattice**: the unit of a spot is ``(i // k, j // k)`` on its lattice indices, a block of
       k x k sites (a parallelogram on hexagonal lattices). Every interior block holds exactly k^2
       sites, so unit occupancy cannot vary periodically, and the blocks follow the lattice, not the
       image axes. ``k`` is the smallest integer with at most ``cap`` occupied blocks whose median
-      block count reaches ``min_median_counts``; the signal criterion stops before fewer than
+      block signal reaches ``signal_target``; the signal criterion stops before fewer than
       ``_MIN_UNITS`` blocks remain.
     - **voronoi** (no lattice: segmented cells, beads): ``m`` tiles from :func:`_voronoi_units`,
-      ``m = min(cap, n / s)`` where ``s`` spots per tile is the estimate that reaches the
-      median-count target (never fewer than ``_MIN_UNITS`` tiles).
+      ``m = min(cap, n / s)``. ``s`` spots per tile starts at the estimate that reaches the target
+      for an additive signal and grows by half until the median tile reaches it (never fewer than
+      ``_MIN_UNITS`` tiles).
 
     Fully deterministic for a given ``seed``. The returned geometry (unit grid and basis, or unit
-    centroids) defines the neighbourhoods of :func:`smoothing_operator`.
+    centroids) defines the neighbourhoods of :func:`focus.spatial.smoothing.smoothing_operator`.
     """
     coords = np.asarray(coords, dtype=np.float64)
     n = len(coords)
-    signal = counts is not None and min_median_counts is not None and n > _MIN_UNITS
-    counts = None if counts is None else np.asarray(counts, dtype=np.float64)
+    signal = unit_signal is not None and signal_target is not None and n > _MIN_UNITS
+    target = float(signal_target) if signal_target is not None else 0.0
+
+    def reaches(flat: np.ndarray) -> bool:
+        """Whether the median unit of ``flat`` reaches the signal target."""
+        values = cast(UnitSignal, unit_signal)(flat)
+        return bool(values.size) and float(np.median(values)) >= target
+
     need_cap = n > cap
-    need_signal = signal and float(np.median(cast(np.ndarray, counts))) < cast(
-        float, min_median_counts
-    )
+    need_signal = signal and not reaches(np.arange(n))
     limited = False
     lattice = infer_lattice(coords, seed=seed)
 
@@ -134,10 +156,7 @@ def plan_spatial_units(
             driver.append("cap")
         if need_signal:
             k_cap = k
-            while True:
-                _, sums = _unit_sizes_and_sums(_lattice_units(idx, k), counts)
-                if np.median(cast(np.ndarray, sums)) >= cast(float, min_median_counts):
-                    break
+            while not reaches(_lattice_units(idx, k)):
                 if (
                     len(_unit_sizes_and_sums(_lattice_units(idx, k + 1))[0])
                     < _MIN_UNITS
@@ -189,16 +208,13 @@ def plan_spatial_units(
     if need_cap:
         m = cap
         driver.append("cap")
+    tiles: tuple[np.ndarray, int] | None = None
     if need_signal:
-        median = float(np.median(cast(np.ndarray, counts)))
-        per_tile = (
-            int(np.ceil(cast(float, min_median_counts) / median)) if median > 0 else n
+        tiles, limited = _signal_tiles(
+            coords, m, cast(UnitSignal, unit_signal), reaches, target, seed
         )
-        m_signal = n // per_tile
-        if m_signal < _MIN_UNITS:
-            m_signal, limited = _MIN_UNITS, True
-        if m_signal < m:
-            m = m_signal
+        if tiles is not None:
+            m = int(tiles[1])
             driver.append("signal")
     if m >= n:
         return SpatialUnits(
@@ -214,7 +230,8 @@ def plan_spatial_units(
             None,
             None,
         )
-    bin_ids, n_units = _voronoi_units(coords, m, seed)
+    # The signal search already tiled the sample at the chosen m.
+    bin_ids, n_units = tiles if tiles is not None else _voronoi_units(coords, m, seed)
     info = {
         "method": "voronoi",
         "layout": "irregular",
@@ -227,6 +244,36 @@ def plan_spatial_units(
     return SpatialUnits(
         bin_ids, n_units, info, _unit_centroids(coords, bin_ids, n_units), None, None
     )
+
+
+def _signal_tiles(
+    coords: np.ndarray,
+    m: int,
+    unit_signal: UnitSignal,
+    reaches: Callable[[np.ndarray], bool],
+    target: float,
+    seed: int,
+) -> tuple[tuple[np.ndarray, int] | None, bool]:
+    """Voronoi tiles whose median reaches the signal target, fewer than ``m``; and the limit flag.
+
+    ``s`` spots per tile starts at the estimate that reaches the target for an additive signal and
+    grows by half until the median tile reaches it; never fewer than ``_MIN_UNITS`` tiles. Returns
+    no tiles when the target needs at least ``m`` tiles.
+    """
+    n = len(coords)
+    spot_signal = unit_signal(np.arange(n))
+    median = float(np.median(spot_signal)) if spot_signal.size else 0.0
+    per_tile = float(np.ceil(target / median)) if median > 0 else float(n)
+    while True:
+        m_signal, limited = int(n // per_tile), False
+        if m_signal < _MIN_UNITS:
+            m_signal, limited = _MIN_UNITS, True
+        if m_signal >= m:
+            return None, limited
+        tiles = _voronoi_units(coords, m_signal, seed)
+        if limited or reaches(tiles[0]):
+            return tiles, limited
+        per_tile = float(np.ceil(per_tile * 1.5))
 
 
 def describe_units(n_spots: int, info: UnitInfo) -> str:

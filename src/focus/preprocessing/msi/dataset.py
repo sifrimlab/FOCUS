@@ -29,7 +29,6 @@ class MsiDataset(DatasetState[MsiSample]):
     lipid_annotations: dict[str, np.ndarray]
     lipid_annotation_db: pd.DataFrame | None
 
-    _LEIDEN_RESOLUTION = 0.5
     _H5AD_COMPRESSION = "gzip"
     _H5AD_INTERMEDIATE_COMPRESSION = (
         "gzip"  # per-sample files; matches project-wide convention
@@ -105,10 +104,12 @@ class MsiDataset(DatasetState[MsiSample]):
         sample_type : MsiSampleType
                 Experiment type: 'tissue' (clean background), 'tissue_noisy' (noisy background),
                 'cell_culture' (gradient domains) or 'microgrid' (isolated single cells); calibrates
-                the foreground detection and its cleanup (focus.preprocessing.msi.technology).
+                the foreground detection, its cleanup and the alignment clustering mode
+                (focus.preprocessing.msi.technology).
         resolution : str
-                SpotResolution preset for the alignment clustering: 'standard' (multicellular pixels)
-                or 'sub_cellular' (weak high-resolution pixels: wider neighbourhood smoothing).
+                SpotResolution of the alignment clustering: 'standard' (native pixels) or
+                'sub_cellular' (weak high-resolution pixels, summed into lattice blocks until the
+                median block detects enough features). Not used by 'microgrid'.
         force_recomputing : bool
                 If True, recompute even when every output carries the current fingerprint.
 

@@ -1,17 +1,12 @@
 """Smoothing behavioral scenarios."""
 
-from typing import cast
-
 from focus.spatial.units import SpatialUnits
 
 import numpy as np
-import scipy.sparse as sp
-from sklearn.metrics import adjusted_rand_score
 
 from focus.spatial.clusters import label_coherence
 from focus.spatial.units import plan_spatial_units
 from focus.spatial.smoothing import smoothing_operator
-from focus.preprocessing.transcriptomics.clustering import native_cluster_labels
 from tests.spatial.data import lattice
 
 
@@ -55,23 +50,12 @@ class TestSmoothing:
         keep = np.arange(units.n_units) % 2 == 0
         assert smoothing_operator(units, 1, keep).shape == (keep.sum(), keep.sum())
 
-    def test_neighbourhood_recovers_weak_domains_without_patches(self) -> None:
-        """Verify neighbourhood recovers weak domains without patches."""
-        xy, ij = lattice(80, 80, [16, 0], [0, 16])
-        truth = ij[:, 1] >= 40
-        means = np.full((len(xy), 200), 0.3)
-        means[~truth, :30] += 0.25
-        means[truth, 30:60] += 0.25
-        X = sp.csr_matrix(np.random.default_rng(7).poisson(means).astype(np.float32))
+    def test_label_coherence_is_chance_corrected(self) -> None:
+        """Contiguous halves score near 1, shuffled labels near 0, one label is undefined."""
+        xy, ij = lattice(40, 40, [16, 0], [0, 16])
         units = plan_spatial_units(xy)
-        genes = [f"g{i}" for i in range(200)]
-        plain, eligible, _ = native_cluster_labels(X, genes, units=units, rings=0)
-        for rings in (1, 2):
-            labels, eligible, info = native_cluster_labels(
-                X, genes, units=units, rings=rings
-            )
-            assert info["n_clusters"] == 2
-            assert adjusted_rand_score(truth[eligible], labels[eligible]) > 0.9
-            assert info["label_coherence"] > cast(
-                float, label_coherence(plain[eligible].astype(str), units, eligible)
-            )
+        halves = (ij[:, 1] >= 20).astype(str)
+        assert label_coherence(halves, units) > 0.9
+        shuffled = np.random.default_rng(0).permutation(halves)
+        assert abs(label_coherence(shuffled, units) or 0.0) < 0.1
+        assert label_coherence(np.zeros(len(xy)).astype(str), units) is None

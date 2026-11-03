@@ -1,4 +1,4 @@
-"""Construct sparse neighbourhood smoothing operators for temporary clustering units."""
+"""Neighbourhood operators over temporary clustering units (descriptive label coherence)."""
 
 from typing import cast
 
@@ -6,7 +6,6 @@ import numpy as np
 import scipy.sparse as sp
 
 from focus.spatial.units import SpatialUnits
-from focus.spatial.settings import _NEIGHBOURHOOD_WEIGHT
 
 
 def smoothing_operator(
@@ -14,9 +13,8 @@ def smoothing_operator(
 ) -> sp.csr_matrix:
     """Row-normalised neighbourhood mean over the kept units, shape (n_kept, n_kept).
 
-    Each kept unit averages itself and its kept neighbours. Applied to a PCA embedding before the
-    kNN graph, it lets weak units borrow signal from adjacent tissue, so labels follow spatial
-    domains instead of per-unit noise. The neighbourhood is isotropic in physical space:
+    Each kept unit averages itself and its kept neighbours; :func:`focus.spatial.clusters.label_coherence`
+    reads its 1-ring neighbourhoods. The neighbourhood is isotropic in physical space:
 
     - lattice layouts: units whose grid offset has a physical length of at most (rings + 0.5)
       times the longest grid step; for rings=1 that is 8 units on square grids and 6 on hexagonal
@@ -75,17 +73,3 @@ def smoothing_operator(
         sp.csr_matrix,
         (sp.diags(1.0 / np.asarray(adjacency.sum(axis=1)).ravel()) @ adjacency).tocsr(),
     )
-
-
-def spatial_embedding(
-    pcs: np.ndarray, operator: sp.csr_matrix, weight: float = _NEIGHBOURHOOD_WEIGHT
-) -> np.ndarray:
-    """Clustering embedding of each unit: its own PCs and its neighbourhood mean, weighted.
-
-    ``operator`` is a :func:`smoothing_operator`; ``weight`` is the share of the neighbourhood
-    term (see ``_NEIGHBOURHOOD_WEIGHT``). Euclidean distances on the result are
-    ``(1 - weight) * d_own^2 + weight * d_neighbourhood^2``.
-    """
-    return np.hstack(
-        [np.sqrt(1 - weight) * pcs, np.sqrt(weight) * (operator @ pcs)]
-    ).astype(np.float32)

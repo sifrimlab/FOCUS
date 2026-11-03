@@ -47,8 +47,8 @@ placed. Anchors that cannot be placed get an all-zero row.
 ### 1.2 Footprint shape
 
 FOCUS design choice: the footprint shape follows the anchor lattice, which is inferred from the
-anchor coordinates alone with the same `infer_lattice` used by
-[ST preprocessing](st_methods.md#361-clustering-units). The lattice basis is reduced to its two
+anchor coordinates alone with the same `infer_lattice` used by the alignment clustering
+([Alignment Clustering §2](spatial_clustering.md#2-clustering-units)). The lattice basis is reduced to its two
 shortest vectors \(a, b\) with \(|a| \le |b|\) and \(|a \cdot b| \le |a|^2/2\), and
 \(\cos\theta = a\cdot b / (|a||b|)\):
 

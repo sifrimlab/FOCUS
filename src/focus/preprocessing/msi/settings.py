@@ -28,7 +28,7 @@ def _step(index: int) -> tuple[int, int, str]:
 
 # Part of the preprocessing fingerprint: bump whenever the same input and settings produce a
 # different output, so cached results are rebuilt.
-METHOD_VERSION = "msi-13"
+METHOD_VERSION = "msi-14"
 
 
 # --- m/z recalibration (docs/scientific/msi_methods.md §4) ---

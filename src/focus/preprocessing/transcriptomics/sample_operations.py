@@ -87,14 +87,29 @@ def prepare_sample(
 
 
 def label_sample(
-    adata: AnnData, resolution: str, reporter: StepReporter, cache_key: str
+    adata: AnnData,
+    tech: Technology,
+    normalization: str,
+    reporter: StepReporter,
+    cache_key: str,
 ) -> np.ndarray:
     """Compute display labels on an analytical copy and record provenance."""
 
     # Independent analytical copy: original observations and genes are retained in .X.
     # Large or sparse samples are clustered on lattice blocks / supercells (in memory only).
+    area = (
+        adata.obs[AREA_KEY].to_numpy(dtype=np.float64)
+        if AREA_KEY in adata.obs
+        else None
+    )
     cluster_labels, eligible, provenance = spot_cluster_labels(
-        adata.X, adata.var_names, adata.obsm["spatial"], resolution, reporter
+        adata.X,
+        adata.var_names,
+        adata.obsm["spatial"],
+        tech,
+        normalization,
+        area,
+        reporter,
     )
     adata.obs["clustering_eligible"] = eligible
     adata.uns["focus_clustering"] = provenance
@@ -143,7 +158,9 @@ def write_sample(
         Processed H5AD destination; errors propagate without wrapping.
     """
     adata = prepare_sample(sample, tech, settings, reporter)
-    cluster_labels = label_sample(adata, tech.resolution, reporter, cache_key)
+    cluster_labels = label_sample(
+        adata, tech, settings["normalization"], reporter, cache_key
+    )
     set_sample_metadata(adata, sample, cluster_labels)
     adata.uns[INPUT_SIGNATURE_KEY] = signature
     _ensure_sparse_csr(adata)

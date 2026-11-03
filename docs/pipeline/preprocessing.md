@@ -152,11 +152,12 @@ The MSI pipeline operates at the **dataset level**: all samples are processed to
    - `"none"`: keep raw binned intensities
 
 10. **Per-Sample Cluster Labels** (used only to colour spots during alignment)
-    - Input: the raw binned matrix (`layers["raw"]`), whatever the `intensity_normalization`
-    - Samples above 250,000 spots are coarsened first: spots are grouped into k x k blocks of the acquisition raster, inferred from the coordinates (Voronoi supercells when no raster is found), and all spots in a block are **summed** into one pseudo-spot. Smaller samples are clustered spot by spot
-    - Each spot or pseudo-spot is divided by the median of its nonzero values (robust to a few intense ions, independent of the instrument's intensity scale), then `log1p`-transformed ([MSI methods §10](../scientific/msi_methods.md#10-per-sample-clustering))
-    - Feature selection (the 2,000 most variable features, as in ST; samples with fewer keep all) → PCA (up to 50 components) → each unit's PCs joined to the mean PCs of its spatial neighbourhood (1 ring for `resolution="standard"`, 2 rings for `"sub_cellular"`, none for `sample_type="microgrid"`) → neighbor graph → Leiden (`resolution=0.5`, `flavor="igraph"`, `n_iterations=2`, `directed=False`) on that matrix → merging of adjacent clusters that no density valley separates; each block's label then propagates back to every spot it contains
-    - Labels stored in `obs["cluster"]`. The summed matrix, PCA embedding and neighbor graph are all discarded (only `obs["cluster"]` is kept) to minimize file size
+    - Mode from `sample_type`: tissue domains (`tissue`, `tissue_noisy`), eight ordered gradient levels (`cell_culture`), foreground against background without clustering (`microgrid`)
+    - Only foreground spectra take part; background spectra are labelled `unassigned`
+    - `resolution="sub_cellular"` sums pixels into k x k blocks of the acquisition raster until the median block detects 200 features; `"standard"` clusters native pixels (blocks only above 250,000 spectra)
+    - Representation: the normalized spectra averaged over each unit, then `log1p` (`intensity_normalization="none"`: each summed spectrum divided by the median of its nonzero features)
+    - Up to 2,000 most variable features → PCA → neighbour graph → Leiden at an overclustering resolution → merging of adjacent clusters that no density valley separates; no spatial smoothing ([Alignment Clustering](../scientific/spatial_clustering.md))
+    - Labels stored in `obs["cluster"]`, eligibility in `obs["clustering_eligible"]`, provenance in `uns["focus_clustering"]`; units, PCA and graphs are discarded
 
 11. **Save Per-Sample AnnData and Merge**
     - Each sample is saved separately (gzip compression), written to a temporary file and renamed

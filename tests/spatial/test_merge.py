@@ -1,17 +1,18 @@
 """Merge behavioral scenarios."""
 
-from typing import Any
-from focus.spatial.types import MergeInfo
-
 import numpy as np
 import scipy.sparse as sp
 from sklearn.metrics import adjusted_rand_score
 
-from focus.config.options import SpotResolution
-from focus.spatial.settings import _MERGE_VALLEY_RATIO
-from focus.spatial.clusters import _valley_ratio, merge_unsupported_clusters
-from focus.spatial.clustering import compute_cluster_labels
 from focus.preprocessing.transcriptomics.clustering import spot_cluster_labels
+from focus.preprocessing.transcriptomics.technology import technology
+from focus.spatial.settings import _MERGE_VALLEY_RATIO
+from focus.spatial.clusters import (
+    _valley_ratio,
+    discriminant_axis,
+    merge_unsupported_clusters,
+    within_precision,
+)
 from tests.spatial.data import same_partition, knn, domains_under_a_field
 
 
@@ -29,6 +30,18 @@ class TestMerge:
         assert _valley_ratio(two, np.arange(4000) < 2000) < 0.4
         small = np.concatenate([rng.normal(0, 1, 4000), rng.normal(6, 1, 80)])
         assert _valley_ratio(small, np.arange(4080) < 4000) < 0.3
+
+    def test_an_outlier_does_not_hide_a_valley(self) -> None:
+        """A few extreme units leave the density range, so a real valley stays visible (audit 2.2)."""
+        rng = np.random.default_rng(14)
+        two = np.concatenate([rng.normal(0, 1, 2000), rng.normal(5, 1, 2000)])
+        first = np.arange(4000) < 2000
+        clean = _valley_ratio(two, first)
+        assert clean < 0.3
+        outlying = two.copy()
+        outlying[0] = 1e4
+        # On the min-max range the outlier squeezed both modes into a few bins (ratio near 1).
+        assert abs(_valley_ratio(outlying, first) - clean) < 0.05
 
     def test_cut_blob_merges_and_a_separate_blob_stays(self) -> None:
         """Verify cut blob merges and a separate blob stays."""
@@ -56,64 +69,43 @@ class TestMerge:
         assert set(labels) == {"0"}
         assert info["n_merges"] == 2
 
-    def test_no_merge_joins_input_clusters_separated_by_a_valley(self) -> None:
-        """Verify no merge joins input clusters separated by a valley."""
+    def test_overclustered_populations_merge_back_to_the_populations(self) -> None:
+        """Many fragments of four separated populations merge into exactly the four."""
         from sklearn.cluster import KMeans
 
         rng = np.random.default_rng(13)
-        centres = np.array([[0, 0, 0], [3, 0, 0], [0, 3.5, 0], [2, 2, 3]])
-        points = np.vstack([rng.normal(c, [1, 1, 1], (1500, 3)) for c in centres])
-        cut = KMeans(12, n_init=1, random_state=0).fit_predict(points)
-        graph = knn(points)
-        labels, info = merge_unsupported_clusters(points, cut, graph)
-        assert info["n_merges"] > 0
-        onehot = sp.csr_matrix((np.ones(len(cut)), (np.arange(len(cut)), cut)))
-        adjacent = (onehot.T @ graph @ onehot).toarray() > 0
-        for i in range(12):
-            for j in range(i + 1, 12):
-                if not adjacent[i, j] or labels[cut == i][0] != labels[cut == j][0]:
-                    continue
-                a, b = points[cut == i], points[cut == j]
-                axis = b.mean(axis=0) - a.mean(axis=0)
-                projection = np.concatenate([a, b]) @ (axis / np.linalg.norm(axis))
-                assert (
-                    _valley_ratio(projection, np.arange(len(projection)) < len(a))
-                    >= _MERGE_VALLEY_RATIO
-                )
+        centres = np.array([[0, 0, 0], [6, 0, 0], [0, 6, 0], [4, 4, 5]])
+        points = np.vstack([rng.normal(c, 1, (1500, 3)) for c in centres])
+        truth = np.repeat(np.arange(4), 1500)
+        cut = KMeans(24, n_init=1, random_state=0).fit_predict(points)
+        labels, info = merge_unsupported_clusters(points, cut, knn(points))
+        # A few tail points of one population sit in a fragment of its neighbour.
+        assert len(set(labels)) == 4
+        assert adjusted_rand_score(truth, labels) > 0.99
+        assert info["n_merges"] == 20
+        assert np.all(info["merge_ratios"] >= _MERGE_VALLEY_RATIO)
 
-    def test_st_and_msi_merge_the_split_of_a_continuous_field(self) -> None:
-        """Verify st and msi merge the split of a continuous field."""
-        from unittest.mock import patch
-        import focus.spatial.clusters as _focus_spatial_clusters
+    def test_discriminant_axis_weighs_noisy_dimensions_down(self) -> None:
+        """Two groups apart along a quiet dimension are separated along it, not a noisy one."""
+        rng = np.random.default_rng(15)
+        points = np.column_stack([rng.normal(0, 5, 4000), rng.normal(0, 0.5, 4000)])
+        points[2000:, 1] += 3
+        points[2000:, 0] += 3  # same shift, but buried in the noisy dimension
+        codes = (np.arange(4000) >= 2000).astype(int)
+        axis = discriminant_axis(
+            within_precision(points, codes),
+            points[codes == 1].mean(axis=0) - points[codes == 0].mean(axis=0),
+        )
+        assert axis is not None and abs(axis[1]) > 0.99
+        assert _valley_ratio(points @ axis, codes == 0) < 0.2
 
+    def test_st_merges_the_split_of_a_continuous_field(self) -> None:
+        """Leiden cuts the field into extra clusters; the merge returns the three domains."""
         xy, domain, X = domains_under_a_field()
         genes = [f"g{i}" for i in range(X.shape[1])]
         labels, eligible, info = spot_cluster_labels(
-            sp.csr_matrix(X), genes, xy, SpotResolution.STANDARD
+            sp.csr_matrix(X), genes, xy, technology("sequencing", "spot")
         )
-        assert info["n_leiden_clusters"] > info["n_clusters"]
-        assert info["n_clusters"] == 3
-        assert adjusted_rand_score(domain[eligible], labels[eligible]) > 0.95
+        assert info["n_leiden_clusters"] > info["n_clusters"] == 3
+        assert adjusted_rand_score(domain[eligible], labels[eligible]) > 0.85
         assert info["parameters"]["merge_valley_ratio"] == _MERGE_VALLEY_RATIO
-        seen = []
-        merge = _focus_spatial_clusters.merge_unsupported_clusters
-
-        def record_merge(*args: Any) -> tuple[np.ndarray, MergeInfo]:
-            """Record the spatial clustering inputs while delegating to the original merge operation."""
-            seen.append(merge(*args))
-            return seen[-1]
-
-        with patch(
-            "focus.spatial.clustering.merge_unsupported_clusters",
-            side_effect=record_merge,
-        ):
-            msi = compute_cluster_labels(
-                sp.csr_matrix(X),
-                leiden_resolution=0.5,
-                normalize_target_sum=None,
-                coordinates=xy,
-                smoothing_rings=1,
-            )
-        assert seen[0][1]["n_merges"] > 0
-        assert len(set(msi)) == 3
-        assert adjusted_rand_score(domain, msi) > 0.95

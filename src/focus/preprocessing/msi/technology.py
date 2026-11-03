@@ -7,6 +7,7 @@ Every value here is fixed (not a user setting) and enters the preprocessing fing
 from dataclasses import asdict, dataclass
 
 from focus.config.options import MsiSampleType
+from focus.spatial.settings import DOMAINS, FOREGROUND, GRADIENT
 
 # --- Per-sample feature selection (docs/scientific/msi_methods.md §5) ---
 
@@ -75,22 +76,23 @@ class SampleProfile:
     cleanup: str
     # Side, in pixels, of the square structuring element of the opening or majority vote.
     cleanup_size: int
-    # Neighbourhood rings of the alignment clustering; None follows the `resolution` preset.
-    smoothing_rings: int | None
+    # Alignment clustering mode (focus.spatial.settings): tissue domains, ordered gradient levels,
+    # or foreground against background without clustering.
+    clustering_mode: str
 
 
 _PROFILES = {
     MsiSampleType.TISSUE: SampleProfile(
-        MsiSampleType.TISSUE, "mixture", 0, "fill_open", 3, None
+        MsiSampleType.TISSUE, "mixture", 0, "fill_open", 3, DOMAINS
     ),
     MsiSampleType.TISSUE_NOISY: SampleProfile(
-        MsiSampleType.TISSUE_NOISY, "mixture", 3, "fill_open_components", 5, None
+        MsiSampleType.TISSUE_NOISY, "mixture", 3, "fill_open_components", 5, DOMAINS
     ),
     MsiSampleType.CELL_CULTURE: SampleProfile(
-        MsiSampleType.CELL_CULTURE, "mixture", 0, "majority", 3, None
+        MsiSampleType.CELL_CULTURE, "mixture", 0, "majority", 3, GRADIENT
     ),
     MsiSampleType.MICROGRID: SampleProfile(
-        MsiSampleType.MICROGRID, "microgrid", 0, "none", 0, 0
+        MsiSampleType.MICROGRID, "microgrid", 0, "none", 0, FOREGROUND
     ),
 }
 

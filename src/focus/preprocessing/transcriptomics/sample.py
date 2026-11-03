@@ -16,7 +16,7 @@ import numpy as np
 import scanpy as sc
 
 from focus.io.paths import preprocessed_file
-from focus.config.options import StCapture, StUnit
+from focus.config.options import StCapture, StNormalization, StUnit
 from focus.runtime.reporter_context import get_reporter
 from focus.io.provenance import cached_fingerprint
 from focus.preprocessing.base import SampleSource
@@ -137,6 +137,7 @@ class SpatialTranscriptomic(SampleSource):
         self,
         capture: str = StCapture.SEQUENCING,
         unit: str = StUnit.SPOT,
+        normalization: str = StNormalization.AUTO,
         quality_control: bool = True,
         remove_mitochondrial_genes: bool = False,
         force_recomputing: bool = False,
@@ -154,7 +155,7 @@ class SpatialTranscriptomic(SampleSource):
         5. QC metrics (``scanpy.pp.calculate_qc_metrics``) with mitochondrial genes present
         6. Spot or cell area in ``obs['focus_area']`` (for area normalization)
         7. Optional mitochondrial gene removal
-        8. Alignment cluster labels with the unit's preset
+        8. Alignment cluster labels with the unit's preset, on the configured normalization
         9. Save (sparse CSR, gzip, atomic). Normalization is applied to the merged dataset only.
 
         Parameters
@@ -163,6 +164,9 @@ class SpatialTranscriptomic(SampleSource):
             ``sequencing`` or ``imaging`` (``StCapture``).
         unit : str
             ``spot``, ``bin`` or ``cell`` (``StUnit``).
+        normalization : str
+            Merged normalization (``StNormalization``); the alignment labels are computed on it
+            (``none``: the technology's ``auto`` method). The output keeps raw counts.
         quality_control : bool
             Remove the technology's outlier spots (structural cleanup always runs).
         remove_mitochondrial_genes : bool
@@ -187,6 +191,7 @@ class SpatialTranscriptomic(SampleSource):
         settings: StSampleSettings = {
             "capture": capture,
             "unit": unit,
+            "normalization": normalization,
             "quality_control": quality_control,
             "remove_mitochondrial_genes": remove_mitochondrial_genes,
         }

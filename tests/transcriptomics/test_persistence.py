@@ -62,17 +62,21 @@ class TestPersistence:
         self.sample.preprocess_data(unit="bin")
         assert changed != cached_fingerprint(path)
 
-    def test_output_normalization_does_not_change_clusters_and_merged_provenance_survives(
+    def test_normalization_drives_the_labels_and_merged_provenance_survives(
         self,
     ) -> None:
-        """Normalization touches the merged matrix only; samples keep raw counts and clusters."""
+        """Samples keep raw counts; their labels are computed on the configured normalization."""
         dataset = SpatialTranscriptomicDataset(str(self.root), [self.sample])
         files = dataset.process_dataset(normalization="none")
         plain = ad.read_h5ad(files["sample"])
-        files = dataset.process_dataset(normalization="cp10k_log")
+        # none clusters on the technology's auto method (log_normalize for sequencing).
+        assert plain.uns["focus_clustering"]["representation"] == "log_normalize"
+        files = dataset.process_dataset(normalization="none")
         assert not self.sample.preprocessing_changed
+        files = dataset.process_dataset(normalization="cp10k_log")
+        assert self.sample.preprocessing_changed
         sample = ad.read_h5ad(files["sample"])
-        np.testing.assert_array_equal(plain.obs["cluster"], sample.obs["cluster"])
+        assert sample.uns["focus_clustering"]["representation"] == "cp10k_log"
         assert not sample.layers and (sample.X != self.adata.X).nnz == 0
         merged = ad.read_h5ad(files["merged"])
         kept = self.adata[:, merged.var_names]
@@ -80,7 +84,7 @@ class TestPersistence:
         assert merged.X.dtype == np.float32
         assert merged.uns["focus_normalization"]["method"] == "cp10k_log"
         assert "sample" in merged.uns["focus_clustering"]
-        assert "selected_genes" in merged.uns["focus_clustering"]["sample"]
+        assert "selected_features" in merged.uns["focus_clustering"]["sample"]
 
     def test_old_alignment_is_refreshed_from_preprocessing(self) -> None:
         """Verify old alignment is refreshed from preprocessing."""

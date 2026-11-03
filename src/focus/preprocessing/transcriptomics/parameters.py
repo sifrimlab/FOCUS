@@ -4,16 +4,20 @@ from typing import TypedDict
 
 
 class StSampleSettings(TypedDict):
-    """Per-sample technology, quality-control and feature settings (fingerprinted)."""
+    """Per-sample technology, quality-control, feature and normalization settings (fingerprinted).
+
+    The normalization is applied to the merged dataset; each sample's alignment labels are
+    computed on it too, so it enters the sample fingerprint.
+    """
 
     capture: str
     unit: str
+    normalization: str
     quality_control: bool
     remove_mitochondrial_genes: bool
 
 
 class SpatialTranscriptomicSettings(StSampleSettings):
-    """Dataset preprocessing keywords, extending sample settings with the merged normalization."""
+    """Dataset preprocessing keywords, extending sample settings with the cache override."""
 
-    normalization: str
     force_recomputing: bool

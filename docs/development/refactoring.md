@@ -12,7 +12,7 @@ were retained. The obsolete debug example was removed with the maintainer's appr
 | --- | --- |
 | `focus.config` | Keys, choices, defaults, typed settings, CLI declarations and ordered validation |
 | `focus.io` | Paths, discovery, scientific-container persistence, TIFF access and provenance |
-| `focus.spatial` | Lattice inference, temporary clustering units, smoothing, transforms and footprint membership |
+| `focus.spatial` | Lattice inference, temporary clustering units, the shared alignment clustering, transforms and footprint membership |
 | `focus.preprocessing.msi` | imzML/IBD reading, acquisition pairing, calibrants, mass features, normalization and MSI coordination |
 | `focus.preprocessing.transcriptomics` | Count validation, QC, analytical clustering, sample processing and shared gene filtering |
 | `focus.preprocessing.microscopy` | Image decoding, color enhancement, tissue preparation and OME pyramid writing |

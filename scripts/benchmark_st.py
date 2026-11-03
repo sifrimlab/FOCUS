@@ -2,8 +2,8 @@
 """Reproducible ST diagnostic; outputs stay outside the input dataset.
 
 PYTHONPATH=src python scripts/benchmark_st.py MEL.h5ad --output /tmp/focus-st-benchmark
-Runs the production entry point (spot_cluster_labels) with the --resolution preset
-(standard or sub_cellular), so units, smoothing and labels match preprocessing.
+Runs the production entry point (spot_cluster_labels) with the --capture, --unit and
+--normalization settings, so units, normalization and labels match preprocessing.
 """
 
 from collections.abc import Sequence
@@ -25,7 +25,8 @@ import psutil
 import scipy.sparse as sp
 
 from focus.preprocessing.transcriptomics.clustering import spot_cluster_labels
-from focus.config.options import SpotResolution
+from focus.config.options import StCapture, StNormalization, StUnit
+from focus.preprocessing.transcriptomics.technology import technology
 
 
 ResultT = TypeVar("ResultT")
@@ -56,10 +57,11 @@ def main() -> None:
     }
     labels = {}
     process = psutil.Process()
+    tech = technology(args.capture, args.unit)
 
     L, eligible, info = measured(
         "clustering",
-        lambda: spot_cluster_labels(X, a.var_names, coords, args.resolution),
+        lambda: spot_cluster_labels(X, a.var_names, coords, tech, args.normalization),
         result,
         process,
     )
@@ -81,12 +83,16 @@ def main() -> None:
 
 
 def parse_arguments() -> argparse.Namespace:
-    """Parse the unchanged input, output and clustering-resolution command options."""
+    """Parse the input, output and ST technology and normalization command options."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("input", type=Path)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument(
-        "--resolution", choices=SpotResolution.list(), default=SpotResolution.STANDARD
+        "--capture", choices=StCapture.list(), default=StCapture.SEQUENCING
+    )
+    parser.add_argument("--unit", choices=StUnit.list(), default=StUnit.SPOT)
+    parser.add_argument(
+        "--normalization", choices=StNormalization.list(), default=StNormalization.AUTO
     )
     return parser.parse_args()
 
@@ -203,7 +209,7 @@ def print_metrics(result: BenchmarkResult, info: ClusterInfo, output: Path) -> N
                     "units",
                     "n_spots",
                     "n_eligible_spots",
-                    "n_selected_genes",
+                    "n_selected_features",
                     "n_clusters",
                     "label_coherence",
                     "seconds",

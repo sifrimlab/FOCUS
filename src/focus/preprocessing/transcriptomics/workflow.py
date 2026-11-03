@@ -46,6 +46,7 @@ def preprocess_samples(
         processed_samples[sample.sample_id] = sample.preprocess_data(
             capture=settings.capture,
             unit=settings.unit,
+            normalization=settings.normalization,
             quality_control=settings.quality_control,
             remove_mitochondrial_genes=settings.remove_mitochondrial_genes,
             force_recomputing=settings.force_recomputing,
