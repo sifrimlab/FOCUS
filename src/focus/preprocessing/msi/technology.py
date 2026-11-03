@@ -79,20 +79,30 @@ class SampleProfile:
     # Alignment clustering mode (focus.spatial.settings): tissue domains, ordered gradient levels,
     # or foreground against background without clustering.
     clustering_mode: str
+    # Dual polarity pairing when the content registration cannot verify a pose: True pairs by the
+    # recorded stage positions with a warning (content without shared shape, such as smooth
+    # cultures); False stops the sample.
+    stage_pairing_fallback: bool
 
 
 _PROFILES = {
     MsiSampleType.TISSUE: SampleProfile(
-        MsiSampleType.TISSUE, "mixture", 0, "fill_open", 3, DOMAINS
+        MsiSampleType.TISSUE, "mixture", 0, "fill_open", 3, DOMAINS, False
     ),
     MsiSampleType.TISSUE_NOISY: SampleProfile(
-        MsiSampleType.TISSUE_NOISY, "mixture", 3, "fill_open_components", 5, DOMAINS
+        MsiSampleType.TISSUE_NOISY,
+        "mixture",
+        3,
+        "fill_open_components",
+        5,
+        DOMAINS,
+        False,
     ),
     MsiSampleType.CELL_CULTURE: SampleProfile(
-        MsiSampleType.CELL_CULTURE, "mixture", 0, "majority", 3, GRADIENT
+        MsiSampleType.CELL_CULTURE, "mixture", 0, "majority", 3, GRADIENT, True
     ),
     MsiSampleType.MICROGRID: SampleProfile(
-        MsiSampleType.MICROGRID, "microgrid", 0, "none", 0, FOREGROUND
+        MsiSampleType.MICROGRID, "microgrid", 0, "none", 0, FOREGROUND, False
     ),
 }
 

@@ -16,12 +16,12 @@ from focus.config.keys import MsiMetadata
 from focus.config.options import MsiIonMode
 from focus.preprocessing.msi.pairing import (
     PolarityPairingError,
-    Registration,
+    Pose,
     describe,
     pair,
     register,
 )
-from focus.preprocessing.msi.pairing_signal import lattice_steps
+from focus.preprocessing.msi.pairing_signal import lattice_steps, rigid_fit, rotate_rows
 
 
 class MsiCoordinates:
@@ -80,11 +80,13 @@ class MsiCoordinates:
         rotated_physical = rotate(physical_coords, -angle_rad, centroid)
         return rotated_physical
 
-    def _register(self) -> tuple[Registration, NDArray[np.float64]]:
-        """Register the two polarities on their spectral content; the pixel pitch of the pairing.
+    def _register(self) -> tuple[Pose, NDArray[np.float64], str]:
+        """Pose of the POSITIVE positions in the NEGATIVE frame, the pixel pitch, and how it was found.
 
-        The pairing bands are consumed. Raises PolarityPairingError, naming the sample, when the pose
-        cannot be verified.
+        The two polarities are registered on their spectral content; the pairing bands are consumed.
+        When the pose cannot be verified, a sample type with the stage pairing fallback (smooth
+        cultures, whose content has no shared shape) pairs by the recorded stage positions with a
+        warning; any other sample stops with PolarityPairingError naming it.
         """
         positive = self.sample._metadata[MsiIonMode.POSITIVE]
         negative = self.sample._metadata[MsiIonMode.NEGATIVE]
@@ -108,11 +110,46 @@ class MsiCoordinates:
                 allow_mirror=not self._stage_positions(),
             )
         except PolarityPairingError as error:
-            raise PolarityPairingError(
-                f"Sample '{self.sample.sample_id}': {error}. Check that both imzML files come from "
-                f"the same section, or process a single polarity."
-            ) from None
-        return registration, steps
+            if not (self.sample.stage_pairing_fallback and self._stage_positions()):
+                raise PolarityPairingError(
+                    f"Sample '{self.sample.sample_id}': {error}. Check that both imzML files come "
+                    f"from the same section, or process a single polarity."
+                ) from None
+            get_reporter().warning(
+                f"{error}. The sample type pairs by the recorded stage positions when the content "
+                f"has no shared shape: POSITIVE and NEGATIVE are paired by stage position, which "
+                f"the content does not verify"
+            )
+            return self._stage_pose(), steps, "paired by recorded stage position"
+        summary = f"registered on spectral content: {describe(registration)}"
+        return registration.pose, steps, summary
+
+    def _stage_pose(self) -> Pose:
+        """Pose the recorded stage positions imply between the rotation-corrected frames.
+
+        Each mode's scan-line rotation correction (§2.1) is the rigid map from its recorded stage
+        positions to its physical coordinates; the pose undoes the POSITIVE correction and applies
+        the NEGATIVE one.
+        """
+        corrections = []
+        for mode in (MsiIonMode.POSITIVE, MsiIonMode.NEGATIVE):
+            metadata = self.sample._metadata[mode]
+            recorded = metadata[MsiMetadata.STAGE_POSITIONS].astype(np.float64)
+            physical = metadata[MsiMetadata.PHYSICAL_COORDINATES].astype(np.float64)
+            corrections.append(rigid_fit(recorded, physical, np.ones(len(recorded))))
+        (pos_angle, pos_pivot, pos_move), (neg_angle, neg_pivot, neg_move) = corrections
+        center = (
+            self.sample._metadata[MsiIonMode.POSITIVE][MsiMetadata.PHYSICAL_COORDINATES]
+            .astype(np.float64)
+            .mean(axis=0)
+        )
+        recorded_center = (
+            rotate_rows(center - pos_pivot - pos_move, -pos_angle) + pos_pivot
+        )
+        mapped = (
+            rotate_rows(recorded_center - neg_pivot, neg_angle) + neg_pivot + neg_move
+        )
+        return Pose(neg_angle - pos_angle, mapped - center, center)
 
     def _stage_positions(self) -> bool:
         """True when every spectrum of both polarities carries its stage position."""
@@ -120,6 +157,20 @@ class MsiCoordinates:
             self.sample._metadata[mode].get(MsiMetadata.STAGE_COORDINATES)
             for mode in (MsiIonMode.POSITIVE, MsiIonMode.NEGATIVE)
         )
+
+    def _report_stage_frames(
+        self, pose: Pose, pos_xy: NDArray[np.float64], steps: NDArray[np.float64]
+    ) -> None:
+        """Report when the pairing pose departs from the recorded stage pose by more than one pitch."""
+        if not self._stage_positions():
+            return
+        stage = self._stage_pose().apply(pos_xy)
+        moved = float(np.median(np.linalg.norm(pose.apply(pos_xy) - stage, axis=1)))
+        if moved > steps.max():
+            get_reporter().detail(
+                f"The recorded stage positions of the two polarities differ by {moved:,.0f} um "
+                f"from the registered pose; the stage frames are not shared (slide reloaded?)"
+            )
 
     def _filter_unpaired_spots(self) -> None:
         """
@@ -133,33 +184,26 @@ class MsiCoordinates:
         coordinates, which only describe that mode's own raster (scan lines and pixel neighbourhoods).
         """
         if not self.sample.double_ion_mode:
+            for metadata in self.sample._metadata.values():
+                metadata.pop(MsiMetadata.STAGE_POSITIONS, None)
             return
         positive = self.sample._metadata[MsiIonMode.POSITIVE]
         negative = self.sample._metadata[MsiIonMode.NEGATIVE]
-        registration, steps = self._register()
+        pose, steps, how = self._register()
         pos_xy = positive[MsiMetadata.PHYSICAL_COORDINATES].astype(np.float64)
         neg_xy = negative[MsiMetadata.PHYSICAL_COORDINATES].astype(np.float64)
-        pos_indices, neg_indices, residual = pair(
-            pos_xy, neg_xy, registration.pose, steps
-        )
+        pos_indices, neg_indices, residual = pair(pos_xy, neg_xy, pose, steps)
         if len(pos_indices) == 0:
             raise PolarityPairingError(
                 f"Sample '{self.sample.sample_id}': no POSITIVE spectrum has a NEGATIVE counterpart."
             )
         reporter = get_reporter()
         reporter.detail(
-            f"POSITIVE and NEGATIVE registered on spectral content: {describe(registration)}; "
-            f"{len(pos_indices):,} pairs, median residual {np.median(residual):.1f} um; unpaired: "
-            f"{len(pos_xy) - len(pos_indices):,} POSITIVE, {len(neg_xy) - len(neg_indices):,} NEGATIVE"
+            f"POSITIVE and NEGATIVE {how}; {len(pos_indices):,} pairs, median residual "
+            f"{np.median(residual):.1f} um; unpaired: {len(pos_xy) - len(pos_indices):,} POSITIVE, "
+            f"{len(neg_xy) - len(neg_indices):,} NEGATIVE"
         )
-        moved = float(
-            np.median(np.linalg.norm(registration.pose.apply(pos_xy) - pos_xy, axis=1))
-        )
-        if self._stage_positions() and moved > steps.max():
-            reporter.detail(
-                f"The recorded stage positions of the two polarities differ by {moved:,.0f} um from "
-                f"the registered pose; the stage frames are not shared (slide reloaded?)"
-            )
+        self._report_stage_frames(pose, pos_xy, steps)
         for metadata, indices in ((positive, pos_indices), (negative, neg_indices)):
             for key in (
                 MsiMetadata.PIXEL_COORDINATES,
@@ -168,6 +212,7 @@ class MsiCoordinates:
                 MsiMetadata.INTENSITIES_BINARY_METADATA,
             ):
                 metadata[key] = metadata[key][indices]
+            metadata.pop(MsiMetadata.STAGE_POSITIONS, None)
 
 
 def compute_raster_coordinates(

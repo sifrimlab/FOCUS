@@ -53,7 +53,7 @@ def process_samples(
 ) -> None:
     """Execute the ordered numerical stages, preserving resume state and write barriers."""
     profile = sample_profile(settings.sample_type)
-    initialize_samples(resume.samples, reporter)
+    initialize_samples(resume.samples, reporter, profile)
     select_references(
         dataset,
         resume.samples,

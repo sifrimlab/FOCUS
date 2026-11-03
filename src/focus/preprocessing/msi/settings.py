@@ -28,7 +28,7 @@ def _step(index: int) -> tuple[int, int, str]:
 
 # Part of the preprocessing fingerprint: bump whenever the same input and settings produce a
 # different output, so cached results are rebuilt.
-METHOD_VERSION = "msi-15"
+METHOD_VERSION = "msi-16"
 
 
 # --- Dual polarity pairing (docs/scientific/msi_methods.md §2.2) ---

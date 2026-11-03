@@ -45,6 +45,7 @@ class MsiMetadata(_AbstractEnum):
     LINE_AXIS: Final = "line_axis"  # PIXEL_COORDINATES column indexing the scan lines (0: horizontal, 1: vertical)
     STAGE_COORDINATES: Final = "stage_coordinates"  # True when every spectrum carries its stage position (3DPositionX/Y)
     PAIRING_BANDS: Final = "pairing_bands"  # per-spectrum m/z band sums, used to register the two polarities
+    STAGE_POSITIONS: Final = "stage_positions"  # recorded stage positions before the scan-line rotation correction
 
 
 class ConfigParameters(_AbstractEnum):

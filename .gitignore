@@ -224,3 +224,6 @@ CLAUDE.md
 
 # Small, public characterization output recorded from the immutable baseline.
 !tests/raman/spectra_expected.npy
+
+# Local example datasets (multi-GB), never committed
+test_data/

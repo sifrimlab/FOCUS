@@ -147,11 +147,26 @@ within 2 coarse cells (median) of the final pose. A pose failing either test sto
 `PolarityPairingError`: no pairing is produced rather than a wrong one. FOCUS design choice: the
 procedure, the band content, the score and the thresholds, calibrated in the table below.
 
+*Stage fallback* (`MsiCoordinates._stage_pose`), for `sample_type: cell_culture` only. A culture
+varies along smooth gradients and its fine structure is mostly scan-line stripes, which differ
+between the polarities, so the content cannot fix a pose: the high-passed score has no distinct
+peak, and without the high pass the gradients match at any rotation. When the verification fails on
+a culture whose two files both carry stage positions, the spectra are paired by the recorded stage
+positions and a warning reports that the content does not verify the pairing. The pose maps each
+positive position to the negative frame through the recorded stage frame: the positive scan-line
+rotation correction (§2.1) is undone and the negative one applied, each fitted as the rigid map from
+the mode's recorded stage positions to its corrected coordinates. Every other sample type, and a
+culture without stage positions, stops as above. FOCUS design choice: a culture is acquired with
+both polarities in one stage frame far more often than a section is reloaded between them, and a
+section's structure keeps the content verification for the cases where the frames differ. On
+`19FULL` (a culture, 20 µm rasters tilted about 18 degrees and 1.5 degrees apart, partially
+overlapping) the fallback pairs 119,896 spectra with a median residual of 7.9 µm.
+
 *Pairing* (`pairing.pair`). Each mapped positive spectrum is paired with the nearest negative
 spectrum within half a pixel diagonal; a negative spectrum claimed twice goes to the closer positive
 one. Spectra without a partner are removed. When stage positions are present and the registered pose
-moves the positive positions by more than one pitch, a detail line reports that the recorded stage
-frames are not shared. Each mode keeps its own pixel coordinates, which describe its own raster
+differs from the recorded stage pose by more than one pitch (median), a detail line reports that the
+recorded stage frames are not shared. Each mode keeps its own pixel coordinates, which describe its own raster
 (scan lines in §4.2, pixel neighbourhoods).
 
 Calibration on the two dual-polarity acquisitions of `test_data` (MEL: shared stage frame; MEL2: NEG

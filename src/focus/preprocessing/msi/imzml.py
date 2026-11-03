@@ -213,6 +213,45 @@ class ImzmlReader:
         )
         return size
 
+    def _physical_coordinates(
+        self,
+        filename: str,
+        parsed_spectra: list[SpectrumRecord],
+        pixel_coordinates: np.ndarray,
+        physical_coordinates: np.ndarray,
+        raster_size: np.ndarray,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray | None]:
+        """Rotation-corrected physical coordinates, the raster size and the recorded stage positions.
+
+        The stage positions are None unless every spectrum carries one.
+        """
+        # Where physical coordinates were absent, the fallback stored raw pixel indices.
+        # Scale those entries by raster_size so the inter-spot spacing is in micrometers,
+        # consistent with the downstream normalization and raster_size/2 centering shift.
+        # PIXEL_COORDINATES is (y, x) and raster_size is (x, y): the pixel grid is reordered to
+        # (x, y) before scaling, matching the (x, y) order of physical_coordinates.
+        has_physical = np.array([m["has_physical_coordinates"] for m in parsed_spectra])
+        pixel_xy = pixel_coordinates[:, ::-1].astype(np.float32)
+        if not raster_size.min() > 0:
+            raster_size = self._infer_pixel_size(
+                filename, pixel_xy, physical_coordinates, has_physical
+            )
+        if not has_physical.any():
+            physical_coordinates = pixel_xy * raster_size
+        elif not has_physical.all():
+            physical_coordinates[~has_physical] = pixel_xy[~has_physical] * raster_size
+
+        # The recorded stage positions are kept until pairing: a sample type that pairs by stage
+        # position when the content cannot needs them in the instrument's own frame.
+        stage_positions = physical_coordinates.copy() if has_physical.all() else None
+
+        # Align MSI laser grid to the axes using linear regression
+        physical_coordinates = self.sample.coordinates._correct_rotation_error(
+            physical_coordinates, pixel_coordinates
+        )
+
+        return physical_coordinates, raster_size, stage_positions
+
     def _parse_imzml(self, filename: str) -> SampleMetadata:
         """
         Parse the imzML files to extract the relevant metadata and the M/Z values.
@@ -331,25 +370,12 @@ class ImzmlReader:
             ]
         )
 
-        # Where physical coordinates were absent, the fallback stored raw pixel indices.
-        # Scale those entries by raster_size so the inter-spot spacing is in micrometers,
-        # consistent with the downstream normalization and raster_size/2 centering shift.
-        # PIXEL_COORDINATES is (y, x) and raster_size is (x, y): the pixel grid is reordered to
-        # (x, y) before scaling, matching the (x, y) order of physical_coordinates.
-        has_physical = np.array([m["has_physical_coordinates"] for m in parsed_spectra])
-        pixel_xy = pixel_coordinates[:, ::-1].astype(np.float32)
-        if not raster_size.min() > 0:
-            raster_size = self._infer_pixel_size(
-                filename, pixel_xy, physical_coordinates, has_physical
-            )
-        if not has_physical.any():
-            physical_coordinates = pixel_xy * raster_size
-        elif not has_physical.all():
-            physical_coordinates[~has_physical] = pixel_xy[~has_physical] * raster_size
-
-        # Align MSI laser grid to the axes using linear regression
-        physical_coordinates = self.sample.coordinates._correct_rotation_error(
-            physical_coordinates, pixel_coordinates
+        physical_coordinates, raster_size, stage_positions = self._physical_coordinates(
+            filename,
+            parsed_spectra,
+            pixel_coordinates,
+            physical_coordinates,
+            raster_size,
         )
 
         # Define the metadata dictionary
@@ -358,11 +384,13 @@ class ImzmlReader:
             MsiMetadata.MZ_DTYPE: cast(type[np.floating], mz_dtype),
             MsiMetadata.RASTER_SIZE: raster_size,
             MsiMetadata.LINE_AXIS: line_axis,
-            MsiMetadata.STAGE_COORDINATES: bool(has_physical.all()),
+            MsiMetadata.STAGE_COORDINATES: stage_positions is not None,
             MsiMetadata.PIXEL_COORDINATES: pixel_coordinates,
             MsiMetadata.PHYSICAL_COORDINATES: physical_coordinates,
             MsiMetadata.MZ_BINARY_METADATA: mz_binary_metadata,
             MsiMetadata.INTENSITIES_BINARY_METADATA: intensities_binary_metadata,
         }
+        if stage_positions is not None:
+            experiment_metadata[MsiMetadata.STAGE_POSITIONS] = stage_positions
 
         return experiment_metadata

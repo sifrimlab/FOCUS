@@ -76,6 +76,9 @@ class MsiSample(SampleSource):
         self.double_ion_mode = double_ion_mode
         self.ion_mode = ion_mode
 
+        # Set from the sample type before initialization: pair by the recorded stage positions when
+        # the content registration of the two polarities cannot verify a pose.
+        self.stage_pairing_fallback = False
         self.recalibration_reference = None  # To be set during dataset preprocessing
         # Per ion mode, the calibrant pool on the sample's own scale and its mass-scale shift,
         # stored so a resumed run aligns against the ions a fresh run compares.

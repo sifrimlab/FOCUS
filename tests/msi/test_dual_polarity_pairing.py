@@ -5,6 +5,7 @@ import tempfile
 
 import numpy as np
 import pytest
+from scipy.spatial import cKDTree
 
 from focus.preprocessing.msi.pairing import PolarityPairingError
 from focus.preprocessing.msi.sample import MsiSample
@@ -59,9 +60,12 @@ class TestDualPolarityPairing:
         return xy
 
     @staticmethod
-    def paired_positions(root: str) -> dict[str, np.ndarray]:
+    def paired_positions(
+        root: str, stage_fallback: bool = False
+    ) -> dict[str, np.ndarray]:
         """Tissue position carried by every paired spectrum, per polarity, in pair order."""
         sample = MsiSample(root, "S", "MSI", double_ion_mode=True)
+        sample.stage_pairing_fallback = stage_fallback
         sample.initialize_sample()
         mz, _ = sample.load_payload()
         return {mode: np.array([tissue_position(m) for m in mz[mode]]) for mode in mz}
@@ -136,3 +140,24 @@ class TestDualPolarityPairing:
             self.write(root, other, "neg", grid(range(ROWS), range(COLS)), xy, xy)
             with pytest.raises(PolarityPairingError, match="could not be registered"):
                 self.paired_positions(root)
+
+    def test_culture_without_shared_shape_pairs_by_stage_position(self) -> None:
+        """Content with no shared shape and a NEG raster tilted 2 degrees over 70% of the POS one: a
+        sample type with the stage fallback pairs by the recorded stage positions, others stop."""
+        with tempfile.TemporaryDirectory() as root:
+            xy = self.positive(
+                root, StructuredTissue((COLS * PITCH, ROWS * PITCH), seed=0)
+            )
+            pixels = grid(range(ROWS), range(18, COLS))
+            stage = (pixels[:, ::-1] * PITCH + 4.0) @ rotation(2.0).T
+            other = StructuredTissue((COLS * PITCH, ROWS * PITCH), seed=7)
+            self.write(root, other, "neg", pixels, stage, stage)
+            with pytest.raises(PolarityPairingError, match="could not be registered"):
+                self.paired_positions(root)
+            located = self.paired_positions(root, stage_fallback=True)
+            distance = np.linalg.norm(located["pos"] - located["neg"], axis=1)
+            assert len(located["pos"]) > 0.6 * len(xy)
+            assert distance.max() <= 0.5 * np.hypot(PITCH, PITCH)
+            # Every pair is the recorded nearest neighbour of its POSITIVE spectrum.
+            nearest, _ = cKDTree(stage).query(located["pos"])
+            np.testing.assert_allclose(distance, nearest, atol=1e-6)
