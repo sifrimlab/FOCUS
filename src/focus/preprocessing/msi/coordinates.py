@@ -21,6 +21,7 @@ from focus.preprocessing.msi.pairing import (
     pair,
     register,
 )
+from focus.preprocessing.msi.settings import _PAIRING_MIN_MARGIN
 from focus.preprocessing.msi.pairing_signal import lattice_steps, rigid_fit, rotate_rows
 
 
@@ -116,9 +117,9 @@ class MsiCoordinates:
                     f"from the same section, or process a single polarity."
                 ) from None
             get_reporter().warning(
-                f"{error}. The sample type pairs by the recorded stage positions when the content "
-                f"has no shared shape: POSITIVE and NEGATIVE are paired by stage position, which "
-                f"the content does not verify"
+                f"Cell culture: POSITIVE and NEGATIVE share no shape to register on (margin "
+                f"{error.margin:.2f}, at least {_PAIRING_MIN_MARGIN} required); paired by their "
+                f"recorded stage positions, not verified by the content"
             )
             return self._stage_pose(), steps, "paired by recorded stage position"
         summary = f"registered on spectral content: {describe(registration)}"

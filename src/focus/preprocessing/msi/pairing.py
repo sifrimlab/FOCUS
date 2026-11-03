@@ -38,6 +38,11 @@ from focus.preprocessing.msi.settings import (
 class PolarityPairingError(ValueError):
     """The two polarities could not be registered with confidence."""
 
+    def __init__(self, message: str, margin: float | None = None) -> None:
+        """Keep the verification margin of the rejected pose, when one was scored."""
+        super().__init__(message)
+        self.margin = margin
+
 
 @dataclass(frozen=True)
 class Pose:
@@ -315,7 +320,8 @@ def register(
             f"POSITIVE and NEGATIVE could not be registered with confidence: best pose "
             f"{_describe(pose)}, margin {margin:.2f} over the next best pose (at least "
             f"{_PAIRING_MIN_MARGIN} required), component halves disagree by {disagreement:.1f} "
-            f"coarse cells (at most {_PAIRING_MAX_DISAGREEMENT} allowed)"
+            f"coarse cells (at most {_PAIRING_MAX_DISAGREEMENT} allowed)",
+            margin=float(margin),
         )
     return Registration(pose, float(margin), disagreement, best.overlap)
 
