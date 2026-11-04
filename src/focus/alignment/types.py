@@ -19,6 +19,7 @@ class ModalityMetadata(TypedDict, total=False):
     spot_encoding: str
     spot_count: int
     spot_basis: list[list[float]] | None
+    spot_shape: str
     acquisition_basis: list[list[float]] | None
     channels: list[dict[str, object]]
 

@@ -12,7 +12,7 @@ import numpy as np
 import scipy.sparse as sp
 
 from focus.alignment.coordinator import DirectMappingAligner
-from focus.alignment.spot_payload import pack_spots, acquisition_basis
+from focus.alignment.spot_payload import pack_spots, acquisition_footprint
 from focus.gui.alignment import DirectMappingAlignmentGUI
 from focus.spot_colors import cluster_colors, label_order
 
@@ -50,10 +50,31 @@ class TestNativeDisplay:
         a.obsm["spatial"] = np.column_stack([col.ravel(), row.ravel()]) @ basis * 16
         a.uns["spot_size"] = [16, 16]
         # Inferred from coordinates alone; each axis matches a true axis up to sign and order.
-        for axis in np.asarray(acquisition_basis(a)):
+        footprint = acquisition_footprint(a)
+        assert footprint is not None and footprint[1] == "rectangle"
+        for axis in np.asarray(footprint[0]):
             assert_close(np.max(np.abs(basis @ axis)), 1, places=6)
         a.obsm["spatial"][0] += 8
-        assert acquisition_basis(a) is None
+        assert acquisition_footprint(a) is None
+
+    def test_hexagonal_lattice_gets_an_oriented_hexagon(self) -> None:
+        """A rotated hexagonal lattice (20 um pitch, rows 17.32 um apart) is drawn as hexagons."""
+        row, col = np.mgrid[:12, :12]
+        xy = np.column_stack(
+            [col.ravel() * 20.0 + (row.ravel() % 2) * 10.0, row.ravel() * 10 * np.sqrt(3)]
+        )
+        theta = 0.4
+        rot = np.array([[np.cos(theta), np.sin(theta)], [-np.sin(theta), np.cos(theta)]])
+        a = ad.AnnData(sp.csr_matrix((len(xy), 2)))
+        a.obsm["spatial"] = xy @ rot
+        a.uns["spot_size"] = [20, 20]
+        footprint = acquisition_footprint(a)
+        assert footprint is not None and footprint[1] == "hexagon"
+        u, v = np.asarray(footprint[0])
+        assert_close(u @ v, 0, places=9)
+        # u is a nearest-neighbour direction: a multiple of 60 degrees from the rotated x axis.
+        offset = (np.arctan2(u[1], u[0]) - np.arctan2(rot[0, 1], rot[0, 0])) % (np.pi / 3)
+        assert_close(min(offset, np.pi / 3 - offset), 0, places=6)
 
     def test_large_display_has_every_original_spot_and_transform(self) -> None:
         """Verify large display has every original spot and transform."""

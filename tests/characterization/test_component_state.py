@@ -39,8 +39,9 @@ def test_alignment_payload_uses_owner_basis(tmp_path: Path) -> None:
     aligner = DirectMappingAligner.__new__(DirectMappingAligner)
     aligner._exact_spots = False
     metadata, _, _, _ = aligner.inputs._prepare_spot_data(str(path), "st")
-    assert aligner._spot_basis is not None
-    assert metadata["spot_basis"] == aligner._spot_basis
+    assert aligner._spot_footprint is not None
+    assert metadata["spot_basis"] == aligner._spot_footprint[0]
+    assert metadata["spot_shape"] == "rectangle"
 
 
 def test_regeneration_reports_through_the_dataset_reporter(tmp_path: Path) -> None:

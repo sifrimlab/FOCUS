@@ -6,6 +6,8 @@ export interface SampleStatus {
 
 export type ModalityType = 'IMAGE' | 'SPOT';
 
+export type SpotShape = 'rectangle' | 'hexagon';
+
 /** One channel of a multichannel image: display colour (RRGGBB) and default visibility. */
 export interface ImageChannel {
   name: string;
@@ -24,6 +26,8 @@ export interface Metadata {
   spot_encoding?: 'FSP1';
   spot_count?: number;
   spot_basis?: [[number, number], [number, number]];
+  // Footprint drawn on spot_basis: hexagon on hexagonal lattices, rectangle otherwise
+  spot_shape?: SpotShape;
   // Multichannel images: channels the payload can composite (?channels=0,2)
   channels?: ImageChannel[];
   // Exact-spot mode (microgrid experiments): only foreground spots are sent

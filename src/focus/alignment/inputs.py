@@ -19,7 +19,7 @@ from PIL import Image
 
 from focus.alignment.image_view import ImageView, load_view
 
-from focus.alignment.spot_payload import pack_spots, acquisition_basis
+from focus.alignment.spot_payload import pack_spots, acquisition_footprint
 from focus.spot_colors import cluster_colors, label_order
 
 
@@ -103,7 +103,7 @@ class AlignmentInputs:
 
         # Generate color map for the cluster labels
         color_map = _generate_cluster_colors(cluster_labels)
-        self.aligner._spot_basis = acquisition_basis(adata)
+        self.aligner._spot_footprint = acquisition_footprint(adata)
         adata.file.close()
         del adata
         return coordinates, spot_size, foreground_mask, cluster_labels, color_map
@@ -158,9 +158,9 @@ class AlignmentInputs:
             "spot_encoding": "FSP1",
             "spot_count": len(coordinates),
         }
-        basis = getattr(self.aligner, "_spot_basis", None)
-        if basis is not None:
-            metadata["spot_basis"] = basis
+        footprint = getattr(self.aligner, "_spot_footprint", None)
+        if footprint is not None:
+            metadata["spot_basis"], metadata["spot_shape"] = footprint
         valid = np.flatnonzero(np.isfinite(coordinates).all(axis=1))
         if not len(valid):
             raise ValueError(f"No finite display coordinates in {filename}")

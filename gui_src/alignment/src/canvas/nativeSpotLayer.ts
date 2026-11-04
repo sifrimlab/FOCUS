@@ -1,18 +1,35 @@
-/** Native quads in bounded GPU meshes: no Graphics path per observation and no spatial pooling. */
+/** Native footprints in bounded GPU meshes: no Graphics path per observation and no spatial pooling. */
 import { Container, Mesh, MeshGeometry, Texture } from 'pixi.js';
 import type { mat3 } from 'gl-matrix';
-import type { Metadata, SpotModalityPayload } from '../api/types';
+import type { Metadata, SpotModalityPayload, SpotShape } from '../api/types';
 import type { SpotStyle } from './spotLayer';
 import { projectiveTransformPoint } from '../utils/matrix';
 import { classColor } from '../utils/colors';
 
-export function spotCorners(x: number, y: number, style: SpotStyle): number[] {
-  const basis = style.basis ?? [[1, 0], [0, 1]];
-  const ux = basis[0]![0]! * style.spotSize[0] * style.boost / 2;
-  const uy = basis[0]![1]! * style.spotSize[0] * style.boost / 2;
-  const vx = basis[1]![0]! * style.spotSize[1] * style.boost / 2;
-  const vy = basis[1]![1]! * style.spotSize[1] * style.boost / 2;
-  return [x-ux-vx,y-uy-vy, x+ux-vx,y+uy-vy, x+ux+vx,y+uy+vy, x-ux+vx,y-uy+vy];
+const H = 1 / Math.sqrt(3);
+/** Unit footprints in (u, v) lattice units, counter-clockwise. The hexagon is the Voronoi cell
+ * of a hexagonal lattice with neighbours along u: 1 across the flats along u, 2/sqrt(3) along v. */
+const TEMPLATES: Record<SpotShape, number[]> = {
+  rectangle: [-.5,-.5, .5,-.5, .5,.5, -.5,.5],
+  hexagon: [.5,-H/2, .5,H/2, 0,H, -.5,H/2, -.5,-H/2, 0,-H],
+};
+
+/** Corner offsets from the spot centre: the template scaled by spot size and boost, on the basis. */
+function footprintOffsets(style: SpotStyle, shape: SpotShape): number[] {
+  const [[ux, uy], [vx, vy]] = style.basis ?? [[1, 0], [0, 1]];
+  const su = style.spotSize[0] * style.boost;
+  const sv = style.spotSize[1] * style.boost;
+  const t = TEMPLATES[shape];
+  const out = new Array<number>(t.length);
+  for (let k = 0; k < t.length; k += 2) {
+    out[k] = t[k]! * su * ux + t[k+1]! * sv * vx;
+    out[k+1] = t[k]! * su * uy + t[k+1]! * sv * vy;
+  }
+  return out;
+}
+
+export function spotCorners(x: number, y: number, style: SpotStyle, shape: SpotShape = 'rectangle'): number[] {
+  return footprintOffsets(style, shape).map((d, k) => d + (k % 2 ? y : x));
 }
 
 interface Chunk { mesh: Mesh<MeshGeometry>; rows: number[]; cls: number; foreground: boolean; shown: boolean }
@@ -21,10 +38,15 @@ export class NativeSpotLayer extends Container {
   private chunks: Chunk[] = [];
   private shapeKey = '';
   private data: SpotModalityPayload;
+  private shape: SpotShape;
 
   constructor(data: SpotModalityPayload, meta: Metadata, target: boolean) {
     super();
     this.data = data;
+    this.shape = meta.spot_shape ?? 'rectangle';
+    const corners = TEMPLATES[this.shape].length / 2;
+    // Triangle fan over each convex footprint.
+    const fan = Array.from({ length: corners - 2 }, (_, t) => [0, t + 1, t + 2]).flat();
     const groups = new Map<string, { rows: number[]; cls: number; foreground: boolean }>();
     for (let i = 0; i < data.length; i++) {
       const spot = data[i]!;
@@ -36,9 +58,9 @@ export class NativeSpotLayer extends Container {
     for (const group of groups.values()) {
       for (let start = 0; start < group.rows.length; start += 4096) {
         const rows = group.rows.slice(start, start + 4096);
-        const indices = new Uint32Array(rows.length * 6);
-        for (let j = 0; j < rows.length; j++) indices.set([4*j,4*j+1,4*j+2,4*j,4*j+2,4*j+3], j*6);
-        const geometry = new MeshGeometry({ positions: new Float32Array(rows.length * 8), indices });
+        const indices = new Uint32Array(rows.length * fan.length);
+        for (let j = 0; j < rows.length; j++) indices.set(fan.map(i => corners * j + i), j * fan.length);
+        const geometry = new MeshGeometry({ positions: new Float32Array(rows.length * corners * 2), indices });
         geometry.batchMode = 'no-batch';
         const mesh = new Mesh({ geometry, texture: Texture.WHITE });
         mesh.tint = classColor(meta, group.cls, target);
@@ -52,6 +74,7 @@ export class NativeSpotLayer extends Container {
     const key = JSON.stringify([style.spotSize, style.boost, style.basis, matrix && Array.from(matrix)]);
     const rebuild = key !== this.shapeKey;
     const visible = new Set(style.classFilter);
+    const offsets = footprintOffsets(style, this.shape);
     for (const chunk of this.chunks) {
       chunk.shown = visible.has(chunk.cls) && (style.foregroundMode === 'all'
         || chunk.foreground === (style.foregroundMode === 'foreground'));
@@ -59,15 +82,12 @@ export class NativeSpotLayer extends Container {
       if (!rebuild) continue;
       const positions = chunk.mesh.geometry.positions;
       for (let j = 0; j < chunk.rows.length; j++) {
-        const spot = this.data[chunk.rows[j]!]!;
-        const corners = spotCorners(spot.spatial[0], spot.spatial[1], style);
-        if (matrix) {
-          for (let k = 0; k < 8; k += 2) {
-            const p = projectiveTransformPoint(matrix, corners[k]!, corners[k+1]!);
-            corners[k] = p[0]; corners[k+1] = p[1];
-          }
+        const [x, y] = this.data[chunk.rows[j]!]!.spatial;
+        for (let k = 0; k < offsets.length; k += 2) {
+          let px = x + offsets[k]!, py = y + offsets[k+1]!;
+          if (matrix) [px, py] = projectiveTransformPoint(matrix, px, py);
+          positions[j * offsets.length + k] = px; positions[j * offsets.length + k + 1] = py;
         }
-        positions.set(corners, j * 8);
       }
       chunk.mesh.geometry.getBuffer('aPosition').update();
     }

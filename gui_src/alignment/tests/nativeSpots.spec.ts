@@ -75,6 +75,27 @@ describe('native spot transport and display contract', () => {
     expect((q[1]! + q[5]!) / 2).toBeCloseTo(20);
   });
 
+  it('draws hexagonal-lattice spots as hexagons that tile the lattice', () => {
+    const style = { spotSize: [20, 20] as [number, number], boost: 1, basis: [[1, 0], [0, 1]] as [[number, number], [number, number]], classFilter: [0], foregroundMode: 'all' as const };
+    const hex = spotCorners(0, 0, style, 'hexagon');
+    expect(hex.length).toBe(12);
+    const xs = hex.filter((_, k) => k % 2 === 0); const ys = hex.filter((_, k) => k % 2 === 1);
+    // 20 across the flats (the pitch), 20 * 2/sqrt(3) vertex to vertex.
+    expect(Math.max(...xs) - Math.min(...xs)).toBeCloseTo(20);
+    expect(Math.max(...ys) - Math.min(...ys)).toBeCloseTo(40 / Math.sqrt(3));
+    // The neighbour one row up (10, 17.32) shares an edge: two vertices coincide.
+    const up = spotCorners(10, 10 * Math.sqrt(3), style, 'hexagon');
+    const shared = [0, 2, 4, 6, 8, 10].filter(i => [0, 2, 4, 6, 8, 10].some(j =>
+      Math.hypot(hex[i]! - up[j]!, hex[i + 1]! - up[j + 1]!) < 1e-9));
+    expect(shared.length).toBe(2);
+    const layer = new NativeSpotLayer(decodeSpots(packed(7)), { modality_type: 'SPOT', modality_name: 'ST', spot_shape: 'hexagon' }, true);
+    layer.update({ ...style, classFilter: Array.from({ length: 7 }, (_, i) => i) });
+    const meshes = layer.children as any[];
+    expect(meshes.reduce((n, c) => n + c.geometry.indices.length, 0)).toBe(12 * 7);
+    expect(meshes.reduce((n, c) => n + c.geometry.positions.length, 0)).toBe(12 * 7);
+    layer.destroy();
+  });
+
   it('renders all native observations in bounded meshes and releases their buffers', () => {
     const data = decodeSpots(packed(10_003));
     const layer = new NativeSpotLayer(data, { modality_type: 'SPOT', modality_name: 'ST' }, true);

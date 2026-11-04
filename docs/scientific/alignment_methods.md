@@ -128,6 +128,11 @@ Every spot is displayed at its original center and footprint. There is no observ
 threshold for display pooling and no majority-vote label grid. The acquisition lattice inferred
 from `.obsm['spatial']` ([Alignment Clustering §2](spatial_clustering.md#2-clustering-units)) sets the axes of the
 square footprints when its axes are approximately orthogonal and its steps match `spot_size`.
+On a hexagonal lattice (classified as in [Registration Methods](registration_methods.md)) each
+spot is drawn as the hexagonal Voronoi cell of the lattice: flats facing the six neighbours,
+`spot_size` across the flats. It circumscribes the disc used as the registration footprint and
+tiles the lattice when `spot_size` equals the pitch. An axis-aligned square on a hexagonal lattice
+overlaps the adjacent rows (0.87 pitch apart) and offsets every other row by half a spot.
 Other layouts retain generic rectangular footprints.
 
 The `FSP1` binary payload is little-endian: a 16-byte header (magic, observation count,

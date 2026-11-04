@@ -57,7 +57,7 @@ class DirectMappingAligner:
     but aligned coordinates are scaled back to full resolution for the output.
     """
 
-    _spot_basis: list[list[float]] | None
+    _spot_footprint: tuple[list[list[float]], str] | None
     _warned_offset: bool
 
     def __init__(
