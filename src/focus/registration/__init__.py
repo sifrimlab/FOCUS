@@ -13,7 +13,6 @@ from typing import TYPE_CHECKING
 _EXPORTS = {
     "FeatureExtractorRegistration": "focus.registration.feature_extraction",
     "SpotInterpolationRegistration": "focus.registration.spot_interpolation",
-    "SpotAggregationRegistration": "focus.registration.spot_aggregation",
     "RamanPixelInterpolationRegistration": "focus.registration.raman_pixel",
 }
 
@@ -38,9 +37,6 @@ if (
     )
     from focus.registration.spot_interpolation import (
         SpotInterpolationRegistration as SpotInterpolationRegistration,
-    )
-    from focus.registration.spot_aggregation import (
-        SpotAggregationRegistration as SpotAggregationRegistration,
     )
     from focus.registration.raman_pixel import (
         RamanPixelInterpolationRegistration as RamanPixelInterpolationRegistration,

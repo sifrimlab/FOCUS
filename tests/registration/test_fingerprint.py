@@ -14,7 +14,6 @@ from focus.registration.provenance import (
     REGISTRATION_GEOMETRY_KEY,
 )
 from focus.registration.spot_interpolation import SpotInterpolationRegistration
-from focus.registration.spot_aggregation import SpotAggregationRegistration
 from tests.registration.data import square_lattice, write_anchor
 
 
@@ -37,6 +36,7 @@ class TestFingerprint:
                 X=sp.csr_matrix(rng.poisson(2, (800, 5)).astype(np.float32))
             )
             target.obsm["spatial"] = target_xy.astype(np.float32)
+            target.uns["spot_size"] = np.array([8.0, 8.0], dtype=np.float32)
             path = os.path.join(self.root, sid, "target.h5ad")
             target.write_h5ad(path)
             self.anchor_files[sid], self.target_files[sid] = anchor, path
@@ -45,14 +45,9 @@ class TestFingerprint:
         """Release the isolated fixture resources."""
         self.tmp.cleanup()
 
-    def run_engine(
-        self,
-        engine: type[SpotInterpolationRegistration]
-        | type[SpotAggregationRegistration] = SpotInterpolationRegistration,
-        samples: tuple[str, ...] = ("s1", "s2"),
-    ) -> dict[str, str]:
+    def run_engine(self, samples: tuple[str, ...] = ("s1", "s2")) -> dict[str, str]:
         """Register the selected fixture samples and return the strategy output paths."""
-        return engine(self.root).register_dataset(
+        return SpotInterpolationRegistration(self.root).register_dataset(
             {s: self.anchor_files[s] for s in samples},
             {s: self.target_files[s] for s in samples},
             "ref",
@@ -93,20 +88,6 @@ class TestFingerprint:
         assert ad.read_h5ad(merged).n_obs == 100
         assert set(ad.read_h5ad(merged).uns[REGISTRATION_GEOMETRY_KEY]) == {"s1"}
 
-    def test_aggregation_sums_members(self) -> None:
-        """Verify aggregation sums members."""
-        files = self.run_engine(SpotAggregationRegistration, ("s1",))
-        out = ad.read_h5ad(files["s1"])
-        target = ad.read_h5ad(self.target_files["s1"])
-        anchor = ad.read_h5ad(self.anchor_files["s1"])
-        xy = target.obsm["spatial"]
-        for i in (0, 37, 99):
-            cx, cy = anchor.obsm["spatial"][i]
-            inside = (np.abs(xy[:, 0] - cx) <= 10) & (np.abs(xy[:, 1] - cy) <= 10)
-            np.testing.assert_allclose(
-                out.X[i].toarray().ravel(), target.X[inside].sum(0).A1
-            )
-
     def test_targets_are_read_from_the_merged_panel(self) -> None:
         """Samples with different panels register onto the merged union panel."""
         panels = {
@@ -122,6 +103,7 @@ class TestFingerprint:
             target.write_h5ad(self.target_files[sid])
             parts.append(target)
         merged = ad.concat(parts, join="outer", fill_value=0)
+        merged.uns["spot_size"] = {sid: np.array([8.0, 8.0]) for sid in panels}
         merged_path = os.path.join(self.root, "merged_target.h5ad")
         merged.write_h5ad(merged_path)
         files = SpotInterpolationRegistration(self.root).register_dataset(
@@ -131,36 +113,49 @@ class TestFingerprint:
         assert list(ad.read_h5ad(files["merged"]).var_names) == union
         s2 = ad.read_h5ad(files["s2"])
         assert list(s2.var_names) == union
-        np.testing.assert_array_equal(np.asarray(s2[:, "g4"].X).ravel(), 0)
+        np.testing.assert_array_equal(s2[:, "g4"].X.toarray().ravel(), 0)
 
-    def test_aggregation_of_a_normalized_target_sums_counts_then_normalizes(
-        self,
-    ) -> None:
-        """Footprints sum the raw counts; the merged file is normalized once, globally."""
+    def test_a_normalized_target_is_apportioned_then_normalized(self) -> None:
+        """Counts are shared by overlap area, then the merged file is normalized once, globally."""
         from focus.preprocessing.transcriptomics.normalization import normalize
 
+        # Target spots of 10 um tile the section; anchors of 20 um start 5 um before a tile edge.
+        tile = square_lattice(20, 10.0)
+        rng = np.random.default_rng(1)
         parts = []
         for sid in ("s1", "s2"):
-            target = ad.read_h5ad(self.target_files[sid])
+            target = ad.AnnData(
+                X=sp.csr_matrix(rng.poisson(3, (len(tile), 5)).astype(np.float32))
+            )
+            target.obsm["spatial"] = tile.astype(np.float32)
             target.obs_names = [f"{sid}_{i}" for i in range(target.n_obs)]
             target.obs["sample_id"] = sid
             parts.append(target)
         merged = ad.concat(parts)
+        merged.uns["spot_size"] = {sid: np.array([10.0, 10.0]) for sid in ("s1", "s2")}
         merged.uns["focus_normalization"] = normalize(merged, "log_normalize")
         merged_path = os.path.join(self.root, "merged_target.h5ad")
         merged.write_h5ad(merged_path)
-        files = SpotAggregationRegistration(self.root).register_dataset(
+        files = SpotInterpolationRegistration(self.root).register_dataset(
             self.anchor_files, {**self.target_files, "merged": merged_path}, "ref", "st"
         )
         sample = ad.read_h5ad(files["s1"])
-        target = ad.read_h5ad(self.target_files["s1"])
-        anchor = ad.read_h5ad(self.anchor_files["s1"])
-        cx, cy = anchor.obsm["spatial"][37]
-        xy = target.obsm["spatial"]
-        inside = (np.abs(xy[:, 0] - cx) <= 10) & (np.abs(xy[:, 1] - cy) <= 10)
+        counts = merged.layers["raw"][:400]
+        # Anchor i spans [20 i - 5, 20 i + 15] on each axis: tiles 2i-1 (half), 2i (full), 2i+1 (half...)
+        ix, iy = 3, 4
+        share = np.zeros(400)
+        for tx in range(20):
+            for ty in range(20):
+                wx = _axis_share(tx, ix)
+                wy = _axis_share(ty, iy)
+                share[ty * 20 + tx] = wx * wy
+        anchor_row = iy * 10 + ix
         np.testing.assert_allclose(
-            sample.X[37].toarray().ravel(), target.X[inside].sum(0).A1
+            sample.layers["raw"][anchor_row].toarray().ravel(),
+            counts.T @ share,
+            rtol=1e-4,
         )
+        assert sample.obs["coverage"].iloc[anchor_row] == 1.0
         out = ad.read_h5ad(files["merged"])
         raw = out.layers["raw"].toarray()
         library = raw.sum(axis=1)
@@ -176,3 +171,9 @@ class TestFingerprint:
         )
         np.testing.assert_allclose(out.X.toarray(), expected, rtol=1e-5)
         assert out.uns["focus_normalization"]["method"] == "log_normalize"
+
+
+def _axis_share(tile: int, anchor: int) -> float:
+    """Share of the 10 um tile ``tile`` (centre 10 tile + 5) inside the 20 um anchor ``anchor``."""
+    lo, hi = 20 * anchor - 5, 20 * anchor + 15
+    return max(0.0, min(hi, 10 * tile + 10) - max(lo, 10 * tile)) / 10.0

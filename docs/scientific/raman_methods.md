@@ -246,7 +246,7 @@ placement \((x_0, y_0, s_x, s_y)\) the anchor spots, aligned to image-0 pixels, 
 coordinates. Only the pixel box the footprints can reach is read (through tifffile's zarr view).
 Each spot receives the Gaussian-weighted average of the measured (finite) pixels of the image inside
 its footprint; a spot with none gets NaN for that image's channels. Features are concatenated over
-the images; see [Registration](registration_methods.md#5-raman-pixel-interpolation-raman_pixel_interpolation).
+the images; see [Registration](registration_methods.md#4-raman-pixel-interpolation-raman_pixel_interpolation).
 
 ---
 

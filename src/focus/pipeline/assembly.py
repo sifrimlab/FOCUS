@@ -168,8 +168,9 @@ def _compute_valid_spot_mask(
 
     Empty rows (all zero, or zero and NaN) arise when an anchor spot's footprint holds no
     target data:
-    - SpotInterpolation / SpotAggregation / RamanPixelInterpolation: no target spot or
-      pixel centre lies inside the footprint (the spot is outside the target tissue).
+    - SpotInterpolation: no target spot overlaps the footprint (the spot is outside the target
+      tissue).
+    - RamanPixelInterpolation: no pixel centre lies inside the footprint.
     - FeatureExtraction: every image token of the footprint is background
       (>= 99% background pixels), or the footprint lies outside the image.
     - Any engine: the spot cannot be placed in the target frame.

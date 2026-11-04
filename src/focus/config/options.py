@@ -31,7 +31,6 @@ class RegistrationType(_AbstractEnum):
     NONE: Final = "none"
     FEATURE_EXTRACTION: Final = "feature_extraction"
     SPOT_INTERPOLATION: Final = "spot_interpolation"
-    SPOT_AGGREGATION: Final = "spot_aggregation"
     RAMAN_PIXEL_INTERPOLATION: Final = "raman_pixel_interpolation"
 
 

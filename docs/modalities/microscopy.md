@@ -146,7 +146,7 @@ A source compressed with lossy JPEG (for example an SVS) is decoded once and sto
 
 ## Registration
 
-`microscopy_image` is compatible with two registration types: `feature_extraction`, and `none` (which aligns the modality but leaves it out of the final MuData). The spot-based types (`spot_interpolation`, `spot_aggregation`) and `raman_pixel_interpolation` are rejected during configuration validation.
+`microscopy_image` is compatible with two registration types: `feature_extraction`, and `none` (which aligns the modality but leaves it out of the final MuData). The spot-based types (`spot_interpolation`) and `raman_pixel_interpolation` are rejected during configuration validation.
 
 `feature_extraction` gives each anchor spot one embedding of the image area inside its footprint, computed with [Prov-GigaPath](https://huggingface.co/prov-gigapath/prov-gigapath), a pathology foundation model downloaded from HuggingFace on first use, so `huggingface_token` must be set in the configuration. The image is encoded at the stored pyramid level closest to the model's 0.5 µm per pixel, using the pixel size recorded at preprocessing. It runs on a GPU when one is available and otherwise on the CPU.
 

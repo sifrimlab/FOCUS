@@ -87,7 +87,7 @@ Image pixel \((\text{col}, \text{row})\) covers \([\text{col}, \text{col}+1) \ti
 \text{row}+1)\) in the frame the alignment step writes; its point is its centre
 \((\text{col} + 0.5, \text{row} + 0.5)\).
 
-FOCUS design choice: the weighted engines use a Gaussian of the anchor-frame distance
+FOCUS design choice: the Raman engine (§4) uses a Gaussian of the anchor-frame distance
 \(d_{ij} = \|q_j - c_i\|\), with a bandwidth of half the geometric mean spot size:
 
 \[
@@ -233,7 +233,7 @@ Per-sample AnnData:
 - `.X`: embeddings, dense float32, shape `(N_ref, D)` with `D` the model width (1536)
 - `.obsm['spatial']`: the anchor coordinates in level-0 image pixels
 - `.obs['sample_id']`
-- `.uns`: the stamps of §6, with `focus_registration_geometry` extended by `encoder`,
+- `.uns`: the stamps of §5, with `focus_registration_geometry` extended by `encoder`,
   `encoded_level` and, when the pixel size is known, `encoded_um_per_px`
 - no `.var` metadata (`var_names` are positional strings) and no `.layers`
 
@@ -252,90 +252,109 @@ a warning.
 
 Applicable modality types: `msi`, `st`.
 
-### 3.1 Geometric setup
+One method registers a spot-based target on the anchors for every combination of spot sizes:
+anchors larger than, equal to or smaller than the target spots, small weak target spots on a large
+signal-rich anchor, and the reverse. The weight of a target spot for an anchor is the area where
+their footprints overlap[^goodchild1980] [^jones1999]. FOCUS adaptation: the overlap is estimated by
+sampling the smaller footprint (§3.2), so ellipses, rotated lattices and projective maps need no
+special case.
+
+### 3.1 Footprints
 
 The target points \(t_j\) are the target modality's `obsm['spatial']`, read from the sample's rows
 of the merged preprocessed target file. That file carries the cross-sample feature filter, the union
 feature panel and the merged normalization, so every registered sample has the same features; the
-per-sample preprocessed file is read only when no merged file exists. The footprint
-\(\mathcal{N}_i\) of anchor \(i\) holds the targets whose mapped centres lie inside it (§1.1 to §1.3).
+per-sample preprocessed file is read only when no merged file exists.
 
-### 3.2 Kernel and interpolation
+- The anchor footprint \(F_i\) is the footprint of §1.2 and §1.3, with area \(|F_i|\), mapped into
+  the target frame. Its area there is \(A_i = |F_i|\,|\det J_i|\), with \(J_i\) the Jacobian of the
+  alignment map at the anchor centre (target units per anchor unit).
+- The target footprint \(G_j\) is the footprint of the target's own `spot_size` (read from
+  `uns['spot_size']`, per sample in a merged file), centred on \(t_j\) in the target frame, with the
+  shape rule of §1.2: an ellipse on a hexagonal target lattice, a rectangle along the lattice axes
+  otherwise. All target spots of a sample share one area \(A_T\). A target without a valid
+  `spot_size` uses the median spacing of its spots as a square footprint, with a warning.
 
-Weights \(w_{ij}\) are the Gaussian of §1.4, on anchor-frame distances. Normalized weighted average:
+Both coordinate systems are in µm, which makes \(A_i\) and \(A_T\) comparable. An alignment map whose
+scale is outside 0.5 to 2 target units per anchor unit logs a warning, because it points to
+coordinates in pixels.
 
-\[
-\hat{f}(r_i)=\frac{\sum_{j\in\mathcal{N}_i} w_{ij} f(t_j)}{\sum_{j\in\mathcal{N}_i} w_{ij}}
-\]
+### 3.2 Overlap
 
-If \(\mathcal{N}_i=\varnothing\), row \(i\) is left at zeros. The row-normalized weights form one
-sparse operator applied to `.X` and to every layer.
+The overlap area is \(O_{ij} = |F_i \cap G_j|\), in target-frame units. It is computed pairwise:
+footprints of one set may overlap each other, and each anchor takes its own overlap.
 
-### 3.3 Output semantics
+The footprint with the smaller area is sampled (the anchor when \(A_i \le A_T\) for the median
+anchor, the target otherwise) on a cell-centred stratified grid of \(p \times p\) points, clipped to
+the ellipse for an elliptical footprint. \(p\) is as fine as a budget of \(10^7\) sample points allows
+for the number of sampled footprints, at most 32. Each point is located in the footprints of the
+other set with the KD-tree search and the containment test of §1.3, whose upper footprint edges are
+open so that footprints tiling the plane share no point.
+
+- Anchors sampled: \(O_{ij} = A_i\,\gamma_{ij}\), with \(\gamma_{ij}\) the share of the points of
+  anchor \(i\) that lie in \(G_j\).
+- Targets sampled: \(O_{ij} = A_T\,\eta_{ij}\), with \(\eta_{ij}\) the share of the points of target
+  \(j\) that lie in \(F_i\).
+
+An anchor inside one target spot therefore takes that spot, an anchor over many target spots takes
+all of them in proportion to their overlap, and a target spot split among small anchors is shared
+by area. The estimate has a quantisation error of at most half a grid step per footprint edge.
+
+### 3.3 Reduction
+
+What the target measures decides how the overlap is used. The target is a count matrix when its
+merged preprocessed file records `uns['focus_normalization']` (spatial transcriptomics) and an
+intensity matrix otherwise (MSI).
+
+| Target | Anchor feature vector | Property |
+|---|---|---|
+| Intensities (intensive) | \(\hat f_i = \dfrac{\sum_j O_{ij} f_j}{\sum_j O_{ij}}\) | A constant field stays constant for every combination of spot sizes; the result does not scale with the number of pixels. |
+| Counts (extensive) | \(\hat f_i = \sum_j \dfrac{O_{ij}}{A_T} f_j\) | Each target spot gives the share of its counts that lies in the anchor, so counts are conserved where anchors tile the target and small weak spots add up on a large anchor without loss. |
+
+The row-normalized overlap (intensities) or \(O/A_T\) (counts) is one sparse operator applied to
+`.X` and every layer. Counts are taken from `layers['raw']`, or from `.X` when the target
+normalization is `none`.
+
+Coverage is the share of the anchor footprint that target spots cover,
+\(c_i = \min\bigl(1, \sum_j O_{ij} / A_i\bigr)\). It is below 1 where target spots have gaps
+between them or the anchor lies partly over the edge of the target section. An anchor that no
+target spot overlaps keeps an all-zero row.
+
+For counts, the merged registered file is normalized once with the target's method
+(`uns['focus_normalization']`) after the samples are merged, and the area used by
+`area_log_normalize` is the covered footprint area \(c_i\,|F_i|\) (the full area for an uncovered
+anchor, whose row is zero). Fractional counts are valid input to every normalization.
+
+### 3.4 Output semantics
 
 Per-sample output AnnData has:
 
-- `.X`: interpolated target features at anchor rows, dense float32
+- `.X`: registered target features at anchor rows, sparse CSR float32, shape \((N_R, D_T)\)
+- `.layers['raw']`: the apportioned counts, for a normalized ST target
+- `.obs['coverage']`: \(c_i\)
+- `.obs['focus_area']`: the covered footprint area, for an ST target
 - `.obsm['spatial']`: anchor coordinates in the target frame
 - target `.var` and `.var_names` propagated
-- every target `.layers` entry interpolated with the same weights
+- every target `.layers` entry reduced with the same operator, for an intensity target
 
-### 3.4 Parameters
+The `.uns['focus_registration_geometry']` stamp adds `overlap_sampled` (`anchor` or `target`) and
+`overlap_points_per_axis`.
+
+### 3.5 Parameters
 
 - `force_recomputing` (default `false`)
 
 ---
 
-## 4. Spot aggregation (`spot_aggregation`)
-
-Applicable modality types: `msi`, `st`.
-
-Same footprint geometry as §3, but the targets inside the footprint are **summed with equal weight** rather than Gaussian-averaged. Applies to subcellular-resolution spot modalities (e.g. Visium HD), where one reference footprint covers many native spots.
-
-### 4.1 Geometric setup
-
-Identical to §3.1: \(\mathcal{N}_i\) holds the targets whose mapped centres lie inside the footprint of anchor \(i\) (§1.1 to §1.3).
-
-### 4.2 Aggregation
-
-Equal-weight sum over the footprint:
-\[
-\hat{f}(r_i)=\sum_{j\in\mathcal{N}_i} f(t_j)
-\]
-
-There is no kernel and no normalization: weights are 1, and the sum is **not** divided by \(|\mathcal{N}_i|\) (footprint occupancy). Equivalently, with the sparse \(N_R\times N_T\) membership matrix \(A\) where \(A_{ij}=1\) iff \(t_j\in\mathcal{N}_i\),
-\[
-\hat{F}=A\,F,
-\]
-evaluated as a sparse product (the target matrix \(F\) is not densified). Footprints may overlap, so one target may contribute to several reference rows. If \(\mathcal{N}_i=\varnothing\), row \(i\) is left at zeros.
-
-`.X` and every `.layers` entry are aggregated with the same membership matrix \(A\).
-
-### 4.3 Output semantics
-
-Per-sample output AnnData has:
-
-- `.X`: summed target features at anchor rows, shape \((N_R, D_T)\), kept **sparse (CSR)**, unlike
-  §3, which densifies
-- `.obsm['spatial']`: anchor coordinates in the target frame
-- target `.var` and `.var_names` propagated
-- any target `.layers` summed identically, also sparse
-
-### 4.4 Parameters
-
-- `force_recomputing` (default `false`)
-
----
-
-## 5. Raman pixel interpolation (`raman_pixel_interpolation`)
+## 4. Raman pixel interpolation (`raman_pixel_interpolation`)
 
 Applicable modality type: `raman`.
 
 [Raman preprocessing](raman_methods.md#6-output) produces a hyperspectral OME-TIFF with one image
-per acquisition (one channel per Raman shift), not a spot table. This engine applies the
-interpolation of §3 to the pixels of every image.
+per acquisition (one channel per Raman shift), not a spot table. This engine applies the Gaussian
+footprint average of §4.2 to the pixels of every image.
 
-### 5.1 Geometric setup
+### 4.1 Geometric setup
 
 1. Each pixel \((\text{col},\text{row})\) of an image's full-resolution level is a target point at
    its centre \((\text{col}+0.5,\text{row}+0.5)\) (§1.4), with a feature vector equal to its
@@ -349,14 +368,20 @@ interpolation of §3 to the pixels of every image.
    bounding boxes are read. Files written before `raman-2` hold one image at the identity
    placement.
 
-### 5.2 Kernel and interpolation
+### 4.2 Kernel and interpolation
 
-Identical to §3.2: the Gaussian weights of §1.4 over the measured pixels whose centres lie inside
-each footprint, row-normalized, per image. An anchor row with no measured pixel of an image in its
+The Gaussian weights \(w_{ij}\) of §1.4 over the measured pixels whose centres lie inside each
+footprint \(\mathcal{N}_i\), row-normalized, per image:
+
+\[
+\hat{f}(r_i)=\frac{\sum_{j\in\mathcal{N}_i} w_{ij} f(t_j)}{\sum_{j\in\mathcal{N}_i} w_{ij}}
+\]
+
+An anchor row with no measured pixel of an image in its
 footprint is NaN for that image's channels; if no footprint reaches an image, a warning is logged.
 The images' features are concatenated.
 
-### 5.3 Output semantics
+### 4.3 Output semantics
 
 Per-sample output AnnData has:
 
@@ -367,13 +392,13 @@ Per-sample output AnnData has:
   no names), with columns `wavenumber` and `acquisition`
 - no `.layers`
 
-### 5.4 Parameters
+### 4.4 Parameters
 
 - `force_recomputing` (default `false`)
 
 ---
 
-## 6. Merge and cache behavior
+## 5. Merge and cache behavior
 
 All registration engines:
 
@@ -391,6 +416,7 @@ FOCUS design choice: outputs are reused by content fingerprint. A per-sample out
 when its stored fingerprint equals the SHA-256 fingerprint of its current inputs:
 
 - the registration method version and `registration_type`;
+- the algorithm marker of the spot method (`overlap-1`), so a change of that method rebuilds only the spot registrations;
 - digests of the anchor's `obsm['spatial']` and `obsm['{target_name}_spatial']`, and its `spot_size`;
 - the identity of the target input: the level-0 pixel digest of a FOCUS OME-TIFF, the
   preprocessing fingerprint of an h5ad, otherwise the file's path, size and modification time;
@@ -410,14 +436,14 @@ bypasses both checks. The merged file is
 
 ---
 
-## 7. Compatibility matrix
+## 6. Compatibility matrix
 
-| Modality type | `feature_extraction` | `spot_interpolation` | `spot_aggregation` | `raman_pixel_interpolation` | `none` |
-|---|---:|---:|---:|---:|---:|
-| `microscopy_image` | yes | no | no | no | yes |
-| `msi` | no | yes | yes | no | yes |
-| `raman` | no | no | no | yes | yes |
-| `st` | no | yes | yes | no | yes |
+| Modality type | `feature_extraction` | `spot_interpolation` | `raman_pixel_interpolation` | `none` |
+|---|---:|---:|---:|---:|
+| `microscopy_image` | yes | no | no | yes |
+| `msi` | no | yes | no | yes |
+| `raman` | no | no | yes | yes |
+| `st` | no | yes | no | yes |
 
 Compatibility is enforced during config validation; an incompatible `registration_type`/modality pairing raises a `ValueError`. The reference modality itself is not registered; it defines the row index used by all registered targets.
 
@@ -425,6 +451,8 @@ Compatibility is enforced during config validation; an incompatible `registratio
 
 ## References
 
+[^goodchild1980]: Goodchild MF, Lam NS-N. Areal interpolation: a variant of the traditional spatial problem. *Geo-Processing* 1:297-312 (1980). No DOI. Source-zone values reassigned to target zones by the area of their intersection.
+[^jones1999]: Jones PW. First- and second-order conservative remapping schemes for grids in spherical coordinates. *Mon Weather Rev* 127:2204-2210 (1999). [doi:10.1175/1520-0493(1999)127<2204:FASOCR>2.0.CO;2](https://doi.org/10.1175/1520-0493(1999)127%3C2204:FASOCR%3E2.0.CO;2). First-order conservative remapping: weights are overlap areas, so the integral of a field is conserved.
 [^hartley1997]: Hartley RI. In defense of the eight-point algorithm. *IEEE Trans Pattern Anal Mach Intell* 19:580-593 (1997). [doi:10.1109/34.601246](https://doi.org/10.1109/34.601246). Coordinate normalisation before the linear solve.
 [^hartley2004]: Hartley R, Zisserman A. *Multiple View Geometry in Computer Vision*, 2nd edn. Cambridge University Press, Cambridge (2004). [doi:10.1017/CBO9780511811685](https://doi.org/10.1017/CBO9780511811685). Direct linear transform for a 2D homography.
 [^xu2024]: Xu H, Usuyama N, Bagga J, et al. A whole-slide foundation model for digital pathology from real-world data. *Nature* 630:181-188 (2024). [doi:10.1038/s41586-024-07441-w](https://doi.org/10.1038/s41586-024-07441-w). Slides resized to 0.5 µm per pixel and tiled at 256 x 256 pixels (Methods, "Preprocessing WSIs"); tile encoder pretrained with DINOv2; inference transform (224 px input, ImageNet normalization) from the reference code at [github.com/prov-gigapath/prov-gigapath](https://github.com/prov-gigapath/prov-gigapath).

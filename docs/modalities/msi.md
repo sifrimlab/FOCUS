@@ -204,18 +204,12 @@ The steps run in this order; [MSI methods](../scientific/msi_methods.md) gives e
 ## Registration
 
 !!! warning "Spot-based registration only"
-    MSI is a spot-based modality, so it supports `spot_interpolation` and `spot_aggregation`. `feature_extraction` is **not** compatible.
+    MSI is a spot-based modality, so it supports `spot_interpolation`. `feature_extraction` is **not** compatible.
 
-`spot_interpolation` performs Gaussian-weighted interpolation: for each anchor spot (from the reference modality), all MSI spots whose centres lie within the anchor's footprint are averaged, weighting each by `exp(−d²/2σ²)` of its distance `d` to the anchor centre, with `σ = √(sx·sy)/2` from the anchor's `spot_size`. Footprint and distance are evaluated in the anchor's own frame, through the alignment transform. The result is a new feature vector at each anchor position.
+`spot_interpolation` registers MSI onto the anchor spots by overlap area. Each MSI spot has a footprint of its own, the raster tile of its `spot_size` (the pixel size of the imzML), and each anchor spot has the footprint of its `spot_size`. The anchor receives the average of the MSI spots it covers, weighted by overlap area, so a constant intensity stays constant whether the anchor is larger or smaller than the MSI pixel and the value does not grow with the number of pixels. An anchor smaller than a pixel takes that pixel. Both coordinate systems must be in µm. `obs['coverage']` records the share of the anchor footprint covered by MSI spots.
 
 ```yaml
 registration_type: spot_interpolation
-```
-
-`spot_aggregation` uses the same footprint but **sums** the MSI spots inside it instead of averaging them: equal weight, no Gaussian kernel, and no normalization. Use it for subcellular-resolution acquisitions, where one anchor spot covers many MSI spots. See [Registration](../pipeline/registration.md#spot_aggregation).
-
-```yaml
-registration_type: spot_aggregation
 ```
 
 No additional registration settings are required for MSI.

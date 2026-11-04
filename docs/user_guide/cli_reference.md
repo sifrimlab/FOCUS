@@ -262,7 +262,7 @@ from focus.preprocessing.microscopy.sample import MicroscopyImage
 from focus.alignment.coordinator import DirectMappingAligner
 
 # Registration
-from focus.registration import FeatureExtractorRegistration, SpotInterpolationRegistration, SpotAggregationRegistration, RamanPixelInterpolationRegistration
+from focus.registration import FeatureExtractorRegistration, SpotInterpolationRegistration, RamanPixelInterpolationRegistration
 
 # Utilities
 from focus.config.validation import parse_config

@@ -109,8 +109,7 @@ For other references, alignment is always manual and the section has no settings
 **3. Registration** (non-reference modalities only). Select the registration method and fill in its settings:
 
 - **None**: Align only; exclude from the final MuData.
-- **Spot interpolation**: Gaussian-weighted average of the target spots in each reference spot's footprint (CPU). For `msi` and `st`.
-- **Spot aggregation**: equal-weight sum of the target spots in each reference spot's footprint, without normalization (CPU). For `msi` and `st`, intended for subcellular-resolution data such as Visium HD.
+- **Spot interpolation**: overlap-area registration of the target spots with each reference spot's footprint, for any combination of spot sizes (CPU). For `msi` and `st`; coordinates must be in µm.
 - **Raman pixel interpolation**: the same Gaussian footprint interpolation applied to the hyperspectral OME-TIFF pixels (CPU). For `raman`.
 - **Feature extraction**: one Prov-GigaPath embedding per reference spot, restricted to the image inside its footprint (GPU recommended; CPU fallback). Only available for `microscopy_image`, and only appropriate when that image is an H&E-stained brightfield RGB section, which is what the model was pretrained on. For fluorescence, IHC or other stains, pick **None** instead: the GUI offers Feature extraction for every microscopy modality and nothing downstream checks the stain.
 

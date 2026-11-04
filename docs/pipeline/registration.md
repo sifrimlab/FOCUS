@@ -29,18 +29,17 @@ Registration runs per sample and then merges the per-sample results:
 |---|---|---|
 | `feature_extraction` | `microscopy_image` (**H&E brightfield only**, see below) | CUDA GPU recommended; CPU fallback |
 | `spot_interpolation` | `msi`, `st` | CPU |
-| `spot_aggregation` | `msi`, `st` | CPU |
 | `raman_pixel_interpolation` | `raman` | CPU |
 | `none` | any (skips registration) | - |
 
-FOCUS therefore has **four** registration modes. They are described below.
+FOCUS therefore has **three** registration modes. They are described below.
 
-### Rules shared by all four modes
+### Rules shared by all three modes
 
 - **Inputs.** The aligned reference (anchor) AnnData supplies the positions through `obsm['spatial']` (its own frame) and `obsm['{target_name}_spatial']` (the target's frame), written by the alignment stage; the target modality supplies the features. Samples present in both are processed; the rest are ignored.
 - **Missing alignment.** A sample whose anchor lacks `obsm['{target_name}_spatial']` is skipped with a warning. No output file is written for it.
 - **Footprint.** Every mode reads the footprint size from the **anchor's** `uns['spot_size']`, in the units of the anchor's `obsm['spatial']` (a single value is applied to both axes). If the key is absent, `[1.0, 1.0]` is used and a warning is logged. The footprint is a disc-like ellipse when the anchor spots sit on a hexagonal lattice (standard Visium) and a rectangle along the lattice axes otherwise.
-- **Anchor frame.** The footprint is evaluated in the anchor's own frame: target spots, pixels or image tokens are mapped back through the inverse of the alignment transform, which FOCUS recovers from the two stored coordinate sets. The footprint size is therefore correct whatever the target's units (µm, image pixels, Raman pixels). A target element belongs to a footprint when its centre lies inside it.
+- **Anchor frame.** The footprint is evaluated in the anchor's own frame: target spots, pixels or image tokens are mapped back through the inverse of the alignment transform, which FOCUS recovers from the two stored coordinate sets. The footprint size is therefore correct whatever the target's units (image pixels, Raman pixels); `spot_interpolation` also compares areas across the two frames and needs both in µm. A pixel or image token belongs to a footprint when its centre lies inside it. `spot_interpolation` also gives every target spot its own footprint and uses the overlap area instead.
 - **Uncovered anchors.** Any anchor with nothing inside its footprint, or that cannot be placed in the target frame, keeps an all-zero row, which the [compilation](compilation.md) coverage filter drops later.
 - **Outputs.** One file per sample plus a merged file, each stamped with `uns['registration_type']`, `uns['focus_registration_fingerprint']` and `uns['focus_registration_geometry']`, and carrying `obs['sample_id']` and `obsm['spatial']` (the anchor coordinates in the target's frame). Merged files rewrite `obs_names` as `{sample_id}_{row_index}`.
 
@@ -100,17 +99,28 @@ The window size is fixed by the encoder; there is no patch size setting.
 
 ## `spot_interpolation`
 
-Used for spot-based omics modalities (MSI, ST). Each reference spot's feature vector is a Gaussian-weighted average of the target spots that fall within the reference spot's footprint.
+Used for spot-based omics modalities (MSI, ST). One method covers every combination of spot sizes: reference spots larger, equal or smaller than the target spots, small weak target spots on a large signal-rich reference spot, and the reverse.
 
-**Algorithm** for each anchor spot with spot size `(sx, sy)`:
+Every reference spot has a footprint (its `spot_size` around its centre, mapped into the target frame) and every target spot has one too (its own `spot_size` around its centre). The overlap area of the two decides how much of the target spot belongs to the reference spot:
 
-1. Find the target spots whose centres, mapped into the anchor's frame, lie inside the anchor's footprint (candidates come from a `cKDTree` search in the target's frame).
-2. Weight each of them by a Gaussian of its anchor-frame distance `d` to the anchor centre, `w = exp(−d² / (2σ²))`, with bandwidth `σ = √(sx·sy) / 2`, and normalize the weights to sum to 1.
-3. Take the weighted average of the target feature vectors.
+- A reference spot inside one target spot takes that spot.
+- A reference spot over many target spots takes all of them in proportion to their overlap.
+- A target spot split among several small reference spots is shared by area.
+- Target spots with gaps between them leave part of the reference footprint uncovered. The covered share is stored in `obs['coverage']`.
 
-This is a **footprint average, not a fixed-k nearest-neighbor** scheme. If no target spot falls inside the footprint, the reference row is left as an **all-zero vector**. Any `layers` on the target are interpolated with the same kernel.
+What is done with the overlap depends on what the target measures:
 
-**Output AnnData:** `X` = `(N_ref, D)` **dense** interpolated features; `obsm['spatial']` = anchor coordinates in the target's frame; `obs['sample_id']`; the target's `var` is propagated; each target layer appears as a layer of the same shape.
+| Target | Reduction | Property |
+|---|---|---|
+| Intensities (MSI) | Area-weighted mean over the covered area | A constant field stays constant whatever the spot sizes. The value does not grow with the number of pixels in the footprint. |
+| Counts (ST) | Each target spot gives the share of its counts that lies in the reference spot | Counts are conserved where reference spots tile the target. Weak small spots add up on a large reference spot with no loss. |
+
+For an ST target the fractional counts go to `layers['raw']`, and the merged registered file is then normalized once with the target's method (`uns['focus_normalization']`). `obs['focus_area']` holds the covered footprint area, which `area_log_normalize` uses. A reference spot that no target spot overlaps keeps an **all-zero row** and is dropped later by the [compilation](compilation.md) coverage filter. Any `layers` of an MSI target are registered with the same operator.
+
+!!! warning "Both coordinate systems in µm"
+    Footprint areas are compared in one unit, so the reference and target coordinates and their `spot_size` values must be in µm. Coordinates in image pixels (Xenium cell centroids in pixels, for example) make the reference footprints look far smaller than they are. A map between the two frames whose scale is outside 0.5 to 2 target units per reference unit logs a warning. Convert the coordinates to µm before preprocessing.
+
+**Output AnnData:** `X` = `(N_ref, D)` registered features as sparse CSR float32; `obs['sample_id']`; `obs['coverage']`; `obs['focus_area']` and `layers['raw']` for a normalized ST target; `obsm['spatial']` = anchor coordinates in the target's frame; the target's `var` is propagated.
 
 **Configuration**
 
@@ -127,50 +137,10 @@ This is a **footprint average, not a fixed-k nearest-neighbor** scheme. If no ta
 |---|---|---|---|
 | `force_recomputing` | bool | `false` | Recompute even if the cached output matches its inputs. |
 
-The interpolation footprint and bandwidth are derived automatically from the anchor `spot_size`; there are no manual kernel parameters.
+The footprints come from the `spot_size` of the reference and of the target; there are no manual kernel parameters. A target without a valid `spot_size` uses the median spacing of its spots, with a warning.
 
----
-
-## `spot_aggregation`
-
-Used for spot-based omics modalities (MSI, ST). Each reference spot's feature vector is the **plain sum** of the target spots that fall within the reference spot's footprint. The footprint is the same as [`spot_interpolation`](#spot_interpolation), but the values are **summed instead of averaged**.
-
-Use it for **subcellular-resolution** spot modalities (e.g. **Visium HD**), where the values to carry onto one reference spot are the accumulated signal of the many native spots it covers.
-
-**Algorithm** for each anchor spot:
-
-1. Find the target spots whose centres, mapped into the anchor's frame, lie inside the anchor's footprint, as in `spot_interpolation`.
-2. **Sum** their feature vectors, each with equal weight.
-
-Internally this is built as a sparse `(N_ref, N_target)` 0/1 membership matrix `A` (`A[i,j] = 1` iff target `j` is inside anchor `i`'s footprint) and the aggregation is the sparse product `A @ X`. The computation is **sparse-preserving**: the target matrix is not densified, which matters for high-resolution inputs with many spots.
-
-Key differences from `spot_interpolation`:
-
-- **Sum, not weighted average.** There is no Gaussian kernel and no weighting; every in-footprint target contributes equally.
-- **Sum of counts.** The summed values are not divided by the number of contributing spots. A target without a normalization (MSI, or ST with `normalization: none`) has `.X` and every layer aggregated the same way. A normalized ST target is aggregated on its `layers['raw']` counts, and the merged registered file is then normalized once with the target's method (`uns['focus_normalization']`), with the anchor footprint area as the area; a sum of log-normalized values has no meaning.
-- Footprints may **overlap**, so a single target spot can contribute to several reference spots.
-- The output `X` stays **sparse (CSR)**, unlike `spot_interpolation`, which returns a dense matrix.
-
-If no target spot falls inside the footprint, the reference row is left as an **all-zero vector** (dropped later by the [compilation](compilation.md) coverage filter).
-
-**Output AnnData:** `X` = `(N_ref, D)` sparse CSR summed features; `obsm['spatial']` = anchor coordinates in the target's frame; `obs['sample_id']`; the target's `var` is propagated; any target `layers` are summed with the same membership.
-
-**Configuration**
-
-```json
-{
-  "registration_type": "spot_aggregation",
-  "registration_settings": {
-    "force_recomputing": false
-  }
-}
-```
-
-| Parameter | Type | Default | Description |
-|---|---|---|---|
-| `force_recomputing` | bool | `false` | Recompute even if the cached output matches its inputs. |
-
-The aggregation footprint is derived automatically from the anchor `spot_size`; there are no manual parameters.
+!!! note "`spot_aggregation` was removed"
+    Summing the target spots inside a footprint is now what `spot_interpolation` does for count targets, with overlap shares in place of whole spots. A config that sets `registration_type: "spot_aggregation"` fails validation and names `spot_interpolation`.
 
 ---
 
@@ -182,7 +152,7 @@ Used for Raman. Raman preprocessing produces a **hyperspectral OME-TIFF** with o
 
 1. Treat each Raman **pixel as a spot**: its position is the pixel centre `(col + 0.5, row + 0.5)` in the full-resolution level (the frame the alignment step writes), and its feature vector is the pixel's spectral intensities across channels.
 2. For every image, map the footprints through the alignment and the image's placement (`focus_placement`) and read only the pixels inside the union of their bounding boxes. Channel names come from the OME-XML (`<wavenumber> cm-1`); outputs written before `raman-2` carry none and are named `Channel_0` to `Channel_{C-1}`.
-3. Run the **same Gaussian footprint interpolation** as [`spot_interpolation`](#spot_interpolation), using the measured (finite) pixels as the target spots. The footprint is the anchor's `spot_size` in the anchor's units, mapped through the alignment, so it covers the same tissue area whatever the Raman pixel size.
+3. Run a **Gaussian footprint average** (weights `exp(−d² / (2σ²))`, `σ = √(sx·sy) / 2`, normalized to sum to 1) over the measured (finite) pixels whose centres lie inside the footprint. The footprint is the anchor's `spot_size` in the anchor's units, mapped through the alignment, so it covers the same tissue area whatever the Raman pixel size.
 
 A spot without a measured pixel of an image in its footprint gets NaN for that image's channels (an ROI acquisition that does not cover it); when an image is out of reach of every spot, a warning is logged. Spots with no measured value in any image are dropped at assembly like any uncovered spot.
 

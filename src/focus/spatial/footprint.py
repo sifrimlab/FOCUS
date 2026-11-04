@@ -112,12 +112,13 @@ class AnchorGeometry:
         return out
 
     def contains(
-        self, rows: np.ndarray, pts: np.ndarray
+        self, rows: np.ndarray, pts: np.ndarray, closed: bool = True
     ) -> tuple[np.ndarray, np.ndarray]:
         """Pairwise test: is target-frame point ``pts[k]`` inside footprint ``rows[k]``?
 
         Returns ``(inside, d2)`` where ``d2`` is the squared anchor-frame distance from the
-        anchor centre (NaN where the point cannot be mapped back).
+        anchor centre (NaN where the point cannot be mapped back). With ``closed=False`` the
+        upper edges are excluded, so footprints that tile the plane never share a boundary point.
         """
         rows = np.asarray(rows, dtype=np.intp)
         q = self.transform.to_anchor(pts, rows)
@@ -127,9 +128,12 @@ class AnchorGeometry:
         h = self.shape.half
         with np.errstate(invalid="ignore"):
             if self.shape.kind == "ellipse":
-                inside = (u[:, 0] / h[0]) ** 2 + (u[:, 1] / h[1]) ** 2 <= 1.0
-            else:
+                radius = (u[:, 0] / h[0]) ** 2 + (u[:, 1] / h[1]) ** 2
+                inside = radius <= 1.0 if closed else radius < 1.0
+            elif closed:
                 inside = (np.abs(u[:, 0]) <= h[0]) & (np.abs(u[:, 1]) <= h[1])
+            else:
+                inside = ((u >= -h) & (u < h)).all(axis=1)
         inside &= self.valid[rows] & np.isfinite(u).all(axis=1)
         return inside, (d**2).sum(axis=1)
 

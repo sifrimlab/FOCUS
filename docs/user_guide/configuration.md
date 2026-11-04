@@ -187,8 +187,7 @@ The computational method used to map this modality's features onto the reference
 | Value | Behaviour | Compatible modality types |
 |-------|-----------|--------------------------|
 | `"none"` | No registration. This modality is aligned but **not** included in the final MuData output. | All |
-| `"spot_interpolation"` | Gaussian-weighted average of the spot-based data in each anchor footprint. Runs on CPU. | `msi`, `st` |
-| `"spot_aggregation"` | Equal-weight **sum** of the spot-based data in each anchor footprint (no normalization); accumulates signal for subcellular-resolution data (e.g. Visium HD). Runs on CPU. | `msi`, `st` |
+| `"spot_interpolation"` | Overlap-area registration of the spot-based data with each anchor footprint, for any combination of spot sizes (ST counts are shared by overlap, MSI intensities averaged by overlap area). Needs reference and target coordinates in µm. Runs on CPU. | `msi`, `st` |
 | `"raman_pixel_interpolation"` | Gaussian-weighted interpolation over the hyperspectral OME-TIFF pixels, each pixel acting as a spot. Runs on CPU. | `raman` |
 | `"feature_extraction"` | One Prov-GigaPath embedding (deep learning) per reference spot, restricted to the image inside its footprint. **Only for H&E-stained brightfield images**: the model is pretrained on H&E tiles. Fluorescence images are rejected (at validation when `image_type` is `"fluorescence"`, at registration from the image type recorded by preprocessing); the stain of a brightfield image is not checked, so other stains yield embeddings that carry no morphological meaning. Use `"none"` for those. Requires a HuggingFace token; runs on an NVIDIA GPU when available, otherwise on the CPU (impractically slow for real images). | `microscopy_image` |
 

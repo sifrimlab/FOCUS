@@ -165,6 +165,12 @@ class STPreprocessingParams(_AbstractEnum):
     FORCE_RECOMPUTING: Final = "force_recomputing"
 
 
+# Registration types removed, with the type that replaces each one (config validation rejects
+# them and names the replacement). One overlap-area method now covers every spot-to-spot case.
+REGISTRATION_REMOVED_TYPES: dict[str, str] = {
+    "spot_aggregation": "spot_interpolation",
+}
+
 # ST settings removed in st-5, with the setting that replaces each one (config validation
 # rejects them and names the replacement).
 ST_REMOVED_SETTINGS: dict[str, str] = {

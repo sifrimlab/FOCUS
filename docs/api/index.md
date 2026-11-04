@@ -32,7 +32,6 @@ from focus.alignment import DirectMappingAligner
 from focus.registration import (
     FeatureExtractorRegistration,
     SpotInterpolationRegistration,
-    SpotAggregationRegistration,
     RamanPixelInterpolationRegistration,
 )
 

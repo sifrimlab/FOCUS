@@ -131,7 +131,7 @@ field.
 
 **Registration:**
 - **Perform Registration**: Enable/disable registration stage
-- **Registration Type**: Feature Extraction (microscopy, GPU recommended), Spot Interpolation or Spot Aggregation (MSI, ST, CPU), Raman Pixel Interpolation (Raman, CPU), or None
+- **Registration Type**: Feature Extraction (microscopy, GPU recommended), Spot Interpolation (MSI, ST, CPU), Raman Pixel Interpolation (Raman, CPU), or None
 - **Force Recomputing**: Re-run registration even if cached
 
 **Feature Extraction Settings:**
@@ -140,7 +140,7 @@ field.
 !!! warning "Feature Extraction expects H&E brightfield images"
     Its model (Prov-GigaPath) is pretrained on H&E-stained brightfield tiles. Select it only for an H&E histological section imaged in RGB; for fluorescence, IHC or other stains select **None** as the registration type. The GUI does not restrict the choice and the pipeline does not check the stain. A non-H&E image is embedded without any error.
 
-Spot interpolation, spot aggregation and Raman pixel interpolation are parameter-free in the GUI.
+Spot interpolation and Raman pixel interpolation are parameter-free in the GUI.
 The footprint of every reference spot is derived automatically from the **reference** modality's
 spot size.
 

@@ -114,7 +114,7 @@ Every registered file, whatever the mode, carries:
 
 In the merged file, `.obs_names` are rewritten as `{sample_id}_{row_index}`.
 
-Every mode reads the footprint from `.uns['spot_size']` of the **anchor** (aligned reference) AnnData, in the units of the anchor's `.obsm['spatial']`, and evaluates it in that frame: target positions are mapped back through the alignment map. The footprint is an ellipse inscribed in $s_x \times s_y$ on a hexagonal anchor lattice and a rectangle $s_x \times s_y$ along the lattice axes otherwise; a target element belongs to it when its centre lies inside. A missing `spot_size` falls back to `[1.0, 1.0]`. See [Registration Methods §1](../scientific/registration_methods.md#1-objective).
+Every mode reads the footprint from `.uns['spot_size']` of the **anchor** (aligned reference) AnnData, in the units of the anchor's `.obsm['spatial']`, and evaluates it in that frame: target positions are mapped back through the alignment map. The footprint is an ellipse inscribed in $s_x \times s_y$ on a hexagonal anchor lattice and a rectangle $s_x \times s_y$ along the lattice axes otherwise; a pixel or image token belongs to it when its centre lies inside, while spot targets are weighted by the overlap of their own footprint with it (`spot_interpolation`). A missing `spot_size` falls back to `[1.0, 1.0]`. See [Registration Methods §1](../scientific/registration_methods.md#1-objective).
 
 ### Feature extraction registration (`feature_extraction`)
 
@@ -134,29 +134,21 @@ No `.layers` are written.
 
 | Attribute | Type | Shape | Description |
 |-----------|------|-------|-------------|
-| `.X` | float32 ndarray (dense) | $(n_\text{ref},\ n_\text{features})$ | Gaussian-weighted average of the target spots inside each anchor footprint. Anchors with no target spot inside are all-zero |
+| `.X` | **sparse CSR** float32 | $(n_\text{ref},\ n_\text{features})$ | MSI target: area-weighted mean of the target spots overlapping each anchor footprint. ST target: the raw counts of each target spot shared among the anchors by overlap, normalized once on the merged file. Anchors that no target spot overlaps are all-zero rows |
 | `.obsm['spatial']` | float32 ndarray | $(n_\text{ref},\ 2)$ | Anchor coordinates in the target modality's frame (`obsm['{target}_spatial']` of the aligned reference) |
+| `.obs['coverage']` | float32 | $(n_\text{ref},)$ | Share of the anchor footprint covered by target spots, in [0, 1] |
+| `.obs['focus_area']` | float32 | $(n_\text{ref},)$ | ST target only: covered anchor footprint area, the area of `area_log_normalize` |
 | `.var` / `.var_names` | DataFrame / Index | $(n_\text{features},)$ | Copied from the target modality (m/z values or gene names) |
-| `.layers['…']` | float32 ndarray (dense) | $(n_\text{ref},\ n_\text{features})$ | Every target layer, interpolated with the same kernel |
+| `.layers['raw']` | sparse CSR float32 | $(n_\text{ref},\ n_\text{features})$ | ST target with a normalization: the apportioned (fractional) counts |
+| `.layers['…']` | sparse CSR float32 | $(n_\text{ref},\ n_\text{features})$ | MSI target: every target layer, registered with the same operator |
 
-The Gaussian bandwidth is $\sigma = \sqrt{s_x s_y}/2$ on anchor-frame distances.
-
-### Spot aggregation registration (`spot_aggregation`)
-
-| Attribute | Type | Shape | Description |
-|-----------|------|-------|-------------|
-| `.X` | **sparse CSR** float32 | $(n_\text{ref},\ n_\text{features})$ | Equal-weight sum of the target spots inside each anchor footprint, unnormalized. Anchors with no target spot inside are all-zero rows |
-| `.obsm['spatial']` | float32 ndarray | $(n_\text{ref},\ 2)$ | As for `spot_interpolation` |
-| `.var` / `.var_names` | DataFrame / Index | $(n_\text{features},)$ | Copied from the target modality |
-| `.layers['…']` | sparse CSR float32 | $(n_\text{ref},\ n_\text{features})$ | Every target layer, summed with the same membership |
-
-Same footprint rule and `spot_size` source as `spot_interpolation`; no kernel and no normalization.
+Every target spot has a footprint from its own `spot_size`; the weights are the overlap areas of anchor and target footprints, estimated on a stratified sample grid of the smaller footprint ([Registration Methods §3](../scientific/registration_methods.md#3-spot-interpolation-spot_interpolation)). The geometry stamp also records `overlap_sampled` and `overlap_points_per_axis`.
 
 ### Raman pixel interpolation registration (`raman_pixel_interpolation`)
 
 | Attribute | Type | Shape | Description |
 |-----------|------|-------|-------------|
-| `.X` | float32 ndarray (dense) | $(n_\text{ref},\ n_\text{channels})$ | Gaussian-weighted average of the Raman pixels inside each anchor footprint, using the same kernel as `spot_interpolation`. Anchors with no pixel inside are all-zero |
+| `.X` | float32 ndarray (dense) | $(n_\text{ref},\ n_\text{channels})$ | Gaussian-weighted average of the Raman pixels inside each anchor footprint, using the Gaussian kernel of §1.4 of the registration methods. Anchors with no pixel inside are all-zero |
 | `.obsm['spatial']` | float32 ndarray | $(n_\text{ref},\ 2)$ | Anchor coordinates in the Raman image's full-resolution pixel frame; pixel $(\text{col}, \text{row})$ is the point $(\text{col}+0.5, \text{row}+0.5)$ |
 | `.var_names` | Index | $(n_\text{channels},)$ | Channel names from the OME-XML, falling back to `Channel_0 … Channel_{C-1}` |
 

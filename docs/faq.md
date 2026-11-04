@@ -20,7 +20,7 @@ Choose the modality with the **lowest spatial resolution** (largest spots) as yo
 
 ### Do I need a GPU?
 
-A GPU is only useful for `feature_extraction` registration, which runs the Prov-GigaPath deep-learning model to compute one image embedding per reference spot from microscopy images. All other pipeline stages run on CPU: preprocessing, alignment, `spot_interpolation`, `spot_aggregation` and `raman_pixel_interpolation` registration, annotation transfer, and MuData compilation.
+A GPU is only useful for `feature_extraction` registration, which runs the Prov-GigaPath deep-learning model to compute one image embedding per reference spot from microscopy images. All other pipeline stages run on CPU: preprocessing, alignment, `spot_interpolation` and `raman_pixel_interpolation` registration, annotation transfer, and MuData compilation.
 
 `feature_extraction` uses the GPU when one is available and otherwise falls back to CPU. Prov-GigaPath on CPU is impractically slow for real images, so a CUDA GPU is **strongly recommended** whenever you use `feature_extraction`.
 

@@ -24,7 +24,10 @@ def _weights(geom: AnchorGeometry, d2: np.ndarray, weights: str) -> np.ndarray:
 
 
 def footprint_membership(
-    geom: AnchorGeometry, target_xy: np.ndarray, weights: str = "gaussian"
+    geom: AnchorGeometry,
+    target_xy: np.ndarray,
+    weights: str = "gaussian",
+    closed: bool = True,
 ) -> scipy.sparse.csr_matrix:
     """
     ``(N_anchor, N_target)`` sparse operator of the target points inside each footprint.
@@ -32,7 +35,7 @@ def footprint_membership(
     Candidates are found in the target frame with a KD-tree (radius covering the whole mapped
     footprint); membership and distance are decided in the anchor frame. ``weights`` is
     ``"gaussian"`` (unnormalised Gaussian of the anchor-frame distance) or ``"ones"``.
-    Anchors with no member are all-zero rows.
+    ``closed=False`` leaves out the upper footprint edges. Anchors with no member are all-zero rows.
     """
     target_xy = np.asarray(target_xy, dtype=np.float64)
     n_anchor, n_target = len(geom.centres), len(target_xy)
@@ -57,7 +60,7 @@ def footprint_membership(
             continue
         rows = np.repeat(sel, counts)
         cols = finite[np.concatenate(hits)]
-        inside, d2 = geom.contains(rows, target_xy[cols])
+        inside, d2 = geom.contains(rows, target_xy[cols], closed)
         rows_out.append(rows[inside])
         cols_out.append(cols[inside])
         data_out.append(_weights(geom, d2[inside], weights))

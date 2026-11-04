@@ -39,7 +39,6 @@ MODALITY_FILE_EXTENSION = {
 REGISTRATION_COMPATIBILITY = {
     RegistrationType.FEATURE_EXTRACTION: [ModalityType.MICROSCOPY_IMAGE],
     RegistrationType.SPOT_INTERPOLATION: [ModalityType.MSI, ModalityType.ST],
-    RegistrationType.SPOT_AGGREGATION: [ModalityType.MSI, ModalityType.ST],
     RegistrationType.RAMAN_PIXEL_INTERPOLATION: [ModalityType.RAMAN],
     RegistrationType.NONE: None,
 }
@@ -67,7 +66,6 @@ DISPLAY_NAMES: dict[str, str] = {
     RegistrationType.NONE: "None",
     RegistrationType.FEATURE_EXTRACTION: "Feature Extraction",
     RegistrationType.SPOT_INTERPOLATION: "Spot Interpolation",
-    RegistrationType.SPOT_AGGREGATION: "Spot Aggregation",
     RegistrationType.RAMAN_PIXEL_INTERPOLATION: "Raman Pixel Interpolation",
     # Alignment strategies
     AlignmentStrategy.MANUAL: "Manual",

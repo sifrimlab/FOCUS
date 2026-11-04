@@ -200,7 +200,6 @@ Example:
   - `"none"` (any modality; skips registration)
   - `"feature_extraction"` (`microscopy_image` only, and only for H&E-stained brightfield images; rejected for fluorescence images; see [Registration Settings](#feature_extraction))
   - `"spot_interpolation"` (`msi`, `st`)
-  - `"spot_aggregation"` (`msi`, `st`)
   - `"raman_pixel_interpolation"` (`raman`)
 - Compatibility is enforced: an incompatible `registration_type`/modality-type pairing raises a validation error.
 
@@ -406,7 +405,7 @@ Example:
 
 ### `spot_interpolation`
 
-Compatible modality types: `msi`, `st`.
+Compatible modality types: `msi`, `st`. Registers the target spots onto each anchor footprint by overlap area, for any combination of spot sizes. ST counts are shared by overlap and normalized once on the merged file; MSI intensities are area-weighted means. Reference and target coordinates and `spot_size` must be in µm. `spot_aggregation` was removed and fails validation. See [Registration](../pipeline/registration.md#spot_interpolation).
 
 | Field | Type | Default |
 |---|---|---|
@@ -419,14 +418,6 @@ Example:
   "force_recomputing": false
 }
 ```
-
-### `spot_aggregation`
-
-Compatible modality types: `msi`, `st`. Sums the target spots inside each anchor footprint instead of averaging them. A normalized ST target is summed on its raw counts and the merged registered file is normalized once with the target's method. Intended for subcellular-resolution data (e.g. Visium HD). See [Registration](../pipeline/registration.md#spot_aggregation).
-
-| Field | Type | Default |
-|---|---|---|
-| `force_recomputing` | bool | `false` |
 
 Example:
 

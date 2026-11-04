@@ -10,7 +10,6 @@
       "none",
       "feature_extraction",
       "spot_interpolation",
-      "spot_aggregation",
       "raman_pixel_interpolation"
     ],
     "registration_compatibility": {
@@ -18,10 +17,6 @@
         "microscopy_image"
       ],
       "spot_interpolation": [
-        "msi",
-        "st"
-      ],
-      "spot_aggregation": [
         "msi",
         "st"
       ],
@@ -226,7 +221,6 @@
       "none": "None",
       "feature_extraction": "Feature Extraction",
       "spot_interpolation": "Spot Interpolation",
-      "spot_aggregation": "Spot Aggregation",
       "raman_pixel_interpolation": "Raman Pixel Interpolation",
       "manual": "Manual",
       "pre_aligned": "Pre-Aligned",
@@ -276,12 +270,6 @@
         }
       },
       "spot_interpolation": {
-        "force_recomputing": {
-          "type": "bool",
-          "default": false
-        }
-      },
-      "spot_aggregation": {
         "force_recomputing": {
           "type": "bool",
           "default": false
@@ -697,7 +685,6 @@
           "sequencing": "Sequencing (Visium, Visium HD, Stereo-seq, Slide-seq)",
           "size_factors": "Size factors (median depth, linear)",
           "spot": "Multicellular spots",
-          "spot_aggregation": "Spot Aggregation",
           "spot_interpolation": "Spot Interpolation",
           "st": "Spatial Transcriptomics",
           "standard": "Standard (native pixels)",
@@ -892,10 +879,6 @@
           "raman_pixel_interpolation": [
             "raman"
           ],
-          "spot_aggregation": [
-            "msi",
-            "st"
-          ],
           "spot_interpolation": [
             "msi",
             "st"
@@ -923,12 +906,6 @@
               "type": "bool"
             }
           },
-          "spot_aggregation": {
-            "force_recomputing": {
-              "default": false,
-              "type": "bool"
-            }
-          },
           "spot_interpolation": {
             "force_recomputing": {
               "default": false,
@@ -940,7 +917,6 @@
           "none",
           "feature_extraction",
           "spot_interpolation",
-          "spot_aggregation",
           "raman_pixel_interpolation"
         ]
       }

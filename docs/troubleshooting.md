@@ -221,7 +221,6 @@ If the sample genuinely has no MSI data, add it to `"ignore_samples"` instead so
 |---|---|
 | `feature_extraction` | `microscopy_image` only |
 | `spot_interpolation` | `msi`, `st` |
-| `spot_aggregation` | `msi`, `st` |
 | `raman_pixel_interpolation` | `raman` |
 | `none` | any |
 

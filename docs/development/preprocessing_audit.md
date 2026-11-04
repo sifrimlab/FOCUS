@@ -247,7 +247,7 @@ rebuilt once and every ST alignment pair is re-aligned once. See `docs/scientifi
 | CP10k as the only normalization; no control-probe removal (3.2) | Catalog `auto`, `none`, `log_normalize` (median depth), `cp10k_log`, `size_factors`, `area_log_normalize`, applied once to the merged dataset with one global scale. Control features are recorded in `obs['pct_counts_control']` and removed. |
 | QC by user thresholds | Structural cleanup (out of tissue, zero counts) plus spatially aware local outliers for spots (SpotSweeper), 5-MAD global outliers for cells, none for bins. |
 | Input re-hashed on every run; non-atomic writes; merge memory (4) | The input SHA-256 is reused while the input stat is unchanged; per-sample and merged writes are atomic; the gene rule reads `var['n_cells_by_counts']` and subsets the merged matrix in place. |
-| `spot_aggregation` of a normalized target | Raw counts are summed per footprint and the merged registered file is normalized once with the target's method. |
+| `spot_interpolation` of a normalized ST target | Raw counts are shared by footprint overlap and the merged registered file is normalized once with the target's method. |
 
 Verified on two MEL Visium HD 16 µm samples (`sequencing`, `bin`): 12,905 of 19,070 union genes kept,
 merged `.X` float32 `log_normalize` at a median library size of 485, `pct_counts_mt` nonzero, no NaN

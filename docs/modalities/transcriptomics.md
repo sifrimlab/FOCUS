@@ -13,7 +13,7 @@ Each sample is validated, cleaned of control features and low-quality spots, giv
 | Field | Required | Description |
 |-------|----------|-------------|
 | Raw counts | Yes | Non-negative integer counts in `.X`, `.layers['counts']`, `.layers['raw']` or `.raw.X`; the first of these that holds counts is used, and every other matrix of the input is dropped |
-| `.obsm['spatial']` | Yes | Spot or cell centres in µm, finite, shape `(N, 2)` |
+| `.obsm['spatial']` | Yes | Spot or cell centres in µm, finite, shape `(N, 2)`. Imaging exports whose coordinates are in image pixels (for example Xenium cell centroids on the morphology image) must be multiplied by the pixel size first; registration compares footprint areas across modalities and logs a warning when the alignment scale is far from 1 |
 | `.uns['spot_size']` | Yes | Spot, bin or cell diameter `[x, y]` in µm. A scalar or 1-element array is broadcast to `[v, v]`; more than 2 values, a non-positive value or a missing field raise `ValueError` |
 | `.var_names` | Yes | Gene names. Duplicated names are made unique with a numeric suffix and reported |
 | `.var['feature_types']` | No | When present, features other than `Gene Expression` are removed as controls |
@@ -21,7 +21,7 @@ Each sample is validated, cleaned of control features and low-quality spots, giv
 | `.obs` cell area | No | For `unit: cell`, the first of `cell_area`, `area_um2`, `area`, `Area`, `volume` is the area used by area normalization |
 
 !!! tip "spot_size"
-    When ST is the reference modality, `spot_size` sets the footprint of every reference spot in all registration modes (`spot_interpolation`, `spot_aggregation`, `raman_pixel_interpolation`, `feature_extraction`), so it must match the technology (see the table below). As a registration target, ST contributes its spot centres; the footprint is the reference's.
+    When ST is the reference modality, `spot_size` sets the footprint of every reference spot in all registration modes (`spot_interpolation`, `raman_pixel_interpolation`, `feature_extraction`), so it must match the technology (see the table below). As a registration target, ST contributes its spot centres; the footprint is the reference's.
 
 ---
 
@@ -140,7 +140,7 @@ reference_modality: visium
 
 ### ST as a non-reference modality
 
-When another spot-based modality (MSI or another ST instance) is the reference, ST is registered onto it using `spot_interpolation` or `spot_aggregation`. FOCUS maps the ST spot centres into the reference's coordinate frame through the alignment transform and averages (or sums) the ST expression profiles whose centres lie within each anchor footprint.
+When another spot-based modality (MSI or another ST instance) is the reference, ST is registered onto it using `spot_interpolation`. FOCUS maps the ST spots into the reference's coordinate frame through the alignment transform and shares their raw counts among the anchor footprints by overlap area. Each ST spot has a footprint of its own (its `spot_size`), so the result is correct whether the anchor spots are larger than, equal to or smaller than the ST spots. The merged registered file is then normalized once with the ST method. Reference and ST coordinates must be in µm.
 
 !!! note "Image-based reference"
     An image-based modality (`microscopy_image`, `raman`) may be set as the reference with ST as a target: preprocessing, alignment and registration all run. The final MuData compilation is skipped, because it requires the reference to be spot-based (`msi` or `st`). Make ST or MSI the reference if you need the compiled multimodal dataset.
@@ -163,8 +163,7 @@ The reference modality defines the output coordinate space and the number of obs
 
 | Registration type | Supported | Notes |
 |-------------------|-----------|-------|
-| `spot_interpolation` | Yes | ST registers onto a reference via Gaussian-weighted average of the ST spots in each anchor footprint |
-| `spot_aggregation` | Yes | ST registers onto a reference by **summing** (not averaging) the ST spots in each anchor footprint. Used for subcellular-resolution data (e.g. Visium HD). When the merged ST file is normalized, the raw counts are summed and the merged registered file is normalized once with the same method |
+| `spot_interpolation` | Yes | ST registers onto a reference by overlap area: the raw counts of each ST spot are shared among the anchor footprints it overlaps (small weak spots such as Visium HD bins add up on a large anchor without loss), then the merged registered file is normalized once with the ST method |
 | `none` | Yes | No registration; ST coordinates are used as-is (valid when ST is the reference) |
 | `feature_extraction` | No | Not compatible with spot-based modalities |
 
@@ -251,7 +250,7 @@ Same slots as above, with these differences:
         processing_settings:
           capture: sequencing
           unit: bin
-        registration_type: spot_aggregation
+        registration_type: spot_interpolation
     ```
 
 === "Xenium cells"

@@ -40,9 +40,8 @@ def _run_registration(
             One Prov-GigaPath CLS embedding per anchor spot, restricted to the image tokens inside
             its footprint.
     For SpotInterpolation (spot modalities):
-            Gaussian-weighted average of the target spots inside each anchor footprint.
-    For SpotAggregation (spot modalities):
-            Sum of the target spots inside each anchor footprint.
+            Overlap-area registration of the target spots with each anchor footprint: counts are
+            apportioned (conserved), intensities are area-weighted means.
     For RamanPixelInterpolation (raman modality):
             Gaussian-weighted average of the Raman OME-TIFF pixels inside each anchor footprint.
 
@@ -97,12 +96,10 @@ def _register_modality(request: RegistrationRequest) -> bool:
     # at the top of this file.
     from focus.registration.feature_extraction import FeatureExtractorRegistration
     from focus.registration.spot_interpolation import SpotInterpolationRegistration
-    from focus.registration.spot_aggregation import SpotAggregationRegistration
     from focus.registration.raman_pixel import RamanPixelInterpolationRegistration
 
     target_strategies: dict[str, TargetRegistrationFactory] = {
         RegistrationType.SPOT_INTERPOLATION: SpotInterpolationRegistration,
-        RegistrationType.SPOT_AGGREGATION: SpotAggregationRegistration,
         RegistrationType.RAMAN_PIXEL_INTERPOLATION: RamanPixelInterpolationRegistration,
     }
     if request.kind == RegistrationType.FEATURE_EXTRACTION:

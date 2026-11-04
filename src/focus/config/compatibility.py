@@ -16,6 +16,7 @@ from focus.config.keys import (
     MsiPreprocessingParams,
     RAMAN_REMOVED_SETTINGS,
     RamanPreprocessingParams,
+    REGISTRATION_REMOVED_TYPES,
     STPreprocessingParams,
     ST_REMOVED_SETTINGS,
 )
@@ -211,6 +212,12 @@ def validate_registration(config: PipelineConfig) -> None:
     # --- Step 9: Registration type compatibility ---
     for modality in config[ConfigParameters.MODALITIES]:
         reg_type = modality[ModalityParameters.REGISTRATION_TYPE]
+        if reg_type in REGISTRATION_REMOVED_TYPES:
+            raise ValueError(
+                f"Modality '{modality[ModalityParameters.NAME]}': registration type "
+                f"'{reg_type}' was removed (use '{REGISTRATION_REMOVED_TYPES[reg_type]}'). "
+                "One overlap-area method now registers spot modalities of any relative size."
+            )
         if reg_type not in RegistrationType.list():
             raise ValueError(
                 f"Unsupported registration type '{reg_type}' for modality '{modality[ModalityParameters.NAME]}'. "

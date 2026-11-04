@@ -16,7 +16,7 @@ Given modalities \(\{M_k\}\), FOCUS constructs a shared set of observations inde
    - Alignment is interactive (`manual`) or declared as pre-existing (`pre_aligned`) when coordinate systems are already matched.
 3. **Registration matched to modality type**
    - Microscopy images use learned embeddings restricted to each reference spot's footprint (`feature_extraction`).
-   - Spot-based modalities use Gaussian-weighted interpolation (`spot_interpolation`) or equal-weight summation (`spot_aggregation`).
+   - Spot-based modalities use overlap-area registration (`spot_interpolation`): counts are shared and intensities averaged by the overlap of reference and target footprints.
 4. **Explicit checkpointing by stage**
    - Intermediate outputs are persisted per sample and merged, enabling restart and auditability.
 5. **Open analysis formats**
@@ -55,11 +55,10 @@ aligned AnnData under the pair-specific key `obsm['{target_name}_spatial']`, a m
 
 ### Stage 3: Registration
 
-For each target modality \(T\), FOCUS computes a feature vector for the footprint of each reference spot. The footprint is the reference's `spot_size`, in the reference's own frame, shaped by its lattice (an ellipse on a hexagonal lattice, a rectangle otherwise); target elements are mapped into that frame through the alignment transform and belong to a footprint when their centre lies inside it.
+For each target modality \(T\), FOCUS computes a feature vector for the footprint of each reference spot. The footprint is the reference's `spot_size`, in the reference's own frame, shaped by its lattice (an ellipse on a hexagonal lattice, a rectangle otherwise); target elements are mapped into that frame through the alignment transform. Pixels and image tokens belong to a footprint when their centre lies inside it; spot targets have a footprint of their own, and the overlap of the two is used.
 
 - `feature_extraction` (`microscopy_image`): one Prov-GigaPath embedding per reference spot, read by a class-token query restricted to the image tokens inside its footprint, at the stored pyramid level closest to 0.5 µm per pixel; valid only for H&E-stained brightfield RGB images, which is the model's pretraining domain.
-- `spot_interpolation` (`msi`, `st`): Gaussian-weighted average over the target spots in each anchor footprint.
-- `spot_aggregation` (`msi`, `st`): equal-weight sum over the target spots in each anchor footprint (no normalization); accumulates signal for subcellular-resolution data.
+- `spot_interpolation` (`msi`, `st`): overlap-area registration of the target spots with each anchor footprint. ST counts are shared by overlap and normalized on the merged file; MSI intensities are area-weighted means. It holds for any relative spot size.
 - `raman_pixel_interpolation` (`raman`): the same Gaussian interpolation over hyperspectral OME-TIFF pixels, each pixel acting as a spot at its centre.
 
 Generic interpolation form:

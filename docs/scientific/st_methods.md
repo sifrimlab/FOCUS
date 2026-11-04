@@ -242,9 +242,10 @@ genes. Library-size normalization in spatial data can remove part of the biologi
 carried by depth[^bhuva2024] [^osta]; `normalization: none` keeps the counts for methods that model
 depth themselves.
 
-A `spot_aggregation` registration of a normalized ST target sums the raw counts of each anchor
-footprint and then applies the same method once to the merged registered file, with
-`obs['focus_area']` set to the anchor footprint area.
+A `spot_interpolation` registration of a normalized ST target shares the raw counts among the anchor
+footprints by overlap area and then applies the same method once to the merged registered file, with
+`obs['focus_area']` set to the covered anchor footprint area
+([registration §3.3](registration_methods.md#33-reduction)).
 
 ### 4.4 Metadata and persistence
 
