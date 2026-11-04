@@ -174,7 +174,7 @@ All configuration errors are caught by `parse_config` before any computation sta
 
 ### `No sample directories found in '...'`
 
-**Cause:** The `dataset_path` directory contains no subdirectories that look like sample folders, or all subdirectories are reserved FOCUS output names (`preprocessing`, `alignment`, `registration`, `annotations`, `plots`, `resources`, `merged`).
+**Cause:** The `dataset_path` directory contains no subdirectories that look like sample folders, or all subdirectories are reserved FOCUS directory names (`preprocessing`, `alignment`, `registration`, `annotations`, `plots`, `resources`, `merged`, `raw`; matched case-insensitively).
 
 **Fix:** Verify your directory layout. Each sample must be a subdirectory of `dataset_path`:
 

@@ -3,7 +3,7 @@
 import os
 
 
-from focus.io.paths import FocusOutputDirectories
+from focus.io.paths import FocusOutputDirectories, is_reserved_directory_name
 
 
 def validate_path_readable(path: str) -> None:
@@ -23,14 +23,16 @@ def discover_sample_ids(
 ) -> list[str]:
     """Discover sample IDs from subdirectories under the given path.
 
-    Returns a sorted list of directory names, excluding standard FOCUS output directories
-    and any sample IDs listed in ignore_samples.
+    Returns a sorted list of directory names, excluding FOCUS system directories (matched
+    case-insensitively, including the raw-data folder `raw`) and any sample IDs listed in ignore_samples.
     """
-    excluded = set(FocusOutputDirectories.list()) | set(ignore_samples or [])
+    ignored = set(ignore_samples or [])
     sample_ids = sorted(
         d
         for d in os.listdir(path)
-        if os.path.isdir(os.path.join(path, d)) and d not in excluded
+        if os.path.isdir(os.path.join(path, d))
+        and not is_reserved_directory_name(d)
+        and d not in ignored
     )
     return sample_ids
 

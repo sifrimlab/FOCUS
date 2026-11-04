@@ -110,3 +110,10 @@ class FocusOutputDirectories(_AbstractEnum):
     PLOTS = "plots"
     RESOURCES = "resources"
     MERGED = "merged"
+    # Raw source data of the dataset (e.g. pre-h5ad spatial transcriptomics); never a sample.
+    RAW = "raw"
+
+
+def is_reserved_directory_name(name: str) -> bool:
+    """Return whether name is a FOCUS system directory name, ignoring case."""
+    return name.casefold() in {d.casefold() for d in FocusOutputDirectories.list()}

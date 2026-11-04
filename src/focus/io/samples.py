@@ -3,7 +3,7 @@
 from focus.config.types import ModalityConfig
 import os
 
-from focus.io.paths import FocusOutputDirectories
+from focus.io.paths import is_reserved_directory_name
 from focus.config.options import ModalityType, MsiIonMode
 
 
@@ -77,7 +77,7 @@ def _validate_sample_id(sample_id: str) -> None:
         raise ValueError("Sample ID must not have leading or trailing whitespace.")
     if os.sep in sample_id or (os.altsep and os.altsep in sample_id):
         raise ValueError(f"Sample ID must not contain path separators: '{sample_id}'")
-    if sample_id in FocusOutputDirectories.list():
+    if is_reserved_directory_name(sample_id):
         raise ValueError(
-            f"'{sample_id}' is a reserved FOCUS output directory name and cannot be used as a sample ID."
+            f"'{sample_id}' is a reserved FOCUS directory name and cannot be used as a sample ID."
         )
