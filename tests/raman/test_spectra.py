@@ -1,37 +1,68 @@
-"""Compare Raman cleaning with original serial/two-worker outputs, including warm reuse."""
-
-from pathlib import Path
-from typing import cast
+"""Spectral denoising, offset, normalisation and quantisation."""
 
 import numpy as np
-import pytest
 
-from focus.preprocessing.raman.sample import RamanImage
+from focus.preprocessing.raman import spectra
+from focus.preprocessing.raman.parameters import RamanRunSettings
 
 
-@pytest.mark.parametrize("parallel", [False, True])
-def test_spectral_cleaning_matches_baseline(tmp_path: Path, parallel: bool) -> None:
-    """Retain float32 spectra, scan slices, zero-variance removal and worker serialization."""
-    sample = RamanImage(str(tmp_path), "sample", "raman", max_workers=2)
-    raw = np.random.RandomState(7).uniform(0, 1, (2, 32, 3, 3)).astype(np.float32)
-    raw[0, :, 0, 0] = 0
-    original = raw.copy()
-    sample._basic_corrected_tiles = raw
-    sample._wavenumbers = np.concatenate(
-        [np.linspace(500, 800, 16), np.linspace(900, 1200, 16)]
-    ).astype(np.float32)
-    sample._spectra_slices = [(0, 15), (16, 31)]
-    expected = np.load(Path(__file__).with_name("spectra_expected.npy"))
-    sample.tiles.process_raw_tiles(parallel=parallel, force_recomputing=True)
-    np.testing.assert_array_equal(
-        cast(np.ndarray, sample.corrected), expected, strict=True
-    )
-    np.testing.assert_array_equal(raw, original, strict=True)
-    cache = Path(sample.output_path) / "raman_corrected_tiles.npy"
-    timestamp = cache.stat().st_mtime_ns
-    sample._basic_corrected_tiles = np.zeros_like(raw)
-    sample.tiles.process_raw_tiles(parallel=parallel)
-    np.testing.assert_array_equal(
-        cast(np.ndarray, sample.corrected), expected, strict=True
-    )
-    assert cache.stat().st_mtime_ns == timestamp
+def _settings(**kwargs: object) -> RamanRunSettings:
+    values: dict[str, object] = {
+        "denoise": True,
+        "remove_offset": False,
+        "normalization": "none",
+    }
+    values.update(kwargs)
+    return RamanRunSettings(**values)  # type: ignore[arg-type]
+
+
+class TestSpectra:
+    """Spectra keep what is real at the cellular scale and their units."""
+
+    def test_rank_matches_the_number_of_components(self) -> None:
+        """Three spectral components plus noise give rank 3."""
+        rng = np.random.default_rng(0)
+        basis = rng.random((3, 20))
+        scores = rng.random((50_000, 3)) * [10.0, 3.0, 1.0]
+        data = scores @ basis + 5 + rng.normal(0, 0.05, (50_000, 20))
+        model = spectra.fit(data)
+        assert model.rank == 3
+
+    def test_pure_noise_keeps_the_mean_and_one_component(self) -> None:
+        """At least one component is kept, so a spectrum is never reduced to the mean alone."""
+        rng = np.random.default_rng(1)
+        model = spectra.fit(rng.normal(10, 1, (20_000, 13)))
+        assert model.rank == 1
+
+    def test_projection_preserves_nan_and_quantises(self) -> None:
+        """Unmeasured pixels stay NaN; stored values lie on the 1/4 count grid."""
+        rng = np.random.default_rng(2)
+        block = (rng.random((5, 4, 4)) * 50).astype(np.float32)
+        block[:, 0, 0] = np.nan
+        model = spectra.fit(block.reshape(5, -1).T)
+        out = spectra.process_block(block, model, _settings())
+        assert np.isnan(out[:, 0, 0]).all() and np.isfinite(out[:, 1:, :]).all()
+        grid = out[np.isfinite(out)] * 4
+        np.testing.assert_allclose(grid, np.rint(grid))
+
+    def test_offset_and_area_normalisation(self) -> None:
+        """The minimum becomes 0; area-normalised spectra average 1 over their channels."""
+        block = np.array([[[2.0]], [[4.0]], [[6.0]]], dtype=np.float32)
+        out = spectra.process_block(
+            block, None, _settings(denoise=False, remove_offset=True)
+        )
+        np.testing.assert_allclose(out[:, 0, 0], [0.0, 2.0, 4.0])
+        area = spectra.process_block(
+            block,
+            None,
+            _settings(denoise=False, remove_offset=True, normalization="area"),
+        )
+        np.testing.assert_allclose(area[:, 0, 0], [0.0, 1.0, 2.0])
+
+    def test_single_channel_is_only_quantised(self) -> None:
+        """One-channel acquisitions are not denoised, offset or normalised."""
+        block = np.array([[[3.07]]], dtype=np.float32)
+        out = spectra.process_block(
+            block, None, _settings(remove_offset=True, normalization="area")
+        )
+        assert out[0, 0, 0] == 3.0

@@ -8,6 +8,7 @@ from focus.config.options import (
     ModalityType,
     MsiIntensityNormalization,
     MsiSampleType,
+    RamanNormalization,
     RegistrationType,
     SegmentationBackgroundColor,
     SpotResolution,
@@ -77,6 +78,8 @@ DISPLAY_NAMES: dict[str, str] = {
     MsiIntensityNormalization.MEDIAN: "Median",
     MsiIntensityNormalization.RMS: "RMS",
     MsiIntensityNormalization.INTERNAL_STANDARD: "Internal Standard",
+    # Raman normalization ("none" shares the label "None" of the other normalizations)
+    RamanNormalization.AREA: "Area (composition per pixel)",
     # Background colour
     SegmentationBackgroundColor.WHITE: "White",
     SegmentationBackgroundColor.BLACK: "Black",

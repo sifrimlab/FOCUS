@@ -301,31 +301,6 @@ conda run --no-capture-output -n FOCUS \
     pip install -e "$SCRIPT_DIR" ${TORCH_CONSTRAINTS:+-c "$TORCH_CONSTRAINTS"}
 success "FOCUS package installed. You can now run 'focus [--config ...]' after activating the FOCUS env."
 
-# 4. Optional tool environments (tools/<Name>/)
-TOOLS_DIR="$SCRIPT_DIR/tools"
-if [[ -d "$TOOLS_DIR" ]]; then
-    for subfolder in "$TOOLS_DIR"/*/; do
-        [[ -d "$subfolder" ]] || continue
-        subfolder_name="$(basename "$subfolder")"
-        env_name="FOCUS_${subfolder_name}"
-        req_file="${subfolder}requirements.txt"
-
-        info "Setting up tool environment '$env_name'..."
-        setup_env "$env_name" "$req_file" "3.11"
-
-        # OpenJDK is required by Java-dependent tools such as ASHLAR.
-        if ! conda_env_exists "$env_name"; then
-            : # env was skipped
-        else
-            info "Ensuring OpenJDK is present in '$env_name'..."
-            conda install -y -n "$env_name" -c conda-forge openjdk 2>/dev/null || \
-                warn "OpenJDK install skipped (may already be present or unavailable)."
-        fi
-    done
-else
-    info "No 'tools/' directory found. Skipping tool environments."
-fi
-
 [[ -n "$TORCH_CONSTRAINTS" && -f "$TORCH_CONSTRAINTS" ]] && rm -f "$TORCH_CONSTRAINTS"
 
 echo

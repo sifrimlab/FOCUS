@@ -1,7 +1,7 @@
 @echo off
 :: FOCUS installation script for Windows.
 :: install.ps1 is the real installer and mirrors install.sh: CUDA detection,
-:: CUDA-matched PyTorch wheels, the FOCUS env, and tool envs. This shim forwards
+:: CUDA-matched PyTorch wheels and the FOCUS env. This shim forwards
 :: to it so the documented `install.bat [--reinstall]` entry point keeps working.
 ::
 :: Usage: install.bat [--reinstall]

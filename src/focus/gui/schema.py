@@ -15,6 +15,7 @@ from focus.config.options import (
     SegmentationBackgroundColor,
     MsiIntensityNormalization,
     MsiSampleType,
+    RamanNormalization,
     SpotResolution,
     StCapture,
     StNormalization,
@@ -112,27 +113,19 @@ def _build_schema() -> dict[str, object]:
                 },
             },
             ModalityType.RAMAN: {
-                RamanPreprocessingParams.FORCE_RECOMPUTING: {
+                RamanPreprocessingParams.DENOISE: {"type": "bool", "default": True},
+                RamanPreprocessingParams.REMOVE_OFFSET: {
                     "type": "bool",
                     "default": False,
                 },
-                RamanPreprocessingParams.MAX_WORKERS: {"type": "int", "default": 8},
-                RamanPreprocessingParams.SAVGOL_WINDOW: {"type": "int", "default": 7},
-                RamanPreprocessingParams.SAVGOL_POLYORDER: {
-                    "type": "int",
-                    "default": 3,
+                RamanPreprocessingParams.NORMALIZATION: {
+                    "type": "enum",
+                    "options": RamanNormalization.list(),
+                    "default": RamanNormalization.NONE,
                 },
-                RamanPreprocessingParams.BG_MIN_AREA_FRACTION: {
-                    "type": "float",
-                    "default": 0.05,
-                },
-                RamanPreprocessingParams.OTSU_THRESHOLD_FACTOR: {
-                    "type": "float",
-                    "default": 0.7,
-                },
-                RamanPreprocessingParams.MIN_OBJECT_SIZE: {
-                    "type": "int",
-                    "default": 500,
+                RamanPreprocessingParams.FORCE_RECOMPUTING: {
+                    "type": "bool",
+                    "default": False,
                 },
             },
             ModalityType.ST: {

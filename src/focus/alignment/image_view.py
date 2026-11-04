@@ -71,7 +71,8 @@ class ImageView:
         """Channel ``index`` scaled to [0, 1] by its display window."""
         window = cast(Sequence[float], self.channels[index]["window"])
         low, high = float(window[0]), float(window[1])
-        plane = self.data[..., index].astype(np.float32)
+        # NaN marks pixels no acquisition measured (Raman mosaics): shown black.
+        plane = np.nan_to_num(self.data[..., index].astype(np.float32), nan=low)
         return cast(
             np.ndarray, np.clip((plane - low) / max(high - low, 1e-12), 0.0, 1.0)
         )

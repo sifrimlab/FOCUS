@@ -136,13 +136,21 @@ MSI_REMOVED_NORMALIZATIONS: dict[str, str] = {
 class RamanPreprocessingParams(_AbstractEnum):
     """Serialized keys for raman preprocessing params."""
 
+    DENOISE: Final = "denoise"
+    REMOVE_OFFSET: Final = "remove_offset"
+    NORMALIZATION: Final = "normalization"
     FORCE_RECOMPUTING: Final = "force_recomputing"
-    MAX_WORKERS: Final = "max_workers"
-    SAVGOL_WINDOW: Final = "savgol_window"
-    SAVGOL_POLYORDER: Final = "savgol_polyorder"
-    BG_MIN_AREA_FRACTION: Final = "bg_min_area_fraction"
-    OTSU_THRESHOLD_FACTOR: Final = "otsu_threshold_factor"
-    MIN_OBJECT_SIZE: Final = "min_object_size"
+
+
+# Raman settings removed in raman-2, with the reason (config validation rejects them).
+RAMAN_REMOVED_SETTINGS: dict[str, str] = {
+    "savgol_window": "spectral smoothing is replaced by 'denoise'",
+    "savgol_polyorder": "spectral smoothing is replaced by 'denoise'",
+    "bg_min_area_fraction": "the background is no longer removed; tissue detection is automatic",
+    "otsu_threshold_factor": "the background is no longer removed; tissue detection is automatic",
+    "min_object_size": "the background is no longer removed; tissue detection is automatic",
+    "max_workers": "processing uses the available CPUs",
+}
 
 
 class STPreprocessingParams(_AbstractEnum):

@@ -14,6 +14,8 @@ from focus.config.keys import (
     MSI_REMOVED_SETTINGS,
     MicroscopyImageProcessingParams,
     MsiPreprocessingParams,
+    RAMAN_REMOVED_SETTINGS,
+    RamanPreprocessingParams,
     STPreprocessingParams,
     ST_REMOVED_SETTINGS,
 )
@@ -24,6 +26,7 @@ from focus.config.options import (
     ModalityType,
     MsiIntensityNormalization,
     MsiSampleType,
+    RamanNormalization,
     RegistrationType,
     SpotResolution,
     StCapture,
@@ -46,6 +49,8 @@ def validate_resolution(config: PipelineConfig) -> None:
         name = modality[ModalityParameters.NAME]
         if modality[ModalityParameters.TYPE] == ModalityType.ST:
             validate_st_settings(name, settings)
+        elif modality[ModalityParameters.TYPE] == ModalityType.RAMAN:
+            validate_raman_settings(name, settings)
         elif modality[ModalityParameters.TYPE] == ModalityType.MICROSCOPY_IMAGE:
             validate_microscopy_settings(
                 name, settings, modality[ModalityParameters.REGISTRATION_TYPE]
@@ -126,6 +131,36 @@ def validate_msi_settings(name: str, settings: Mapping[str, object]) -> None:
         raise ValueError(
             f"Modality '{name}': mass_tolerance must be a positive number of ppm, got {tolerance!r}."
         )
+
+
+def validate_raman_settings(name: str, settings: Mapping[str, object]) -> None:
+    """Reject removed Raman settings (with the reason), unknown normalizations and non-bool switches."""
+    removed = [key for key in settings if key in RAMAN_REMOVED_SETTINGS]
+    if removed:
+        reasons = ", ".join(
+            f"'{key}' ({RAMAN_REMOVED_SETTINGS[key]})" for key in removed
+        )
+        raise ValueError(
+            f"Modality '{name}': these Raman settings were removed: {reasons}. "
+            "Use 'denoise', 'remove_offset' and 'normalization'."
+        )
+    normalization = settings.get(
+        RamanPreprocessingParams.NORMALIZATION, RamanNormalization.NONE
+    )
+    if normalization not in RamanNormalization.list():
+        raise ValueError(
+            f"Modality '{name}': normalization must be one of "
+            f"{RamanNormalization.list()}, got {normalization!r}."
+        )
+    for key in (
+        RamanPreprocessingParams.DENOISE,
+        RamanPreprocessingParams.REMOVE_OFFSET,
+    ):
+        value = settings.get(key)
+        if value is not None and not isinstance(value, bool):
+            raise ValueError(
+                f"Modality '{name}': {key} must be true or false, got {value!r}."
+            )
 
 
 def validate_microscopy_settings(

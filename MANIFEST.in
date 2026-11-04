@@ -18,7 +18,6 @@ graft scripts
 graft tests
 graft typing
 graft docs/development
-recursive-include tools *.py Dockerfile requirements.txt
 
 # Build intermediates: never shippable, and node_modules would dwarf the rest.
 # gui_src/ is an npm workspace, so dependencies are hoisted to gui_src/node_modules.

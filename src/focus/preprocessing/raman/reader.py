@@ -1,283 +1,102 @@
-"""Read tiled Leica scans, remove rescanned spectral overlaps and populate sample arrays."""
+"""Tile stacks of a LIF acquisition, read straight from the file's memory blocks."""
 
 from __future__ import annotations
-from focus.preprocessing.raman.lif_metadata import parse_lif_metadata
-from typing import cast
-from focus.preprocessing.raman.metadata import RamanMetadata
-from typing import TYPE_CHECKING
 
-if TYPE_CHECKING:
-    from focus.preprocessing.raman.sample import RamanImage
+from dataclasses import dataclass
 
-from focus.runtime.reporter_context import get_reporter
 import numpy as np
-from readlif.reader import LifFile, LifImage
+from readlif.reader import LifFile
+
+from focus.preprocessing.raman.inventory import Acquisition, LifElement
 
 
-class RamanReader:
-    """Decode tiled spectral scans and retain their shared acquisition state on the sample."""
+@dataclass
+class TileStack:
+    """The ``(tile, channel, y, x)`` samples of one acquisition, memory-mapped from the LIF.
 
-    def __init__(self, sample: RamanImage) -> None:
-        """Bind the component to its existing sample state."""
-        self.sample = sample
+    Channels are ordered by increasing wavenumber (Leica scans the pump upwards, so the stored order
+    is reversed); ``order`` maps output channel ``c`` to stored channel ``order[c]``. Values are the
+    native samples; nothing is rescaled.
+    """
 
-    # --- Data loading ---
+    blocks: list[np.ndarray]
+    order: np.ndarray
+    wavenumbers: np.ndarray
+    pump_nm: np.ndarray
+    saturation: int
 
-    def _load_lif(self, filename: str) -> None:
-        """Load Raman data from a Leica LIF file."""
-        lif_file = LifFile(filename)
-        metadata_dict: dict[str, RamanMetadata] = parse_lif_metadata(lif_file)
+    @property
+    def tiles(self) -> int:
+        """Number of tiles over all elements."""
+        return sum(b.shape[0] for b in self.blocks)
 
-        reference_metadata = RamanMetadata()
-        reference_metadata.name = "reference"
-        reference_metadata.index = 0
+    @property
+    def channels(self) -> int:
+        """Number of spectral channels."""
+        return int(self.order.size)
 
-        raw_tiles: dict[str, np.ndarray] = {}
-        wavenumbers: dict[str, np.ndarray] = {}
-        coordinates: dict[str, np.ndarray] = {}
-        pixel_size: dict[str, np.ndarray] = {}
+    @property
+    def tile_shape(self) -> tuple[int, int]:
+        """``(rows, columns)`` of one tile."""
+        return int(self.blocks[0].shape[2]), int(self.blocks[0].shape[3])
 
-        for name, metadata in metadata_dict.items():
-            # Extract only tiled images, ignore automatic stitching
-            if metadata.tile_number is None or metadata.tile_number < 2:
-                continue
+    def _locate(self, tile: int) -> tuple[np.ndarray, int]:
+        for block in self.blocks:
+            if tile < block.shape[0]:
+                return block, tile
+            tile -= block.shape[0]
+        raise IndexError(tile)
 
-            if None in [
-                metadata.tile_number,
-                metadata.lambda_steps,
-                metadata.scan_width,
-                metadata.scan_height,
-            ]:
-                get_reporter().warning(
-                    f"Image '{name}' is missing required metadata (probably a corrupted scan)"
-                )
-                continue
+    def tile(self, tile: int) -> np.ndarray:
+        """``(C, Y, X)`` native samples of one tile, channels by increasing wavenumber."""
+        block, local = self._locate(tile)
+        return np.asarray(block[local][self.order])
 
-            self._append_scan(
-                lif_file,
-                name,
-                metadata,
-                raw_tiles,
-                wavenumbers,
-                coordinates,
-                pixel_size,
-            )
+    def plane(self, tile: int, channel: int) -> np.ndarray:
+        """``(Y, X)`` native samples of one tile and output channel."""
+        block, local = self._locate(tile)
+        return np.asarray(block[local, int(self.order[channel])])
 
-        self._store_scans(
-            raw_tiles, wavenumbers, coordinates, pixel_size, reference_metadata
-        )
 
-    def _store_scans(
-        self,
-        raw_tiles: dict[str, np.ndarray],
-        wavenumbers: dict[str, np.ndarray],
-        coordinates: dict[str, np.ndarray],
-        pixel_size: dict[str, np.ndarray],
-        reference_metadata: RamanMetadata,
-    ) -> None:
-        """Merge scans in acquisition order, remove overlaps and store normalized float32 sample state."""
-        # Merge all scans into single arrays
-        stacked_tiles = np.concatenate([raw_tiles[name] for name in raw_tiles], axis=1)
-        stacked_wavenumbers = np.concatenate(
-            [wavenumbers[name] for name in wavenumbers], axis=-1
-        )
-        coords_array = np.stack([coordinates[name] for name in coordinates], axis=1)
-        pixel_size_array = np.stack(
-            [pixel_size[name] for name in pixel_size], axis=0
-        ).mean(axis=0)
+def _memory_view(element: LifElement, offset: int) -> np.ndarray:
+    """Strided ``(T, C, Y, X)`` view of an element's memory block."""
+    dtype = np.dtype(np.uint8 if element.bytes_per_sample == 1 else "<u2")
+    flat = np.memmap(
+        element.lif,
+        dtype=np.uint8,
+        mode="r",
+        offset=offset,
+        shape=(element.required_bytes,),
+    )
+    shape = (element.tiles, element.channels, element.size_y, element.size_x)
+    strides = tuple(
+        s if s else 0 for s in element.strides
+    )  # a missing dimension has size 1, its stride is irrelevant
+    return np.lib.stride_tricks.as_strided(
+        flat.view(dtype) if dtype.itemsize == 1 else np.frombuffer(flat, dtype=dtype),
+        shape=shape,
+        strides=strides,
+        writeable=False,
+    )
 
-        stacked_tiles, stacked_wavenumbers = self._remove_overlap(
-            stacked_tiles, stacked_wavenumbers
-        )
 
-        # Normalize to [0, 1] float32
-        max_val = stacked_tiles.max()
-        if max_val > 1.0 and max_val <= 255.0:
-            stacked_tiles /= np.float32(255.0)
-        elif max_val > 1.0 and max_val <= 65535.0:
-            stacked_tiles /= np.float32(65535.0)
-        elif max_val > 65535.0:
-            raise ValueError("Expected input data in range [0, 255] or [0, 65535].")
-
-        # Store results
-        reference_metadata.scan_height = stacked_tiles.shape[-2]
-        reference_metadata.scan_width = stacked_tiles.shape[-1]
-        reference_metadata.tile_number = stacked_tiles.shape[0]
-        reference_metadata.lambda_steps = stacked_tiles.shape[1]
-        reference_metadata.tiles_coordinates = coords_array[0]
-        reference_metadata.pixel_size = pixel_size_array
-
-        self.sample._raw_tiles = stacked_tiles
-        self.sample._wavenumbers = stacked_wavenumbers.astype(np.float32)
-        self.sample._metadata = reference_metadata
-        self.sample._tiles_coordinates = coords_array
-
-    def _find_slice_index(self, channel_idx: int) -> int:
-        """Find which spectra slice a channel index belongs to."""
-        for i, (start, end) in enumerate(self.sample._spectra_slices):
-            if start <= channel_idx <= end:
-                return i
-        return len(self.sample._spectra_slices) - 1
-
-    def _check_wavenumbers_overlaps(
-        self, wavenumbers: np.ndarray
-    ) -> tuple[int | None, int | None]:
-        """Locate a scanned spectral overlap, or return two None values."""
-        if len(wavenumbers) < 2:
-            return None, None
-
-        is_asc = np.all(wavenumbers[:-1] <= wavenumbers[1:])
-        is_desc = np.all(wavenumbers[:-1] >= wavenumbers[1:])
-        if is_asc or is_desc:
-            return None, None
-
-        expected_asc = wavenumbers[1] >= wavenumbers[0]
-
-        break_idx = None
-        for i in range(1, len(wavenumbers)):
-            if expected_asc and wavenumbers[i] < wavenumbers[i - 1]:
-                break_idx = i
-                break
-            elif not expected_asc and wavenumbers[i] > wavenumbers[i - 1]:
-                break_idx = i
-                break
-
-        if break_idx is None:
-            return None, None
-
-        target_val = wavenumbers[break_idx]
-        left_slice = wavenumbers[:break_idx]
-        # The next scan overlaps only when it starts inside the range already scanned; a disjoint
-        # window (e.g. the CH region followed by the fingerprint region) is kept whole.
-        if not left_slice.min() <= target_val <= left_slice.max():
-            return None, None
-        closest_idx = int(np.argmin(np.abs(left_slice - target_val)))
-
-        return break_idx, closest_idx
-
-    @staticmethod
-    def _compute_wavenumbers(
-        lambda_begin: float, lambda_end: float, lambda_steps: int, lambda_stokes: float
-    ) -> np.ndarray:
-        """Compute Raman wavenumber array from wavelength metadata."""
-        pump_wavelength = np.linspace(
-            lambda_begin, lambda_end, lambda_steps, dtype=np.float32
-        )
-        raman_wavenumbers = ((1.0 / pump_wavelength) - (1.0 / lambda_stokes)) * 1e7
-        return raman_wavenumbers
-
-    def _append_scan(
-        self,
-        lif_file: LifFile,
-        name: str,
-        metadata: RamanMetadata,
-        raw_tiles: dict[str, np.ndarray],
-        wavenumbers: dict[str, np.ndarray],
-        coordinates: dict[str, np.ndarray],
-        pixel_size: dict[str, np.ndarray],
-    ) -> None:
-        """Read one tiled scan, append its spectral boundaries, then validate its physical metadata."""
-        raw_tiles[name] = self._read_scan(lif_file, metadata)
-
-        # Record spectra slice boundaries
-        if len(self.sample._spectra_slices) == 0:
-            self.sample._spectra_slices.append(
-                (0, cast(int, metadata.lambda_steps) - 1)
-            )
-        else:
-            prev_end = self.sample._spectra_slices[-1][1]
-            self.sample._spectra_slices.append(
-                (prev_end + 1, prev_end + cast(int, metadata.lambda_steps))
-            )
-
-        wavenumbers[name] = self._compute_wavenumbers(
-            cast(float, metadata.lambda_begin),
-            cast(float, metadata.lambda_end),
-            cast(int, metadata.lambda_steps),
-            cast(float, metadata.lambda_stokes),
-        )
-
-        if metadata.tiles_coordinates is not None:
-            coordinates[name] = metadata.tiles_coordinates
-        else:
-            raise ValueError(f"Tiles coordinates not found for image '{name}'.")
-
-        if metadata.pixel_size is not None and np.all(metadata.pixel_size > 0):
-            pixel_size[name] = metadata.pixel_size
-        else:
-            raise ValueError(f"Pixel size not found or invalid for image '{name}'.")
-
-    @staticmethod
-    def _read_scan(lif_file: LifFile, metadata: RamanMetadata) -> np.ndarray:
-        """Load a scan's planes as (tiles, channels, width, height) float32 in acquisition order."""
-        image: LifImage = lif_file.get_image(metadata.index)
-        if image is None:
+def open_stack(acquisition: Acquisition, lif: LifFile) -> TileStack:
+    """Memory-map every element of an acquisition (all from the same LIF file)."""
+    blocks = []
+    for element in acquisition.elements:
+        offset, length = lif.get_image(element.index).offsets[:2]
+        if length < element.required_bytes:
             raise ValueError(
-                f"Image with index {metadata.index} not found in the LIF file."
+                f"'{element.path}': memory block holds {length} bytes, {element.required_bytes} expected"
             )
-
-        # Allocate as float32 (needed for BaSiC correction downstream)
-        tiles = np.zeros(
-            (
-                cast(int, metadata.tile_number),
-                cast(int, metadata.lambda_steps),
-                cast(int, metadata.scan_width),
-                cast(int, metadata.scan_height),
-            ),
-            dtype=np.float32,
-        )
-
-        for tile_idx in range(cast(int, metadata.tile_number)):
-            for spectral_idx in range(cast(int, metadata.lambda_steps)):
-                plane = image.get_plane(
-                    display_dims=(1, 2),
-                    c=0,
-                    requested_dims={9: spectral_idx, 10: tile_idx},
-                )
-                tiles[tile_idx, spectral_idx, :, :] = plane
-
-        return tiles
-
-    def _remove_overlap(
-        self,
-        stacked_tiles: np.ndarray,
-        stacked_wavenumbers: np.ndarray,
-    ) -> tuple[np.ndarray, np.ndarray]:
-        """Remove a rescanned interval and update inclusive slice indices; return the paired arrays."""
-        # Handle wavenumber overlaps (re-scanned regions)
-        break_idx, closest_idx = self._check_wavenumbers_overlaps(stacked_wavenumbers)
-
-        if break_idx is not None and closest_idx is not None:
-            get_reporter().detail(
-                f"Overlapping wavenumbers at index {break_idx}: overlapping region removed"
-            )
-            stacked_wavenumbers = np.concatenate(
-                [stacked_wavenumbers[:closest_idx], stacked_wavenumbers[break_idx:]]
-            )
-            stacked_tiles = np.concatenate(
-                [
-                    stacked_tiles[:, :closest_idx, :, :],
-                    stacked_tiles[:, break_idx:, :, :],
-                ],
-                axis=1,
-            )
-
-            self._update_slices(closest_idx, break_idx)
-
-        return stacked_tiles, stacked_wavenumbers
-
-    def _update_slices(self, closest_idx: int, break_idx: int) -> None:
-        """Shift scan boundaries after overlap removal, retaining the original lookup order."""
-        # Update spectra slice indices
-        new_slices = []
-        shift = break_idx - closest_idx
-        for index, s in enumerate(self.sample._spectra_slices):
-            if index < self._find_slice_index(closest_idx):
-                new_slices.append(s)
-            elif index == self._find_slice_index(closest_idx):
-                new_slices.append((s[0], int(closest_idx - 1)))
-            elif index == self._find_slice_index(break_idx):
-                new_slices.append((int(closest_idx), int(s[1] - shift)))
-            else:
-                new_slices.append((int(s[0] - shift), int(s[1] - shift)))
-        self.sample._spectra_slices = new_slices
+        blocks.append(_memory_view(element, int(offset)))
+    first = acquisition.first
+    wavenumbers = first.wavenumbers
+    order = np.argsort(wavenumbers, kind="stable")
+    return TileStack(
+        blocks=blocks,
+        order=order,
+        wavenumbers=wavenumbers[order],
+        pump_nm=first.pump_nm[order],
+        saturation=(1 << first.bits) - 1,
+    )

@@ -166,7 +166,8 @@ def _compute_valid_spot_mask(
     Returns a bool mask (n_obs,) — True where a spot has non-zero coverage in
     every non-anchor modality. Returns None when no filtering is needed.
 
-    Zero-vector rows arise when an anchor spot's footprint holds no target data:
+    Empty rows (all zero, or zero and NaN) arise when an anchor spot's footprint holds no
+    target data:
     - SpotInterpolation / SpotAggregation / RamanPixelInterpolation: no target spot or
       pixel centre lies inside the footprint (the spot is outside the target tissue).
     - FeatureExtraction: every image token of the footprint is background
@@ -185,7 +186,10 @@ def _compute_valid_spot_mask(
             X_csr.eliminate_zeros()
             mod_mask = np.asarray(X_csr.getnnz(axis=1) > 0)
         else:
-            mod_mask = ~np.all(X == 0.0, axis=1)
+            # NaN marks a feature the target did not measure at that spot (a Raman acquisition that
+            # does not cover it); a row with no finite non-zero value has no coverage at all.
+            dense = np.asarray(X)
+            mod_mask = ~np.all((dense == 0.0) | ~np.isfinite(dense), axis=1)
         n_empty = int(np.sum(~mod_mask))
         if n_empty > 0:
             logger.debug(

@@ -1,66 +1,100 @@
-"""Clean Raman tile spectra with the original RamanSPy pipeline and zero-variance handling."""
+"""Spectral processing of one multi-channel acquisition: denoise, offset, normalisation, quantisation.
 
-import warnings
+Denoising projects every pixel's spectrum on the principal components that are real at the cellular
+scale. The components and the rank come from spectra averaged over ``RANK_BIN_UM`` bins (saturated
+or partly measured bins left out); the rank is the number of singular values above the
+Gavish-Donoho optimal hard threshold for an unknown noise level (Gavish and Donoho 2014),
+``omega(beta) * median(singular values)``. At least the first component is kept. The spectral
+directions left out are noise at the cellular scale; removing them reduces the per-pixel noise
+without smoothing in space or along the spectrum.
+
+The non-resonant SRS background (cross-phase modulation, thermal lensing, two-photon absorption) is
+nearly flat across a spectral window (Berto et al. 2014); ``remove_offset`` subtracts each pixel's
+minimum over the window. ``area`` normalisation divides each spectrum by its mean over the window,
+so it describes composition independent of local density.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+
 import numpy as np
-import ramanspy as rp
+
+from focus.config.options import RamanNormalization
+from focus.preprocessing.raman import settings as tech
+from focus.preprocessing.raman.parameters import RamanRunSettings
 
 
-def _zero_variance_spectra(spectra_array: np.ndarray) -> np.ndarray:
-    """Identify zero-variance spectra (produce numerical errors downstream)."""
-    forward_differences = np.diff(spectra_array, axis=-1)
-    mad = np.median(
-        np.abs(
-            forward_differences - np.median(forward_differences, axis=-1, keepdims=True)
-        ),
-        axis=-1,
+@dataclass(frozen=True)
+class SpectralModel:
+    """Mean spectrum and the kept components (rows of ``components``), in output channel order."""
+
+    mean: np.ndarray
+    components: np.ndarray
+    singular_values: np.ndarray
+
+    @property
+    def rank(self) -> int:
+        """Number of kept components."""
+        return int(self.components.shape[0])
+
+
+def _omega(beta: float) -> float:
+    """Gavish-Donoho threshold coefficient for an unknown noise level (aspect ratio ``beta``)."""
+    return 0.56 * beta**3 - 0.95 * beta**2 + 1.82 * beta + 1.43
+
+
+def fit(spectra: np.ndarray) -> SpectralModel:
+    """Model of ``(N, C)`` binned spectra (rows with a non-finite value are ignored)."""
+    finite = spectra[np.isfinite(spectra).all(axis=1)].astype(np.float64)
+    if len(finite) > tech.DECOMPOSITION_SAMPLES:
+        rng = np.random.default_rng(0)
+        finite = finite[
+            rng.choice(len(finite), tech.DECOMPOSITION_SAMPLES, replace=False)
+        ]
+    channels = spectra.shape[1]
+    if len(finite) < channels + 1:
+        raise ValueError("too few measured spectra to model the acquisition")
+    mean = finite.mean(axis=0)
+    _, singular, vt = np.linalg.svd(finite - mean, full_matrices=False)
+    beta = min(channels, len(finite)) / max(channels, len(finite))
+    rank = int((singular > _omega(beta) * np.median(singular)).sum())
+    rank = max(1, rank)
+    return SpectralModel(
+        mean=mean.astype(np.float32),
+        components=vt[:rank].astype(np.float32),
+        singular_values=singular.astype(np.float32),
     )
-    return np.array(mad == 0, dtype=np.bool_).squeeze()
 
 
-def _process_tile_parallel(
-    tile: np.ndarray,
-    wavenumbers: np.ndarray,
-    tile_index: int,
-    slice_index: int,
-    savgol_window: int,
-    savgol_polyorder: int,
-) -> tuple[np.ndarray, int, int]:
-    """Process a single tile with the RamanSPy spectral cleaning pipeline."""
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", RuntimeWarning)
+def quantization_step(settings: RamanRunSettings, channels: int) -> float:
+    """Grid step of the stored values (detector counts, or area-normalised units)."""
+    if settings.normalization == RamanNormalization.AREA and channels > 1:
+        return tech.QUANTIZATION_AREA
+    return tech.QUANTIZATION_COUNTS
 
-        pipeline = rp.preprocessing.Pipeline(
-            [
-                rp.preprocessing.despike.WhitakerHayes(),
-                rp.preprocessing.denoise.SavGol(
-                    window_length=savgol_window, polyorder=savgol_polyorder
-                ),
-                rp.preprocessing.baseline.IASLS(),
-                rp.preprocessing.normalise.MinMax(),
-            ]
-        )
 
-        C, X, Y = tile.shape
-        y_indices, x_indices = np.meshgrid(np.arange(X), np.arange(Y))
-        coordinates = np.stack((x_indices, y_indices), axis=-1)
-
-        reshaped_tile = tile.reshape(C, -1).T  # (Y*X, C)
-        reshaped_coordinates = coordinates.reshape(-1, 2)
-
-        zero_variance_mask = _zero_variance_spectra(reshaped_tile)
-        reshaped_tile = reshaped_tile[~zero_variance_mask]
-        reshaped_coordinates = reshaped_coordinates[~zero_variance_mask]
-
-        if reshaped_tile.shape[0] == 0:
-            return np.zeros_like(tile), tile_index, slice_index
-
-        spectral_image = rp.SpectralImage(reshaped_tile, wavenumbers)
-        processed_tile = pipeline.apply(spectral_image).spectral_data
-
-        restored_tile = np.zeros((C, X, Y), dtype=np.float32)
-        for i in range(processed_tile.shape[0]):
-            x = int(reshaped_coordinates[i, 0])
-            y = int(reshaped_coordinates[i, 1])
-            restored_tile[:, x, y] = processed_tile[i, :]
-
-        return restored_tile, tile_index, slice_index
+def process_block(
+    block: np.ndarray,
+    model: SpectralModel | None,
+    settings: RamanRunSettings,
+) -> np.ndarray:
+    """Process a ``(C, Y, X)`` block of flat-field corrected spectra (NaN where not measured)."""
+    channels = block.shape[0]
+    out = block.astype(np.float32, copy=True)
+    if channels > 1:
+        flat = out.reshape(channels, -1)
+        if model is not None:
+            centred = flat.T - model.mean
+            projected = centred @ model.components.T @ model.components + model.mean
+            flat[:] = projected.T
+        if settings.remove_offset:
+            with np.errstate(invalid="ignore"):
+                flat -= np.min(flat, axis=0, keepdims=True)
+        if settings.normalization == RamanNormalization.AREA:
+            with np.errstate(invalid="ignore", divide="ignore"):
+                level = np.mean(flat, axis=0, keepdims=True)
+                flat /= np.where(level > 0, level, np.nan)
+    step = quantization_step(settings, channels)
+    quantised: np.ndarray = (np.rint(out / step) * step).astype(np.float32)
+    return quantised

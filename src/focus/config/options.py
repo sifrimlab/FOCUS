@@ -141,6 +141,13 @@ class MsiIntensityNormalization(_AbstractEnum):
     )
 
 
+class RamanNormalization(_AbstractEnum):
+    """Raman per-pixel normalizations, applied within one acquisition."""
+
+    NONE: Final = "none"
+    AREA: Final = "area"  # spectrum divided by its mean over the acquisition's channels
+
+
 class DecompositionMethod(_AbstractEnum):
     """Supported decomposition method values in declaration order."""
 

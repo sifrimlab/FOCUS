@@ -234,7 +234,7 @@ pixel types), written unchanged. Compression is lossless and readable by tifffil
 | Image | Codec |
 |---|---|
 | Brightfield, 8-bit | JPEG 2000 reversible (ISO/IEC 15444-1) |
-| Every other image | zstd[^collet2021], horizontal predictor (floating-point predictor for floats) |
+| Every other image | zstd[^collet2021], horizontal predictor (none for floating-point images: Bio-Formats 8.4 cannot read the floating-point predictor) |
 
 FOCUS design choice: JPEG 2000 reversible is about 40% smaller than zlib on H&E; JPEG-XL lossless is
 about 8% smaller again but Bio-Formats 8.4 cannot read it. A source compressed with lossy JPEG (for

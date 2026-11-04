@@ -1,149 +1,118 @@
-"""Hold one Raman source, acquisition metadata and loaded/intermediate image arrays."""
+"""Bind one Raman (SRS) LIF session to its cache key and output OME-TIFF."""
 
-from numpy.typing import NDArray
+from __future__ import annotations
 
-from functools import cached_property
-
-from focus.preprocessing.raman.reader import RamanReader
-from focus.preprocessing.raman.tiles import RamanTiles
-from focus.preprocessing.raman.correction import RamanCorrection
-from focus.preprocessing.raman.stitching import RamanStitcher
-import focus.preprocessing.raman.settings as _settings
-import tifffile
+import json
+from importlib.metadata import PackageNotFoundError, version
 import os
-from focus.runtime.reporter_context import get_reporter
-import numpy as np
 
+from focus.io import ome_write
+from focus.io.paths import preprocessed_file
+from focus.io.provenance import cached_fingerprint, fingerprint, input_signature
 from focus.preprocessing.base import SampleSource
-from focus.preprocessing.raman.metadata import RamanMetadata
+from focus.preprocessing.raman.parameters import RamanRunSettings
+from focus.preprocessing.raman.settings import METHOD_VERSION, calibration
+from focus.preprocessing.raman.workflow import Provenance, process_lif
+from focus.runtime.reporter_context import get_reporter
+
+# Libraries whose behaviour shapes the output pixels or metadata (distribution names).
+_SOFTWARE = (
+    "numpy",
+    "scipy",
+    "scikit-image",
+    "tifffile",
+    "imagecodecs",
+    "zarr",
+    "ome-types",
+    "readlif",
+)
+
+
+def _version(name: str) -> str:
+    try:
+        return version(name)
+    except PackageNotFoundError:
+        return "missing"
+
+
+def find_lif(directory: str) -> str:
+    """The single ``.lif`` session file of a sample directory.
+
+    Raises
+    ------
+    FileNotFoundError
+        If there is none.
+    ValueError
+        If there are several (one LAS X session per sample).
+    """
+    found = sorted(
+        entry.path
+        for entry in os.scandir(directory)
+        if entry.is_file() and entry.name.lower().endswith(".lif")
+    )
+    if not found:
+        raise FileNotFoundError(f"No .lif file found in {directory}")
+    if len(found) > 1:
+        names = ", ".join(os.path.basename(f) for f in found)
+        raise ValueError(
+            f"Several .lif files in {directory} ({names}): keep one per sample"
+        )
+    return found[0]
 
 
 class RamanImage(SampleSource):
-    """
-    Process Raman Spectral Images. Supports Leica LIF files.
-    Pipeline: load → BaSiC correction → background removal → spectral cleaning → ASHLAR stitching → OME-TIFF.
+    """One Leica SRS session written as a multi-image OME-TIFF (one image per acquisition).
+
+    Input: one ``.lif`` file per sample. Output: every complete SRS acquisition stitched,
+    flat-field corrected and placed in the frame of the reference acquisition, reused while its
+    fingerprint matches.
     """
 
-    def __init__(
-        self,
-        source_path: str,
-        sample_id: str,
-        modality_name: str,
-        max_workers: int = _settings._MAX_WORKERS,
-    ) -> None:
-        """
-        Parameters
-        ----------
-        source_path : str
-                Path to the data source directory.
-        sample_id : str
-                Sample ID.
-        modality_name : str
-                Name of the modality.
-        max_workers : int
-                Maximum number of workers for parallel processing.
-        """
+    def __init__(self, source_path: str, sample_id: str, modality_name: str) -> None:
+        """Create the sample output directory and resolve its LIF file."""
         super().__init__(source_path, sample_id, modality_name)
         self.input_path = os.path.join(source_path, sample_id, modality_name)
-        self._max_workers = max_workers
+        self.filename = find_lif(self.input_path)
 
-        # Intermediate data
-        self._raw_tiles: NDArray[np.float32] | None = None
-        self._basic_corrected_tiles: NDArray[np.float32] | None = None
-        self._raman_corrected_tiles: NDArray[np.float32] | None = None
-        self._quick_mosaic: NDArray[np.uint8] | None = None
-        self._mosaic: NDArray[np.generic] | None = None
-        self._metadata: RamanMetadata | None = None
-        self._wavenumbers: NDArray[np.float32] | None = None
-        self._tiles_coordinates: NDArray[np.float32] | None = None
-        self._spectra_slices: list[tuple[int, int]] = []
+    def process(
+        self, settings: RamanRunSettings, force_recomputing: bool = False
+    ) -> str:
+        """Preprocess the session unless the output already carries this fingerprint.
 
-    def load_source(self) -> None:
-        """Load the source data. Looks for supported file formats (LIF) in the input directory."""
-        os.makedirs(self.output_path, exist_ok=True)
-
-        reporter = getattr(self, "_step_reporter", None) or get_reporter()
-        found = False
-        with os.scandir(self.input_path) as it:
-            for entry in it:
-                if entry.is_file() and entry.name.lower().endswith(".lif"):
-                    reporter.step(1, 5, "Loading LIF data")
-                    reporter.detail(entry.name)
-                    self.reader._load_lif(os.path.join(self.input_path, entry.name))
-                    found = True
-                    break
-
-        if not found:
-            raise FileNotFoundError(
-                f"No supported Raman source file found in {self.input_path}"
-            )
-
-    # --- Properties ---
-
-    @property
-    def raw(self) -> np.ndarray | None:
-        """Raw tiles: (T, C, Y, X) float32."""
-        return self._raw_tiles
-
-    @property
-    def corrected(self) -> np.ndarray | None:
-        """Corrected tiles (BaSiC + background + RamanSPy): (T, C, Y, X) float32."""
-        return self._raman_corrected_tiles
-
-    @property
-    def mosaic(self) -> np.ndarray | None:
-        """Final stitched mosaic: (C, Y, X)."""
-        return self._mosaic
-
-    @property
-    def metadata(self) -> RamanMetadata | None:
-        """Return loaded Raman metadata, or None before source loading."""
-        return self._metadata
-
-    @property
-    def wavenumbers(self) -> np.ndarray | None:
-        """Wavenumber array: (W,) float32."""
-        return self._wavenumbers
-
-    @property
-    def tiles_coordinates(self) -> np.ndarray | None:
-        """Tile coordinates: (T, N_slices, 2) float32."""
-        return self._tiles_coordinates
-
-    @property
-    def sample_id(self) -> str:
-        """Read or validate the string identifier of this sample."""
-        return self._sample_id
-
-    @sample_id.setter
-    def sample_id(self, value: str) -> None:
-        """Read or validate the string identifier of this sample."""
-        if not isinstance(value, str):
-            raise TypeError("Sample ID must be a string.")
-        self._sample_id = value
-
-    def _force_mosaic_load(self, output_path: str, filename: str) -> None:
-        """Load the existing stitched TIFF into the sample's mosaic state."""
-        self._mosaic = tifffile.imread(
-            os.path.join(output_path, f"{filename}.ome.tiff")
+        Returns
+        -------
+        str
+            Path to the output OME-TIFF.
+        """
+        output = preprocessed_file(
+            self.source_path, self.sample_id, self.modality_name, "ome.tiff"
         )
+        reporter = getattr(self, "_step_reporter", None) or get_reporter()
+        signature = input_signature(self.filename, output)
+        key = self._fingerprint(settings, signature)
+        if not force_recomputing and cached_fingerprint(output) == key:
+            reporter.cached()
+            return output
+        previous = ome_write.previous_output(output)
+        process_lif(
+            self.filename,
+            settings,
+            reporter,
+            output,
+            Provenance(key, signature, previous),
+        )
+        return output
 
-    @cached_property
-    def reader(self) -> RamanReader:
-        """Return the RamanReader component bound to this sample."""
-        return RamanReader(self)
-
-    @cached_property
-    def tiles(self) -> RamanTiles:
-        """Return the RamanTiles component bound to this sample."""
-        return RamanTiles(self)
-
-    @cached_property
-    def correction(self) -> RamanCorrection:
-        """Return the RamanCorrection component bound to this sample."""
-        return RamanCorrection(self)
-
-    @cached_property
-    def stitcher(self) -> RamanStitcher:
-        """Return the RamanStitcher component bound to this sample."""
-        return RamanStitcher(self)
+    def _fingerprint(self, settings: RamanRunSettings, signature: str) -> str:
+        """Method, input content, sample, settings, calibration constants and software versions."""
+        return fingerprint(
+            {
+                "method": METHOD_VERSION,
+                "input_sha256": json.loads(signature)["sha256"],
+                "sample_id": self.sample_id,
+                "modality": self.modality_name,
+                "settings": settings.fingerprint_settings(),
+                "calibration": calibration(),
+                "software": {name: _version(name) for name in _SOFTWARE},
+            }
+        )

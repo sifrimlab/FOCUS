@@ -331,34 +331,40 @@ Per-sample output AnnData has:
 
 Applicable modality type: `raman`.
 
-[Raman preprocessing](raman_methods.md#10-outputs) produces a hyperspectral OME-TIFF (one channel per Raman shift), not a spot table. This engine applies the interpolation of §3 to pixel data.
+[Raman preprocessing](raman_methods.md#6-output) produces a hyperspectral OME-TIFF with one image
+per acquisition (one channel per Raman shift), not a spot table. This engine applies the
+interpolation of §3 to the pixels of every image.
 
 ### 5.1 Geometric setup
 
-1. Each Raman pixel \((\text{col},\text{row})\) of the full-resolution level is a target point at its
-   centre \((\text{col}+0.5,\text{row}+0.5)\) (§1.4), with a feature vector equal to its spectral
-   intensities across channels.
-2. The footprints are mapped into the Raman pixel frame through the alignment map (§1.1), so the
-   reference's `spot_size` is honoured whatever the Raman pixel size. Only the pixels inside the
-   union of the footprints' pixel bounding boxes enter the computation. Channel names are taken from
-   the OME-XML metadata (fallback `Channel_N`).
+1. Each pixel \((\text{col},\text{row})\) of an image's full-resolution level is a target point at
+   its centre \((\text{col}+0.5,\text{row}+0.5)\) (§1.4), with a feature vector equal to its
+   spectral intensities. Pixels with a non-finite value (not measured by the acquisition) are not
+   target points.
+2. The alignment maps the reference spots into image-0 pixels. Image \(k\), stored with placement
+   \((x_0, y_0, s_x, s_y)\) (its pixel \((c, r)\) lies at image-0 pixel
+   \((x_0 + s_x c, y_0 + s_y r)\)), receives the spots at \(((x - x_0)/s_x, (y - y_0)/s_y)\), and the
+   footprint map (§1.1) is fitted again on these coordinates, so the reference's `spot_size` is
+   honoured whatever the Raman pixel size. Only the pixels inside the union of the footprints' pixel
+   bounding boxes are read. Files written before `raman-2` hold one image at the identity
+   placement.
 
 ### 5.2 Kernel and interpolation
 
-Identical to §3.2: the Gaussian weights of §1.4 over the pixels whose centres lie inside each
-footprint, row-normalized. Anchor rows with no pixel in the footprint are left at zeros.
-
-If no footprint reaches the image, a warning is logged and the output is an all-zero
-\((N_R, C)\) matrix.
+Identical to §3.2: the Gaussian weights of §1.4 over the measured pixels whose centres lie inside
+each footprint, row-normalized, per image. An anchor row with no measured pixel of an image in its
+footprint is NaN for that image's channels; if no footprint reaches an image, a warning is logged.
+The images' features are concatenated.
 
 ### 5.3 Output semantics
 
 Per-sample output AnnData has:
 
-- `.X`: interpolated spectra, dense float32, shape \((N_R, C)\)
-- `.obsm['spatial']`: anchor coordinates in the Raman pixel frame
-- `.var`: indexed by spectral channel name, read from the OME-XML. ASHLAR writes no channel names,
-  so in practice `Channel_0 … Channel_{C-1}`
+- `.X`: interpolated spectra, dense float32, shape \((N_R, C)\) with \(C\) the channels of all images
+- `.obsm['spatial']`: anchor coordinates in the Raman image-0 pixel frame
+- `.var`: indexed by channel name, read from the OME-XML (`<wavenumber> cm-1`; the acquisition name
+  is appended when a wavenumber is measured by several acquisitions; `Channel_N` when the file has
+  no names), with columns `wavenumber` and `acquisition`
 - no `.layers`
 
 ### 5.4 Parameters

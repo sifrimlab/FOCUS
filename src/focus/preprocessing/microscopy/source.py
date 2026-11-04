@@ -11,6 +11,7 @@ import os
 import dask.array as da
 import numpy as np
 
+from focus.io.ome_write import ChannelInfo as ChannelInfo
 from focus.preprocessing.microscopy.metadata import _SUPPORTED_EXTENSIONS
 
 # Canonical axis order of every SourceImage array: time, depth, rows, columns, channels.
@@ -42,20 +43,6 @@ _FLUORESCENCE_MODES = {
     "epifluorescence",
 }
 _BRIGHTFIELD_MODES = {"brightfield", "transmitted"}
-
-
-@dataclass(frozen=True)
-class ChannelInfo:
-    """Acquisition metadata of one channel; every field is optional except the name."""
-
-    name: str
-    color: str | None = None  # "RRGGBB"
-    excitation_nm: float | None = None
-    emission_nm: float | None = None
-    fluor: str | None = None
-    illumination: str | None = None  # OME IlluminationType
-    acquisition_mode: str | None = None  # OME AcquisitionMode
-    contrast_method: str | None = None  # OME ContrastMethod
 
 
 @dataclass

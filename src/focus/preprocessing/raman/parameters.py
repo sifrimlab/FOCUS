@@ -1,29 +1,30 @@
-"""Internal Raman run parameters; no validation or default changes are introduced."""
+"""Typed Raman settings and their serialized fingerprint representation."""
 
 from dataclasses import dataclass
 from typing import TypedDict
 
 
 class RamanSettings(TypedDict):
-    """Existing preprocessing keywords after adapter defaults are applied."""
+    """Preprocessing keywords after adapter defaults are applied."""
 
+    denoise: bool
+    remove_offset: bool
+    normalization: str
     force_recomputing: bool
-    max_workers: int
-    savgol_window: int
-    savgol_polyorder: int
-    bg_min_area_fraction: float
-    otsu_threshold_factor: float
-    min_object_size: int
 
 
 @dataclass(frozen=True)
 class RamanRunSettings:
-    """Correction, smoothing and worker parameters passed through to each sample."""
+    """Options that change the written spectra."""
 
-    force_recomputing: bool
-    max_workers: int
-    savgol_window: int
-    savgol_polyorder: int
-    bg_min_area_fraction: float
-    otsu_threshold_factor: float
-    min_object_size: int
+    denoise: bool
+    remove_offset: bool
+    normalization: str
+
+    def fingerprint_settings(self) -> dict[str, object]:
+        """Cache-key values with stable casts."""
+        return {
+            "denoise": bool(self.denoise),
+            "remove_offset": bool(self.remove_offset),
+            "normalization": str(self.normalization),
+        }

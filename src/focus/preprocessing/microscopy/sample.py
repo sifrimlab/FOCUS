@@ -9,7 +9,7 @@ import os
 from focus.io.paths import preprocessed_file
 from focus.io.provenance import cached_fingerprint, fingerprint, input_signature
 from focus.preprocessing.base import SampleSource
-from focus.preprocessing.microscopy import pyramid
+from focus.io import ome_write
 from focus.preprocessing.microscopy.metadata import METHOD_VERSION
 from focus.preprocessing.microscopy.parameters import ImageSettings
 from focus.preprocessing.microscopy.source import find_source_file, open_source
@@ -84,7 +84,7 @@ class MicroscopyImage(SampleSource):
             reporter.cached()
             return output
         reporter.step(1, 5, "Reading image")
-        previous = pyramid.previous_output(output)
+        previous = ome_write.previous_output(output)
         with open_source(self.filename) as source:
             process_image(
                 source, settings, reporter, output, Provenance(key, signature, previous)

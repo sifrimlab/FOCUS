@@ -223,3 +223,56 @@ def read_ome_physical_size_um(filename: str) -> np.ndarray | None:
             else None
         )
     return None
+
+
+def read_image_annotations(filename: str) -> list[dict[str, object]]:
+    """Per OME ``Image``, in file order: its name, channel names and FOCUS image annotations.
+
+    Each entry holds ``name``, ``channels`` (list of channel names) and ``annotations`` (the
+    ``focus.image`` MapAnnotation linked to the image, empty when there is none). A TIFF without
+    OME-XML yields one entry with no names.
+    """
+    import xml.etree.ElementTree as ET
+    import tifffile
+
+    try:
+        with tifffile.TiffFile(filename) as tif:
+            root = ET.fromstring(cast(tifffile.TiffPage, tif.pages[0]).description)
+    except Exception:
+        return [{"name": "", "channels": [], "annotations": {}}]
+
+    def local(element: ET.Element) -> str:
+        return element.tag.rsplit("}", 1)[-1]
+
+    maps: dict[str, dict[str, str]] = {}
+    for element in root.iter():
+        if (
+            local(element) == "MapAnnotation"
+            and element.get("Namespace") == "focus.image"
+        ):
+            maps[element.get("ID", "")] = {
+                str(entry.get("K")): entry.text or ""
+                for entry in element.iter()
+                if local(entry) == "M" and entry.get("K") is not None
+            }
+    images: list[dict[str, object]] = []
+    for image in (e for e in root if local(e) == "Image"):
+        pixels = next((e for e in image if local(e) == "Pixels"), None)
+        channels = (
+            [
+                c.get("Name", f"Channel_{i}")
+                for i, c in enumerate(e for e in pixels if local(e) == "Channel")
+            ]
+            if pixels is not None
+            else []
+        )
+        refs = [e.get("ID", "") for e in image if local(e) == "AnnotationRef"]
+        annotations = next((maps[r] for r in refs if r in maps), {})
+        images.append(
+            {
+                "name": image.get("Name", ""),
+                "channels": channels,
+                "annotations": annotations,
+            }
+        )
+    return images or [{"name": "", "channels": [], "annotations": {}}]

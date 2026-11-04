@@ -146,33 +146,25 @@
         }
       },
       "raman": {
-        "force_recomputing": {
+        "denoise": {
+          "type": "bool",
+          "default": true
+        },
+        "remove_offset": {
           "type": "bool",
           "default": false
         },
-        "max_workers": {
-          "type": "int",
-          "default": 8
+        "normalization": {
+          "type": "enum",
+          "options": [
+            "none",
+            "area"
+          ],
+          "default": "none"
         },
-        "savgol_window": {
-          "type": "int",
-          "default": 7
-        },
-        "savgol_polyorder": {
-          "type": "int",
-          "default": 3
-        },
-        "bg_min_area_fraction": {
-          "type": "float",
-          "default": 0.05
-        },
-        "otsu_threshold_factor": {
-          "type": "float",
-          "default": 0.7
-        },
-        "min_object_size": {
-          "type": "int",
-          "default": 500
+        "force_recomputing": {
+          "type": "bool",
+          "default": false
         }
       },
       "st": {
@@ -261,7 +253,8 @@
       "max": "Maximum-intensity projection",
       "best_focus": "Best-focus plane",
       "middle": "Middle plane",
-      "geojson": "GeoJSON"
+      "geojson": "GeoJSON",
+      "area": "Area (composition per pixel)"
     },
     "registration_params": {
       "feature_extraction": {
@@ -708,7 +701,8 @@
           "tic": "TIC",
           "tissue": "Tissue (clean background)",
           "tissue_noisy": "Tissue (noisy background)",
-          "white": "White"
+          "white": "White",
+          "area": "Area (composition per pixel)"
         },
         "intensity_normalization": [
           "none",
@@ -817,33 +811,25 @@
             }
           },
           "raman": {
-            "bg_min_area_fraction": {
-              "default": 0.05,
-              "type": "float"
+            "denoise": {
+              "default": true,
+              "type": "bool"
             },
             "force_recomputing": {
               "default": false,
               "type": "bool"
             },
-            "max_workers": {
-              "default": 8,
-              "type": "int"
+            "normalization": {
+              "default": "none",
+              "options": [
+                "none",
+                "area"
+              ],
+              "type": "enum"
             },
-            "min_object_size": {
-              "default": 500,
-              "type": "int"
-            },
-            "otsu_threshold_factor": {
-              "default": 0.7,
-              "type": "float"
-            },
-            "savgol_polyorder": {
-              "default": 3,
-              "type": "int"
-            },
-            "savgol_window": {
-              "default": 7,
-              "type": "int"
+            "remove_offset": {
+              "default": false,
+              "type": "bool"
             }
           },
           "st": {

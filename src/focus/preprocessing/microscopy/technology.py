@@ -11,6 +11,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from focus.config.options import MicroscopyImageType, MicroscopyZProjection
+from focus.io import ome_write
 
 # Tissue detection runs on a canvas of about 8 µm per pixel, the 1.25x base magnification of
 # HistoQC (Janowczyk et al. 2019). The canvas keeps at least 1024 px on its short side, so small
@@ -56,7 +57,7 @@ CROP_MARGIN_PX = 250
 DISPLAY_SATURATION_PERCENT = 0.35
 
 # Output pyramid: 512 px tiles, levels halve each side until the image fits in one tile.
-TILE = 512
+TILE = ome_write.TILE
 # Lossless codecs read by tifffile and Bio-Formats 8: JPEG 2000 reversible for 8-bit brightfield,
 # zstd with a horizontal predictor otherwise. JPEG-XL is smaller but Bio-Formats 8.4 cannot read it.
 BRIGHTFIELD_CODEC: tuple[str, dict[str, object]] = ("jpeg2000", {"reversible": True})
@@ -100,7 +101,8 @@ class ImageProfile:
             name, args = BRIGHTFIELD_CODEC
             return name, dict(args), None
         name, args = DEFAULT_CODEC
-        return name, dict(args), 3 if np.issubdtype(dtype, np.floating) else 2
+        # Bio-Formats 8.4 cannot read the TIFF floating-point predictor (3): floats get none.
+        return name, dict(args), None if np.issubdtype(dtype, np.floating) else 2
 
     @property
     def encoder_eligible(self) -> bool:

@@ -176,17 +176,17 @@ The aggregation footprint is derived automatically from the anchor `spot_size`; 
 
 ## `raman_pixel_interpolation`
 
-Used for Raman. Raman preprocessing produces a **hyperspectral OME-TIFF** (an ASHLAR-stitched image with one channel per Raman shift), not a spot table, so this engine adapts the interpolation to pixel data.
+Used for Raman. Raman preprocessing produces a **hyperspectral OME-TIFF** with one image per acquisition (each with one channel per Raman shift and its placement in image 0), not a spot table, so this engine adapts the interpolation to pixel data.
 
 **Algorithm**
 
 1. Treat each Raman **pixel as a spot**: its position is the pixel centre `(col + 0.5, row + 0.5)` in the full-resolution level (the frame the alignment step writes), and its feature vector is the pixel's spectral intensities across channels.
-2. Map the footprints into the Raman image and keep only the pixels inside the union of their bounding boxes. Channel names come from the OME-XML metadata; ASHLAR writes none, so in practice the names are `Channel_0 … Channel_{C-1}`.
-3. Run the **same Gaussian footprint interpolation** as [`spot_interpolation`](#spot_interpolation), using those pixels as the target spots. The footprint is the anchor's `spot_size` in the anchor's units, mapped through the alignment, so it covers the same tissue area whatever the Raman pixel size.
+2. For every image, map the footprints through the alignment and the image's placement (`focus_placement`) and read only the pixels inside the union of their bounding boxes. Channel names come from the OME-XML (`<wavenumber> cm-1`); outputs written before `raman-2` carry none and are named `Channel_0` to `Channel_{C-1}`.
+3. Run the **same Gaussian footprint interpolation** as [`spot_interpolation`](#spot_interpolation), using the measured (finite) pixels as the target spots. The footprint is the anchor's `spot_size` in the anchor's units, mapped through the alignment, so it covers the same tissue area whatever the Raman pixel size.
 
-When no footprint reaches the image, meaning the anchor spots do not overlap the Raman mosaic at all, a warning is logged and every row is written as a zero vector.
+A spot without a measured pixel of an image in its footprint gets NaN for that image's channels (an ROI acquisition that does not cover it); when an image is out of reach of every spot, a warning is logged. Spots with no measured value in any image are dropped at assembly like any uncovered spot.
 
-**Output AnnData:** `X` = `(N_ref, C)` dense interpolated spectra; `obsm['spatial']` = anchor coordinates in the Raman pixel frame; `obs['sample_id']`; `var` indexed by channel name. No `layers`.
+**Output AnnData:** `X` = `(N_ref, C)` dense interpolated spectra, the images' channels concatenated; `obsm['spatial']` = anchor coordinates in the Raman image-0 pixel frame; `obs['sample_id']`; `var` indexed by channel name (with the acquisition name appended when a wavenumber is measured by several acquisitions), columns `wavenumber` and `acquisition`. No `layers`.
 
 **Configuration**
 

@@ -63,7 +63,6 @@ def owned_sources() -> list[str]:
             "src/focus",
             "scripts",
             "tests",
-            "tools",
             "typing",
             "docs/development",
         )

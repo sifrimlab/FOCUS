@@ -36,7 +36,6 @@ notebooks/
 configs/
 
 # CI / tools / docs
-tools/
 .github/
 .git/
 

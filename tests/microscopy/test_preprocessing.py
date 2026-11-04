@@ -9,7 +9,7 @@ import tifffile
 
 from focus.io.ome import load_ome_tiff_level, read_channel_names, read_display_settings
 from focus.io.provenance import planes_digest, read_ome_annotations
-from focus.preprocessing.microscopy.pyramid import _level0_planes
+from focus.io.ome_write import level0_planes as _level0_planes
 from focus.preprocessing.microscopy.sample import MicroscopyImage
 from focus.preprocessing.microscopy.source import ChannelInfo, hint_from_channels
 

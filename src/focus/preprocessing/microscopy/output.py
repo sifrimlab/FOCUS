@@ -18,9 +18,10 @@ from focus.io.provenance import (
     PREPROCESSING_FINGERPRINT_KEY,
     SUPERSEDED_SIGNATURE_KEY,
 )
-from focus.preprocessing.microscopy import pyramid, tissue
+from focus.io import ome_write
+from focus.preprocessing.microscopy import tissue
 from focus.preprocessing.microscopy.metadata import METHOD_VERSION
-from focus.preprocessing.microscopy.ome_xml import OmeImage, build_ome_xml
+from focus.io.ome_write import OmeImage, build_ome_xml
 from focus.preprocessing.microscopy.source import SourceImage
 from focus.runtime.reporting import StepReporter
 
@@ -111,7 +112,7 @@ def write_staged(
 ) -> None:
     """Digest level 0, build the OME-XML and write the TIFF atomically."""
     supersession(
-        pyramid.level0_digest(levels[0], source.rgb), provenance, values, reporter
+        ome_write.level0_digest(levels[0], source.rgb), provenance, values, reporter
     )
     xml = build_ome_xml(ome_image(source, analysis, levels, values, offset), values)
     codec = analysis.profile.codec(source.dtype)
@@ -119,7 +120,9 @@ def write_staged(
         f"{len(levels)} pyramid levels, {codec[0]} lossless, {np.dtype(source.dtype).name}"
     )
     with atomic_path(output) as tmp:
-        pyramid.write_pyramid(levels, tmp, source.rgb, xml, codec, analysis.pixel_size)
+        ome_write.write_pyramid(
+            levels, tmp, source.rgb, xml, codec, analysis.pixel_size
+        )
     if analysis.profile.image_type == MicroscopyImageType.FLUORESCENCE:
         reporter.detail(
             "Fluorescence image: feature_extraction registration does not apply"

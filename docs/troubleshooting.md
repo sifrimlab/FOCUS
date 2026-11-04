@@ -57,41 +57,18 @@ If you have a GPU and want to use `feature_extraction` registration:
 
 ---
 
-### Raman Processing Fails: Missing `FOCUS_BaSiCpy` or `FOCUS_ASHLAR` Environment
+### Raman Processing Reports No Complete SRS Acquisition
 
-**Symptom:** every sample of a `raman` modality is reported on the console as
-`Error processing sample <sample_id>: Conda environment 'FOCUS_BaSiCpy' does not exist.`,
-`... conda not found. Make sure conda is installed and in PATH.`, or a non-zero exit from the ASHLAR
-subprocess. The pipeline keeps running and the modality produces no preprocessed output.
+**Symptom:** a `raman` sample is reported as `Sample skipped: No complete SRS acquisition in
+<file>.lif`, and step `1/4` lists every image of the file as skipped.
 
-**Cause:** Raman processing runs BaSiC illumination correction and ASHLAR stitching in dedicated
-auxiliary conda environments (`FOCUS_BaSiCpy`, `FOCUS_ASHLAR`). If one of these environments was
-not created during installation, Raman preprocessing fails when it tries to invoke it. The failure is
-caught per sample, so the run continues instead of stopping.
+**Cause:** FOCUS processes complete coherent Raman tile scans and Mark & Find position groups only.
+Images without CRS laser settings, frames without stage positions, mosaics merged by LAS X and
+aborted scans are skipped; the step `1/4` detail lines give the reason for each group.
 
-**Fix:**
-
-The install script creates these environments automatically: one `FOCUS_<name>` environment for
-each subdirectory of `tools/` (`BaSiCpy` and `ASHLAR`). There are no interactive prompts. First
-confirm whether they exist:
-
-```bash
-conda env list
-# Expect to see: FOCUS, FOCUS_BaSiCpy, FOCUS_ASHLAR
-```
-
-If `FOCUS_BaSiCpy` or `FOCUS_ASHLAR` is missing, the tool-environment setup failed during
-installation (commonly a network or conda error). Re-run the installer and watch its output for that
-step:
-
-```bash
-bash install.sh        # macOS/Linux
-.\install.ps1          # Windows (PowerShell; install.bat also works)
-```
-
-ASHLAR needs Java to read the tile files through Bio-Formats, but you do not need to install it
-yourself: the installer runs `conda install -c conda-forge openjdk` in every tool environment it
-creates, `FOCUS_ASHLAR` included.
+**Fix:** export or keep the original tile scans in the session file (not only the merged mosaics),
+and check that the scans finished: an aborted scan is reported as `incomplete scan (n of m tiles
+stored)`. See [Raman: which images become acquisitions](modalities/raman.md#which-images-become-acquisitions).
 
 ---
 

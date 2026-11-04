@@ -9,9 +9,9 @@ import os
 import dask.array as da
 import numpy as np
 
-from focus.preprocessing.microscopy import crop, display, pyramid, tissue
+from focus.io import ome_write
+from focus.preprocessing.microscopy import crop, display, tissue
 from focus.preprocessing.microscopy.metadata import _valid_pixel_size
-from focus.preprocessing.microscopy.ome_xml import ome_pixel_type
 from focus.preprocessing.microscopy.output import focus_annotations, write_staged
 from focus.preprocessing.microscopy.parameters import ImageSettings
 from focus.preprocessing.microscopy.profile import resolve_image_type
@@ -178,7 +178,9 @@ def process_image(
     provenance: Provenance,
 ) -> None:
     """Analyse the source, then stage, digest and write its pyramid atomically."""
-    ome_pixel_type(source.dtype)  # fail before any work on a type OME cannot store
+    ome_write.ome_pixel_type(
+        source.dtype
+    )  # fail before any work on a type OME cannot store
     report_source(source, reporter)
     analysis = analyse(source, settings, reporter)
     plane, offset, fill = region(source, analysis, settings, reporter)
@@ -191,9 +193,9 @@ def process_image(
         os.path.dirname(output), f".{os.getpid()}.stage.{os.path.basename(output)}"
     )
     try:
-        levels = pyramid.stage_levels(plane, source.rgb, workdir)
+        levels = ome_write.stage_levels(plane, source.rgb, workdir)
         write_staged(
             source, analysis, levels, values, provenance, offset, output, reporter
         )
     finally:
-        pyramid.remove_workdir(workdir)
+        ome_write.remove_workdir(workdir)

@@ -1,316 +1,265 @@
 # Raman Preprocessing Methods
 
-Implementation reference for `focus/preprocessing/raman/`. `RamanDataset.process_dataset()` iterates
-over samples and, for each one, calls `sample.load_source()`, `sample.correction.basic_correct()`,
-`sample.correction.remove_background()`, `sample.tiles.process_raw_tiles()` and
-`sample.stitcher.ashlar_stitch()` in that order, skipping the whole sample when its final
-OME-TIFF already exists and `force_recomputing` is false. Exceptions raised while processing a sample
-are reported as `Sample skipped: <error>`, and the loop moves to the next sample.
+Implementation reference for `focus/preprocessing/raman/` (method version `raman-2`). The input is one
+Leica LAS X session file (`.lif`) of hyperspectral stimulated Raman scattering (SRS)
+acquisitions[^freudiger2008]; the output is one OME-TIFF holding one OME image per acquisition.
+`RamanImage.process()` reuses an existing output whose fingerprint matches and otherwise runs
+`workflow.process_lif`: inventory (§1), illumination and tile registration (§2, §3), placement of the
+acquisitions (§4), spectral processing (§5) and writing (§6).
 
 ---
 
-## 1. Input and metadata extraction
+## 1. Inventory
 
-`load_source()` scans `{dataset}/{sample_id}/{modality}/` and loads the first entry whose name ends in
-`.lif` (case-insensitive); with no such file it raises `FileNotFoundError`.
+### 1.1 Elements
 
-`parse_lif_metadata` walks the LIF XML (`readlif`'s `xml_root`) and returns one `RamanMetadata` per
-image element. Elements are collected from the `Children` container of each top-level `Element`, with
-fallbacks for LIF files whose header is a flat `LMSDataContainerHeader`; when nothing is found it
-raises `ValueError("No elements found in the LIF file or unexpected XML structure.")`.
-
-Per element:
+`inventory.read_elements` walks the LIF XML header in readlif's order (depth first through
+`Children/Element`, descending only into elements that hold `Data`), so element `i` is readlif image
+`i`. Per image element:
 
 | Field | XML source |
 |---|---|
-| `scan_height`, `pixel_size[0]` | `Data/Image/ImageDescription/Dimensions/DimensionDescription[@DimID=1]`: `NumberOfElements`, and `Length / NumberOfElements` |
-| `scan_width`, `pixel_size[1]` | same, `@DimID=2` |
-| `lambda_steps` | same, `@DimID=9`: `NumberOfElements` |
-| `tile_number` | same, `@DimID=10`: `NumberOfElements` |
-| `lambda_begin`, `lambda_end` | `LambdaDefinition/LambdaExcitation`: `LambdaExcitationBeginDouble` / `LambdaExcitationEndDouble`, falling back to the non-`Double` attribute names |
-| `lambda_stokes`, `laser_type` | first `LaserArray/Laser` element carrying a `PumpWavelength`, plus its `LaserName` |
-| `tiles_coordinates` | `Data/Image/Attachment[@Name="TileScanInfo"]/Tile`: `PosX`, `PosY` |
+| width, height, pixel size | `DimensionDescription` `DimID` 1 (X, columns) and 2 (Y, rows): `NumberOfElements`, `Length / NumberOfElements`, unit `m` or `um` |
+| channels | `DimID` 9 `NumberOfElements` (1 when absent) |
+| stored tiles | `DimID` 10 `NumberOfElements` (1 when absent) |
+| byte strides | `BytesInc` of `DimID` 10, 9, 2, 1 |
+| bit depth | `ChannelDescription@Resolution` |
+| planned tiles, stage positions | `Attachment[@Name="TileScanInfo"]/Tile`: count, `PosX`, `PosY` (scaled by the X dimension unit to µm), presence of `PosZ` |
+| pump wavelengths | `LambdaExcitation` begin and end (`...Double` attributes first), `linspace` over the channels; without `DimID` 9 the `Wavelength` of the CRS laser |
+| Stokes wavelength | `PumpWavelength` of the `LaserArray/Laser` that carries one (the fixed 1032 nm beam) |
+| detector gain | `Gain` of the active `DetectorList/Detector` |
+| line average, laser power | `ATLConfocalSettingDefinition@LineAverage`, laser `PumpOutputPower` |
+| start time | first entry of `TimeStampList` (Windows FILETIME) |
+| memory | `Memory@Size` |
 
-The wavelength and laser attributes are searched at
-`Data/Image/Attachment[@Name="HardwareSetting"]/ATLConfocalSettingDefinition` and, if not found there,
-at the same path under `LDM_Block_Sequential/LDM_Block_Sequential_Master`.
-
-Units: each spatial `DimensionDescription` carries a `Unit`, `m` or `um`, giving a scaling factor of
-\(10^6\) or \(1\) to micrometers; any other unit raises `ValueError`. The same factor converts the
-tile `PosX`/`PosY` to micrometers, so tile coordinates and pixel sizes are both in µm. When the number
-of `Tile` entries does not match `DimID=10`, a `RuntimeWarning` line is printed and the element is
-dropped.
-
-`_load_lif` then keeps only elements with `tile_number >= 2`. Single-field acquisitions and any
-automatically stitched image are ignored. An element still missing `tile_number`,
-`lambda_steps`, `scan_width` or `scan_height` is reported as a probably corrupted scan and skipped;
-a missing `tiles_coordinates` or a non-positive `pixel_size` raises `ValueError`.
-
-Pixel data is read plane by plane through `readlif`
-(`image.get_plane(display_dims=(1, 2), c=0, requested_dims={9: spectral_index, 10: tile_index})`) into
-a `float32` array of shape `(tile_number, lambda_steps, scan_width, scan_height)`. `float32` is
-required by the BaSiC step downstream.
-
----
-
-## 2. Wavenumber axis
-
-For each element, with \(\lambda_i\) the `lambda_steps` values of
-`linspace(lambda_begin, lambda_end, lambda_steps)` and \(\lambda_{stokes}\) the laser `PumpWavelength`
-(`_compute_wavenumbers`):
+The Raman shift of channel `i` is
 
 \[
-\tilde\nu_i = \left(\frac{1}{\lambda_i} - \frac{1}{\lambda_{stokes}}\right)\times 10^7
+\tilde\nu_i = \frac{10^7}{\lambda_{\mathrm{pump},i}} - \frac{10^7}{\lambda_{\mathrm{Stokes}}}\quad(\mathrm{cm}^{-1}).
 \]
 
-The factor \(10^7\) converts \(\text{nm}^{-1}\) to \(\text{cm}^{-1}\). The concatenated result is
-stored as `float32` on `RamanImage.wavenumbers`.
+### 1.2 Selection
 
-The axis is consumed only by §5, as the spectral axis handed to RamanSPy. It is never written to disk:
-neither the stitched OME-TIFF nor any sidecar file records it.
+`inventory.select` decides on every element, in this order:
 
----
+1. no CRS laser or no finite pump wavelength: not an SRS acquisition;
+2. no `TileScanInfo` tile: single frame without a stage position;
+3. one stored tile, one planned tile, no `PosZ`: LAS X merged mosaic or snapshot (merged mosaics
+   carry one stage tile without a Z position; acquired tiles carry `PosZ`);
+4. stored tiles different from planned tiles, or `Memory@Size` smaller than
+   tiles x channels x rows x columns x bytes: incomplete scan;
+5. no positive pixel size;
+6. one tile outside a job folder: snapshot.
 
-## 3. Merging scans, overlap trimming, intensity scaling
-
-Elements that pass the filters above are merged into single arrays:
-
-- tile data concatenated along the channel axis, in element order (requires identical tile count and
-  tile size across elements);
-- wavenumber vectors concatenated in the same order;
-- tile coordinates stacked to `(tiles, scans, 2)`;
-- pixel sizes averaged over elements into one `(2,)` vector.
-
-Each element's channel range is recorded in `_spectra_slices` as an inclusive `(start, end)` pair.
-These slices are the unit of work in §5 and the unit of output in §6, and they allow one sample to
-carry several acquisitions with different spectral ranges.
-
-**Overlap trimming** (`_check_wavenumbers_overlaps`). Within one scan the wavelength axis is a
-`linspace`, so the wavenumber axis is monotonic; a concatenation of scans that re-cover part of the
-spectrum is not. The first index \(b\) where monotonicity breaks is located. The scans overlap only
-when \(\min_{i<b}\tilde\nu_i \le \tilde\nu_b \le \max_{i<b}\tilde\nu_i\); a disjoint window is returned
-untouched, since the nearest channel of a range that does not contain \(\tilde\nu_b\) is its first one
-and trimming from it would delete the whole preceding scan. For an overlap, the index
-\(c=\arg\min_{i<b}\lvert\tilde\nu_i-\tilde\nu_b\rvert\) marks where the overlap starts in the preceding
-block, and channels \([c, b)\) are dropped from the wavenumber vector and from the tile array. The
-slice boundaries are re-indexed by the shift \(b-c\): slices before the affected one are unchanged, the
-affected one is truncated at \(c-1\), the one containing \(b\) restarts at \(c\), and later slices are
-shifted down. A monotonic axis is returned untouched, and only one overlapping region is removed.
-
-**Intensity scaling.** The merged stack is rescaled once, from the global maximum: values in
-\((1, 255]\) are divided by 255, values in \((255, 65535]\) by 65535, a maximum above 65535 raises
-`ValueError`, and a maximum at or below 1 is left as is.
-
-The `RamanImage.metadata` object that results is a summary of the merged stack, not a copy of any
-single element's metadata. Its `tile_number` and `lambda_steps` are the merged array's first two
-dimensions, its `scan_height` and `scan_width` are its last two, and its `pixel_size` is the
-cross-scan mean. The per-element arrays are allocated as
-`(tiles, channels, scan_width, scan_height)`, so `scan_height` and `scan_width` are swapped on this
-summary object relative to the per-element metadata. Their only consumer, the
-`tile_size=(scan_height, scan_width)` argument of `_extract_tiles_segmentation_from_mosaic` in §5,
-reads them in the merged array's own axis order.
+The remaining tile scans are acquisitions. Single-tile elements in one job folder sharing size,
+pixel size, channels, pump wavelengths, gain, line average and bit depth form one acquisition (Mark &
+Find positions). Acquisitions are then visited from the latest to the earliest start time: one that
+measures the same spectral window (first and last pump wavelength within 0.05 nm, same channel count)
+over a stage footprint overlapping a later kept acquisition is superseded by it. FOCUS design choice:
+a session in which a window was re-acquired (for example with a higher detector gain, or over a
+larger region) keeps the re-acquisition only.
 
 ---
 
-## 4. BaSiC correction
+## 2. Reading and illumination
 
-`basic_correct()` runs BaSiCpy channel-wise in the external conda environment `FOCUS_BaSiCpy`. Before
-starting, it verifies that `conda` is on `PATH`, that a conda environment path containing
-`FOCUS_BaSiCpy` is listed by `conda env list --json`, and that `tools/BaSiCpy/main.py` exists; each
-failed check raises.
+### 2.1 Tile stacks
 
-Per channel \(c\):
+`reader.open_stack` maps each element's memory block (offset from readlif) with `numpy.memmap` and
+a strided view of shape `(tiles, channels, rows, columns)` built from the `BytesInc` strides; samples
+are read in their native type (8 or 16 bit) without rescaling. Channels are reordered by increasing
+wavenumber. The saturation value is \(2^{\mathrm{bits}}-1\).
 
-1. Write `basic_input_{c}.npy`, the `(tiles, rows, columns)` slice for that channel.
-2. `conda run -n FOCUS_BaSiCpy python tools/BaSiCpy/main.py {output_path} {c}`, with
-   `JAX_PLATFORM_NAME=cpu` in the subprocess environment. `main.py` calls `BaSiC().fit(...)` followed
-   by `.transform(...)` on that stack and writes `basic_output_{c}.npy`.
-3. Poll for the output file for up to 10 s (0.2 s interval), then load it and delete both temporaries.
-   A missing file at the end of the timeout raises `TimeoutError`.
+### 2.2 Flat-field
 
-Channels are dispatched concurrently with `ThreadPoolExecutor(max_workers)`. When every channel has
-returned, the assembled `float32` tensor is min-max normalized **globally** (one minimum and one
-maximum over all tiles and channels, applied only when the maximum exceeds the minimum) and cached to
-`basic_corrected_tiles.npy`.
+Every tile of an acquisition is imaged through the same scan field, so the shading profile is
+shared. `flatfield.estimate` computes it retrospectively[^tomazevic2002]:
 
----
+1. per tile, the mean over channels of the unsaturated samples (`channel_mean`; a pixel saturated in
+   every channel keeps the saturation value);
+2. the per-pixel mean over the tissue tiles: tiles whose mean is at least the 25th percentile of the
+   tile means;
+3. Gaussian smoothing with \(\sigma = 36\) µm, normalised to mean 1, floored at 0.05.
 
-## 5. Background removal
+One profile is estimated per acquisition and applied to all its channels. FOCUS design choice: the
+shading of the scan optics changes little over the 20 to 40 nm pump tuning range of one window,
+while per-channel estimates from 8-bit low-count channels are dominated by noise. Acquisitions with
+fewer than 10 tiles (Mark & Find positions) borrow the profile of the acquisition with the nearest
+mean wavenumber in the same file; without one they are left uncorrected and reported.
 
-`remove_background()` segments tissue once on a quick-stitched preview mosaic (`_quick_stitch`) and
-back-projects the mask onto the tiles. It requires the BaSiC-corrected tiles to be in memory and
-raises `RuntimeError` otherwise, even when its own cache exists.
+`flatfield.overlap_check` measures the shading independently of the model: in each side-by-side
+overlap of registered tiles (§3) the same tissue is imaged near the right (or bottom) edge of one
+tile and near the left (or top) edge of the next, so the ratio of the two strip means is the
+edge-to-edge illumination ratio. Strips 8 px inside the overlap and 100 px away from the tile ends
+are used; strips darker than half the 25th-percentile tile mean are background and ignored. The
+median measured and modelled ratios are reported and stored with the image.
 
-1. **Distance-transform feathered blend.** Tiles are placed at their stage coordinates divided by
-   `pixel_size[0]`. Each tile is weighted by the Euclidean distance transform of its footprint,
-   normalized to its maximum, \(w(u,v)=\mathrm{EDT}(u,v)/\max \mathrm{EDT}\), so a pixel near the
-   tile centre carries more weight than one near its border. The mosaic is the weighted sum divided by
-   the accumulated weights, \(M = \bigl(\sum_t w_t\,T_t\bigr) \big/ \bigl(\sum_t w_t\bigr)\), per
-   channel, with zeros wherever no tile contributed.
-2. **PCA to one component.** Pixels that are zero in every channel are excluded; an all-zero mosaic
-   raises `RuntimeError("The mosaic is completely black.")`. The remaining \(C\)-channel vectors
-   are projected onto their first principal component (`sklearn.decomposition.PCA(n_components=1)`).
-   The scores are clipped to their 2nd and 98th percentiles and rescaled to \([0,1]\); excluded pixels
-   are written back as 0.
-3. **CLAHE.** The grayscale image is scaled to `uint8` and equalized with
-   `cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))`. The result is the preview mosaic used below.
-4. **Otsu segmentation.** The preview mosaic is clipped at its 95th percentile and Otsu's threshold is
-   computed on that copy (between-class-variance criterion, as in
-   [microscopy](microscopy_methods.md#52-segmentation)). The threshold is
-   multiplied by `otsu_threshold_factor` (default 0.7), truncated to an integer, and applied to the
-   **unclipped** preview mosaic.
-5. **Morphological cleanup.**
-   `skimage.morphology.remove_small_objects(mask, max_size=min_object_size)` removes connected
-   components (4-connectivity) whose area is at most `min_object_size` pixels (the `max_size`
-   argument is inclusive), followed by `scipy.ndimage.binary_fill_holes`.
-6. **Contour area filter.** External contours (`cv2.RETR_EXTERNAL`) are kept when their area is at
-   least `bg_min_area_fraction` × (mosaic height × mosaic width) and filled to form the tissue mask.
-   When `cv2.findContours` returns nothing, a warning is printed and the mask from step 5 is kept
-   unrefined.
-7. **Back-projection.** `_extract_tiles_segmentation_from_mosaic` cuts the mosaic mask at each tile's
-   position into a boolean array shaped like the tile stack, using that tile's coordinates for the
-   scan the channel belongs to. That array multiplies the BaSiC-corrected tiles.
-   Background pixels become exactly 0 in every channel. The masked tiles are cached to
-   `segmented_tiles.npy` and replace the BaSiC-corrected tiles in memory, so §6 operates on them.
+FOCUS design choice, with its calibration: BaSiC[^peng2017], used before `raman-2`, was compared
+with this estimator against the overlap ratios of the five P762 acquisitions. BaSiC (reference
+smoothness) underestimated the right/left ratio of the single-channel scans (1.20 and 1.10 modelled,
+1.35 and 1.27 measured) and its flat-fields carried texture that correlated between acquisitions
+sharing a tile grid (r = 0.46 to 0.48) and not between acquisitions on different grids, that is,
+specimen; raising its smoothness removed the texture and the shading with it. The smoothed mean
+matched the measured ratios within 0.04 for every acquisition.
 
 ---
 
-## 6. Spectral cleaning (RamanSPy)
+## 3. Tile registration and assembly
 
-`process_raw_tiles()` builds one work unit per `(tile, spectra slice)` pair, so each scan's channel
-block is cleaned independently with its own wavenumber sub-range. Units are dispatched with
-`joblib.Parallel(n_jobs=max_workers, return_as="generator")`; `parallel=False` runs the identical
-per-unit function in a plain loop.
+`stitching.register` follows ASHLAR's edge alignment[^muhlich2022]:
 
-Inside `_process_tile_parallel` the block is reshaped to one spectrum per pixel and run through a fixed
-`rp.preprocessing.Pipeline`, in order:
+1. stage positions in pixels: \((\mathrm{PosX}, \mathrm{PosY})\) minus their minimum, divided by
+   the pixel size; stage X runs along the columns and stage Y along the rows, with no flip (checked
+   on P762 against the mosaic LAS X merged itself: correlation 0.79 unflipped, 0.02 or below for
+   every flip);
+2. neighbour pairs: tiles whose predicted overlap is at least 16 px in both directions and that lie
+   side by side (corner contacts are ignored);
+3. per pair, phase correlation[^kuglin1975] of the predicted overlap of the two flat-field
+   corrected channel-mean tiles, both whitened with a Laplacian of Gaussian (\(\sigma = 1\) px)
+   (`skimage.registration.phase_cross_correlation`[^guizar2008]); a correction larger than
+   15 µm (ASHLAR's default maximum shift) or than half the overlap is rejected;
+4. acceptance: the normalised cross-correlation of the aligned overlap must exceed the 99th
+   percentile reached by 200 random pairs of tiles that do not overlap, cut with real overlap
+   geometries (ASHLAR's permutation test);
+5. positions: weighted least squares over the accepted pairwise offsets (weight = correlation),
+   with a stage prior of weight \(10^{-3}\) times the median edge weight, so tiles without an
+   accepted edge keep their stage placement; edges with a residual above 3 px are dropped and the
+   system solved again (up to three times); positions are rounded to whole pixels.
 
-1. **Whitaker-Hayes despiking** (`WhitakerHayes()`, RamanSPy defaults `kernel_size=3`,
-   `threshold=8`): points whose modified \(z\)-score
-   \(\lvert 0.6745\,(d_i-\mathrm{med}(d))/\mathrm{MAD}(d)\rvert\) on the consecutive-difference series
-   \(d=\mathrm{diff}(y)\) exceeds the threshold are flagged as cosmic-ray spikes; each flagged point is
-   replaced by the mean of the non-flagged points within \(\pm\)`kernel_size`, iterating until no
-   further point can be fixed.
-2. **Savitzky-Golay denoising** (`SavGol(window_length=savgol_window, polyorder=savgol_polyorder)`):
-   least-squares fit of a degree-`savgol_polyorder` polynomial (default 3) within a sliding window of
-   `savgol_window` channels (default 7), evaluated at the window centre; smooths noise while
-   preserving peak shape. SciPy raises `ValueError` when the polynomial order is not smaller than the
-   window, or when the window is longer than the block being filtered.
-3. **IASLS baseline correction** (`IASLS()`, RamanSPy defaults `lam=1e6`, `p=1e-2`, `lam_1=1e-4`,
-   `max_iter=50`, `tol=1e-3`, `diff_order=2`): Improved Asymmetric Least Squares estimates a smooth
-   baseline \(z\) minimizing an asymmetrically weighted penalized least-squares objective
-   \(\sum_i w_i (y_i-z_i)^2 + \lambda \lVert D^2 z\rVert^2\) with an additional first-derivative
-   term, where the weights \(w_i\) penalize points above the baseline far less than those below, and
-   subtracts \(z\).
-4. **Min-max normalization** (`MinMax()`, RamanSPy default `pixelwise=True`): each spectrum is
-   rescaled to \([0,1]\) individually.
+On P762 81 to 170 overlaps per acquisition are accepted with a median residual of 0.3 to 0.4 px; the
+solved positions differ from the stage by a median of 26 to 36 px across the mosaic (a stage to
+scanner scale difference of about 0.6 %), and the assembled CH-window mosaic matches the LAS X
+merge with a correlation of 0.956 (0.800 with stage positions).
 
-Only the Savitzky-Golay window and polynomial order are exposed as parameters.
-
-**Zero-variance spectra.** `_zero_variance_spectra` computes the median absolute deviation of each
-spectrum's consecutive-difference series and flags the spectra whose MAD is exactly 0. These are flat
-spectra, including the background pixels zeroed in §5. That MAD is the denominator of the Whitaker-Hayes
-modified \(z\)-score, so those spectra are dropped from the unit before the pipeline runs and their
-pixels are written back as zeros. A unit in which every spectrum is flat returns an all-zero block
-without invoking the pipeline.
-
-The cleaned stack is cached to `raman_corrected_tiles.npy`.
+Assembly (`stitching.ownership`, `assemble_channel`) never blends: every mosaic pixel takes its value
+from the tile whose centre is nearest (ties to the lower tile index), so each stored sample is one
+measurement and the masks partition the covered area. Pixels no tile covers are NaN.
 
 ---
 
-## 7. ASHLAR stitching
+## 4. Placement of the acquisitions
 
-`_prepare_for_ashlar` prepares the inputs:
+### 4.1 Reference image
 
-- mirror the tile \(y\) coordinates within their own range per scan,
-  \(y' = \max y + \min y - y\) (Leica → OME-TIFF convention);
-- `np.nan_to_num`, then scale by 255 and cast to `uint8`;
-- choose one alignment channel per spectra slice: take each channel's per-tile mean over the tile's
-  pixels, reduce over tiles with a maximum, and select the `argmax` over the slice's channels; the
-  index is counted within the slice, because each slice is written as its own cycle file;
-- write one `ashlar_input_cycle_{n}.ome.tiff` per spectra slice, one OME image per tile, zlib
-  compressed, carrying `PhysicalSizeX`/`PhysicalSizeY` in µm, per-plane `PositionX`/`PositionY` in µm,
-  and channel names `Channel_0 … Channel_{C-1}`.
+Image 0 is the acquisition with the largest footprint; footprints within 2 % of the largest are
+tied and the tie goes to an acquisition with CH-region channels (2800 to 3100 cm⁻¹), then to the
+most channels. FOCUS design choice: the CH region has the strongest SRS signal and the lipid and
+protein contrast used for alignment.
 
-`ashlar_stitch()` then runs `conda run -n FOCUS_ASHLAR python -u tools/ASHLAR/main.py {output_path}
-{align_channels}` (comma-separated, one per cycle) with `check=True`, so a non-zero exit propagates as `CalledProcessError`. The script:
+### 4.2 Placement
 
-1. sorts the `ashlar_input*` files by cycle number;
-2. builds a Bio-Formats reader per file (hence the Java dependency) and calls
-   `process_axis_flip(reader, False, False)`, which leaves the tile positions as written;
-3. runs `reg.EdgeAligner` on the first cycle with that cycle's channel and `max_shift=15` µm
-   (`do_make_thumbnail=False` when there is only one cycle), then a `reg.LayerAligner` per further
-   cycle against that result, with the cycle's own channel and the same `max_shift`;
-4. writes every cycle's mosaic through `reg.PyramidWriter`, with `peak_size` computed so the smallest
-   pyramid level holds at most \(3000\times3000 = 9\times10^6\) pixels;
-5. deletes the cycle input files.
+Each mosaic's origin in stage µm is the mean over its tiles of stage position minus solved position
+times the pixel size. Stage coordinates are not trusted alone across acquisitions: in P762 the
+acquisitions taken 9 hours before the reference are 455 µm from their stage positions relative to it
+(the slide or the stage frame moved between scans). `placement.place` therefore scores candidates:
 
-ASHLAR reads the physical pixel size from the cycle files and refuses inputs whose `PhysicalSizeX` and
-`PhysicalSizeY` differ by more than a relative tolerance of `1e-4` (`Can't handle non-square pixels`).
+- stage coordinates relative to the reference;
+- stage coordinates relative to every image already placed (acquisitions of one session sitting
+  share a stage frame);
+- a phase-correlation search over every relative offset of the whitened (LoG, \(\sigma = 1.5\) px)
+  channel-mean mosaics at 4.5 µm per pixel, zero-padded to the sum of their sizes so no offset
+  wraps.
 
-FOCUS renames `ashlar_output.ome.tiff` to the final preprocessing output path and loads it into
-`RamanImage.mosaic`.
-
----
-
-## 8. Caching and intermediates
-
-Stage outputs are cached in the sample's preprocessing directory:
-
-| File | Stage |
-|---|---|
-| `basic_corrected_tiles.npy` | §4 |
-| `segmented_tiles.npy` | §5 |
-| `raman_corrected_tiles.npy` | §6 |
-
-Each stage loads its cache instead of recomputing whenever the file exists and `force_recomputing` is
-false; the caches record no parameter values, so a changed parameter is only honoured with
-`force_recomputing: true` or after the files are removed. §1 is never cached: the LIF file is re-read
-on every run that does not already have a final OME-TIFF, because the tile coordinates, pixel size and
-slice boundaries feed the later stages.
-
-`process_dataset()` deletes all three files after the sample's final OME-TIFF has been produced, so
-they persist only after an interrupted or failed run. In that case they let a rerun resume
-mid-sample.
+Each candidate is scored by the normalised cross-correlation of the unwhitened channel-mean mosaics
+over their overlap at 4.5 µm per pixel, against every image already placed; the best candidate is
+refined by phase correlation of the whitened mosaics at about 1.2 µm per pixel, within two coarse
+pixels, against the image it matched. FOCUS design choice: tissue morphology is shared by all
+spectral windows while their contrast differs, so a fingerprint-window acquisition is scored against
+whichever placed image it resembles most. Placements more than 20 µm from the stage position are
+reported. The placement is stored as `x0,y0,sx,sy`: image pixel \((c, r)\) lies at image-0 pixel
+\((x_0 + s_x c,\ y_0 + s_y r)\), with \(s\) the ratio of the pixel sizes.
 
 ---
 
-## 9. Parameters reflected by implementation
+## 5. Spectral processing
 
-Defaults come from the `RamanImage` class constants and are applied both by the config settings
-extractor (`_extract_raman_settings`) and by the `RamanDataset.process_dataset()` signature. They are
-written below as the configuration values you would supply.
+`images.build` stages the assembled native samples of every channel (uint8 or uint16, 0 where no
+tile measured) with one flat-field mosaic beside them, then processes blocks of 1024 x 1024 px:
 
-| Parameter | Default | Stage |
-|---|---|---|
-| `force_recomputing` | `false` | all |
-| `max_workers` | 8 | §4 (threads), §6 (`joblib` workers) |
-| `savgol_window` | 7 | §6 |
-| `savgol_polyorder` | 3 | §6 |
-| `bg_min_area_fraction` | 0.05 | §5 |
-| `otsu_threshold_factor` | 0.7 | §5 |
-| `min_object_size` | 500 | §5 |
+1. **Flat-field correction:** native value divided by the flat-field mosaic (NaN where not covered).
+2. **Denoising** (`denoise`, multi-channel acquisitions): the spectra are averaged over bins of
+   4.5 µm (8 x 8 px on P762); bins containing a saturated sample are left out; the centred bin spectra
+   (up to 300 000) are decomposed by SVD and the rank is the number of singular values above the
+   optimal hard threshold for an unknown noise level, \(\omega(\beta)\cdot\mathrm{median}(\sigma_i)\)
+   with \(\omega(\beta) \approx 0.56\beta^3 - 0.95\beta^2 + 1.82\beta + 1.43\)[^gavish2014], at least 1.
+   Every pixel spectrum \(x\) is replaced by \(\mu + VV^\top(x-\mu)\), with \(\mu\) the mean bin
+   spectrum and \(V\) the kept components. FOCUS design choice, with its calibration: on P762 the
+   threshold keeps 1 component (CH window) and 0 to 1 (fingerprint windows) on single pixels, and 3
+   and 2 on 4.5 µm bins; ranking single pixels would erase the CH2/CH3 shape that separates lipids
+   from proteins[^lu2015], which is real at the cellular scale. The projection removes the spectral
+   directions that are noise at that scale and keeps the spatial resolution.
+3. **Offset** (`remove_offset`): each pixel's minimum over the window is subtracted. The
+   non-resonant SRS background (cross-phase modulation, two-photon absorption, thermal effects) is
+   nearly flat over a window[^berto2014]; the minimum is a FOCUS approximation of it.
+4. **Normalisation** (`normalization: area`): each spectrum is divided by its mean over the
+   acquisition's channels; a non-positive mean gives NaN.
+5. **Quantisation:** values are rounded to multiples of 1/4 detector count (2⁻⁸ for area-normalised
+   spectra), so the float32 tiles compress well. FOCUS design choice: 4 times finer than the
+   converter step; on P762 the rounding adds less than 0.5 % to the variance of the denoised
+   measurement noise.
 
-`max_workers` is also read by `_create_raman_samples`, which passes it to each `RamanImage`
-constructor; `process_dataset()` re-assigns it on every sample before processing.
+Single-channel acquisitions are only flat-field corrected and quantised. SRS intensity is linear in
+concentration[^freudiger2008][^fu2012]; without `normalization` the stored values keep that property
+within an acquisition. The saturated fraction of every channel is stored; above 1 % a warning is
+reported. Saturated samples keep their (clipped) values.
 
 ---
 
-## 10. Outputs
+## 6. Output
 
-Per sample:
+One BigTIFF, written image by image (`ome_write.ImagesWriter`): image 0 first, then the other
+acquisitions in start order. Each image is a series of one page per channel with SubIFD levels,
+2 x 2 averages of the finite samples, rounded to the same grid, halving each side until the image
+fits one 512 px tile; tiles are zstd compressed without a predictor (Bio-Formats 8.4 cannot read the
+TIFF floating-point predictor, and horizontal differencing would carry NaN along the rows). The OME-XML
+(first page, UTF-8) describes every image: channels named `<wavenumber> cm-1` with the pump
+wavelength as `ExcitationWavelength` and `AcquisitionMode` `SpectralImaging`, physical pixel size,
+and a `focus.image` MapAnnotation per image (listed in [Raman](../modalities/raman.md#output)). It is
+written with the first image and replaced once every image is known
+(`ome_write.replace_description`).
 
-```text
-{dataset_path}/{sample_id}/preprocessing/{modality}/{modality}_{sample_id}_processed.ome.tiff
-```
+Image 0 carries the display rendering (`focus_display`) and the tissue outline: on its stored level
+nearest 4.5 µm per pixel, the channel mean (unmeasured pixels set to the 1st percentile of the
+measured ones) is smoothed with \(\sigma = 27\) µm and thresholded with Otsu's method[^otsu1979]
+over the measured pixels, then cleaned like the microscopy tissue mask (closing, specks, holes,
+debris area; see [microscopy](microscopy_methods.md)) and stored as OME ROI polygons. FOCUS design
+choice: SRS glass has its own non-resonant level (7 to 10 counts against 20 to 80 for tissue in
+the P762 CH3 scan), so the two populations suit Otsu's threshold, whereas the triangle threshold of
+the microscopy fluorescence path, made for a near-zero background, classed 99.6 % of the measured
+area as tissue; display windows are the 0.35 and 99.65 percentiles over tissue. The channel
+nearest 2850 cm⁻¹ (within 30 cm⁻¹) is green and the one nearest 2930 cm⁻¹ magenta, both shown;
+without either the middle channel is shown.
 
-`uint8`, one channel per surviving spectral channel in scan order, Adobe-Deflate compressed with a
-horizontal predictor in 1024 × 1024 tiles, with 2× pyramid levels. The OME-XML holds the ASHLAR creator
-string and `PhysicalSizeX`/`PhysicalSizeY` in µm, and no channel names. As a result,
-`raman_pixel_interpolation` names the registered features `Channel_0 … Channel_{C-1}`, and the
-wavenumber axis is not recoverable from the file. No merged file is produced for Raman.
+The file-level `focus` MapAnnotation holds the fingerprint (method version, input SHA-256, sample,
+modality, settings, every constant of `settings.calibration()`, library versions), the input
+signature, the level-0 pixel digest of all images in page order, the skipped elements with their
+reasons, the tissue fraction and `focus_display`. A regenerated output with the same digest records
+the file it replaces, so alignments made on it stay valid.
 
-The stitched OME-TIFF is the input to the [alignment stage](alignment_methods.md) and to
-[`raman_pixel_interpolation` registration](registration_methods.md#5-raman-pixel-interpolation-raman_pixel_interpolation),
-both of which work in its pixel coordinates. Registration maps the reference footprints into those
-coordinates through the alignment transform.
+---
+
+## 7. Registration
+
+`raman_pixel_interpolation` reads every image (`raman_pixel.raman_targets`): for image `k` with
+placement \((x_0, y_0, s_x, s_y)\) the anchor spots, aligned to image-0 pixels, are mapped to
+\(((x - x_0)/s_x, (y - y_0)/s_y)\) and the footprint geometry is fitted again from these
+coordinates. Only the pixel box the footprints can reach is read (through tifffile's zarr view).
+Each spot receives the Gaussian-weighted average of the measured (finite) pixels of the image inside
+its footprint; a spot with none gets NaN for that image's channels. Features are concatenated over
+the images; see [Registration](registration_methods.md#5-raman-pixel-interpolation-raman_pixel_interpolation).
+
+---
+
+## References
+
+[^freudiger2008]: Freudiger C. W. et al. Label-free biomedical imaging with high sensitivity by stimulated Raman scattering microscopy. *Science* 322, 1857-1861 (2008). [doi:10.1126/science.1165758](https://doi.org/10.1126/science.1165758)
+[^fu2012]: Fu D. et al. Quantitative chemical imaging with multiplex stimulated Raman scattering microscopy. *Journal of the American Chemical Society* 134, 3623-3626 (2012). [doi:10.1021/ja210081h](https://doi.org/10.1021/ja210081h)
+[^lu2015]: Lu F.-K. et al. Label-free DNA imaging in vivo with stimulated Raman scattering microscopy. *PNAS* 112, 11624-11629 (2015). [doi:10.1073/pnas.1515121112](https://doi.org/10.1073/pnas.1515121112)
+[^berto2014]: Berto P., Andresen E. R., Rigneault H. Background-free stimulated Raman spectroscopy and microscopy. *Physical Review Letters* 112, 053905 (2014). [doi:10.1103/PhysRevLett.112.053905](https://doi.org/10.1103/PhysRevLett.112.053905)
+[^tomazevic2002]: Tomazevic D., Likar B., Pernus F. Comparative evaluation of retrospective shading correction methods. *Journal of Microscopy* 208, 212-223 (2002). [doi:10.1046/j.1365-2818.2002.01079.x](https://doi.org/10.1046/j.1365-2818.2002.01079.x)
+[^peng2017]: Peng T. et al. A BaSiC tool for background and shading correction of optical microscopy images. *Nature Communications* 8, 14836 (2017). [doi:10.1038/ncomms14836](https://doi.org/10.1038/ncomms14836)
+[^muhlich2022]: Muhlich J. L. et al. Stitching and registering highly multiplexed whole-slide images of tissues and tumors using ASHLAR. *Bioinformatics* 38, 4613-4621 (2022). [doi:10.1093/bioinformatics/btac544](https://doi.org/10.1093/bioinformatics/btac544)
+[^kuglin1975]: Kuglin C. D., Hines D. C. The phase correlation image alignment method. *Proceedings of the IEEE International Conference on Cybernetics and Society*, 163-165 (1975).
+[^guizar2008]: Guizar-Sicairos M., Thurman S. T., Fienup J. R. Efficient subpixel image registration algorithms. *Optics Letters* 33, 156-158 (2008). [doi:10.1364/OL.33.000156](https://doi.org/10.1364/OL.33.000156)
+[^otsu1979]: Otsu N. A threshold selection method from gray-level histograms. *IEEE Transactions on Systems, Man, and Cybernetics* 9, 62-66 (1979). [doi:10.1109/TSMC.1979.4310076](https://doi.org/10.1109/TSMC.1979.4310076)
+[^gavish2014]: Gavish M., Donoho D. L. The optimal hard threshold for singular values is 4/√3. *IEEE Transactions on Information Theory* 60, 5040-5053 (2014). [doi:10.1109/TIT.2014.2323359](https://doi.org/10.1109/TIT.2014.2323359)

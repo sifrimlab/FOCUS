@@ -6,8 +6,7 @@
     PowerShell port of install.sh with the same behaviour: detects the system
     CUDA version, installs a CUDA-matched PyTorch from the pytorch.org wheel
     index (so the bundled CUDA does not clash with PyPI nvidia-* packages),
-    creates the main FOCUS conda environment, installs the FOCUS package, and
-    sets up one conda environment per tool under tools\.
+    creates the main FOCUS conda environment and installs the FOCUS package.
 
 .PARAMETER Reinstall
     Recreate environments from scratch instead of skipping existing ones.
@@ -271,30 +270,6 @@ if ($script:TorchConstraints) {
 }
 if ($LASTEXITCODE -ne 0) { Write-Err "FOCUS package install failed."; exit 1 }
 Write-Ok "FOCUS package installed. You can now run 'focus [--config ...]' after activating the FOCUS env."
-
-# 4. Optional tool environments (tools\<Name>\)
-$toolsDir = Join-Path $ScriptDir "tools"
-if (Test-Path $toolsDir) {
-    Get-ChildItem -Path $toolsDir -Directory | ForEach-Object {
-        $subName = $_.Name
-        $envName = "FOCUS_$subName"
-        $reqFile = Join-Path $_.FullName "requirements.txt"
-
-        Write-Info "Setting up tool environment '$envName'..."
-        Setup-Env -EnvName $envName -ReqFile $reqFile -PythonVer "3.11" -InstallTorch $false
-
-        # OpenJDK is required by Java-dependent tools such as ASHLAR.
-        if (Test-CondaEnv $envName) {
-            Write-Info "Ensuring OpenJDK is present in '$envName'..."
-            & conda install -y -n $envName -c conda-forge openjdk 2>$null
-            if ($LASTEXITCODE -ne 0) {
-                Write-Warn "OpenJDK install skipped (may already be present or unavailable)."
-            }
-        }
-    }
-} else {
-    Write-Info "No 'tools\' directory found. Skipping tool environments."
-}
 
 if ($script:TorchConstraints -and (Test-Path $script:TorchConstraints)) {
     Remove-Item -Force $script:TorchConstraints

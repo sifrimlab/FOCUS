@@ -21,7 +21,6 @@ _EXPORTS = {
     "MsiSample": "focus.preprocessing.msi.sample",
     "MsiDataset": "focus.preprocessing.msi.dataset",
     "RamanImage": "focus.preprocessing.raman.sample",
-    "RamanMetadata": "focus.preprocessing.raman.metadata",
     "RamanDataset": "focus.preprocessing.raman.dataset",
     "SpatialTranscriptomic": "focus.preprocessing.transcriptomics.sample",
     "SpatialTranscriptomicDataset": "focus.preprocessing.transcriptomics.dataset",
@@ -57,7 +56,6 @@ if (
     from focus.preprocessing.msi.sample import MsiSample as MsiSample
     from focus.preprocessing.msi.dataset import MsiDataset as MsiDataset
     from focus.preprocessing.raman.sample import RamanImage as RamanImage
-    from focus.preprocessing.raman.metadata import RamanMetadata as RamanMetadata
     from focus.preprocessing.raman.dataset import RamanDataset as RamanDataset
     from focus.preprocessing.transcriptomics.sample import (
         SpatialTranscriptomic as SpatialTranscriptomic,

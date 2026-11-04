@@ -8,8 +8,8 @@ version = "1.0.0"
 description = "FOCUS: End-to-end preprocessing, alignment, and registration pipeline"
 readme = "README.md"
 # PEP 639 SPDX expression (needs setuptools >= 77, hence the build-system pin
-# above). GPL-3.0-or-later is forced by the dependency closure: leidenalg and
-# cvxopt are GPL-3.0-or-later, readlif is GPL-3.0, igraph is GPL-2.0-or-later.
+# above). GPL-3.0-or-later is forced by the dependency closure: leidenalg is
+# GPL-3.0-or-later, readlif is GPL-3.0, igraph is GPL-2.0-or-later.
 # Do not add a "License ::" classifier alongside this: PEP 639 forbids mixing
 # the two.
 license = "GPL-3.0-or-later"
@@ -38,7 +38,6 @@ dependencies = [
     "ome-types",
     "imagecodecs",
     "readlif",
-    "ramanspy",
     "tqdm",
     "psutil",
     "flask",
@@ -89,13 +88,13 @@ strict = true
 namespace_packages = true
 explicit_package_bases = true
 mypy_path = ["src", "typing"]
-files = ["src/focus", "scripts", "tests", "tools"]
+files = ["src/focus", "scripts", "tests"]
 show_error_codes = true
 
 # These external scientific packages do not publish complete PEP 561 typing.
 # Owned modules remain checked; their library boundaries are annotated locally.
 [[tool.mypy.overrides]]
-module = ["numba.*", "joblib.*", "sklearn.*", "h5py.*", "anndata.*", "mudata.*", "scanpy.*", "ramanspy.*", "readlif.*", "pylibCZIrw.*", "basicpy.*", "ashlar.*", "cv2.*", "igraph.*", "leidenalg.*"]
+module = ["numba.*", "joblib.*", "sklearn.*", "h5py.*", "anndata.*", "mudata.*", "scanpy.*", "readlif.*", "pylibCZIrw.*", "cv2.*", "igraph.*", "leidenalg.*"]
 ignore_missing_imports = true
 
 # The compiled Vue/Vite front-ends under focus/gui/{main,alignment} are data

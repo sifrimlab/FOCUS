@@ -86,12 +86,9 @@ The script (`install.sh` / `install.ps1`):
    from `requirements.txt`.
 4. Installs the `focus` package in editable mode (`pip install -e .`), registering the
    `focus` command.
-5. Scans the `tools/` directory and creates one auxiliary environment per subfolder:
-   currently `FOCUS_ASHLAR` and `FOCUS_BaSiCpy` (both Python 3.11), used for Raman
-   spectroscopy preprocessing. OpenJDK is installed into `FOCUS_ASHLAR` automatically.
-
-These auxiliary environments are created by the default installer invocation; no extra
-flag is needed.
+Every modality, Raman included, runs in the `FOCUS` environment. Installations made before
+`raman-2` also have `FOCUS_ASHLAR` and `FOCUS_BaSiCpy` environments; they are no longer used and
+can be removed with `conda env remove -n FOCUS_ASHLAR` and `conda env remove -n FOCUS_BaSiCpy`.
 
 ### Step 4: Activate the environment
 

@@ -10,7 +10,7 @@ from unittest.mock import patch
 import numpy as np
 import tifffile
 
-from focus.preprocessing.microscopy.pyramid import _level0_planes
+from focus.io.ome_write import level0_planes as _level0_planes
 from focus.preprocessing.microscopy.sample import MicroscopyImage
 from focus.io.provenance import (
     read_ome_annotations,

@@ -32,11 +32,11 @@ class TestLevel:
         import dask.array as da
 
         from focus.io.ome import load_ome_tiff_level, ome_tiff_pyramid_dims
-        from focus.preprocessing.microscopy import pyramid
+        from focus.io import ome_write as pyramid
 
         with (
             tempfile.TemporaryDirectory() as tmp,
-            patch("focus.preprocessing.microscopy.technology.TILE", 64),
+            patch("focus.io.ome_write.TILE", 64),
         ):
             for channels in (3, 2, 1):
                 image = np.random.default_rng(channels).integers(

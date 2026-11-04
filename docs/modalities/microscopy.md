@@ -134,7 +134,7 @@ One OME-TIFF per sample:
 | Pixels | Level 0 holds the source pixels after the optional crop and fill: the source sample type (`uint8`, `uint16`, `int16`, `uint32`, `float32` and the other OME pixel types) and every channel |
 | Layout | One OME-TIFF series, 512 x 512 tiles; one page per channel, or one interleaved page for RGB |
 | Pyramid | Lower levels stored as SubIFDs, each halving both sides with a 2 x 2 area average, until the image fits in one tile |
-| Compression | Lossless: JPEG 2000 reversible for 8-bit brightfield, zstd with a predictor otherwise; readable by tifffile and Bio-Formats 8 (QuPath 0.7) |
+| Compression | Lossless: JPEG 2000 reversible for 8-bit brightfield, zstd otherwise (horizontal predictor for integer images); readable by tifffile and Bio-Formats 8 (QuPath 0.7) |
 | Channel metadata | Name, colour, excitation and emission wavelengths, fluorophore, illumination type, acquisition mode and contrast method, when the source records them |
 | Pixel size | `PhysicalSizeX/Y` in µm when known, plus TIFF resolution tags on every page |
 | Tissue outline | OME ROI `tissue`, one polygon per tissue piece in level-0 pixels |

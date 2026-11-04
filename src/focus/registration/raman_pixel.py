@@ -1,4 +1,4 @@
-"""Gaussian footprint readout from stitched Raman pixel intensities."""
+"""Gaussian footprint readout from the images of a Raman OME-TIFF."""
 
 from functools import partial
 
@@ -8,16 +8,21 @@ from focus.registration.anchor import AnchorArrays
 from focus.spatial.footprint import AnchorGeometry
 from anndata import AnnData
 from focus.runtime.reporting import StepReporter
+from collections import Counter
+from dataclasses import dataclass
+from typing import cast
+import json
 import logging
-import xml.etree.ElementTree as ET
 
 import anndata
 import numpy as np
 import pandas as pd
+import scipy.sparse
 import tifffile
+import zarr
 
 from focus.config.options import RegistrationType
-from focus.io.ome import hw_from_axes
+from focus.io.ome import hw_from_axes, read_image_annotations
 from focus.registration.execution import register_target
 from focus.spatial.membership import pixel_footprint_membership, row_normalize
 from focus.runtime.reporter_context import get_reporter
@@ -25,23 +30,89 @@ from focus.runtime.reporter_context import get_reporter
 logger = logging.getLogger(__name__)
 
 
+@dataclass(frozen=True)
+class RamanTarget:
+    """One OME image of a Raman file and its placement in image 0's level-0 pixels."""
+
+    series: int
+    name: str
+    channels: list[str]
+    wavenumbers: list[float] | None
+    placement: tuple[float, float, float, float]
+
+
+def raman_targets(filename: str) -> list[RamanTarget]:
+    """Every image of a Raman OME-TIFF with its placement.
+
+    A ``raman-2`` file holds one image per acquisition, each with its channel names (wavenumbers)
+    and a ``focus_placement`` ``"x0,y0,sx,sy"``. Older single-image files (stitched by ASHLAR)
+    yield one target at the identity placement, its channels named ``Channel_N`` when the file
+    carries no names.
+    """
+    images = read_image_annotations(filename)
+    targets = []
+    for index, image in enumerate(images):
+        values = cast(dict[str, str], image["annotations"])
+        placement = (0.0, 0.0, 1.0, 1.0)
+        if "focus_placement" in values:
+            x0, y0, sx, sy = (float(v) for v in values["focus_placement"].split(","))
+            placement = (x0, y0, sx, sy)
+        wavenumbers = (
+            [float(v) for v in json.loads(values["focus_wavenumbers_cm1"])]
+            if "focus_wavenumbers_cm1" in values
+            else None
+        )
+        targets.append(
+            RamanTarget(
+                series=index,
+                name=str(values.get("focus_acquisition", image["name"])),
+                channels=[str(c) for c in cast(list[str], image["channels"])],
+                wavenumbers=wavenumbers,
+                placement=placement,
+            )
+        )
+    return targets
+
+
+def feature_names(targets: list[RamanTarget], counts: list[int]) -> pd.DataFrame:
+    """``var`` of the registered features: channel names, made unique with the acquisition name."""
+    names: list[str] = []
+    wavenumbers: list[float] = []
+    acquisitions: list[str] = []
+    for target, count in zip(targets, counts):
+        channels = target.channels if len(target.channels) == count else []
+        for i in range(count):
+            names.append(channels[i] if channels else f"Channel_{len(names)}")
+            wavenumbers.append(
+                target.wavenumbers[i]
+                if target.wavenumbers and len(target.wavenumbers) == count
+                else float("nan")
+            )
+            acquisitions.append(target.name)
+    seen = Counter(names)
+    unique = [f"{n} ({a})" if seen[n] > 1 else n for n, a in zip(names, acquisitions)]
+    return pd.DataFrame(
+        {"wavenumber": wavenumbers, "acquisition": acquisitions}, index=unique
+    )
+
+
 class RamanPixelInterpolationRegistration:
     """
     Register a Raman OME-TIFF modality to the anchor by Gaussian-weighted interpolation.
 
-    Treats each pixel of the ASHLAR-stitched Raman OME-TIFF as a "spot" located at its centre
-    (pixel ``(col, row)`` is the point ``(col + 0.5, row + 0.5)``) whose feature vector is its
-    spectral intensities across channels. For each anchor spot the Gaussian-weighted average
-    of the pixels whose centres lie inside the spot's footprint is computed, producing one
-    spectral vector per anchor spot.
+    Each pixel of every image of the Raman OME-TIFF is a "spot" located at its centre (pixel
+    ``(col, row)`` is the point ``(col + 0.5, row + 0.5)``) whose feature vector is its spectral
+    intensities. For each anchor spot, every image contributes the Gaussian-weighted average of its
+    measured pixels whose centres lie inside the spot's footprint; images are concatenated along
+    the features. A spot that an image does not measure gets NaN for that image's channels.
 
-    The footprint is evaluated in the anchor frame, where ``spot_size`` is defined: pixel
-    centres are mapped back through the inverse of the alignment transform, so the anchor's
-    spot size is honoured whatever the Raman pixel size.
+    The footprint is evaluated in the anchor frame, where ``spot_size`` is defined: pixel centres
+    are mapped back through the inverse of the alignment transform, composed with the image's
+    placement in image 0, so the anchor's spot size is honoured whatever the Raman pixel size.
 
     Coordinate convention:
-    - ``anchor_files`` contains the aligned reference AnnData: ``obsm['spatial']`` (anchor
-      frame) and ``obsm['{target_name}_spatial']`` (the same spots in Raman level-0 pixels).
+    - ``anchor_files`` contains the aligned reference AnnData: ``obsm['spatial']`` (anchor frame)
+      and ``obsm['{target_name}_spatial']`` (the same spots in level-0 pixels of Raman image 0).
 
     Parameters
     ----------
@@ -61,93 +132,71 @@ class RamanPixelInterpolationRegistration:
         self._path = path
 
     @staticmethod
-    def _load_raman_crop(
-        filename: str,
-        crop: tuple[int, int, int, int],
-    ) -> tuple[np.ndarray, list[str]]:
-        """Load the level-0 pixels ``[c0, c1) x [r0, r1)`` of a Raman OME-TIFF.
-
-        Parameters
-        ----------
-        filename : str
-            Path to the ASHLAR-stitched Raman OME-TIFF.
-        crop : (c0, r0, c1, r1)
-            Half-open pixel box, already clamped to the image.
-
-        Returns
-        -------
-        pixels : np.ndarray (C, r1 - r0, c1 - c0) float32
-            Spectral intensities of the crop.
-        channel_names : list[str]
-            Name for each spectral channel (from OME metadata or 'Channel_N').
-        """
+    def _image_dims(filename: str, series: int) -> tuple[int, int]:
+        """``(H, W)`` of one image's level 0 without loading pixel data."""
         with tifffile.TiffFile(filename) as tif:
-            series = tif.series[0]
-
-            # Prefer full-resolution level of a pyramid; fall back to the series itself
-            full_level = series.levels[0] if len(series.levels) > 1 else series
-            axes = series.axes.upper()
-
-            # Extract channel names from OME-XML (best-effort)
-            channel_names = None
-            if tif.is_ome and tif.ome_metadata:
-                try:
-                    root = ET.fromstring(tif.ome_metadata)
-                    tag_prefix = root.tag.split("}")[0] + "}" if "}" in root.tag else ""
-                    ch_elements = root.findall(f".//{tag_prefix}Channel")
-                    names = [c.get("Name", "") for c in ch_elements]
-                    if any(n for n in names):
-                        channel_names = [
-                            n if n else f"Channel_{i}" for i, n in enumerate(names)
-                        ]
-                except Exception:
-                    pass
-
-            image = full_level.asarray()
-
-        # Squeeze leading singleton OME dims (T=1, Z=1 in TZCYX → CYX)
-        axes_trimmed = axes[-len(image.shape) :]
-        while image.ndim > 3 and image.shape[0] == 1:
-            image = image[0]
-            axes_trimmed = axes_trimmed[1:]
-
-        # Normalize to (C, Y, X)
-        axes_3 = axes_trimmed[-3:] if len(axes_trimmed) >= 3 else axes_trimmed
-        if len(set(axes_3) & {"C", "Y", "X"}) == 3:
-            c_idx = axes_3.index("C")
-            y_idx = axes_3.index("Y")
-            x_idx = axes_3.index("X")
-            image = np.transpose(image, (c_idx, y_idx, x_idx))
-        elif image.ndim == 3:
-            # Fallback: first dim is channels when it is the smallest, i.e., CHW layout
-            if image.shape[0] < image.shape[1] and image.shape[0] < image.shape[2]:
-                pass  # already (C, Y, X)
-            elif image.shape[2] < image.shape[0] and image.shape[2] < image.shape[1]:
-                image = np.transpose(image, (2, 0, 1))  # HWC → CHW
-        elif image.ndim == 2:
-            image = image[np.newaxis]
-
-        if channel_names is None:
-            channel_names = [f"Channel_{i}" for i in range(image.shape[0])]
-
-        c0, r0, c1, r1 = crop
-        return np.asarray(image[:, r0:r1, c0:c1], dtype=np.float32), channel_names
+            level = tif.series[series].levels[0]
+            return hw_from_axes(level.shape, getattr(level, "axes", ""))
 
     @staticmethod
-    def _image_dims(filename: str) -> tuple[int, int]:
-        """Return (H, W) of the full-resolution OME-TIFF without loading pixel data."""
+    def _load_crop(
+        filename: str, series: int, crop: tuple[int, int, int, int]
+    ) -> np.ndarray:
+        """``(C, r1 - r0, c1 - c0)`` float32 level-0 pixels of one image (only the crop is read)."""
+        c0, r0, c1, r1 = crop
         with tifffile.TiffFile(filename) as tif:
-            series = tif.series[0]
-            if len(series.levels) > 1:
-                shape = series.levels[0].shape
-                axes = getattr(series.levels[0], "axes", "") or getattr(
-                    series, "axes", ""
-                )
-            else:
-                shape = series.shape
-                axes = getattr(series, "axes", "")
-        # Identify (Y, X) from OME axes metadata (shared with the alignment image loader).
-        return hw_from_axes(shape, axes)
+            level = tif.series[series].levels[0]
+            axes = str(getattr(level, "axes", "")).upper()
+            # The level-0 array, not the multiscale group of a pyramid series.
+            store = zarr.open(tif.series[series].aszarr(level=0), mode="r")
+            index: list[object] = []
+            for axis, size in zip(axes, level.shape):
+                if axis == "Y":
+                    index.append(slice(r0, r1))
+                elif axis == "X":
+                    index.append(slice(c0, c1))
+                elif axis in "CS":
+                    index.append(slice(None))
+                else:
+                    index.append(0)
+            data = np.asarray(store[tuple(index)], dtype=np.float32)  # type: ignore[index]
+        kept = [a for a in axes if a in "CSYX"]
+        if "C" not in kept and "S" not in kept:
+            return data[np.newaxis]
+        colour = kept.index("C") if "C" in kept else kept.index("S")
+        return np.moveaxis(data, colour, 0)
+
+    def _image_features(
+        self,
+        filename: str,
+        target: RamanTarget,
+        geom: AnchorGeometry,
+        n_obs: int,
+        n_channels: int,
+    ) -> tuple[np.ndarray, int]:
+        """``(N, C)`` features of one image and the number of spots it measures."""
+        height, width = self._image_dims(filename, target.series)
+        boxes = geom.pixel_bboxes(height, width)
+        reach = boxes[(boxes[:, 2] > boxes[:, 0]) & (boxes[:, 3] > boxes[:, 1])]
+        out = np.full((n_obs, n_channels), np.nan, dtype=np.float32)
+        if len(reach) == 0:
+            return out, 0
+        crop = (
+            int(reach[:, 0].min()),
+            int(reach[:, 1].min()),
+            int(reach[:, 2].max()),
+            int(reach[:, 3].max()),
+        )
+        pixels = self._load_crop(filename, target.series, crop)
+        features = pixels.reshape(pixels.shape[0], -1).T  # (crop pixels, C)
+        measured = np.isfinite(features).all(axis=1)
+        weights = pixel_footprint_membership(geom, crop, weights="gaussian")
+        weights = (weights @ scipy.sparse.diags(measured.astype(np.float32))).tocsr()
+        totals = np.asarray(weights.sum(axis=1)).ravel()
+        values = row_normalize(weights) @ np.where(measured[:, None], features, 0.0)
+        hit = totals > 0
+        out[hit] = np.asarray(values, dtype=np.float32)[hit]
+        return out, int(hit.sum())
 
     def _compute_sample(
         self,
@@ -158,41 +207,54 @@ class RamanPixelInterpolationRegistration:
         geom: AnchorGeometry,
     ) -> tuple[AnnData | None, dict[str, object]]:
         """Compute one sample's registered features and geometry metadata."""
-        height, width = self._image_dims(target_files[sample_id])
-        # Load only the pixels that some footprint can reach.
-        boxes = geom.pixel_bboxes(height, width)
-        reach = boxes[(boxes[:, 2] > boxes[:, 0]) & (boxes[:, 3] > boxes[:, 1])]
-        if len(reach) == 0:
-            # The anchor spots fall entirely outside the Raman image: there is no tissue
-            # overlap, so every row is a zero spectral vector.
-            reporter.warning(
-                f"All {anchor.n_obs} anchor spots fall outside the Raman image: "
-                f"zero spectral vectors assigned (no overlap)"
+        filename = target_files[sample_id]
+        targets = raman_targets(filename)
+        blocks: list[np.ndarray] = []
+        counts: list[int] = []
+        for target in targets:
+            x0, y0, sx, sy = target.placement
+            if target.series == 0 and target.placement == (0.0, 0.0, 1.0, 1.0):
+                image_geom = geom
+            else:
+                mapped = (np.asarray(anchor.mapped, dtype=np.float64) - [x0, y0]) / [
+                    sx,
+                    sy,
+                ]
+                image_geom = AnchorGeometry.from_arrays(
+                    anchor.spatial, mapped, anchor.spot_size
+                )
+            with tifffile.TiffFile(filename) as tif:
+                level = tif.series[target.series].levels[0]
+                axes = str(getattr(level, "axes", "")).upper()
+                n_channels = next(
+                    (int(n) for a, n in zip(axes, level.shape) if a in "CS"), 1
+                )
+            features, measured = self._image_features(
+                filename, target, image_geom, anchor.n_obs, n_channels
             )
-            crop = (0, 0, 0, 0)
-        else:
-            crop = (
-                int(reach[:, 0].min()),
-                int(reach[:, 1].min()),
-                int(reach[:, 2].max()),
-                int(reach[:, 3].max()),
-            )
-        pixels, channel_names = self._load_raman_crop(target_files[sample_id], crop)
-        weights = row_normalize(
-            pixel_footprint_membership(geom, crop, weights="gaussian")
-        )
-        features = pixels.reshape(pixels.shape[0], -1).T  # (crop pixels, C)
+            blocks.append(features)
+            counts.append(n_channels)
+            label = f"'{target.name}'" if target.name else "Raman image"
+            if measured == 0:
+                reporter.warning(
+                    f"All {anchor.n_obs} anchor spots fall outside {label}: its channels are NaN"
+                )
+            else:
+                reporter.detail(
+                    f"{label}: {measured}/{anchor.n_obs} spots measured, {n_channels} channels"
+                )
+        features = np.concatenate(blocks, axis=1)
         logger.debug(
             f"Anchor: {anchor.n_obs} spots, spot_size={anchor.spot_size}. "
-            f"Raman crop {crop}: {features.shape[0]} pixels, {features.shape[1]} channels."
+            f"Raman: {len(targets)} image(s), {features.shape[1]} channels."
         )
         adata = anndata.AnnData(
-            X=np.asarray(weights @ features, dtype=np.float32),
+            X=features,
             obsm={"spatial": anchor.mapped.copy()},
             obs={"sample_id": [sample_id] * anchor.n_obs},
-            var=pd.DataFrame(index=channel_names),
+            var=feature_names(targets, counts),
         )
-        return adata, {}
+        return adata, {"raman_images": len(targets)}
 
     def register_dataset(
         self,
@@ -216,7 +278,7 @@ class RamanPixelInterpolationRegistration:
             - ``uns['spot_size']``: anchor spot dimensions, in the units of ``obsm['spatial']``.
             {sample_id: h5ad_path}
         target_files : dict[str, str]
-            ASHLAR-stitched Raman OME-TIFF files.
+            Raman OME-TIFF files (one image per acquisition, or a single stitched image).
             {sample_id: ome_tiff_path}
         anchor_name : str
             Name of the anchor (reference) modality.
