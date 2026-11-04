@@ -35,7 +35,7 @@ from focus.spatial.units import (
 )
 
 # Version of the shared clustering method, recorded in every sample's provenance.
-CLUSTERING_VERSION = "clusters-2"
+CLUSTERING_VERSION = "clusters-3"
 
 # (summed raw rows of the kept units, units, kept unit ids) -> (log-scale rows, description)
 Represent: TypeAlias = Callable[

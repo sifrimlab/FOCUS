@@ -11,7 +11,7 @@ from typing import NamedTuple, TypeAlias
 import numpy as np
 
 from focus.spatial.settings import _LLOYD_ITERATIONS, _MIN_UNITS, _SPATIAL_CAP
-from focus.spatial.lattice import _lattice_units, infer_lattice
+from focus.spatial.lattice import _brick_layout, _lattice_units, infer_lattice
 
 
 def _unit_sizes_and_sums(
@@ -117,10 +117,12 @@ def plan_spatial_units(
     rows (:func:`focus.spatial.clustering._bin_sum_matrix`) and every spot inherits its unit's label.
 
     - **lattice**: the unit of a spot is ``(i // k, j // k)`` on its lattice indices, a block of
-      k x k sites (a parallelogram on hexagonal lattices). Every interior block holds exactly k^2
-      sites, so unit occupancy cannot vary periodically, and the blocks follow the lattice, not the
-      image axes. ``k`` is the smallest integer with at most ``cap`` occupied blocks whose median
-      block signal reaches ``signal_target``; the signal criterion stops before fewer than
+      k x k sites; on hexagonal lattices the sites are counted along the rows first
+      (:func:`_brick_layout`), so a block is an upright brick of k sites in each of k rows, not a
+      parallelogram leaning 60 degrees. Every interior block holds exactly k^2 sites, so unit
+      occupancy cannot vary periodically, and the blocks follow the lattice, not the image axes.
+      ``k`` is the smallest integer with at most ``cap`` occupied blocks whose median block
+      signal reaches ``signal_target``; the signal criterion stops before fewer than
       ``_MIN_UNITS`` blocks remain.
     - **voronoi** (no lattice: segmented cells, beads): ``m`` tiles from :func:`_voronoi_units`,
       ``m = min(cap, n / s)``. ``s`` spots per tile starts at the estimate that reaches the target
@@ -148,17 +150,19 @@ def plan_spatial_units(
     if lattice is not None:
         idx, basis = lattice
         step = np.linalg.norm(basis, axis=1).tolist()
+        # Blocks are counted along the rows (upright bricks on hexagonal lattices).
+        bidx, bbasis = _brick_layout(idx, basis)
         k, driver = 1, []
         if need_cap:
             k = max(1, int(np.sqrt(n / cap)))
-            while len(_unit_sizes_and_sums(_lattice_units(idx, k))[0]) > cap:
+            while len(_unit_sizes_and_sums(_lattice_units(bidx, k))[0]) > cap:
                 k += 1
             driver.append("cap")
         if need_signal:
             k_cap = k
-            while not reaches(_lattice_units(idx, k)):
+            while not reaches(_lattice_units(bidx, k)):
                 if (
-                    len(_unit_sizes_and_sums(_lattice_units(idx, k + 1))[0])
+                    len(_unit_sizes_and_sums(_lattice_units(bidx, k + 1))[0])
                     < _MIN_UNITS
                 ):
                     limited = True
@@ -181,8 +185,8 @@ def plan_spatial_units(
                 idx,
                 basis,
             )
-        width = int(idx[:, 1].max() // k) + 1
-        uniq, bin_ids = np.unique(_lattice_units(idx, k), return_inverse=True)
+        width = int(bidx[:, 1].max() // k) + 1
+        uniq, bin_ids = np.unique(_lattice_units(bidx, k), return_inverse=True)
         bin_ids = bin_ids.astype(np.intp)
         n_units = int(uniq.size)
         info: UnitInfo = {
@@ -190,7 +194,7 @@ def plan_spatial_units(
             "layout": "lattice",
             "step": step,
             "k": k,
-            "unit_size": [k * v for v in step],
+            "unit_size": (k * np.linalg.norm(bbasis, axis=1)).tolist(),
             "n_units": n_units,
             "driver": "+".join(driver),
             "signal_limited": limited,
@@ -201,7 +205,7 @@ def plan_spatial_units(
             info,
             _unit_centroids(coords, bin_ids, n_units),
             np.column_stack([uniq // width, uniq % width]),
-            k * basis,
+            k * bbasis,
         )
 
     m, driver = n, []

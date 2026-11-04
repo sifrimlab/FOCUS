@@ -17,7 +17,7 @@ from focus.spatial.settings import COUNTS, DOMAINS, clustering_preset
 from focus.spatial.types import ClusterInfo, ClusteringParameters, Matrix
 from focus.spatial.units import SpatialUnits
 
-METHOD_VERSION = "st-6"
+METHOD_VERSION = "st-7"
 # Per-unit display eligibility of the alignment labels, not tissue QC.
 PARAMETERS: ClusteringParameters = {"min_counts": 50, "min_genes": 20}
 

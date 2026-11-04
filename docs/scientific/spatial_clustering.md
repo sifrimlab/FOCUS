@@ -7,9 +7,10 @@ annotation or export step reads them. Both modalities run one shared routine,
 three parts: the spots that take part, the eligibility of a unit, and the normalized representation
 of the summed counts or intensities.
 
-Method version `clusters-2`, introduced with ST `st-6` and MSI `msi-14`. Every ST and MSI output is
-rebuilt once, and every ST and MSI alignment pair is aligned again once, because the alignment key
-is the preprocessing fingerprint.
+Method version `clusters-3`, introduced with ST `st-7`: blocks on hexagonal lattices are upright
+bricks (§2). Every ST output is rebuilt once, and every ST alignment pair is aligned again once,
+because the alignment key is the preprocessing fingerprint. MSI rasters are never hexagonal, so
+their labels are unchanged and MSI keeps `msi-16`.
 
 ## 1. Presets
 
@@ -66,9 +67,13 @@ built from the acquisition lattice, inferred from the coordinates:
   the coordinates; `spot_size` is the spot footprint and can differ from it (55 µm spots at a 100 µm
   pitch on standard Visium). FOCUS design choice.
 - **Blocks.** The unit of a spot is the block (i // k, j // k) of its lattice indices (i, j),
-  counted from the smallest index. Every interior block holds exactly k² sites (a parallelogram on
-  hexagonal lattices), so block occupancy has no periodic component, and the blocks follow the
-  lattice, not the image axes. k is the smallest integer for which the number of occupied blocks is
+  counted from the smallest index. On a hexagonal lattice the second basis vector projects onto
+  the first by μ = ±1/2 step, so blocks of the native indices are parallelograms leaning 60 degrees
+  and every label boundary across the rows leans the same way. Each row is therefore counted along
+  the first axis, i' = i + ⌊μ j⌋, and the blocks are taken on (i', j): an upright brick of k sites
+  in each of k rows, on a rectangular unit grid with steps |a| and |b - μ a|. FOCUS design choice.
+  Every interior block holds exactly k² sites, so block occupancy has no periodic component, and
+  the blocks follow the lattice, not the image axes. k is the smallest integer for which the number of occupied blocks is
   at most the cap and, under the signal criterion, the median block reaches the target. The signal
   criterion stops growing k before fewer than 1,000 blocks would remain; the provenance then
   records `signal_limited` and a warning is reported.

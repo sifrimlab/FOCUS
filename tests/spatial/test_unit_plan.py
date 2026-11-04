@@ -48,11 +48,33 @@ class TestUnitPlan:
         ).min() > radius - 2 * k * 16 * np.sqrt(2)
 
     def test_hexagonal_blocks_have_equal_occupancy(self) -> None:
-        """Verify hexagonal blocks have equal occupancy."""
+        """Interior hexagonal blocks hold k^2 sites; only the slanted domain edges cut blocks."""
         xy, _ = lattice(600, 500, [100, 0], [50, 100 * np.sqrt(3) / 2])
         units = plan_spatial_units(xy, cap=250_000)
         assert (units.info["method"], units.info["k"]) == ("lattice", 2)
-        assert np.all(np.bincount(cast(np.ndarray, units.bin_ids)) == 4)
+        sizes = np.bincount(cast(np.ndarray, units.bin_ids))
+        assert sizes.max() == 4
+        # The parallelogram domain cuts the bricks along its two slanted sides only (500 rows).
+        assert np.count_nonzero(sizes < 4) <= 2 * 500
+        np.testing.assert_allclose(
+            units.info["unit_size"], [200, 100 * np.sqrt(3)], rtol=1e-6
+        )
+
+    def test_hexagonal_blocks_are_upright_bricks(self) -> None:
+        """Blocks on a hexagonal lattice do not lean: every row sits under the first one."""
+        for b in ([50, 100 * np.sqrt(3) / 2], [-50, 100 * np.sqrt(3) / 2]):
+            xy, _ = lattice(400, 400, [100, 0], b, angle_deg=0.0)
+            units = plan_spatial_units(xy, cap=len(xy) // 16)
+            k = units.info["k"]
+            assert k >= 4
+            ids = cast(np.ndarray, units.bin_ids)
+            rows = np.rint(xy[:, 1] / (100 * np.sqrt(3) / 2)).astype(int)
+            full = np.flatnonzero(np.bincount(ids) == k * k)
+            for unit in full[:: max(1, len(full) // 200)]:
+                m = ids == unit
+                means = [xy[m & (rows == r), 0].mean() for r in np.unique(rows[m])]
+                # A parallelogram drifts (k - 1) * 50 across its rows; a brick by half a pitch.
+                assert np.ptp(means) <= 50 + 1e-6
 
     def test_signal_target_grows_blocks_and_rich_spots_stay_native(self) -> None:
         """Verify signal target grows blocks and rich spots stay native."""

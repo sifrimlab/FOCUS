@@ -106,6 +106,30 @@ def infer_lattice(
     return idx, basis
 
 
+def _brick_layout(
+    idx: np.ndarray, basis: np.ndarray, tol: float = 0.02
+) -> tuple[np.ndarray, np.ndarray]:
+    """Row-aligned indices of a hexagonal lattice, so k x k blocks are upright bricks.
+
+    On a hexagonal lattice ``b`` projects onto ``a`` by ``mu = +-1/2`` steps, and k x k blocks of
+    the native indices are parallelograms leaning 60 degrees: every block boundary across the
+    rows leans the same way. Counting each row along ``a`` instead, ``c = i + floor(mu * j)``,
+    makes a block of k consecutive ``c`` in k consecutive rows a brick with exactly k sites per
+    row (k^2 per interior block, so occupancy stays aperiodic). Returns the new indices (>= 0)
+    and the basis ``[a, b - mu a]`` of the (rectangular) row grid. Other lattices are returned
+    unchanged.
+    """
+    a, b = np.asarray(basis, dtype=np.float64)
+    mu = float(a @ b / (a @ a))
+    equal = abs(np.linalg.norm(b) / np.linalg.norm(a) - 1) <= 0.05
+    if not (equal and abs(abs(mu) - 0.5) <= tol):
+        return idx, basis
+    half = np.sign(mu) * 0.5
+    col = idx[:, 0] + np.floor(half * idx[:, 1]).astype(np.int64)
+    out = np.column_stack([col - col.min(), idx[:, 1]])
+    return out, np.vstack([a, b - half * a])
+
+
 def _lattice_units(idx: np.ndarray, k: int) -> np.ndarray:
     """Flat id of the k x k lattice block holding each spot (blocks anchored at index 0)."""
     q = idx // k
