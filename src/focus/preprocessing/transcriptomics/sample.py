@@ -139,6 +139,7 @@ class SpatialTranscriptomic(SampleSource):
         unit: str = StUnit.SPOT,
         normalization: str = StNormalization.AUTO,
         quality_control: bool = True,
+        remove_controls_and_empty: bool = True,
         remove_mitochondrial_genes: bool = False,
         force_recomputing: bool = False,
         step_reporter: StepReporter | None = None,
@@ -148,10 +149,11 @@ class SpatialTranscriptomic(SampleSource):
 
         Pipeline (``docs/scientific/st_methods.md`` §3):
         1. Load and validate; resolve the raw counts; make gene names unique
-        2. Remove control features, recording their share in ``obs['pct_counts_control']``
+        2. Record the control share in ``obs['pct_counts_control']`` and remove the control
+           features (``remove_controls_and_empty``)
         3. Flag mitochondrial genes (``.var['mt']``)
-        4. Quality control: out-of-tissue and zero-count spots, then the technology's outliers
-           (``quality_control``)
+        4. Quality control: out-of-tissue spots, zero-count spots (``remove_controls_and_empty``),
+           then the technology's outliers (``quality_control``)
         5. QC metrics (``scanpy.pp.calculate_qc_metrics``) with mitochondrial genes present
         6. Spot or cell area in ``obs['focus_area']`` (for area normalization)
         7. Optional mitochondrial gene removal
@@ -168,7 +170,10 @@ class SpatialTranscriptomic(SampleSource):
             Merged normalization (``StNormalization``); the alignment labels are computed on it
             (``none``: the technology's ``auto`` method). The output keeps raw counts.
         quality_control : bool
-            Remove the technology's outlier spots (structural cleanup always runs).
+            Remove the technology's outlier spots.
+        remove_controls_and_empty : bool
+            Remove control features (probes, codewords) and zero-count spots. ``False`` keeps
+            both (out-of-tissue spots are still removed).
         remove_mitochondrial_genes : bool
             Drop the genes flagged in ``.var['mt']`` (``MT-`` / ``MT.`` prefix, any case).
         force_recomputing : bool
@@ -193,6 +198,7 @@ class SpatialTranscriptomic(SampleSource):
             "unit": unit,
             "normalization": normalization,
             "quality_control": quality_control,
+            "remove_controls_and_empty": remove_controls_and_empty,
             "remove_mitochondrial_genes": remove_mitochondrial_genes,
         }
         signature = input_signature(self._input_file(), output_file)

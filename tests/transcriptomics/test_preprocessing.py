@@ -99,6 +99,14 @@ class TestInput:
         assert list(result.var_names) == ["Gene1"]
         np.testing.assert_allclose(result.obs["pct_counts_control"], [20.0, 50.0])
 
+    def test_controls_are_kept_when_removal_is_off(self) -> None:
+        """With drop=False the panel is untouched and the control share is still recorded."""
+        X = sp.csr_matrix(np.array([[4, 0, 1], [2, 2, 0]], dtype=np.float32))
+        adata = spatial_adata(X, ["Gene1", "NegControlProbe_1", "BLANK_0001"])
+        result = remove_controls(adata, StepReporter(), drop=False)
+        assert list(result.var_names) == ["Gene1", "NegControlProbe_1", "BLANK_0001"]
+        np.testing.assert_allclose(result.obs["pct_counts_control"], [20.0, 50.0])
+
 
 class TestQualityControl:
     """Local outliers keep low-depth domains; global outliers do not."""
@@ -134,6 +142,27 @@ class TestQualityControl:
                 output = ad.read_h5ad(path)
                 assert output.n_obs == expected
                 assert output.uns["focus_qc"]["removed"]["zero_counts"] == 2
+
+    def test_controls_and_empty_cells_are_kept_when_removal_is_off(self) -> None:
+        """remove_controls_and_empty=False keeps probe features and zero-count cells end to end."""
+        rng = np.random.default_rng(3)
+        X = rng.poisson(5.0, (60, 6)).astype(np.float32)
+        X[[3, 4]] = 0
+        names = ["g0", "g1", "g2", "g3", "NegControlProbe_1", "BLANK_0001"]
+        for remove, n_obs, n_vars in ((True, 58, 4), (False, 60, 6)):
+            with tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                sample = write_sample(root, "a", spatial_adata(sp.csr_matrix(X), names))
+                files = SpatialTranscriptomicDataset(
+                    str(root), [sample]
+                ).process_dataset(
+                    capture="imaging",
+                    unit="cell",
+                    quality_control=False,
+                    remove_controls_and_empty=remove,
+                )
+                merged = ad.read_h5ad(files["merged"])
+            assert (merged.n_obs, merged.n_vars) == (n_obs, n_vars)
 
 
 class TestMergedDataset:

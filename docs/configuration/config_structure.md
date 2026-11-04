@@ -155,6 +155,7 @@ This page documents the **canonical structure** and the set of config fields tha
   "unit": "spot",
   "normalization": "auto",
   "quality_control": true,
+  "remove_controls_and_empty": true,
   "remove_mitochondrial_genes": false,
   "force_recomputing": false
 }

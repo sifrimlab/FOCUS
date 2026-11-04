@@ -481,6 +481,7 @@ def preprocess_data(
     capture: str = "sequencing",
     unit: str = "spot",
     quality_control: bool = True,
+    remove_controls_and_empty: bool = True,
     remove_mitochondrial_genes: bool = False,
     force_recomputing: bool = False,
     step_reporter=None,
@@ -490,7 +491,7 @@ def preprocess_data(
 
 Reuses a cached file only when its fingerprint (input SHA-256, settings, technology constants, method and software versions) matches and `force_recomputing` is false. The input SHA-256 is reused while the input file's path, size and modification time are unchanged.
 
-Pipeline: load → control features recorded and removed → flag mito genes in `.var["mt"]` → quality control (out-of-tissue and zero-count spots; the unit's outlier rule when `quality_control`) → QC metrics → `obs["focus_area"]` → optional mito-gene removal → prefix `.obs_names` with `<sample_id>_` → cluster labels → atomic gzip-compressed `.h5ad` with raw counts.
+Pipeline: load → control features recorded and removed (`remove_controls_and_empty`) → flag mito genes in `.var["mt"]` → quality control (out-of-tissue spots; zero-count spots when `remove_controls_and_empty`; the unit's outlier rule when `quality_control`) → QC metrics → `obs["focus_area"]` → optional mito-gene removal → prefix `.obs_names` with `<sample_id>_` → cluster labels → atomic gzip-compressed `.h5ad` with raw counts.
 
 Output AnnData structure:
 
@@ -515,6 +516,7 @@ Output AnnData structure:
 | `capture` | `str` | `"sequencing"` | `"sequencing"` or `"imaging"` (`StCapture`) |
 | `unit` | `str` | `"spot"` | `"spot"`, `"bin"` or `"cell"` (`StUnit`); selects the outlier rule and the clustering preset |
 | `quality_control` | `bool` | `True` | Remove the outlier spots of the unit's rule |
+| `remove_controls_and_empty` | `bool` | `True` | Remove the control features and the zero-count spots; `False` keeps both |
 | `remove_mitochondrial_genes` | `bool` | `False` | Drop mitochondrial genes (`MT-`/`MT.` prefix) from the feature set |
 | `force_recomputing` | `bool` | `False` | Re-run even if output already exists |
 
@@ -532,6 +534,7 @@ class SpatialTranscriptomicDataset(DatasetState):
         unit: str = "spot",
         normalization: str = "auto",
         quality_control: bool = True,
+        remove_controls_and_empty: bool = True,
         remove_mitochondrial_genes: bool = False,
         force_recomputing: bool = False,
         step_reporter=None,

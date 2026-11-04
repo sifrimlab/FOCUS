@@ -211,7 +211,8 @@ Additional settings for the chosen registration method. May be an empty object w
     | `capture` | string | `"sequencing"` (default; Visium, Visium HD, Stereo-seq, Slide-seq) or `"imaging"` (Xenium, MERFISH, CosMx). Sets the gene rule and the `auto` normalization. |
     | `unit` | string | `"spot"` (default; multicellular spots), `"bin"` (sub-cellular bins or beads) or `"cell"` (segmented cells). Sets the outlier rule and the clustering preset. |
     | `normalization` | string | `"auto"` (default), `"none"`, `"log_normalize"`, `"cp10k_log"`, `"size_factors"` or `"area_log_normalize"`, applied once to the merged dataset. |
-    | `quality_control` | bool | Remove the outlier spots of the unit's rule. Out-of-tissue and zero-count spots are removed in every case. Default `true`. |
+    | `quality_control` | bool | Remove the outlier spots of the unit's rule. Out-of-tissue spots are removed in every case. Default `true`. |
+    | `remove_controls_and_empty` | bool | Remove the control features (probes, codewords) and the zero-count spots. `false` keeps both. Default `true`. |
     | `remove_mitochondrial_genes` | bool | Drop the genes flagged in `.var['mt']` (case-insensitive `MT-`/`MT.` name prefix) from the feature set. Applied per sample, before merging. Default `false`. |
     | `force_recomputing` | bool | Reprocess even if output already exists. Default `false`. |
 

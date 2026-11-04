@@ -53,12 +53,18 @@ def prepare_sample(
 ) -> AnnData:
     """Load counts, remove controls and low-quality spots, add QC, and name observations."""
     adata = sample.load_data(reporter)
-    adata = remove_controls(adata, reporter)
+    adata = remove_controls(adata, reporter, drop=settings["remove_controls_and_empty"])
 
     # Case-insensitive 'MT-'/'MT.' prefix; name-based, so Ensembl-keyed panels are not flagged.
     adata.var["mt"] = adata.var_names.str.upper().str.match(r"^MT[-\.]")
 
-    adata, removed = quality_control(adata, tech, settings["quality_control"], reporter)
+    adata, removed = quality_control(
+        adata,
+        tech,
+        settings["quality_control"],
+        reporter,
+        drop_empty=settings["remove_controls_and_empty"],
+    )
     adata.uns["focus_qc"] = {
         "rule": tech.outlier_rule if settings["quality_control"] else "none",
         "removed": removed,

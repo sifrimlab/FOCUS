@@ -11,5 +11,6 @@ class StRunSettings:
     unit: str
     normalization: str
     quality_control: bool
+    remove_controls_and_empty: bool
     remove_mitochondrial_genes: bool
     force_recomputing: bool

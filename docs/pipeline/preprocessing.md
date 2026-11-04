@@ -296,9 +296,9 @@ Supports any spatial transcriptomics technology whose AnnData holds raw counts (
 **Per-Sample Processing Steps** (raw counts throughout):
 
 1. **Loading and Validation**: finite `.obsm["spatial"]` (float32), required `.uns["spot_size"]` (float32 `[x, y]`), raw counts resolved into a CSR `.X` with every other input matrix dropped, unique gene names
-2. **Control Features**: probes, codewords and non-`Gene Expression` features counted into `obs["pct_counts_control"]`, then removed
+2. **Control Features**: probes, codewords and non-`Gene Expression` features counted into `obs["pct_counts_control"]`, then removed (kept with `remove_controls_and_empty=false`)
 3. **Mitochondrial Flag**: `.var["mt"]` by a case-insensitive `MT-`/`MT.` name prefix
-4. **Quality Control**: out-of-tissue (`in_tissue == 0`) and zero-count spots always removed; with `quality_control=true`, local outliers for `unit="spot"` (36 nearest spots, robust z beyond 3) and global 5-MAD low-tail outliers for `unit="cell"`
+4. **Quality Control**: out-of-tissue (`in_tissue == 0`) spots always removed, zero-count spots removed unless `remove_controls_and_empty=false`; with `quality_control=true`, local outliers for `unit="spot"` (36 nearest spots, robust z beyond 3) and global 5-MAD low-tail outliers for `unit="cell"`
 5. **QC Metrics**: `scanpy.pp.calculate_qc_metrics(qc_vars=["mt"], percent_top=None)` with mitochondrial genes present
 6. **Area**: `obs["focus_area"]` from `spot_size` (spots, bins) or the cell area column (cells)
 7. **Mitochondrial Gene Removal** (optional, `remove_mitochondrial_genes`)
@@ -325,6 +325,7 @@ The merged file is reused when `force_recomputing` is false, no sample was rebui
 | `unit` | `"spot"` | `"spot"`, `"bin"` or `"cell"` |
 | `normalization` | `"auto"` | Method applied to the merged dataset |
 | `quality_control` | `true` | Remove the outlier spots of the unit's rule |
+| `remove_controls_and_empty` | `true` | Remove the control features (probes, codewords) and the zero-count spots; `false` keeps both |
 | `remove_mitochondrial_genes` | `false` | Drop mitochondrial genes (`MT-`/`MT.` prefix), per sample |
 | `force_recomputing` | `false` | Reprocess even if output already exists |
 

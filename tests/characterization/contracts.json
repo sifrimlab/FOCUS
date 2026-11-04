@@ -201,6 +201,10 @@
           "type": "bool",
           "default": true
         },
+        "remove_controls_and_empty": {
+          "type": "bool",
+          "default": true
+        },
         "remove_mitochondrial_genes": {
           "type": "bool",
           "default": false
@@ -858,6 +862,10 @@
               "type": "enum"
             },
             "quality_control": {
+              "default": true,
+              "type": "bool"
+            },
+            "remove_controls_and_empty": {
               "default": true,
               "type": "bool"
             },

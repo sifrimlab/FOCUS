@@ -68,7 +68,8 @@ barcodes; they measure background, not expression. A feature is a control when
 `NegControlProbe_`, `NegControlCodeword_`, `NegPrb`, `BLANK_`, `Blank-`, `UnassignedCodeword_`,
 `DeprecatedCodeword_`, `Intergenic_` or `SystemControl`. Their counts per spot are stored as
 `obs['total_counts_control']` and `obs['pct_counts_control']` (percent of all counts, controls
-included), then the features are removed[^salas2025].
+included), then the features are removed[^salas2025]. With `remove_controls_and_empty: false` the
+features are kept, for panels whose features are probes by design.
 
 ### 3.2 Mitochondrial gene flag
 
@@ -79,7 +80,8 @@ Detection is name-based, so datasets keyed by Ensembl identifiers are not flagge
 
 #### 3.3.1 Structural cleanup
 
-Always applied, with no threshold:
+No threshold is involved. The out-of-tissue rule always applies; the zero-count rule applies unless
+`remove_controls_and_empty: false`:
 
 - spots with `obs['in_tissue'] == 0`, when the column exists (spots under the capture area but
   outside the tissue);
@@ -116,7 +118,7 @@ Sub-cellular bins hold tens of counts, so local medians and MADs are dominated b
 a low bin is expected rather than defective. Bins receive the structural cleanup only. This is a
 FOCUS design choice.
 
-`quality_control: false` disables §3.3.2 and §3.3.3; the structural cleanup always runs. The
+`quality_control: false` disables §3.3.2 and §3.3.3; the structural cleanup runs as set above. The
 number of spots removed per reason is reported and stored in `.uns['focus_qc']`.
 
 ### 3.4 QC metric computation
@@ -278,6 +280,7 @@ Merged:
 | `unit` | `spot` |
 | `normalization` | `auto` |
 | `quality_control` | `true` |
+| `remove_controls_and_empty` | `true` |
 | `remove_mitochondrial_genes` | `false` |
 | `force_recomputing` | `false` |
 

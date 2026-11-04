@@ -86,8 +86,10 @@ def control_features(adata: ad.AnnData) -> np.ndarray:
     return mask
 
 
-def remove_controls(adata: ad.AnnData, reporter: StepReporter) -> ad.AnnData:
-    """Record each spot's control counts in ``obs``, then drop the control features.
+def remove_controls(
+    adata: ad.AnnData, reporter: StepReporter, drop: bool = True
+) -> ad.AnnData:
+    """Record each spot's control counts in ``obs``, then drop the control features if ``drop``.
 
     ``obs['total_counts_control']`` and ``obs['pct_counts_control']`` (percent of all counts,
     controls included) are written for every input, 0 when the panel has no controls.
@@ -107,7 +109,7 @@ def remove_controls(adata: ad.AnnData, reporter: StepReporter) -> ad.AnnData:
         out=np.zeros(adata.n_obs),
         where=total > 0,
     ).astype(np.float32)
-    if not controls.any():
+    if not drop or not controls.any():
         return adata
     reporter.detail(f"Removed {int(controls.sum())} control features")
     return adata[:, ~controls].copy()

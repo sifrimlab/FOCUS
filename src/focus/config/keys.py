@@ -160,6 +160,7 @@ class STPreprocessingParams(_AbstractEnum):
     UNIT: Final = "unit"
     NORMALIZATION: Final = "normalization"
     QUALITY_CONTROL: Final = "quality_control"
+    REMOVE_CONTROLS_AND_EMPTY: Final = "remove_controls_and_empty"
     REMOVE_MITOCHONDRIAL_GENES: Final = "remove_mitochondrial_genes"
     FORCE_RECOMPUTING: Final = "force_recomputing"
 

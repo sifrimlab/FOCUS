@@ -351,13 +351,15 @@ Example:
 | `unit` | string | `"spot"` |
 | `normalization` | string | `"auto"` |
 | `quality_control` | bool | `true` |
+| `remove_controls_and_empty` | bool | `true` |
 | `remove_mitochondrial_genes` | bool | `false` |
 | `force_recomputing` | bool | `false` |
 
 - `capture`: `"sequencing"` (Visium, Visium HD, Stereo-seq, Slide-seq) or `"imaging"` (Xenium, MERFISH, CosMx). Sets the gene rule (sequencing: detected in at least 20 spots of one sample; imaging: every detected gene) and the `auto` normalization.
 - `unit`: `"spot"` (multicellular spots), `"bin"` (sub-cellular square bins or beads) or `"cell"` (segmented cells). Sets the outlier rule of `quality_control` and the clustering preset of the alignment colours.
 - `normalization`: `"auto"`, `"none"`, `"log_normalize"`, `"cp10k_log"`, `"size_factors"` or `"area_log_normalize"`, applied once to the merged dataset. Any value but `"none"` keeps the counts in `.layers['raw']`. See [ST normalization](../modalities/transcriptomics.md#normalization).
-- `quality_control`: removes the outlier spots of the unit's rule (local outliers for spots, global outliers for cells, none for bins). Out-of-tissue and zero-count spots and control features are removed in every case.
+- `quality_control`: removes the outlier spots of the unit's rule (local outliers for spots, global outliers for cells, none for bins). Out-of-tissue spots are removed in every case.
+- `remove_controls_and_empty`: when `true` (default), removes the control features (probes, codewords, blanks) and the spots without counts. Set `false` to keep every feature and every observation, for example when an imaging panel holds only probes and the cells serve as alignment targets. `obs['pct_counts_control']` is recorded either way.
 - `remove_mitochondrial_genes`: when `true`, drops mitochondrial genes (flagged by a case-insensitive `MT-`/`MT.` name prefix) from the feature set. Applied per sample, after QC metrics are computed, so `pct_counts_mt` still describes the matrix before removal.
 - The settings `resolution`, `min_count_per_spot`, `max_count_per_spot`, `min_genes_per_spot`, `max_genes_per_spot`, `min_spots_per_gene`, `min_count_spots_ratio_per_gene`, `total_counts_normalize` and `log1p_transform` were removed; a configuration that sets one fails validation and names the replacement.
 
@@ -369,6 +371,7 @@ Example:
   "unit": "bin",
   "normalization": "auto",
   "quality_control": true,
+  "remove_controls_and_empty": true,
   "remove_mitochondrial_genes": false,
   "force_recomputing": false
 }

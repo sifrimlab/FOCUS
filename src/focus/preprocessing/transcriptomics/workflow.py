@@ -48,6 +48,7 @@ def preprocess_samples(
             unit=settings.unit,
             normalization=settings.normalization,
             quality_control=settings.quality_control,
+            remove_controls_and_empty=settings.remove_controls_and_empty,
             remove_mitochondrial_genes=settings.remove_mitochondrial_genes,
             force_recomputing=settings.force_recomputing,
             step_reporter=reporter,

@@ -148,6 +148,10 @@ def _build_schema() -> dict[str, object]:
                     "type": "bool",
                     "default": True,
                 },
+                STPreprocessingParams.REMOVE_CONTROLS_AND_EMPTY: {
+                    "type": "bool",
+                    "default": True,
+                },
                 STPreprocessingParams.REMOVE_MITOCHONDRIAL_GENES: {
                     "type": "bool",
                     "default": False,

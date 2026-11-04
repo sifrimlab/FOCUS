@@ -80,9 +80,11 @@ def quality_control(
     tech: Technology,
     enabled: bool,
     reporter: StepReporter,
+    drop_empty: bool = True,
 ) -> tuple[ad.AnnData, dict[str, int]]:
     """
-    Remove out-of-tissue and zero-count spots, then the technology's outliers when ``enabled``.
+    Remove out-of-tissue spots, zero-count spots (``drop_empty``), then the technology's outliers
+    when ``enabled``.
 
     ``spot`` units use local outliers (low library size, low detected genes, high mitochondrial
     percent); ``cell`` units use global low-tail outliers of library size and detected genes;
@@ -101,7 +103,8 @@ def quality_control(
     if "in_tissue" in adata.obs:
         drop("outside_tissue", adata.obs["in_tissue"].astype(int).to_numpy() == 0)
     metrics = spot_metrics(adata)
-    drop("zero_counts", metrics["total_counts"] == 0)
+    if drop_empty:
+        drop("zero_counts", metrics["total_counts"] == 0)
 
     rule = tech.outlier_rule if enabled else "none"
     if rule != "none":

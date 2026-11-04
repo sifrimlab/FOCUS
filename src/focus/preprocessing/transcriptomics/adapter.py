@@ -45,6 +45,9 @@ def _extract_st_settings(settings: ProcessingSettings) -> SpatialTranscriptomicS
             STPreprocessingParams.NORMALIZATION, StNormalization.AUTO
         ),
         "quality_control": settings.get(STPreprocessingParams.QUALITY_CONTROL, True),
+        "remove_controls_and_empty": settings.get(
+            STPreprocessingParams.REMOVE_CONTROLS_AND_EMPTY, True
+        ),
         "remove_mitochondrial_genes": settings.get(
             STPreprocessingParams.REMOVE_MITOCHONDRIAL_GENES, False
         ),

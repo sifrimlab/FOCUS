@@ -64,9 +64,9 @@ dataset_root/
 Run by `SpatialTranscriptomic.preprocess_data()`. A cached file is reused only when its fingerprint (input SHA-256, settings, technology constants, method and software versions) matches; `force_recomputing=True` always rebuilds. The input SHA-256 is stored in the output and reused while the input's path, size and modification time are unchanged, so an unchanged input is not re-hashed.
 
 1. **Load and validate**: see [Input Requirements](#input-requirements). `.X` becomes the raw counts in sparse CSR.
-2. **Control features**: features matched by `var['feature_types']` or by a control name prefix (`NegControlProbe_`, `NegControlCodeword_`, `NegPrb`, `BLANK_`, `Blank-`, `UnassignedCodeword_`, `DeprecatedCodeword_`, `Intergenic_`, `SystemControl`) are counted into `obs['total_counts_control']` and `obs['pct_counts_control']`, then removed.
+2. **Control features**: features matched by `var['feature_types']` or by a control name prefix (`NegControlProbe_`, `NegControlCodeword_`, `NegPrb`, `BLANK_`, `Blank-`, `UnassignedCodeword_`, `DeprecatedCodeword_`, `Intergenic_`, `SystemControl`) are counted into `obs['total_counts_control']` and `obs['pct_counts_control']`, then removed (unless `remove_controls_and_empty: false`).
 3. **Mitochondrial flag**: `.var['mt']` from a case-insensitive `MT-`/`MT.` name prefix. Ensembl-keyed panels are not flagged.
-4. **Quality control**: spots outside the tissue (`in_tissue == 0`) and spots without counts are always removed. With `quality_control: true`, the outlier rule of the unit follows (see [Technology calibration](#technology-calibration)). The retained spots and the number removed per reason are reported, and the counts are stored in `.uns['focus_qc']`.
+4. **Quality control**: spots outside the tissue (`in_tissue == 0`) are always removed, and spots without counts unless `remove_controls_and_empty: false`. With `quality_control: true`, the outlier rule of the unit follows (see [Technology calibration](#technology-calibration)). The retained spots and the number removed per reason are reported, and the counts are stored in `.uns['focus_qc']`.
 5. **QC metrics**: `scanpy.pp.calculate_qc_metrics(qc_vars=['mt'], percent_top=None)` with mitochondrial genes present: `total_counts`, `n_genes_by_counts`, `total_counts_mt`, `pct_counts_mt` and `log1p_` variants in `.obs`, gene metrics in `.var`.
 6. **Area**: `obs['focus_area']` holds the area used by area normalization: the `spot_size` area for spots and bins, the cell area column for cells.
 7. **Mitochondrial gene removal (optional)**: with `remove_mitochondrial_genes: true`, the flagged genes are dropped. The QC metrics of step 5 still describe the matrix before removal.
@@ -93,7 +93,8 @@ Run by `SpatialTranscriptomicDataset.process_dataset()`. The cached merged file 
 | `capture` | `str` | `"sequencing"` | `"sequencing"` (Visium, Visium HD, Stereo-seq, Slide-seq) or `"imaging"` (Xenium, MERFISH, CosMx) |
 | `unit` | `str` | `"spot"` | `"spot"` (multicellular capture spots), `"bin"` (sub-cellular square bins or beads) or `"cell"` (segmented cells) |
 | `normalization` | `str` | `"auto"` | Method applied to the merged dataset (see [Normalization](#normalization)) |
-| `quality_control` | `bool` | `True` | Remove the outlier spots of the unit's rule. Out-of-tissue and zero-count spots are removed in every case |
+| `quality_control` | `bool` | `True` | Remove the outlier spots of the unit's rule. Out-of-tissue spots are removed in every case |
+| `remove_controls_and_empty` | `bool` | `True` | Remove the control features and the zero-count spots; `False` keeps both |
 | `remove_mitochondrial_genes` | `bool` | `False` | Drop the genes flagged in `.var['mt']`, per sample |
 | `force_recomputing` | `bool` | `False` | Reprocess even if cached output files already exist |
 

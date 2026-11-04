@@ -40,6 +40,7 @@ class SpatialTranscriptomicDataset(DatasetState[SpatialTranscriptomic]):
         unit: str = StUnit.SPOT,
         normalization: str = StNormalization.AUTO,
         quality_control: bool = True,
+        remove_controls_and_empty: bool = True,
         remove_mitochondrial_genes: bool = False,
         force_recomputing: bool = False,
         step_reporter: StepReporter | None = None,
@@ -66,6 +67,9 @@ class SpatialTranscriptomicDataset(DatasetState[SpatialTranscriptomic]):
             ``StNormalization`` value applied to the merged dataset.
         quality_control : bool
             Remove the technology's outlier spots.
+        remove_controls_and_empty : bool
+            Remove control features (probes, codewords) and zero-count spots. ``False`` keeps
+            both (out-of-tissue spots are still removed).
         remove_mitochondrial_genes : bool
             Drop mitochondrial genes (``MT-`` / ``MT.`` prefix) per sample.
         force_recomputing : bool
@@ -82,6 +86,7 @@ class SpatialTranscriptomicDataset(DatasetState[SpatialTranscriptomic]):
             unit,
             normalization,
             quality_control,
+            remove_controls_and_empty,
             remove_mitochondrial_genes,
             force_recomputing,
         )
