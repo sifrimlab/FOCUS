@@ -37,7 +37,7 @@ Even when the stage runs, it **skips writing the MuData** (logging the reason to
 ## 3. Inputs
 
 - **Anchor (the reference modality).** Compilation loads the reference's merged file once and treats it as the **anchor** that defines the shared observations. If annotation transfer ran, the anchor is the **annotated** reference file (`merged/annotations/...`); otherwise it is the reference's merged preprocessed file. The shared `obsm['spatial']`, `obs['sample_id']`, and (if present) `uns['spot_size']` are taken from the anchor.
-- **Each target modality's merged registered file** (`merged/registration/...`), providing that modality's feature matrix `X`, `var`, and `obs`.
+- **Each target modality's merged registered file** (`merged/registration/...`), providing that modality's feature matrix `X`, `var`, `obs`, and any extra `obsm` layers.
 
 ---
 
@@ -78,7 +78,7 @@ Output path:
 
 Layout:
 
-- **`mod['<modality>']`**: one `AnnData` per modality, ordered anchor-first then by config declaration order. Each carries its `X`, `var`, and `obs`. Per-modality AnnData do **not** carry `obsm['spatial']` or `uns['spot_size']`; those are stored once at the top level.
+- **`mod['<modality>']`**: one `AnnData` per modality, ordered anchor-first then by config declaration order. Each carries its `X`, `var`, and `obs`, and any `obsm` entries other than `spatial` that its registration wrote (for example `patch_embedding` and `patch_spatial` from `feature_extraction` with `patch_embeddings: true`, filtered to the kept spots like `X`). Per-modality AnnData do **not** carry `obsm['spatial']` or `uns['spot_size']`; those are stored once at the top level.
 - **`obs['sample_id']`**: shared sample identifiers.
 - **`obs['spatial_annotation']`**: shared region labels, present only when annotation transfer ran.
 - **`obsm['spatial']`**: shared spot coordinates in the reference frame, shape `(n_obs, 2)`, `float32`.

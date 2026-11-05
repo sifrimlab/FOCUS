@@ -1,12 +1,14 @@
-"""Encode microscopy windows and compute footprint-restricted CLS readouts."""
+"""Encode microscopy windows on a fixed lattice and pool final-layer tokens per anchor spot."""
+
+from dataclasses import dataclass
+from functools import partial
 
 from numpy.typing import NDArray
-from focus.registration.batching import forward_with_retry
+from focus.registration.batching import Encoded, forward_with_retry
 
 from focus.registration.batching import estimate_batch_size
 from timm.models.vision_transformer import VisionTransformer
 from focus.spatial.footprint import AnchorGeometry
-from focus.registration.readout import LevelGeometry
 from typing import cast
 from focus.runtime.reporting import StepReporter
 import timm
@@ -14,6 +16,7 @@ import torch
 import huggingface_hub
 import tqdm
 import numpy as np
+import scipy.sparse as sp
 
 from focus.config.options import SegmentationBackgroundColor
 from focus.registration.windows import (
@@ -22,23 +25,43 @@ from focus.registration.windows import (
     cut_patch_batch,
     cut_window_batch,
     background_mask,
-    token_background_mask,
     resolve_bg_color,
+    token_background_grid,
 )
-from focus.registration.readout import TokenGrid, plan_windows, readout_membership
+from focus.registration.readout import (
+    LevelGeometry,
+    TokenGrid,
+    WindowLattice,
+    build_lattice,
+    footprint_tokens,
+    patch_links,
+)
+
+
+@dataclass
+class SpotFeatures:
+    """Per-spot outputs of :meth:`MicroscopyImageFeatureExtractor.extract_spot_features`."""
+
+    x: NDArray[np.float32]  # (N, D) footprint embeddings; zero rows read nothing
+    lattice: WindowLattice  # windows of the encoded image
+    patch_embedding: NDArray[np.float32] | None = (
+        None  # (N, D) CLS of each spot's patch
+    )
+    patch_id: NDArray[np.int64] | None = (
+        None  # (N,) lattice window of the patch, -1 = none
+    )
 
 
 class MicroscopyImageFeatureExtractor:
     """
-    Prov-GigaPath tile encoder with a footprint-restricted CLS readout.
+    Prov-GigaPath tile encoder read out per anchor spot.
 
-    ``extract_spot_features`` gives every anchor spot the CLS embedding of exactly the tissue
-    inside its footprint: the image is encoded in windows, and each spot appends its own CLS
-    query to its window's token sequence. Through the attention mask that query attends only to
-    itself and to the tokens whose centres lie inside the footprint, while the window's own CLS
-    and patch tokens attend to each other exactly as in a standard forward pass (they never see
-    the queries). A query covering every token therefore reproduces the standard CLS embedding,
-    which is checked when the model is loaded.
+    ``extract_spot_features`` encodes the image with a standard forward pass in encoder-sized
+    windows on a fixed lattice (stride half a window; see ``focus.registration.readout``). Each
+    token of the image's global token grid is taken from the one window it is most central in,
+    and every spot's embedding is the mean of the final-layer tokens its footprint overlaps,
+    weighted by that overlap. Optionally each spot also gets the standard CLS embedding of its
+    patch, the window that reads the token holding its centre.
 
     ``extract_grid_features`` is the plain per-tile CLS on a non-overlapping grid (anchorless use).
     """
@@ -51,7 +74,7 @@ class MicroscopyImageFeatureExtractor:
         hf_token: str | None = None,
         model: VisionTransformer | None = None,
     ) -> None:
-        """Initialize the tile model on the selected device and verify footprint readouts.
+        """Initialize the tile model on the selected device and verify its token layout.
 
         Parameters
         ----------
@@ -65,7 +88,7 @@ class MicroscopyImageFeatureExtractor:
         Raises
         ------
         RuntimeError
-            If the model layout or full-window readout self-test is incompatible.
+            If the model is not a class-token ViT or its token layout is not the expected grid.
 
         Notes
         -----
@@ -77,7 +100,7 @@ class MicroscopyImageFeatureExtractor:
 
         if model is None:
             huggingface_hub.login(token=self.hf_token)
-            # dynamic_img_size: windows larger than 224 px get interpolated position embeddings.
+            # dynamic_img_size: windows of an image smaller than 224 px are still encoded.
             model = cast(
                 VisionTransformer,
                 timm.create_model(
@@ -100,10 +123,9 @@ class MicroscopyImageFeatureExtractor:
             getattr(m, "has_class_token", False)
             and m.global_pool == "token"
             and getattr(m, "attn_pool", None) is None
-            and m.pos_embed is not None
         ):
             raise RuntimeError(
-                "The encoder must be a ViT with a class token, token pooling and position embeddings"
+                "The encoder must be a ViT with a class token and token pooling"
             )
         self.grid = TokenGrid(
             patch=int(m.patch_embed.patch_size[0]),
@@ -111,7 +133,7 @@ class MicroscopyImageFeatureExtractor:
         )
         self.n_prefix = int(m.num_prefix_tokens)
         self.embedding_dim = int(m.num_features)
-        self._verify_readout()
+        self._verify_tokens()
 
     # ------------------------------------------------------------------ encoding
 
@@ -131,85 +153,35 @@ class MicroscopyImageFeatureExtractor:
             emb = self.patch_encoder(x)
         return cast(np.ndarray, emb.float().cpu().numpy())
 
-    def _readout_mask(self, member: torch.Tensor, n_seq: int) -> torch.Tensor:
+    def _encode_windows(
+        self, windows: NDArray[np.float32], with_cls: bool = True
+    ) -> Encoded:
         """
-        ``(B, 1, L, L)`` boolean attention mask, True = may attend, for ``n_seq`` window tokens
-        (prefix + patches) followed by ``R`` readout queries.
-
-        The window block attends to itself only (a standard forward). Readout ``r`` attends to
-        itself, to any register tokens, and to the patch tokens in ``member[:, r]``; never to the
-        window's CLS or to other readouts.
+        Final-layer patch tokens ``(B, T, D)`` of each window, row-major, and, with ``with_cls``,
+        the standard CLS embedding ``(B, D)`` (identical to the model's own forward).
         """
-        b, r, t = member.shape
-        length = n_seq + r
-        mask = torch.zeros(
-            (b, 1, length, length), dtype=torch.bool, device=member.device
-        )
-        mask[:, :, :n_seq, :n_seq] = True
-        if r:
-            mask[:, 0, n_seq:, self.n_prefix : n_seq] = member
-            if self.n_prefix > 1:
-                mask[:, 0, n_seq:, 1 : self.n_prefix] = True
-            idx = torch.arange(n_seq, length, device=member.device)
-            mask[:, 0, idx, idx] = True
-        return mask
-
-    def _forward_readouts(self, x: torch.Tensor, member: torch.Tensor) -> torch.Tensor:
-        """Readout embeddings ``(B, R, D)`` of normalised windows ``x`` for memberships ``(B, R, T)``."""
         m = self.patch_encoder
-        t = m.patch_drop(m._pos_embed(m.patch_embed(x)))
-        b, n_seq, c = t.shape
-        # Every readout starts from the window CLS's initial state (cls_token + its position embedding).
-        t = torch.cat([t, t[:, :1].expand(b, member.shape[1], c)], dim=1)
-        t = m.norm_pre(t)
-        mask = self._readout_mask(member, n_seq)
-        for blk in m.blocks:
-            t = blk(t, attn_mask=mask)
-        t = m.norm(t)[:, n_seq:]
-        return cast(torch.Tensor, m.head(m.head_drop(m.fc_norm(t))))
-
-    def _encode_readouts(
-        self, windows: NDArray[np.float32], member: NDArray[np.bool_]
-    ) -> NDArray[np.float32]:
-        """Encode window queries and return their CPU NumPy embeddings."""
         x = self._to_device(windows)
-        mem = torch.from_numpy(member).to(self.device)
         with torch.inference_mode():
-            emb = self._forward_readouts(x, mem)
-        return emb.float().cpu().numpy()
+            feats = m.forward_features(x)
+            tokens = feats[:, self.n_prefix :].float().cpu().numpy()
+            if not with_cls:
+                return (tokens,)
+            cls = m.forward_head(feats).float().cpu().numpy()
+        return tokens, cls
 
-    def _verify_readout(self) -> None:
-        """A readout over every token must equal the standard CLS embedding of the same window."""
+    def _verify_tokens(self) -> None:
+        """The encoder must return one final-layer token per patch of a training-size window."""
         side = self.grid.base_side
         gen = torch.Generator().manual_seed(0)
         x = torch.rand((1, side, side, 3), generator=gen).numpy()
-        n_tokens = (side // self.grid.patch) ** 2
-        standard = self._encode_np_batch(x)[0]
-        readout = self._encode_readouts(x, np.ones((1, 1, n_tokens), dtype=bool))[0, 0]
-        scale = float(np.abs(standard).max()) or 1.0
-        if not np.allclose(readout, standard, rtol=1e-3, atol=1e-3 * scale):
+        tokens, _ = self._encode_windows(x)
+        expected = (side // self.grid.patch) ** 2
+        if tokens.shape[1] != expected:
             raise RuntimeError(
-                "Footprint readout self-test failed: a readout over the whole window does not reproduce "
-                f"the encoder's CLS embedding (max difference {np.abs(readout - standard).max():.3g})"
+                f"The encoder returned {tokens.shape[1]} patch tokens for a {side} px window; "
+                f"expected {expected} ({side // self.grid.patch} x {side // self.grid.patch})"
             )
-
-    def _encode_batch(
-        self, windows: NDArray[np.float32], member: NDArray[np.bool_] | None
-    ) -> NDArray[np.float32]:
-        """Select plain CLS or masked readouts from the membership's original None sentinel."""
-        return (
-            self._encode_np_batch(windows)
-            if member is None
-            else self._encode_readouts(windows, member)
-        )
-
-    def _estimate_batch_size(
-        self, windows: NDArray[np.float32], member: NDArray[np.bool_] | None
-    ) -> int:
-        """Probe the existing forward paths without retaining probe tensors."""
-        return estimate_batch_size(
-            self.device, windows, member, self._encode_np_batch, self._encode_readouts
-        )
 
     # ------------------------------------------------------------------- public
 
@@ -220,10 +192,11 @@ class MicroscopyImageFeatureExtractor:
         geom: AnchorGeometry,
         level: LevelGeometry,
         background_color: str = SegmentationBackgroundColor.WHITE,
+        patch_embeddings: bool = False,
         step_reporter: StepReporter | None = None,
-    ) -> NDArray[np.float32]:
+    ) -> SpotFeatures:
         """
-        One footprint-restricted CLS embedding per anchor spot.
+        One footprint embedding per anchor spot and, optionally, the embedding of its patch.
 
         Parameters
         ----------
@@ -237,89 +210,96 @@ class MicroscopyImageFeatureExtractor:
                 Which level ``image`` is, and its scale relative to level 0.
         background_color : SegmentationBackgroundColor
                 Fill color of non-tissue pixels; tokens that are at least 99 % this color are
-                never read out.
+                never read.
+        patch_embeddings : bool
+                Also return, per spot, the standard CLS embedding of its patch.
 
         Returns
         -------
-        np.ndarray
-                ``(N, D)`` float32. Spots that cannot be placed in the image, or whose footprint
-                holds only background, keep an all-zero row.
+        SpotFeatures
+                ``x`` is ``(N, D)`` float32: the mean of the final-layer tokens each footprint
+                overlaps, weighted by the overlap. Spots that cannot be placed in the image, or
+                whose footprint holds only background, keep an all-zero row, and only they have
+                ``patch_id == -1`` (with an all-zero ``patch_embedding`` row).
         """
         img = ensure_hwc3(image)
         n = len(centres0)
-        out = np.zeros((n, self.embedding_dim), dtype=np.float32)
-        plan = plan_windows(geom, centres0, level, self.grid)
-        if plan.truncated and step_reporter:
-            step_reporter.warning(
-                f"{plan.truncated} footprints are wider than the largest encoder window "
-                f"({self.grid.max_side} px): they are read through that window, centred on the spot"
-            )
-        bg = resolve_bg_color(background_color)
+        dim = self.embedding_dim
+        x_out = np.zeros((n, dim), dtype=np.float32)
+        lattice = build_lattice(img.shape[:2], self.grid)
         p = self.grid.patch
+        token_bg = token_background_grid(img, p, resolve_bg_color(background_color))
+        tokens = footprint_tokens(geom, centres0, level, lattice, token_bg)
+        live = tokens.total > 0
+
+        patch = (
+            patch_links(centres0, level, lattice, live) if patch_embeddings else None
+        )
+        needed = np.unique(
+            tokens.window if patch is None else np.r_[tokens.window, patch[patch >= 0]]
+        )
+        patch_cls = (
+            None if patch is None else np.zeros((len(needed), dim), dtype=np.float32)
+        )
 
         if step_reporter:
             step_reporter.step(
-                2, 3, "Extracting spot embeddings", unit="spot", items_total=n
+                2,
+                3,
+                "Extracting spot embeddings",
+                unit="window",
+                items_total=len(needed),
             )
-        pbar = tqdm.tqdm(total=n, desc="Extracting spot embeddings", unit="spot")
-        processed = len(plan.unplaced)
-        pbar.update(processed)
-
-        for (h, w), chunks in plan.groups():
-            n_seq = self.n_prefix + (h // p) * (w // p)
-            first = cut_window_batch(img, np.array([chunks[0].origin]), h, w)
-            r_probe = len(chunks[0].spots) + (-(n_seq + len(chunks[0].spots)) % 8)
-            batch_size = self._estimate_batch_size(
-                first, np.ones((1, r_probe, n_seq - self.n_prefix), dtype=bool)
+        if needed.size:
+            h, w = lattice.window_shape
+            n_tok = lattice.tokens_per_window
+            encode = partial(self._encode_windows, with_cls=patch_embeddings)
+            first = cut_window_batch(img, lattice.origin(needed[:1]), h, w)
+            batch_size = estimate_batch_size(self.device, first, encode)
+            # Each token's weight, normalised by its spot's total, so the sums are the means.
+            share = (tokens.weight / tokens.total[tokens.spot]).astype(np.float32)
+            pbar = tqdm.tqdm(
+                total=len(needed), desc="Extracting spot embeddings", unit="window"
             )
             start = 0
-            while start < len(chunks):
-                batch = chunks[start : start + batch_size]
-                start += len(batch)
-                windows = cut_window_batch(
-                    img, np.array([c.origin for c in batch]), h, w
+            while start < len(needed):
+                batch = needed[start : start + batch_size]
+                windows = cut_window_batch(img, lattice.origin(batch), h, w)
+                out, batch_size = forward_with_retry(
+                    self.device, encode, windows, batch_size
                 )
-                background = token_background_mask(windows, p, bg)
-
-                live, members, spots = [], [], []
-                for b, chunk in enumerate(batch):
-                    member, keep = readout_membership(
-                        chunk, plan, geom, level, self.grid, background[b]
+                e0 = np.searchsorted(tokens.window, batch[0], side="left")
+                e1 = np.searchsorted(tokens.window, batch[-1], side="right")
+                if e1 > e0:
+                    pos = np.searchsorted(batch, tokens.window[e0:e1])
+                    spots, inverse = np.unique(tokens.spot[e0:e1], return_inverse=True)
+                    pool = sp.csr_matrix(
+                        (
+                            share[e0:e1],
+                            (inverse.ravel(), pos * n_tok + tokens.local[e0:e1]),
+                        ),
+                        shape=(len(spots), len(batch) * n_tok),
                     )
-                    if keep.any():
-                        live.append(b)
-                        members.append(member[keep])
-                        spots.append(chunk.spots[keep])
-                if live:
-                    r = max(len(s) for s in spots)
-                    r += (
-                        -(n_seq + r) % 8
-                    )  # pad so the sequence length is a multiple of 8
-                    member_arr = np.zeros(
-                        (len(live), r, n_seq - self.n_prefix), dtype=bool
-                    )
-                    for k, mem in enumerate(members):
-                        member_arr[k, : len(mem)] = mem
-                    emb, batch_size = forward_with_retry(
-                        self.device,
-                        self._encode_batch,
-                        windows[live],
-                        member_arr,
-                        batch_size,
-                    )
-                    for k, s in enumerate(spots):
-                        out[s] = emb[k, : len(s)]
-
-                step = sum(len(c.spots) for c in batch)
-                processed += step
-                pbar.update(step)
+                    x_out[spots] += pool @ out[0].reshape(len(batch) * n_tok, dim)
+                if patch_cls is not None:
+                    patch_cls[start : start + len(batch)] = out[1]
+                start += len(batch)
+                pbar.update(len(batch))
                 if step_reporter:
-                    step_reporter.update(processed, n)
-        pbar.close()
+                    step_reporter.update(start, len(needed))
+            pbar.close()
 
         if self.device.type == "cuda":
             torch.cuda.empty_cache()
-        return out
+        features = SpotFeatures(x_out, lattice)
+        if patch is not None and patch_cls is not None:
+            features.patch_id = patch
+            features.patch_embedding = np.zeros((n, dim), dtype=np.float32)
+            linked = patch >= 0
+            features.patch_embedding[linked] = patch_cls[
+                np.searchsorted(needed, patch[linked])
+            ]
+        return features
 
     def extract_grid_features(
         self,
@@ -348,9 +328,13 @@ class MicroscopyImageFeatureExtractor:
                 (0, self.embedding_dim), dtype=np.float32
             ), center_coordinates
 
+        def encode(windows: NDArray[np.float32]) -> Encoded:
+            """Plain CLS of each tile, as a one-element output tuple."""
+            return (self._encode_np_batch(windows),)
+
         bg_color = resolve_bg_color(background_color)
         sample = cut_patch_batch(img, top_left[:1], patch_size)
-        batch_size = self._estimate_batch_size(sample, None)
+        batch_size = estimate_batch_size(self.device, sample, encode)
 
         if step_reporter:
             step_reporter.step(
@@ -366,10 +350,10 @@ class MicroscopyImageFeatureExtractor:
             patches = cut_patch_batch(img, top_left[start:end], patch_size)
             fg_local = np.where(~background_mask(patches, bg_color))[0]
             if fg_local.size > 0:
-                emb, batch_size = forward_with_retry(
-                    self.device, self._encode_batch, patches[fg_local], None, batch_size
+                out, batch_size = forward_with_retry(
+                    self.device, encode, patches[fg_local], batch_size
                 )
-                chunks.append(emb)
+                chunks.append(out[0])
                 fg_chunks.append(np.arange(start, end)[fg_local])
             pbar.update(end - start)
             if step_reporter:

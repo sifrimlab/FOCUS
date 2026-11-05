@@ -241,6 +241,15 @@ def validate_registration(config: PipelineConfig) -> None:
                     f"(modality '{modality[ModalityParameters.NAME]}'). Compatible types: {compatible}"
                 )
 
+        if reg_type == RegistrationType.FEATURE_EXTRACTION:
+            settings = modality.get(ModalityParameters.REGISTRATION_SETTINGS) or {}
+            value = settings.get("patch_embeddings")
+            if value is not None and not isinstance(value, bool):
+                raise ValueError(
+                    f"Modality '{modality[ModalityParameters.NAME]}': patch_embeddings must be "
+                    f"true or false, got {value!r}."
+                )
+
 
 def validate_alignment(config: PipelineConfig) -> None:
     """Check reference types, pre-aligned strategies, and modality pairs."""

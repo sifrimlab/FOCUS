@@ -44,6 +44,7 @@ class RegistrationSettings(TypedDict, total=False):
 
     force_recomputing: bool
     background_color: str | None
+    patch_embeddings: bool
     patch_size: int
 
 

@@ -114,15 +114,18 @@ Every registered file, whatever the mode, carries:
 
 In the merged file, `.obs_names` are rewritten as `{sample_id}_{row_index}`.
 
-Every mode reads the footprint from `.uns['spot_size']` of the **anchor** (aligned reference) AnnData, in the units of the anchor's `.obsm['spatial']`, and evaluates it in that frame: target positions are mapped back through the alignment map. The footprint is an ellipse inscribed in $s_x \times s_y$ on a hexagonal anchor lattice and a rectangle $s_x \times s_y$ along the lattice axes otherwise; a pixel or image token belongs to it when its centre lies inside, while spot targets are weighted by the overlap of their own footprint with it (`spot_interpolation`). A missing `spot_size` falls back to `[1.0, 1.0]`. See [Registration Methods §1](../scientific/registration_methods.md#1-objective).
+Every mode reads the footprint from `.uns['spot_size']` of the **anchor** (aligned reference) AnnData, in the units of the anchor's `.obsm['spatial']`, and evaluates it in that frame: target positions are mapped back through the alignment map. The footprint is an ellipse inscribed in $s_x \times s_y$ on a hexagonal anchor lattice and a rectangle $s_x \times s_y$ along the lattice axes otherwise; a pixel belongs to it when its centre lies inside, while image tokens (`feature_extraction`) and spot targets (`spot_interpolation`) are weighted by their overlap with it. A missing `spot_size` falls back to `[1.0, 1.0]`. See [Registration Methods §1](../scientific/registration_methods.md#1-objective).
 
 ### Feature extraction registration (`feature_extraction`)
 
 | Attribute | Type | Shape | Description |
 |-----------|------|-------|-------------|
-| `.X` | float32 ndarray (dense) | $(n_\text{ref},\ n_\text{dims})$ | One Prov-GigaPath CLS embedding per reference spot, restricted to the image tokens inside its footprint (1536-dim). Rows whose footprint holds only background, or lies outside the image, are all-zero |
+| `.X` | float32 ndarray (dense) | $(n_\text{ref},\ n_\text{dims})$ | One Prov-GigaPath embedding per reference spot: the mean of the final-layer image tokens its footprint overlaps, weighted by the overlap (1536-dim). Rows whose footprint holds only background, or lies outside the image, are all-zero |
 | `.obsm['spatial']` | float32 ndarray | $(n_\text{ref},\ 2)$ | Reference coordinates in full-resolution image pixels |
-| `.uns['focus_registration_geometry']` | dict | - | Also records `encoder` (model id), `encoded_level` (pyramid level encoded) and, when the pixel size is known, `encoded_um_per_px` |
+| `.obsm['patch_embedding']` | float32 ndarray | $(n_\text{ref},\ n_\text{dims})$ | Only with `patch_embeddings: true`. The standard Prov-GigaPath embedding of the 224 px patch around each spot, shared by the spots of one patch; zero rows where `.X` is zero |
+| `.obsm['patch_spatial']` | float32 ndarray | $(n_\text{ref},\ 2)$ | Only with `patch_embeddings: true`. Centre of each spot's patch in the reference coordinate system (the frame of the MuData's `obsm['spatial']`); NaN without a patch |
+| `.obs['patch_id']` | int64 | $(n_\text{ref},)$ | Only with `patch_embeddings: true`. Patch index, unique within `sample_id`; `-1` where `.X` is zero |
+| `.uns['focus_registration_geometry']` | dict | - | Also records `encoder` (model id), `encoded_level` (pyramid level encoded), `readout` (`token_mean`), `window_px` and `stride_px` (encoded-level pixels), `patch_embeddings` and, when the pixel size is known, `encoded_um_per_px` and `window_um` |
 | `.var_names` | Index | $(n_\text{dims},)$ | Positional strings `"0" … "n_dims-1"`; the embedding has no feature metadata |
 
 No `.layers` are written.

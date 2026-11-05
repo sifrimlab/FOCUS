@@ -190,7 +190,7 @@ The computational method used to map this modality's features onto the reference
 | `"spot_interpolation"` | Overlap-area registration of the spot-based data with each anchor footprint, for any combination of spot sizes (ST counts are shared by overlap, MSI intensities averaged by overlap area). Needs reference and target coordinates in µm. Runs on CPU. | `msi`, `st` |
 | `"raman_pixel_interpolation"` | Gaussian-weighted interpolation over the hyperspectral OME-TIFF pixels, each pixel acting as a spot. Runs on CPU. | `raman` |
 | `"pixel_composition"` | Fraction of each reference footprint occupied by each pixel phenotype of a dataset-level codebook (Raman: endmembers of linear spectral unmixing; fluorescence: Pixie pixel clusters), plus the mean pixel values in `obsm['channel_mean']` and a per-sample label map. Brightfield images are rejected. Runs on CPU. | `raman`, `microscopy_image` |
-| `"feature_extraction"` | One Prov-GigaPath embedding (deep learning) per reference spot, restricted to the image inside its footprint. **Only for H&E-stained brightfield images**: the model is pretrained on H&E tiles. Fluorescence images are rejected (at validation when `image_type` is `"fluorescence"`, at registration from the image type recorded by preprocessing); the stain of a brightfield image is not checked, so other stains yield embeddings that carry no morphological meaning. Use `"none"` for those. Requires a HuggingFace token; runs on an NVIDIA GPU when available, otherwise on the CPU (impractically slow for real images). | `microscopy_image` |
+| `"feature_extraction"` | One Prov-GigaPath embedding (deep learning) per reference spot, the mean of the encoder tokens inside its footprint, and optionally the embedding of the image patch around it. **Only for H&E-stained brightfield images**: the model is pretrained on H&E tiles. Fluorescence images are rejected (at validation when `image_type` is `"fluorescence"`, at registration from the image type recorded by preprocessing); the stain of a brightfield image is not checked, so other stains yield embeddings that carry no morphological meaning. Use `"none"` for those. Requires a HuggingFace token; runs on an NVIDIA GPU when available, otherwise on the CPU (impractically slow for real images). | `microscopy_image` |
 
 ### `processing_settings` _(required, object)_
 
@@ -198,7 +198,7 @@ Modality-specific preprocessing parameters. See the per-type sections below.
 
 ### `registration_settings` _(optional, object, default: `{}`)_
 
-Additional settings for the chosen registration method. May be an empty object when `registration_type` is `"none"`. Every method accepts `force_recomputing`; `feature_extraction` also accepts `background_color` (`"white"` or `"black"`), used for images that preprocessing did not fill. See [Configuration Fields](../configuration/config_fields.md#registration-settings).
+Additional settings for the chosen registration method. May be an empty object when `registration_type` is `"none"`. Every method accepts `force_recomputing`; `feature_extraction` also accepts `background_color` (`"white"` or `"black"`), used for images that preprocessing did not fill, and `patch_embeddings` (`true` or `false`, default `false`), which also stores the embedding of the image patch around each spot. See [Configuration Fields](../configuration/config_fields.md#registration-settings).
 
 ---
 

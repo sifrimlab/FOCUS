@@ -1,16 +1,22 @@
 """
-Planning of the footprint-restricted CLS readout (pure NumPy, no torch).
+Lattice planning of the microscopy encoding (pure NumPy, no torch).
 
-Feature extraction encodes the tissue in encoder-sized windows. Every anchor spot is read out
-in one window by its own CLS query, which attends only to the window tokens inside the spot's
-footprint (see ``MicroscopyImageFeatureExtractor.extract_spot_features``). This module decides
-which pyramid level is encoded, where the windows sit, which spots each window reads out, and
-which tokens each readout may attend to.
+Feature extraction encodes the image in ``base x base`` encoder windows on a fixed lattice whose
+stride is half a window, rounded down to whole tokens. Window origins are multiples of the token
+size, so the tokens of every window fall on one global token grid. Each token of that grid is
+read from exactly one window: the one whose centre is nearest to it, ties going to the lower
+window. Its centre then lies at least ``base / 4`` px inside that window, except at the image
+border.
+
+A spot's embedding is the weighted mean of the final-layer tokens its footprint overlaps (see
+``MicroscopyImageFeatureExtractor.extract_spot_features``), and its patch is the window that reads
+the token holding its centre. This module decides which pyramid level is encoded, where the
+windows sit, which tokens each spot reads and with which weight, and which window is each spot's
+patch.
 
 Coordinates: pixel ``j`` of a level spans ``[j, j + 1)``; level ``i`` coordinates are level-0
-coordinates times the measured size ratio ``(W_i / W_0, H_i / H_0)``. The token at row ``r``,
-column ``c`` of a window with top-left ``(ox, oy)`` is centred at
-``(ox + (c + 0.5) * p, oy + (r + 0.5) * p)`` for token size ``p``.
+coordinates times the measured size ratio ``(W_i / W_0, H_i / H_0)``. Token ``(r, c)`` of the
+global grid covers ``[c * p, (c + 1) * p) x [r * p, (r + 1) * p)`` for token size ``p``.
 """
 
 from numpy.typing import NDArray
@@ -18,17 +24,18 @@ from numpy.typing import NDArray
 from typing import cast
 
 from numpy.typing import ArrayLike
-from collections.abc import Iterator
 from focus.spatial.footprint import AnchorGeometry
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 import numpy as np
 
 # Prov-GigaPath tiles were resized to 0.5 µm per pixel (20x) before pretraining.
 ENCODER_UM_PER_PX = 0.5
-_MAX_SIDE_TOKENS = 64  # largest window side, in tokens
-_MAX_READOUTS = 512  # spots read out by one forward pass of one window
+_SAMPLES_PER_TOKEN = (
+    4  # s x s sample points per token measure its overlap with a footprint
+)
+_MAX_POINTS = 1 << 22  # sample points per containment call (bounds host memory)
 
 
 @dataclass(frozen=True)
@@ -95,73 +102,148 @@ class TokenGrid:
     base_side: int
 
     @property
-    def context(self) -> int:
-        """Minimum margin of tissue kept around a footprint inside its window."""
-        return self.base_side // 4
+    def stride(self) -> int:
+        """Lattice stride: half the encoder window, rounded down to whole tokens (at least one)."""
+        return max(self.patch, (self.base_side // 2) // self.patch * self.patch)
+
+
+@dataclass(frozen=True)
+class AxisLattice:
+    """Window placement along one image axis."""
+
+    origins: NDArray[np.int64]  # window starts, multiples of the token size
+    side: int  # window extent along this axis, pixels (0 when no whole token fits)
+    n_tokens: int  # whole tokens covered by the windows: [0, n_tokens * p)
+    owner: NDArray[np.int64]  # (n_tokens,) index of the window that reads each token
+
+
+def axis_lattice(dim: int, grid: TokenGrid) -> AxisLattice:
+    """
+    Windows along an axis of ``dim`` pixels.
+
+    Windows are ``base_side`` wide (or the whole axis, rounded down to tokens, when it is
+    shorter), start at ``0, stride, 2 * stride, ...`` and end with one window flush with the last
+    whole token. Each token is owned by the window whose centre is nearest to the token centre,
+    ties going to the lower window.
+    """
+    p = grid.patch
+    side = min(grid.base_side, dim // p * p)
+    empty = np.zeros(0, dtype=np.int64)
+    if side < p:
+        return AxisLattice(empty, 0, 0, empty)
+    last = (dim - side) // p * p
+    origins = np.arange(0, last + 1, grid.stride, dtype=np.int64)
+    if origins[-1] < last:
+        origins = np.append(origins, np.int64(last))
+    n_tokens = (last + side) // p
+    if len(origins) == 1:
+        return AxisLattice(origins, side, n_tokens, np.zeros(n_tokens, dtype=np.int64))
+    centres = origins + side / 2
+    tok = (np.arange(n_tokens) + 0.5) * p
+    hi = np.clip(np.searchsorted(centres, tok, side="left"), 1, len(centres) - 1)
+    owner = np.where(tok - centres[hi - 1] <= centres[hi] - tok, hi - 1, hi)
+    return AxisLattice(origins, side, n_tokens, owner.astype(np.int64))
+
+
+@dataclass(frozen=True)
+class WindowLattice:
+    """The encoder windows of one image. Windows are numbered row-major (``wy * nx + wx``)."""
+
+    patch: int
+    stride: int  # lattice stride, pixels
+    y: AxisLattice
+    x: AxisLattice
 
     @property
-    def max_side(self) -> int:
-        """Return the maximum supported window side in image pixels."""
-        return _MAX_SIDE_TOKENS * self.patch
+    def shape(self) -> tuple[int, int]:
+        """Number of windows along ``(y, x)``."""
+        return len(self.y.origins), len(self.x.origins)
+
+    @property
+    def window_shape(self) -> tuple[int, int]:
+        """Window ``(h, w)`` in pixels."""
+        return self.y.side, self.x.side
+
+    @property
+    def token_shape(self) -> tuple[int, int]:
+        """Rows and columns of the global token grid covered by the windows."""
+        return self.y.n_tokens, self.x.n_tokens
+
+    @property
+    def tokens_per_window(self) -> int:
+        """Tokens in one window."""
+        return (self.y.side // self.patch) * (self.x.side // self.patch)
+
+    def origin(self, window: ArrayLike) -> NDArray[np.int64]:
+        """``(K, 2)`` top-left ``(ox, oy)`` of windows, in encoded-level pixels."""
+        wy, wx = np.divmod(np.asarray(window, dtype=np.int64), self.shape[1])
+        return np.column_stack([self.x.origins[wx], self.y.origins[wy]])
+
+    def centre(self, window: ArrayLike) -> NDArray[np.float64]:
+        """``(K, 2)`` centre ``(x, y)`` of windows, in encoded-level pixels."""
+        h, w = self.window_shape
+        centre = self.origin(window).astype(np.float64) + np.array([w / 2, h / 2])
+        return cast(NDArray[np.float64], centre)
+
+    def token_window(
+        self, rows: ArrayLike, cols: ArrayLike
+    ) -> tuple[NDArray[np.int64], NDArray[np.int64]]:
+        """Window reading each global token ``(rows, cols)`` and the token's index inside it."""
+        rows = np.asarray(rows, dtype=np.int64)
+        cols = np.asarray(cols, dtype=np.int64)
+        wy, wx = self.y.owner[rows], self.x.owner[cols]
+        local_r = rows - self.y.origins[wy] // self.patch
+        local_c = cols - self.x.origins[wx] // self.patch
+        return wy * self.shape[1] + wx, local_r * (self.x.side // self.patch) + local_c
 
 
-@dataclass
-class Chunk:
-    """One forward-pass item: a window and the spots read out in it."""
-
-    origin: tuple[int, int]  # (ox, oy) top-left, encoded-level pixels
-    shape: tuple[int, int]  # (h, w) pixels, multiples of the token size
-    spots: NDArray[np.intp]  # anchor indices
-
-
-@dataclass
-class WindowPlan:
-    """Anchor-to-window assignments and pixel geometry for encoder readout."""
-
-    chunks: list[Chunk]  # sorted by window shape, then readout count
-    boxes: NDArray[np.float64]  # (N, 4) footprint boxes, encoded-level pixels
-    centres: NDArray[np.float64]  # (N, 2) anchor centres, encoded-level pixels
-    unplaced: NDArray[np.intp] = field(
-        default_factory=lambda: np.zeros(0, dtype=np.intp)
+def build_lattice(dims: tuple[int, int], grid: TokenGrid) -> WindowLattice:
+    """The window lattice of an encoded image of ``dims = (H, W)`` pixels."""
+    return WindowLattice(
+        grid.patch,
+        grid.stride,
+        axis_lattice(int(dims[0]), grid),
+        axis_lattice(int(dims[1]), grid),
     )
-    truncated: int = 0
-
-    def groups(self) -> Iterator[tuple[tuple[int, int], list[Chunk]]]:
-        """Yield ``(shape, chunks)`` runs of consecutive chunks that share a window shape."""
-        start = 0
-        while start < len(self.chunks):
-            shape = self.chunks[start].shape
-            stop = start
-            while stop < len(self.chunks) and self.chunks[stop].shape == shape:
-                stop += 1
-            yield shape, self.chunks[start:stop]
-            start = stop
 
 
-def _ceil_to(x: ArrayLike, m: int) -> np.ndarray:
-    """Round a pixel extent upward to the next multiple of the token side."""
-    return np.ceil(np.asarray(x, dtype=np.float64) / m) * m
+@dataclass
+class SpotTokens:
+    """The tokens each spot reads, as entries sorted by window."""
+
+    spot: NDArray[np.int64]  # (E,) anchor index
+    window: NDArray[np.int64]  # (E,) lattice window that reads the token
+    local: NDArray[np.int64]  # (E,) token index inside that window, row-major
+    weight: NDArray[np.float64]  # (E,) overlap of the token with the footprint, (0, 1]
+    total: NDArray[
+        np.float64
+    ]  # (N,) summed weight per spot; 0 when the spot reads nothing
 
 
-def _floor_to(x: ArrayLike, m: int) -> np.ndarray:
-    """Round a pixel extent downward to a multiple of the token side."""
-    return np.floor(np.asarray(x, dtype=np.float64) / m) * m
+def _sample_offsets(p: int, s: int) -> np.ndarray:
+    """``(s*s, 2)`` sub-cell centres of a ``p`` px token, relative to its top-left corner."""
+    k = (np.arange(s) + 0.5) * p / s
+    xx, yy = np.meshgrid(k, k)
+    return np.column_stack([xx.ravel(), yy.ravel()])
 
 
-def plan_windows(
-    geom: AnchorGeometry, centres0: np.ndarray, level: LevelGeometry, grid: TokenGrid
-) -> WindowPlan:
+def footprint_tokens(
+    geom: AnchorGeometry,
+    centres0: np.ndarray,
+    level: LevelGeometry,
+    lattice: WindowLattice,
+    token_background: np.ndarray,
+    samples: int = _SAMPLES_PER_TOKEN,
+    max_points: int = _MAX_POINTS,
+) -> SpotTokens:
     """
-    Assign every placeable anchor spot to one encoder window.
+    The tokens of the global grid each anchor footprint overlaps, weighted by that overlap.
 
-    A footprint of extent ``e`` (encoded-level pixels, rounded up to whole tokens) needs
-    ``e + 2 * context`` plus one token of slack. It gets a window of side ``base_side`` when that
-    fits, otherwise the need rounded up to 4 tokens, at most ``max_side`` (larger footprints are
-    read through the largest window centred on them). Windows sit on a lattice of stride
-    ``side - e - 2 * context`` (rounded down to tokens, at least one token), so every footprint
-    has at least ``context`` pixels of tissue around it inside its window, except where the
-    window meets the image edge. Spots that share a window share one forward pass, in chunks of
-    at most 512 readouts.
+    A token's weight is the fraction of ``samples x samples`` sub-cell centres of the token that
+    lie inside the footprint (``geom.contains``, so the footprint's shape and the alignment map,
+    affine or projective, are followed exactly). A placed spot whose footprint covers no sample
+    point reads the token holding its centre (clipped to the grid) with weight 1. Background
+    tokens are then dropped; a spot left without tokens reads nothing (``total == 0``).
 
     Parameters
     ----------
@@ -170,132 +252,148 @@ def plan_windows(
     centres0 : np.ndarray
         ``(N, 2)`` anchor centres in level-0 pixels.
     level : LevelGeometry
-    grid : TokenGrid
+    lattice : WindowLattice
+        Windows of the encoded image.
+    token_background : np.ndarray
+        ``lattice.token_shape`` bool, True for background tokens.
     """
-    h_img, w_img = level.dims
-    p, base, ctx, max_side = grid.patch, grid.base_side, grid.context, grid.max_side
+    p = lattice.patch
+    ny, nx = lattice.token_shape
+    n = len(centres0)
+    if ny == 0 or nx == 0:
+        empty = np.zeros(0, dtype=np.int64)
+        return SpotTokens(empty, empty, empty, np.zeros(0), np.zeros(n))
 
-    scale = np.tile(level.scale, 2)
-    boxes = geom.target_bboxes() * scale
-    centres = level.to_level(centres0)
-
-    clipped = boxes.copy()
-    clipped[:, [0, 2]] = np.clip(clipped[:, [0, 2]], 0, w_img)
-    clipped[:, [1, 3]] = np.clip(clipped[:, [1, 3]], 0, h_img)
+    boxes = geom.target_bboxes() * np.tile(level.scale, 2)
     with np.errstate(invalid="ignore"):
         ok = geom.valid & np.isfinite(boxes).all(axis=1)
-        ok &= (clipped[:, 2] > clipped[:, 0]) & (clipped[:, 3] > clipped[:, 1])
-    extent = np.where(
-        ok,
-        np.maximum(clipped[:, 2] - clipped[:, 0], clipped[:, 3] - clipped[:, 1]),
-        0.0,
-    )
-    mid = np.column_stack(
-        [(clipped[:, 0] + clipped[:, 2]) / 2, (clipped[:, 1] + clipped[:, 3]) / 2]
-    )
+        ok &= (boxes[:, 2] > 0) & (boxes[:, 0] < nx * p)
+        ok &= (boxes[:, 3] > 0) & (boxes[:, 1] < ny * p)
+    idx = np.flatnonzero(ok)
+    b = boxes[idx]
+    c_lo = np.clip(np.floor(b[:, 0] / p), 0, nx - 1).astype(np.int64)
+    c_hi = np.clip(np.floor(b[:, 2] / p), 0, nx - 1).astype(np.int64)
+    r_lo = np.clip(np.floor(b[:, 1] / p), 0, ny - 1).astype(np.int64)
+    r_hi = np.clip(np.floor(b[:, 3] / p), 0, ny - 1).astype(np.int64)
+    widths = c_hi - c_lo + 1
+    counts = widths * (r_hi - r_lo + 1)
 
-    # One token of slack on top of the footprint and its context: snapping the window origin
-    # to the stride lattice moves the window by at most half a stride.
-    need = _ceil_to(extent, p) + 2 * ctx + p
-    side = np.where(need <= base, base, np.minimum(max_side, _ceil_to(need, 4 * p)))
-    truncated = int((ok & (need > max_side)).sum())
-    side_x = np.minimum(side, _floor_to(w_img, p))
-    side_y = np.minimum(side, _floor_to(h_img, p))
-    ok &= (side_x >= p) & (side_y >= p)
-
-    stride = np.maximum(p, _floor_to(side - _ceil_to(extent, p) - 2 * ctx, p))
-    ox = np.clip(
-        stride * np.round((mid[:, 0] - side_x / 2) / stride),
-        0,
-        np.maximum(w_img - side_x, 0),
-    )
-    oy = np.clip(
-        stride * np.round((mid[:, 1] - side_y / 2) / stride),
-        0,
-        np.maximum(h_img - side_y, 0),
-    )
-
-    placed = np.flatnonzero(ok)
-    keys = np.column_stack(
-        [side_y[placed], side_x[placed], oy[placed], ox[placed]]
-    ).astype(np.int64)
-    chunks: list[Chunk] = []
-    if placed.size:
-        windows, inverse = np.unique(keys, axis=0, return_inverse=True)
-        inverse = inverse.ravel()
-        order = np.argsort(inverse, kind="stable")
-        bounds = np.searchsorted(inverse[order], np.arange(len(windows) + 1))
-        for wi, (sy, sx, wy, wx) in enumerate(windows):
-            members = placed[order[bounds[wi] : bounds[wi + 1]]]
-            for start in range(0, members.size, _MAX_READOUTS):
-                chunks.append(
-                    Chunk(
-                        (int(wx), int(wy)),
-                        (int(sy), int(sx)),
-                        members[start : start + _MAX_READOUTS],
-                    )
-                )
-        chunks.sort(key=lambda c: (c.shape, -len(c.spots), c.origin[1], c.origin[0]))
-
-    return WindowPlan(chunks, boxes, centres, np.flatnonzero(~ok), truncated)
-
-
-def readout_membership(
-    chunk: Chunk,
-    plan: WindowPlan,
-    geom: AnchorGeometry,
-    level: LevelGeometry,
-    grid: TokenGrid,
-    token_background: np.ndarray,
-) -> tuple[np.ndarray, np.ndarray]:
-    """
-    Tokens each spot of ``chunk`` reads out.
-
-    A token belongs to a spot when its centre lies inside the spot's footprint. A spot whose
-    footprint contains no token centre reads the token that contains the spot centre. Background
-    tokens are then removed; a spot left without tokens is not read out (its row stays zero).
-
-    Returns
-    -------
-    member : np.ndarray
-        ``(R, T)`` bool, R = number of spots in the chunk, T = tokens of the window.
-    keep : np.ndarray
-        ``(R,)`` bool, spots with at least one foreground token.
-    """
-    p = grid.patch
-    ox, oy = chunk.origin
-    h, w = chunk.shape
-    ny, nx = h // p, w // p
-    spots = chunk.spots
-    r_count = len(spots)
-    member = np.zeros((r_count, ny * nx), dtype=bool)
-
-    # Candidate tokens: centres within one token of the footprint box.
-    b = plan.boxes[spots]
-    c_lo = np.clip(np.ceil((b[:, 0] - p - ox) / p - 0.5), 0, nx).astype(np.int64)
-    c_hi = np.clip(np.floor((b[:, 2] + p - ox) / p - 0.5) + 1, 0, nx).astype(np.int64)
-    r_lo = np.clip(np.ceil((b[:, 1] - p - oy) / p - 0.5), 0, ny).astype(np.int64)
-    r_hi = np.clip(np.floor((b[:, 3] + p - oy) / p - 0.5) + 1, 0, ny).astype(np.int64)
-    widths = np.maximum(c_hi - c_lo, 0)
-    counts = widths * np.maximum(r_hi - r_lo, 0)
-    if counts.sum():
-        local = np.repeat(np.arange(r_count), counts)
-        offset = np.arange(int(counts.sum())) - np.repeat(
-            np.cumsum(counts) - counts, counts
+    offsets = _sample_offsets(p, samples)
+    per_token = len(offsets)
+    budget = max(1, max_points // per_token)
+    spot_parts, row_parts, col_parts, w_parts = [], [], [], []
+    ends = np.cumsum(counts)
+    start = 0
+    while start < len(idx):
+        # Spots in order until their candidate tokens fill the budget (always at least one spot).
+        base = ends[start] - counts[start]
+        stop = max(start + 1, int(np.searchsorted(ends, base + budget, side="right")))
+        sel = np.arange(start, stop)
+        cnt = counts[sel]
+        local = np.repeat(sel, cnt)
+        offset = np.arange(int(cnt.sum())) - np.repeat(np.cumsum(cnt) - cnt, cnt)
+        cols = c_lo[local] + offset % widths[local]
+        rows = r_lo[local] + offset // widths[local]
+        corner = np.column_stack([cols * p, rows * p]).astype(np.float64)
+        pts = (corner[:, None, :] + offsets[None]).reshape(-1, 2)
+        inside, _ = geom.contains(
+            np.repeat(idx[local], per_token), level.to_level0(pts)
         )
-        wrep = np.repeat(np.maximum(widths, 1), counts)
-        cols = np.repeat(c_lo, counts) + offset % wrep
-        rows = np.repeat(r_lo, counts) + offset // wrep
-        centres = np.column_stack([ox + (cols + 0.5) * p, oy + (rows + 0.5) * p])
-        inside, _ = geom.contains(spots[local], level.to_level0(centres))
-        member[local[inside], rows[inside] * nx + cols[inside]] = True
+        weight = inside.reshape(-1, per_token).mean(axis=1)
+        hit = weight > 0
+        spot_parts.append(idx[local[hit]])
+        row_parts.append(rows[hit])
+        col_parts.append(cols[hit])
+        w_parts.append(weight[hit])
+        start = stop
 
-    empty = np.flatnonzero(~member.any(axis=1))
-    if empty.size:
-        c = np.floor((plan.centres[spots[empty], 0] - ox) / p)
-        r = np.floor((plan.centres[spots[empty], 1] - oy) / p)
-        inside = (c >= 0) & (c < nx) & (r >= 0) & (r < ny)
-        member[empty[inside], (r[inside] * nx + c[inside]).astype(np.int64)] = True
+    spot = np.concatenate(spot_parts) if spot_parts else np.zeros(0, np.int64)
+    rows = np.concatenate(row_parts) if row_parts else np.zeros(0, np.int64)
+    cols = np.concatenate(col_parts) if col_parts else np.zeros(0, np.int64)
+    weight = np.concatenate(w_parts) if w_parts else np.zeros(0)
 
-    member &= ~token_background[None, :]
-    return member, cast(np.ndarray, member.any(axis=1))
+    # A placed spot whose footprint covers no sample point reads the token holding its centre.
+    centres = level.to_level(centres0)
+    h, w = level.dims
+    with np.errstate(invalid="ignore"):
+        placed = geom.valid & np.isfinite(centres).all(axis=1)
+        placed &= (centres[:, 0] >= 0) & (centres[:, 0] < w)
+        placed &= (centres[:, 1] >= 0) & (centres[:, 1] < h)
+    missing = np.flatnonzero(placed & (np.bincount(spot, minlength=n) == 0))
+    if missing.size:
+        spot = np.concatenate([spot, missing])
+        rows = np.concatenate([rows, _centre_token(centres[missing, 1], p, ny)])
+        cols = np.concatenate([cols, _centre_token(centres[missing, 0], p, nx)])
+        weight = np.concatenate([weight, np.ones(missing.size)])
+
+    fg = ~token_background[rows, cols]
+    spot, rows, cols, weight = spot[fg], rows[fg], cols[fg], weight[fg]
+    window, local_tok = lattice.token_window(rows, cols)
+    order = np.argsort(window, kind="stable")
+    return SpotTokens(
+        spot[order].astype(np.int64),
+        window[order],
+        local_tok[order],
+        weight[order],
+        np.bincount(spot, weights=weight, minlength=n).astype(np.float64),
+    )
+
+
+def _centre_token(v: np.ndarray, p: int, n: int) -> NDArray[np.int64]:
+    """Global token index holding coordinate ``v``, clipped to the ``n`` tokens of the grid."""
+    return np.clip(np.floor(v / p), 0, n - 1).astype(np.int64)
+
+
+def patch_links(
+    centres0: np.ndarray,
+    level: LevelGeometry,
+    lattice: WindowLattice,
+    live: np.ndarray,
+) -> NDArray[np.int64]:
+    """
+    Each spot's patch: the window that reads the token holding its centre (clipped to the grid).
+
+    Only ``live`` spots (those with a non-zero embedding) are linked; the others get ``-1``.
+    """
+    n = len(centres0)
+    out = np.full(n, -1, dtype=np.int64)
+    ny, nx = lattice.token_shape
+    if ny == 0 or nx == 0:
+        return out
+    centres = level.to_level(centres0)
+    ok = np.asarray(live, dtype=bool) & np.isfinite(centres).all(axis=1)
+    p = lattice.patch
+    rows = _centre_token(centres[ok, 1], p, ny)
+    cols = _centre_token(centres[ok, 0], p, nx)
+    out[ok] = lattice.token_window(rows, cols)[0]
+    return out
+
+
+def patch_anchor_xy(
+    geom: AnchorGeometry,
+    lattice: WindowLattice,
+    level: LevelGeometry,
+    patch: np.ndarray,
+    centres0: np.ndarray,
+) -> NDArray[np.float64]:
+    """
+    ``(N, 2)`` centre of each spot's patch in the anchor frame (NaN without a patch).
+
+    A window centre is mapped back through the alignment map evaluated at the linked spot
+    nearest to it, so every spot of one patch gets the same coordinates (the choice matters only
+    for a ``local_affine`` map). Centres the map cannot place are NaN.
+    """
+    out = np.full((len(patch), 2), np.nan)
+    linked = np.flatnonzero(np.asarray(patch) >= 0)
+    if not linked.size:
+        return out
+    windows, inverse = np.unique(patch[linked], return_inverse=True)
+    inverse = inverse.ravel()
+    centre = lattice.centre(windows)
+    dist = np.linalg.norm(level.to_level(centres0[linked]) - centre[inverse], axis=1)
+    order = np.lexsort((dist, inverse))
+    first = order[np.searchsorted(inverse[order], np.arange(len(windows)))]
+    xy = geom.transform.to_anchor(level.to_level0(centre), linked[first])
+    xy[~np.isfinite(xy).all(axis=1)] = np.nan
+    out[linked] = xy[inverse]
+    return out

@@ -33,7 +33,7 @@ If you do not have a GPU, use `"registration_type": "spot_interpolation"` for `m
 | | Alignment | Registration |
 |---|---|---|
 | **What it does** | Records the reference modality's spot/pixel coordinates in each non-reference modality's coordinate space by letting the user physically drag the reference layer to overlap the fixed target layer | Transfers features (intensities, embeddings) from the non-reference modality onto the reference spot grid |
-| **How it works** | The confirmed overlay is returned as a 3×3 projective matrix and applied to every reference spot; the mapped coordinates are stored in `obsm`, with no landmark fitting | Gaussian-weighted average or sum of the target spots or pixels inside each reference spot's footprint (spot and Raman modalities), or one footprint-restricted embedding per reference spot (microscopy) |
+| **How it works** | The confirmed overlay is returned as a 3×3 projective matrix and applied to every reference spot; the mapped coordinates are stored in `obsm`, with no landmark fitting | Gaussian-weighted average or sum of the target spots or pixels inside each reference spot's footprint (spot and Raman modalities), or one embedding per reference spot pooled from the image tokens its footprint overlaps (microscopy) |
 | **User involvement** | Interactive: you drag and visually overlap the reference with the target in the browser GUI | Fully automated |
 | **Output** | Aligned AnnData with `obsm['{modality}_spatial']` keys | Registered AnnData with feature matrix aligned to the reference grid |
 | **Required for MuData?** | Yes | Yes (when the reference is spot-based) |

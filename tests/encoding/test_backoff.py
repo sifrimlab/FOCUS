@@ -12,50 +12,57 @@ torch = pytest.importorskip("torch")
 from focus.registration.batching import _OOMError, forward_with_retry  # noqa: E402
 
 
-@pytest.mark.parametrize("masked", [False, True])
-def test_backoff_matches_baseline(masked: bool) -> None:
-    """Retain original slice order, matching memberships and the reduced batch limit."""
-    calls: list[dict[str, object]] = []
+@pytest.mark.parametrize("outputs", [1, 2])
+def test_backoff_matches_baseline(outputs: int) -> None:
+    """Retain original slice order for every output and the reduced batch limit."""
+    calls: list[list[float]] = []
 
-    def encode(
-        windows: NDArray[np.float32], member: NDArray[np.bool_] | None
-    ) -> NDArray[np.float32]:
-        """Record aligned input slices and simulate failure for batches larger than two."""
-        calls.append(
-            {
-                "ids": windows.ravel().tolist(),
-                "member": None if member is None else member.ravel().tolist(),
-            }
-        )
+    def encode(windows: NDArray[np.float32]) -> tuple[NDArray[np.float32], ...]:
+        """Record input slices and simulate failure for batches larger than two."""
+        calls.append(windows.ravel().tolist())
         if len(windows) > 2:
             raise _OOMError("controlled allocation failure")
-        return windows.reshape(-1, 1)
+        ids = windows.reshape(-1, 1)
+        return (ids,) if outputs == 1 else (ids, -ids)
 
     windows = np.arange(5, dtype=np.float32).reshape(5, 1, 1, 1)
-    member = np.arange(5).reshape(5, 1, 1).astype(bool) if masked else None
-    result, batch = forward_with_retry(torch.device("cpu"), encode, windows, member, 8)
+    result, batch = forward_with_retry(torch.device("cpu"), encode, windows, 8)
     contract = json.loads(Path(__file__).with_name("oom_contract.json").read_text())[
-        int(masked)
+        outputs - 1
     ]
     assert {
-        "masked": masked,
+        "outputs": outputs,
         "calls": calls,
-        "result": result.tolist(),
+        "result": [r.tolist() for r in result],
         "batch_size": batch,
-        "dtype": str(result.dtype),
+        "dtype": [str(r.dtype) for r in result],
     } == contract
+
+
+def test_nested_failures_keep_every_window() -> None:
+    """A slice that fails again shrinks the batch without skipping the windows after it."""
+
+    def encode(windows: NDArray[np.float32]) -> tuple[NDArray[np.float32], ...]:
+        """Fail on more than two windows, and on more than one once window 2 is involved."""
+        ids = windows.ravel()
+        if len(ids) > 2 or (len(ids) > 1 and 2 in ids):
+            raise _OOMError("controlled allocation failure")
+        return (windows.reshape(-1, 1),)
+
+    windows = np.arange(6, dtype=np.float32).reshape(6, 1, 1, 1)
+    (result,), batch = forward_with_retry(torch.device("cpu"), encode, windows, 8)
+    assert result.ravel().tolist() == [0.0, 1.0, 2.0, 3.0, 4.0, 5.0]
+    assert batch == 1
 
 
 def test_single_window_failure_propagates() -> None:
     """Stop retrying and propagate the allocation error when one window cannot fit."""
 
-    def fail(
-        windows: NDArray[np.float32], member: NDArray[np.bool_] | None
-    ) -> NDArray[np.float32]:
+    def fail(windows: NDArray[np.float32]) -> tuple[NDArray[np.float32], ...]:
         """Simulate an allocation error regardless of the requested batch size."""
         raise _OOMError("one window does not fit")
 
     with pytest.raises(_OOMError, match="one window does not fit"):
         forward_with_retry(
-            torch.device("cpu"), fail, np.ones((1, 1, 1, 1), dtype=np.float32), None, 1
+            torch.device("cpu"), fail, np.ones((1, 1, 1, 1), dtype=np.float32), 1
         )

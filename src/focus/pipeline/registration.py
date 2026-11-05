@@ -152,5 +152,6 @@ def register_image(
         anchor_type=_get_reference_modality(request.config)[ModalityParameters.TYPE],
         force_recomputing=request.force,
         background_color=request.settings.get("background_color", None),
+        patch_embeddings=bool(request.settings.get("patch_embeddings", False)),
         step_reporter=request.reporter,
     )

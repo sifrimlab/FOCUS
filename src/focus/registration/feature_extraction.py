@@ -21,8 +21,10 @@ class FeatureExtractorRegistration:
     Each anchor spot's footprint (its ``spot_size`` in the anchor frame, shaped by the anchor
     lattice) is mapped into the image through the alignment transform. The image is read at
     the stored pyramid level closest to the encoder's 0.5 µm per pixel and encoded by
-    Prov-GigaPath in windows; every spot gets the CLS embedding of a query that attends only
-    to the window tokens whose centres lie inside its footprint (see
+    Prov-GigaPath in 224 px windows on a lattice of stride 112 px; every spot gets the mean of
+    the final-layer tokens its footprint overlaps, weighted by the overlap. With
+    ``patch_embeddings`` every spot also gets the standard CLS embedding of its patch (the
+    window around it) and that patch's centre in the anchor frame (see
     ``MicroscopyImageFeatureExtractor.extract_spot_features``).
 
     Parameters
@@ -56,6 +58,7 @@ class FeatureExtractorRegistration:
         anchor_type: str | None = None,
         force_recomputing: bool = False,
         background_color: str | None = None,
+        patch_embeddings: bool = False,
         step_reporter: StepReporter | None = None,
     ) -> dict[str, str]:
         """
@@ -80,6 +83,10 @@ class FeatureExtractorRegistration:
                 Recompute even when the stored fingerprint matches.
         background_color : SegmentationBackgroundColor, optional
                 Fill color of non-tissue pixels (default white).
+        patch_embeddings : bool
+                Also store each spot's patch embedding (``obsm['patch_embedding']``), the
+                patch centre in the anchor frame (``obsm['patch_spatial']``) and the patch
+                index (``obs['patch_id']``).
         step_reporter : StepReporter, optional
                 If provided, reports per-sample and per-spot progress to the GUI.
 
@@ -104,6 +111,7 @@ class FeatureExtractorRegistration:
             anchor_type,
             background_color,
             reporter,
+            patch_embeddings=patch_embeddings,
         )
 
         registered_files = register_samples(

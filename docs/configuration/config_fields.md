@@ -388,9 +388,11 @@ Compatible modality type: `microscopy_image`, and only for **brightfield** image
 | Field | Type | Default |
 |---|---|---|
 | `background_color` | string | `"white"` |
+| `patch_embeddings` | bool | `false` |
 | `force_recomputing` | bool | `false` |
 
 - `background_color`: `"white"` or `"black"`. This is the colour counted by the background test: an encoder token whose pixels match it in at least 99% of positions is never read, and a reference spot whose footprint holds only such tokens is stored as an all-zero embedding. It applies to images that preprocessing did not fill; when `remove_background` filled the image, the recorded `focus_background_fill` is used instead (0 counts as black, any other value as white).
+- `patch_embeddings`: also store, for every reference spot, the embedding of the 224 px encoder patch around it (`obsm['patch_embedding']`), that patch's centre in the reference frame (`obsm['patch_spatial']`) and the patch index (`obs['patch_id']`, unique within a sample, `-1` for spots with an all-zero embedding). The patch embedding describes about 112 × 112 µm of tissue and is shared by the spots of one patch, so it is coarser but much less noisy than the spot embedding in `X`. It roughly doubles the size of the registered file. Changing it recomputes the registration.
 - `force_recomputing`: recompute even when the cached registration matches its inputs.
 
 The encoder window and the encoded pyramid level are not settings: the window is the encoder's input size and the level is the one closest to 0.5 µm per pixel. A `patch_size` key is ignored with a warning.
@@ -400,6 +402,7 @@ Example:
 ```json
 "registration_settings": {
   "background_color": "white",
+  "patch_embeddings": false,
   "force_recomputing": false
 }
 ```

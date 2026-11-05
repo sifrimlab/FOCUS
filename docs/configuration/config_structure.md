@@ -98,7 +98,7 @@ This page documents the **canonical structure** and the set of config fields tha
 | Value | Meaning | Compatible modality type(s) |
 |---|---|---|
 | `none` | Skip registration for this modality | all |
-| `feature_extraction` | One Prov-GigaPath embedding per reference spot, restricted to the image inside its footprint; brightfield images only (fluorescence is rejected) | `microscopy_image` |
+| `feature_extraction` | One Prov-GigaPath embedding per reference spot, the mean of the encoder tokens inside its footprint, and optionally the embedding of the image patch around it; brightfield images only (fluorescence is rejected) | `microscopy_image` |
 | `spot_interpolation` | Overlap-area registration of the target spots with each anchor footprint, for any combination of spot sizes: MSI intensities are area-weighted means, ST counts are shared by overlap and then normalized on the merged file | `msi`, `st` |
 | `raman_pixel_interpolation` | Gaussian-weighted pixel interpolation over the hyperspectral OME-TIFF | `raman` |
 | `pixel_composition` | Share of each reference footprint occupied by each pixel phenotype of a dataset-level codebook: unmixing endmembers for Raman, Pixie pixel clusters for fluorescence; brightfield images are rejected | `raman`, `microscopy_image` |
@@ -170,6 +170,7 @@ This page documents the **canonical structure** and the set of config fields tha
 ```json
 {
   "background_color": "white",
+  "patch_embeddings": false,
   "force_recomputing": false
 }
 ```

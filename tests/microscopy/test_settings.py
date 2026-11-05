@@ -64,6 +64,28 @@ class TestSettings:
             _reject_fluorescence({"s": out}, ["s"], "img")
 
 
+def test_patch_embeddings_must_be_a_bool() -> None:
+    """The feature-extraction patch layer switch accepts only true or false."""
+    from focus.config.compatibility import validate_registration
+
+    def config(value: object) -> dict[str, object]:
+        return {
+            "modalities": [
+                {
+                    "name": "he",
+                    "type": "microscopy_image",
+                    "registration_type": "feature_extraction",
+                    "registration_settings": {"patch_embeddings": value},
+                }
+            ]
+        }
+
+    validate_registration(config(True))  # type: ignore[arg-type]
+    validate_registration(config(None))  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="patch_embeddings must be true or false"):
+        validate_registration(config("yes"))  # type: ignore[arg-type]
+
+
 def test_alignment_view_renders_the_stored_windows(tmp_path: Path) -> None:
     """The alignment payload is a coloured composite of the shown channels within their windows."""
     from focus.alignment.image_view import load_view

@@ -105,3 +105,88 @@ class TestFeatureExtractionRegistration:
                     cached_fingerprint(files["s1"], key=REGISTRATION_FINGERPRINT_KEY)
                     is not None
                 )
+
+    def test_default_output_is_the_token_mean_without_patch_layers(self) -> None:
+        """Without patch embeddings only X, the spot coordinates and the sample id are written."""
+        rng = np.random.default_rng(5)
+        with tempfile.TemporaryDirectory() as tmp:
+            image, anchor_path, _ = encoding_inputs(tmp, rng)
+            with patch(
+                "focus.registration.spot_encoding.MicroscopyImageFeatureExtractor",
+                TinyExtractor,
+            ):
+                files = FeatureExtractorRegistration(tmp).register_dataset(
+                    {"s1": image}, {"s1": anchor_path}, "he", "msi", anchor_type="msi"
+                )
+            out = ad.read_h5ad(files["s1"])
+            assert list(out.obsm.keys()) == ["spatial"]
+            assert list(out.obs.columns) == ["sample_id"]
+            geometry = out.uns[REGISTRATION_GEOMETRY_KEY]
+            assert geometry["readout"] == "token_mean"
+            assert list(geometry["window_px"]) == [64, 64]
+            assert int(geometry["stride_px"]) == 32
+            assert not bool(geometry["patch_embeddings"])
+
+    def test_patch_embeddings_add_the_patch_layer_and_change_the_cache_key(
+        self,
+    ) -> None:
+        """The opt-in patch layer is written per spot, keeps X, and is a different cache entry."""
+        from focus.registration.readout import TokenGrid, build_lattice
+
+        rng = np.random.default_rng(6)
+        with tempfile.TemporaryDirectory() as tmp:
+            image, anchor_path, spatial = encoding_inputs(tmp, rng)
+            engine = FeatureExtractorRegistration(tmp)
+            with patch(
+                "focus.registration.spot_encoding.MicroscopyImageFeatureExtractor",
+                TinyExtractor,
+            ):
+                files = engine.register_dataset(
+                    {"s1": image}, {"s1": anchor_path}, "he", "msi", anchor_type="msi"
+                )
+                plain = ad.read_h5ad(files["s1"])
+                key = cached_fingerprint(files["s1"], key=REGISTRATION_FINGERPRINT_KEY)
+                files = engine.register_dataset(
+                    {"s1": image, "s2": image},
+                    {"s1": anchor_path, "s2": anchor_path},
+                    "he",
+                    "msi",
+                    anchor_type="msi",
+                    patch_embeddings=True,
+                )
+            out = ad.read_h5ad(files["s1"])
+            assert (
+                cached_fingerprint(files["s1"], key=REGISTRATION_FINGERPRINT_KEY) != key
+            )
+            np.testing.assert_allclose(out.X, plain.X, rtol=1e-5, atol=1e-6)
+            assert out.obsm["patch_embedding"].shape == (64, 32)
+            assert out.obsm["patch_spatial"].shape == (64, 2)
+            patch_id = out.obs["patch_id"].to_numpy()
+            assert patch_id.dtype == np.int64
+            # Spots on the white border read nothing: no X, no patch.
+            linked = patch_id >= 0
+            np.testing.assert_array_equal(linked, np.abs(out.X).any(axis=1))
+            assert 0 < linked.sum() < len(linked)
+            assert np.all(out.obsm["patch_embedding"][~linked] == 0)
+            assert np.isnan(out.obsm["patch_spatial"][~linked]).all()
+            for pid in np.unique(patch_id[linked]):
+                rows = out.obsm["patch_embedding"][patch_id == pid]
+                assert np.all(rows == rows[0])
+            # Level 1 is encoded at 0.5 µm/px and the anchor is in µm: centre_px * 0.5 = µm.
+            lattice = build_lattice((320, 400), TokenGrid(patch=16, base_side=64))
+            np.testing.assert_allclose(
+                out.obsm["patch_spatial"][linked],
+                lattice.centre(patch_id[linked]) * 0.5,
+                atol=1e-4,
+            )
+            # Every spot lies inside its patch (32 px window = 16 µm half-side).
+            offset = np.abs(out.obsm["patch_spatial"][linked] - spatial[linked])
+            assert np.all(offset <= 16.0 + 1e-6)
+            assert bool(out.uns[REGISTRATION_GEOMETRY_KEY]["patch_embeddings"])
+
+            merged = ad.read_h5ad(files["merged"])
+            assert merged.n_obs == 128
+            assert {"spatial", "patch_embedding", "patch_spatial"} <= set(merged.obsm)
+            np.testing.assert_array_equal(
+                merged.obs["patch_id"].to_numpy(), np.r_[patch_id, patch_id]
+            )

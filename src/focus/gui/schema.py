@@ -172,6 +172,7 @@ def _build_schema() -> dict[str, object]:
                     "options": SegmentationBackgroundColor.list(),
                     "default": SegmentationBackgroundColor.WHITE,
                 },
+                "patch_embeddings": {"type": "bool", "default": False},
             },
             RegistrationType.SPOT_INTERPOLATION: {
                 "force_recomputing": {"type": "bool", "default": False},

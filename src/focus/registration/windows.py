@@ -192,3 +192,31 @@ def token_background_mask(
     return background_mask(
         tokens.reshape(b * ny * nx, patch, patch, c), bg_color
     ).reshape(b, ny * nx)
+
+
+def token_background_grid(
+    img: np.ndarray,
+    patch: int,
+    bg_color: np.ndarray,
+    strip_tokens: int = 16,
+) -> NDArray[np.bool_]:
+    """
+    :func:`token_background_mask` over the global token grid of a whole image.
+
+    The grid covers the whole tokens of the image, ``(H // patch, W // patch)``; it is computed
+    in strips of ``strip_tokens`` token rows so the per-pixel test never holds the whole image.
+
+    Returns
+    -------
+    np.ndarray
+        ``(H // patch, W // patch)`` bool, True for background tokens.
+    """
+    ny, nx = img.shape[0] // patch, img.shape[1] // patch
+    out = np.zeros((ny, nx), dtype=bool)
+    if ny == 0 or nx == 0:
+        return out
+    for r0 in range(0, ny, strip_tokens):
+        r1 = min(ny, r0 + strip_tokens)
+        strip = img[r0 * patch : r1 * patch, : nx * patch][None]
+        out[r0:r1] = token_background_mask(strip, patch, bg_color).reshape(r1 - r0, nx)
+    return out

@@ -3,7 +3,7 @@
 from numpy.typing import NDArray
 
 from collections.abc import Callable
-from typing import cast
+from typing import TypeAlias, cast
 import numpy as np
 import torch
 
@@ -14,15 +14,13 @@ _SAFETY_FRACTION = 0.8
 _CPU_BATCH = 32
 _OOMError = getattr(torch.cuda, "OutOfMemoryError", RuntimeError)
 
+# Per-window encoder outputs: arrays whose first axis is the window.
+Encoded: TypeAlias = tuple[NDArray[np.float32], ...]
+Encoder: TypeAlias = Callable[[NDArray[np.float32]], Encoded]
+
 
 def estimate_batch_size(
-    device: torch.device,
-    windows: NDArray[np.float32],
-    member: NDArray[np.bool_] | None,
-    encode_np: Callable[[NDArray[np.float32]], NDArray[np.float32]],
-    encode_readouts: Callable[
-        [NDArray[np.float32], NDArray[np.bool_]], NDArray[np.float32]
-    ],
+    device: torch.device, windows: NDArray[np.float32], encode: Encoder
 ) -> int:
     """
     Conservatively choose a batch size for windows shaped like ``windows[0]``.
@@ -45,10 +43,7 @@ def estimate_batch_size(
         base = torch.cuda.memory_allocated(device)  # resident model weights
         trial_w = np.repeat(windows[:1], probe, axis=0)
         try:
-            if member is None:
-                encode_np(trial_w)
-            else:
-                encode_readouts(trial_w, np.repeat(member[:1], probe, axis=0))
+            encode(trial_w)
             break
         except _OOMError:
             torch.cuda.empty_cache()
@@ -70,13 +65,10 @@ def estimate_batch_size(
 
 def forward_with_retry(
     device: torch.device,
-    encode: Callable[
-        [NDArray[np.float32], NDArray[np.bool_] | None], NDArray[np.float32]
-    ],
+    encode: Encoder,
     windows: NDArray[np.float32],
-    member: NDArray[np.bool_] | None,
     batch_size: int,
-) -> tuple[NDArray[np.float32], int]:
+) -> tuple[Encoded, int]:
     """Encode a batch, halving its working size on CUDA OOM and retaining output order.
 
     Parameters
@@ -84,34 +76,33 @@ def forward_with_retry(
     device : torch.device
         Device whose cached allocations are released after an out-of-memory error.
     encode : callable
-        Forward operation for float32 (B, H, W, 3) windows and optional boolean
-        (B, R, T) memberships; returns float32 CPU embeddings.
+        Forward operation for float32 (B, H, W, 3) windows; returns a tuple of float32 CPU
+        arrays whose first axis is the window.
     windows : np.ndarray
         Host windows, sliced without mutation during retry.
-    member : np.ndarray or None
-        Readout memberships, sliced alongside windows; None selects plain CLS.
     batch_size : int
         Current working batch limit, retained or reduced for the caller's next batch.
 
     Returns
     -------
-    tuple[NDArray[np.float32], int]
-        Ordered embeddings and the final working batch size.
+    tuple[Encoded, int]
+        Every output concatenated in window order, and the final working batch size.
     """
     try:
-        return (encode(windows, member)), batch_size
+        return encode(windows), batch_size
     except _OOMError:
         if device.type == "cuda":
             torch.cuda.empty_cache()
-        new_bs = max(1, min(batch_size, len(windows)) // 2)
         if len(windows) <= 1:
             # Can't shrink any further: re-raise rather than spin forever.
             raise
-        outs = []
-        for s in range(0, len(windows), new_bs):
-            part = None if member is None else member[s : s + new_bs]
-            emb, new_bs = forward_with_retry(
-                device, encode, windows[s : s + new_bs], part, new_bs
-            )
-            outs.append(emb)
-        return np.concatenate(outs, axis=0), new_bs
+        new_bs = max(1, min(batch_size, len(windows)) // 2)
+        parts: list[Encoded] = []
+        start = 0
+        while start < len(windows):
+            # A slice that fails again lowers new_bs; the next slice starts where this one ended.
+            part = windows[start : start + new_bs]
+            out, new_bs = forward_with_retry(device, encode, part, new_bs)
+            parts.append(out)
+            start += len(part)
+        return tuple(np.concatenate(p, axis=0) for p in zip(*parts)), new_bs

@@ -273,6 +273,10 @@
             "black"
           ],
           "default": "white"
+        },
+        "patch_embeddings": {
+          "type": "bool",
+          "default": false
         }
       },
       "spot_interpolation": {
@@ -912,6 +916,10 @@
               "type": "enum"
             },
             "force_recomputing": {
+              "default": false,
+              "type": "bool"
+            },
+            "patch_embeddings": {
               "default": false,
               "type": "bool"
             }

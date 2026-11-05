@@ -146,61 +146,64 @@ The chosen level is read into memory; integer dtypes are rescaled by their dtype
 encoder receives \([0,1]\) data. Anchor coordinates and footprints map to the level through the
 measured size ratio \((W_i/W_0, H_i/H_0)\).
 
-### 2.2 Footprint-restricted CLS readout
+### 2.2 Footprint token readout
 
 Prov-GigaPath's tile encoder is a vision transformer[^dosovitskiy2021] pretrained with
 DINOv2[^xu2024][^oquab2023]: the input window is split into square tokens of \(p\) pixels (read from
 the model), a class token (CLS) is prepended, and the CLS output after the final normalisation is
-the tile embedding. FOCUS design choice: each anchor gets the CLS embedding of exactly the tissue
-inside its footprint, computed with attention masking inside windows of the training size, so the
-tokens keep their surrounding context while the embedding reads only the footprint.
+the tile embedding. FOCUS design choice: the image is encoded with standard forward passes in windows
+of the training size, and each anchor gets the mean of the final-layer patch tokens its footprint
+overlaps, weighted by the overlap. The tokens keep the context of their window; the embedding reads
+only the footprint. Optionally each anchor also gets the standard CLS embedding of its patch
+(§2.4).
 
-**Windows.** The training window side \(b\) is the model's input size (224 px); the context margin
-is \(c = b/4 = 56\) px. For an anchor whose footprint box, clipped to the image, has extent \(e\)
-(the larger side, in level pixels):
+The design follows a measurement on an MSI anchor of 10 × 20 µm spots (1–3 tokens per footprint):
+a CLS query masked to the footprint's tokens, the previous readout, depended for about half of its
+variance on where the token grid fell relative to the spot, while the overlap-weighted token mean
+of the same footprint depended on it for under a fifth and predicted the co-registered MSI and ST
+data better.
 
-- the window needs \(n = \lceil e \rceil_p + 2c + p\), where \(\lceil\cdot\rceil_p\) rounds up to a
-  multiple of \(p\) and the extra token absorbs the stride rounding below;
-- window side \(= b\) when \(n \le b\), otherwise \(n\) rounded up to a multiple of \(4p\), at most
-  64 tokens (1024 px for \(p = 16\)); larger windows use position embeddings interpolated by `timm`
-  (`dynamic_img_size`). A footprint wider than the largest window is read through the largest window
-  centred on it, with a warning;
-- each window axis is at most the image size rounded down to whole tokens;
-- windows sit on a lattice of stride \(s = \max(p, \lfloor \text{side} - \lceil e \rceil_p - 2c
-  \rfloor_p)\): the window origin is \(s \cdot \mathrm{round}((\text{mid} - \text{side}/2)/s)\),
-  clamped to the image, with mid the centre of the clipped footprint box. Every footprint therefore
-  has at least \(c\) pixels of tissue around it inside its window, except where the window meets the
-  image edge.
+**Windows.** The training window side \(b\) is the model's input size (224 px). Windows of side
+\(b\) sit on a fixed lattice of stride \(s = \max(p, \lfloor b/2 \rfloor_p)\) (112 px), where
+\(\lfloor\cdot\rfloor_p\) rounds down to a multiple of \(p\). Along each axis of \(D\) pixels the
+origins are \(0, s, 2s, \dots\) while the window fits, plus one window flush with the last whole
+token at \(\lfloor D - b \rfloor_p\). An axis shorter than \(b\) gets one window of
+\(\lfloor D \rfloor_p\) pixels (encoded with position embeddings interpolated by `timm`,
+`dynamic_img_size`). All origins are multiples of \(p\), so the tokens of every window fall on one
+global token grid covering \([0, \lfloor W \rfloor_p) \times [0, \lfloor H \rfloor_p)\).
 
-Anchors that map to the same window share one forward pass, in chunks of at most 512 readouts.
-Anchors that cannot be placed (§1.1), whose footprint lies outside the image, or for which the image
-is smaller than one token keep an all-zero row.
+**Token ownership.** Each token of the global grid is read from exactly one window: the one whose
+centre is nearest the token centre, per axis, ties going to the lower window (with \(s = 7p\) a
+token every 7 lies exactly halfway). A token's centre is then at least \(b/4\) (56 px) inside its
+window, except within \(b/4\) of the image border.
 
-**Tokens of a footprint.** Token \((r, k)\) of a window with origin \((o_x, o_y)\) is centred at
-\((o_x + (k + 0.5)p,\ o_y + (r + 0.5)p)\). A token belongs to an anchor when its centre, mapped to
-level 0 and into the anchor frame, lies inside the footprint (§1.3). An anchor whose footprint
-contains no token centre (a footprint smaller than one token) reads the token that contains the
-anchor centre. A token is background when at least 99 % of its pixels match the background color,
-a pixel matching iff `np.isclose(pixel, bg_color, atol=1e-3)` holds on every
-channel; background tokens are removed from every footprint, and an anchor left without tokens keeps
-an all-zero row. The background color is the fill recorded by preprocessing
-(`focus_background_fill`, [microscopy §5.3](microscopy_methods.md#53-crop-and-fill-opt-in): 0 is
-black, any other value white) when the image was filled, and the configured `background_color`
-otherwise.
+**Tokens of a footprint.** Each token overlapping a footprint's bounding box (mapped to the level) is
+sampled at the \(4 \times 4\) sub-cell centres \(((k + 0.5)p/4)\); its weight is the fraction of
+those points that, mapped to level 0 and into the anchor frame, lie inside the footprint (§1.3). The
+weight therefore follows the footprint's shape and the alignment map, affine or projective. An
+anchor whose footprint covers no sample point (a footprint much smaller than one token) reads the
+token holding its centre, clipped to the grid, with weight 1. A token is background when at least
+99 % of its pixels match the background color, a pixel matching iff
+`np.isclose(pixel, bg_color, atol=1e-3)` holds on every channel; background tokens are removed from
+every footprint, and an anchor left without tokens keeps an all-zero row. The background color is
+the fill recorded by preprocessing (`focus_background_fill`,
+[microscopy §5.3](microscopy_methods.md#53-crop-and-fill-opt-in): 0 is black, any other value white)
+when the image was filled, and the configured `background_color` otherwise. Anchors that cannot be
+placed (§1.1), whose footprint lies outside the image, or for which the image is smaller than one
+token also keep an all-zero row.
 
-**Readout.** For each chunk, one query per anchor is appended to the window's token sequence,
-initialised as the window CLS (class token plus its position embedding). The boolean attention mask
-allows:
+**Readout.** Only the windows that own a weighted token (and, with patch embeddings, the patch
+windows) are encoded. The embedding of an anchor is
+\(\sum_t w_t\,z_t / \sum_t w_t\) over its tokens \(t\), with \(z_t\) the final-layer token (after the
+final normalisation) from the token's own window. A footprint of any size is read this way: a large
+one simply spans several windows. When the model is loaded FOCUS checks that it returns one token
+per patch of a training-size window and stops with an error otherwise.
 
-- the CLS and the patch tokens (and any register tokens) to attend among themselves only, exactly as
-  in a standard forward pass, so the readout queries never change them;
-- each readout query to attend to itself, to any register tokens, and to its footprint's tokens; it
-  never attends to the window CLS or to another query.
-
-The embedding of an anchor is its query's output after the final normalisation and the model head.
-A query whose footprint covers every token of the window reproduces the standard CLS embedding;
-FOCUS verifies this on a random window when the model is loaded and stops with an error if the
-readout differs (relative tolerance \(10^{-3}\)).
+**Patch.** An anchor's patch is the window that owns the token holding its centre (clipped to the
+grid); its embedding is that window's standard CLS embedding, identical to the model's own forward
+pass. Only anchors with a non-zero embedding have a patch. The patch centre is mapped to level 0 and
+back through the alignment map into the anchor frame, evaluated at the linked anchor nearest the
+window centre so every anchor of one patch gets the same coordinates.
 
 ### 2.3 Encoder normalization and model
 
@@ -219,28 +222,42 @@ with ImageNet statistics
 Model: `hf_hub:prov-gigapath/prov-gigapath` via `timm` with `dynamic_img_size=True`, run in
 `torch.inference_mode()` on a CUDA GPU when one is available, otherwise on the CPU.
 
-On GPU the batch size is chosen per window shape from the available VRAM: up to 8 copies of a real
-window with its largest readout chunk are forwarded once to measure the per-window cost (halved on
-an out-of-memory error), and the batch is sized to 80 % of the free memory, clamped to 1 to 512
-windows, capped so the in-flight pixels stay within \(512 \times 224^2\), and rounded to a multiple
-of 8 from 16 windows up. A CUDA out-of-memory error halves the batch and retries. On CPU the batch is
+On GPU the batch size is chosen from the available VRAM: up to 8 copies of a real window are
+forwarded once to measure the per-window cost (halved on an out-of-memory error), and the batch is
+sized to 80 % of the free memory, clamped to 1 to 512 windows, capped so the in-flight pixels stay
+within \(512 \times 224^2\), and rounded to a multiple of 8 from 16 windows up. A CUDA
+out-of-memory error halves the batch and retries, keeping every window in order. On CPU the batch is
 at most 32 windows under the same pixel cap.
 
 ### 2.4 Outputs
 
 Per-sample AnnData:
 
-- `.X`: embeddings, dense float32, shape `(N_ref, D)` with `D` the model width (1536)
+- `.X`: footprint embeddings (§2.2), dense float32, shape `(N_ref, D)` with `D` the model width
+  (1536)
 - `.obsm['spatial']`: the anchor coordinates in level-0 image pixels
 - `.obs['sample_id']`
+- with `patch_embeddings`:
+  - `.obsm['patch_embedding']`: float32 `(N_ref, D)`, the standard CLS embedding of each anchor's
+    patch; anchors of one patch share the row, anchors without a patch have a zero row
+  - `.obsm['patch_spatial']`: float32 `(N_ref, 2)`, the patch centre in the anchor frame (the frame
+    of the MuData's `obsm['spatial']`), NaN without a patch
+  - `.obs['patch_id']`: int64, the patch index, unique within `sample_id`, `-1` exactly for the
+    anchors whose `.X` row is zero
 - `.uns`: the stamps of §6, with `focus_registration_geometry` extended by `encoder`,
-  `encoded_level` and, when the pixel size is known, `encoded_um_per_px`
+  `encoded_level`, `readout` (`token_mean`), `window_px` and `stride_px` (encoded-level pixels),
+  `patch_embeddings` and, when the pixel size is known, `encoded_um_per_px` and `window_um`
 - no `.var` metadata (`var_names` are positional strings) and no `.layers`
+
+The patch layer is a coarser, cleaner view of the same tissue: a 224 px patch at 0.5 µm/px covers
+about 112 × 112 µm and is shared by every anchor linked to it, while `.X` describes only the
+footprint. Both are kept by the sample merge and carried into the MuData modality.
 
 ### 2.5 Parameters reflected in code path
 
 - `background_color` (`white`/`black`, default `white`), used when the image records no background
   fill
+- `patch_embeddings` (default `false`): also write the patch layer of §2.4
 - `force_recomputing` (default `false`)
 
 The window size is fixed by the model; a `patch_size` key in `registration_settings` is ignored with
@@ -567,11 +584,13 @@ when its stored fingerprint equals the SHA-256 fingerprint of its current inputs
 - the registration method version and `registration_type`;
 - the algorithm marker of the spot method (`overlap-1`), so a change of that method rebuilds only the spot registrations;
 - for `pixel_composition`, its algorithm marker (`pixel-phenotypes-1`) and the codebook fingerprint (§5.5);
+- for `feature_extraction`, its algorithm marker (`token-mean-1`, §2.2), so outputs of the earlier
+  masked-CLS readout are rebuilt;
 - digests of the anchor's `obsm['spatial']` and `obsm['{target_name}_spatial']`, and its `spot_size`;
 - the identity of the target input: the level-0 pixel digest of a FOCUS OME-TIFF, the
   preprocessing fingerprint of an h5ad, otherwise the file's path, size and modification time;
-- the method settings (`feature_extraction`: `background_color`, the encoder, the reference
-  modality type and the image's recorded pixel size).
+- the method settings (`feature_extraction`: `background_color`, `patch_embeddings`, the encoder,
+  the reference modality type and the image's recorded pixel size).
 
 An output without a fingerprint, or with a different one, is recomputed. The merged file is reused
 only when its fingerprint, built from the per-sample fingerprints in sample order, matches;

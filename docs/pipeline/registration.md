@@ -50,7 +50,7 @@ The geometry is detailed in [Registration Methods §1](../scientific/registratio
 
 ## `feature_extraction`
 
-Used for microscopy images. Each reference spot is described by a deep-learning embedding of exactly the image area inside its footprint.
+Used for microscopy images. Each reference spot is described by a deep-learning embedding of the image area inside its footprint and, optionally, by the embedding of the 224 px image patch around it.
 
 !!! warning "H&E-stained brightfield images only"
     The encoder is **Prov-GigaPath**, a foundation model pretrained on brightfield tiles from H&E-stained whole-slide images ([model card](https://huggingface.co/prov-gigapath/prov-gigapath)). Its embeddings describe H&E morphology, so `feature_extraction` is only appropriate when the modality is an **H&E-stained histological section imaged in brightfield RGB**.
@@ -66,16 +66,18 @@ Used for microscopy images. Each reference spot is described by a deep-learning 
 
 1. Choose the encoding scale. Prov-GigaPath was trained on tiles at 0.5 µm per pixel, so FOCUS reads the stored pyramid level of the preprocessed image whose pixel size is closest to 0.5 µm, without resampling it: a 40x scan (0.25 µm) is encoded from its half-resolution level, a 20x scan from full resolution. The pixel size comes from the image's OME metadata, written by preprocessing from the source file; with an MSI reference it can also be derived from the alignment. When it is unknown, the full-resolution level is used and a warning is logged.
 2. Map every reference spot's footprint into the image (see the shared rules above).
-3. Cut **windows** of 224 px, the encoder's input size, around the footprints, with at least 56 px of tissue around each footprint. Spots that fall in the same window share one forward pass. A footprint too large for a 224 px window gets a larger window (up to 1024 px), with interpolated position embeddings.
-4. For each spot, add a **readout query** to its window: a copy of the encoder's class token whose attention is restricted to the window's patch tokens (the square pixel blocks the encoder embeds) whose centres lie inside the footprint. The window's own tokens attend to each other exactly as in a normal forward pass, so they keep the context of the surrounding tissue, while each spot's embedding reads only its footprint. A spot smaller than one token reads the token that contains its centre.
+3. Encode the image in **windows** of 224 px, the encoder's input size, on a fixed grid with a 112 px step (half a window), so neighbouring windows overlap by half. Each patch token (a 16 × 16 px block the encoder embeds) is taken from the one window it is most central in, which keeps at least 56 px of surrounding tissue as context around it.
+4. Each spot's embedding is the **mean of the final-layer patch tokens its footprint overlaps**, each weighted by the fraction of the token that lies inside the footprint. A spot much smaller than one token reads the token that contains its centre; a large footprint simply reads tokens from several windows.
 5. A token is **background** when **≥99 % of its pixels match the background colour** (white `[1,1,1]` or black `[0,0,0]`); background tokens are never read. The colour is the fill that preprocessing recorded in the image (`focus_background_fill`: 0 is black, any other value white) when `remove_background` was enabled, and the configured `background_color` otherwise. A spot whose footprint holds only background, or lies outside the image, keeps an **all-zero embedding**, which the [compilation](compilation.md) coverage filter later drops.
 6. Encode with **Prov-GigaPath** (`hf_hub:prov-gigapath/prov-gigapath`, loaded via `timm`, run under `torch.inference_mode()`), producing a **1536-dimensional** embedding per spot. Input windows are normalized with ImageNet statistics (μ = (0.485, 0.456, 0.406), σ = (0.229, 0.224, 0.225)); inference runs on the GPU when CUDA is available and otherwise on CPU. On GPU the batch size is chosen automatically per window size from the free VRAM and is reduced and retried if an out-of-memory error occurs.
 
-When the model is loaded, FOCUS checks that a readout covering a whole window reproduces the encoder's standard embedding of that window, and stops with an error otherwise. No normalization is applied to the output embeddings.
+With `patch_embeddings: true`, each spot also gets its **patch**: the window that reads the token holding the spot's centre. The patch embedding is that window's standard Prov-GigaPath embedding (about 112 × 112 µm of tissue at 0.5 µm/px), shared by every spot linked to it. It is coarser than the spot embedding but much less noisy, which matters when the spots are small (for example 10–20 µm MSI pixels cover only one to three tokens). Spots with an all-zero embedding have no patch.
+
+When the model is loaded, FOCUS checks that it returns one token per 16 px block of a 224 px window, and stops with an error otherwise. No normalization is applied to the output embeddings.
 
 **Requirements:** an H&E-stained brightfield image (see the warning above), a `huggingface_token` in the config (for the model download), and for reasonable runtime an NVIDIA GPU with CUDA.
 
-**Output AnnData:** `X` = `(N_ref, 1536)` dense embeddings; `obsm['spatial']` = the reference coordinates in full-resolution image pixels; `obs['sample_id']`; `uns['focus_registration_geometry']` also records the encoded pyramid level and its pixel size. There is no `var` metadata (`var_names` are positional strings) and no `layers`.
+**Output AnnData:** `X` = `(N_ref, 1536)` dense spot embeddings; `obsm['spatial']` = the reference coordinates in full-resolution image pixels; `obs['sample_id']`; `uns['focus_registration_geometry']` also records the encoded pyramid level and its pixel size, the window and step sizes, and whether patch embeddings were written. With `patch_embeddings: true` there are also `obsm['patch_embedding']` = `(N_ref, 1536)` patch embeddings, `obsm['patch_spatial']` = each patch's centre in the reference coordinate system (NaN for spots without a patch), and `obs['patch_id']` = the patch index, unique within a sample (`-1` for spots without a patch). There is no `var` metadata (`var_names` are positional strings) and no `layers`.
 
 **Configuration**
 
@@ -84,6 +86,7 @@ When the model is loaded, FOCUS checks that a readout covering a whole window re
   "registration_type": "feature_extraction",
   "registration_settings": {
     "background_color": "white",
+    "patch_embeddings": false,
     "force_recomputing": false
   }
 }
@@ -92,6 +95,7 @@ When the model is loaded, FOCUS checks that a readout covering a whole window re
 | Parameter | Type | Default | Description |
 |---|---|---|---|
 | `background_color` | string | `"white"` | `"white"` or `"black"`: the color counted toward the ≥99 % background test for an image that preprocessing did not fill. A filled image uses its recorded `focus_background_fill` instead. |
+| `patch_embeddings` | bool | `false` | Also store, for every spot, the embedding of its 224 px patch (`obsm['patch_embedding']`), the patch centre in the reference frame (`obsm['patch_spatial']`) and the patch index (`obs['patch_id']`). Adds about as much data as `X`. |
 | `force_recomputing` | bool | `false` | Recompute even if the cached output matches its inputs. |
 
 The window size is fixed by the encoder; there is no patch size setting.

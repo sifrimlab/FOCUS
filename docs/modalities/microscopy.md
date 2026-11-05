@@ -150,7 +150,7 @@ A source compressed with lossy JPEG (for example an SVS) is decoded once and sto
 
 `pixel_composition` clusters the pixels of a multichannel fluorescence image into phenotypes with Pixie (Gaussian smoothing, per-pixel and per-channel normalization, self-organizing map, consensus metaclustering) and gives each anchor spot the fraction of its footprint occupied by each phenotype. See [Registration](../pipeline/registration.md#pixel_composition).
 
-`feature_extraction` gives each anchor spot one embedding of the image area inside its footprint, computed with [Prov-GigaPath](https://huggingface.co/prov-gigapath/prov-gigapath), a pathology foundation model downloaded from HuggingFace on first use, so `huggingface_token` must be set in the configuration. The image is encoded at the stored pyramid level closest to the model's 0.5 µm per pixel, using the pixel size recorded at preprocessing. It runs on a GPU when one is available and otherwise on the CPU.
+`feature_extraction` gives each anchor spot one embedding of the image area inside its footprint (the mean of the encoder's patch tokens it overlaps) and, optionally, the embedding of the image patch around it, computed with [Prov-GigaPath](https://huggingface.co/prov-gigapath/prov-gigapath), a pathology foundation model downloaded from HuggingFace on first use, so `huggingface_token` must be set in the configuration. The image is encoded at the stored pyramid level closest to the model's 0.5 µm per pixel, using the pixel size recorded at preprocessing. It runs on a GPU when one is available and otherwise on the CPU.
 
 !!! warning "Use `feature_extraction` only on H&E-stained brightfield images"
     Prov-GigaPath is pretrained on brightfield tiles from H&E-stained whole-slide images, so its embeddings represent H&E morphology. `feature_extraction` applies to brightfield images only. An image recorded as `fluorescence` is rejected: at configuration time when `image_type` is `"fluorescence"`, and at registration time from the `focus_image_type` recorded in the preprocessed image (for example when `image_type: auto` resolved to fluorescence).
@@ -164,6 +164,7 @@ A source compressed with lossy JPEG (for example an SVS) is decoded once and sto
 | Name | Type | Default | Description |
 |------|------|---------|-------------|
 | `background_color` | `str` | `"white"` | Colour used to recognise empty image areas when the image was not filled. An encoder token whose pixels match it in at least 99% of positions is never read; an anchor spot whose footprint holds only such tokens receives an all-zero embedding, keeping one output row per anchor spot. When preprocessing filled the background (`remove_background: true`), the fill recorded in the image (`focus_background_fill`) is used instead: 0 counts as black, any other value as white |
+| `patch_embeddings` | `bool` | `false` | Also store, for every anchor spot, the embedding of the 224 px image patch around it (`obsm['patch_embedding']`), the patch centre in the reference frame (`obsm['patch_spatial']`) and the patch index (`obs['patch_id']`). The patch embedding is coarser than the spot embedding but much less noisy for small spots |
 | `force_recomputing` | `bool` | `false` | Recompute even if the registration output matches its inputs |
 
 ```yaml
