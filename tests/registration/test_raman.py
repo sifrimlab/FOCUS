@@ -11,7 +11,7 @@ from focus.registration.provenance import REGISTRATION_GEOMETRY_KEY
 from focus.spatial.footprint import AnchorGeometry
 from focus.spatial.membership import pixel_footprint_membership
 from focus.registration.raman_pixel import RamanPixelInterpolationRegistration
-from tests.registration.data import hex_lattice, write_anchor
+from tests.registration.data import hex_lattice, write_anchor, write_image_ome
 
 
 class TestRaman:
@@ -50,47 +50,6 @@ class TestRaman:
             assert np.all(np.abs(counts - np.pi * 13.75**2) < 2 * np.pi * 13.75)
 
 
-def _write_raman(
-    path: str, images: list[tuple[np.ndarray, dict[str, object], list[str]]]
-) -> None:
-    """Multi-image Raman OME-TIFF as raman-2 writes it (``(C, Y, X)`` float32 per image)."""
-    import zarr
-
-    from focus.io import ome_write
-
-    staged, described = [], []
-    workdir = path + ".stage"
-    for index, (data, values, names) in enumerate(images):
-        level0 = zarr.create_array(
-            store=os.path.join(workdir, f"{index}.zarr"),
-            shape=data.shape,
-            chunks=(1, 64, 64),
-            dtype=np.float32,
-            fill_value=np.nan,
-        )
-        level0[:] = data
-        levels = ome_write.levels_from(level0, False, workdir, f"i{index}_")
-        staged.append(ome_write.StagedImage(levels, False, np.array([1.0, 1.0])))
-        described.append(
-            ome_write.OmeImage(
-                name=f"acq{index}",
-                shape_yx=data.shape[1:],
-                dtype=np.dtype(np.float32),
-                rgb=False,
-                channels=[ome_write.ChannelInfo(n) for n in names],
-                colours=["FFFFFF"] * len(names),
-                pixel_size=np.array([1.0, 1.0]),
-                significant_bits=None,
-                objective=(None, None),
-                contours=[],
-                annotations=values,
-            )
-        )
-    xml = ome_write.build_ome_xml(described, {"focus_method": "raman-2"})
-    ome_write.write_images(path, staged, xml, ("zstd", {"level": 3}, 3))
-    ome_write.remove_workdir(workdir)
-
-
 class TestRamanImages:
     """Several acquisitions in one file: each is read through its placement."""
 
@@ -107,7 +66,7 @@ class TestRamanImages:
             roi = np.stack([np.full((100, 120), 7.0, np.float32)] * 2)
             roi[:, :, :10] = np.nan  # a gap the ROI did not measure
             raman = os.path.join(tmp, "raman.ome.tiff")
-            _write_raman(
+            write_image_ome(
                 raman,
                 [
                     (

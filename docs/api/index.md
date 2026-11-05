@@ -33,6 +33,7 @@ from focus.registration import (
     FeatureExtractorRegistration,
     SpotInterpolationRegistration,
     RamanPixelInterpolationRegistration,
+    PixelCompositionRegistration,
 )
 
 # Annotations

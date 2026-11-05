@@ -30,11 +30,12 @@ Registration runs per sample and then merges the per-sample results:
 | `feature_extraction` | `microscopy_image` (**H&E brightfield only**, see below) | CUDA GPU recommended; CPU fallback |
 | `spot_interpolation` | `msi`, `st` | CPU |
 | `raman_pixel_interpolation` | `raman` | CPU |
+| `pixel_composition` | `raman`, `microscopy_image` (**fluorescence only**) | CPU |
 | `none` | any (skips registration) | - |
 
-FOCUS therefore has **three** registration modes. They are described below.
+FOCUS therefore has **four** registration modes. They are described below.
 
-### Rules shared by all three modes
+### Rules shared by all four modes
 
 - **Inputs.** The aligned reference (anchor) AnnData supplies the positions through `obsm['spatial']` (its own frame) and `obsm['{target_name}_spatial']` (the target's frame), written by the alignment stage; the target modality supplies the features. Samples present in both are processed; the rest are ignored.
 - **Missing alignment.** A sample whose anchor lacks `obsm['{target_name}_spatial']` is skipped with a warning. No output file is written for it.
@@ -54,7 +55,7 @@ Used for microscopy images. Each reference spot is described by a deep-learning 
 !!! warning "H&E-stained brightfield images only"
     The encoder is **Prov-GigaPath**, a foundation model pretrained on brightfield tiles from H&E-stained whole-slide images ([model card](https://huggingface.co/prov-gigapath/prov-gigapath)). Its embeddings describe H&E morphology, so `feature_extraction` is only appropriate when the modality is an **H&E-stained histological section imaged in brightfield RGB**.
 
-    `feature_extraction` applies to brightfield images only. An image recorded as fluorescence is rejected: at configuration time when the modality sets `image_type: "fluorescence"`, and at registration time from the `focus_image_type` that preprocessing recorded in the image (for example when `image_type: auto` resolved to fluorescence). FOCUS performs no check on the stain of a brightfield image: it is cut into windows, normalized and forwarded to the model, and a full `(N_ref, 1536)` matrix comes back without an error or a warning. For IHC with other chromogens, other histological stains, or any brightfield acquisition that is not H&E, those numbers do not describe the tissue and must not be interpreted as morphology.
+    `feature_extraction` applies to brightfield images only. An image recorded as fluorescence is rejected: at configuration time when the modality sets `image_type: "fluorescence"`, and at registration time from the `focus_image_type` that preprocessing recorded in the image (for example when `image_type: auto` resolved to fluorescence). FOCUS performs no check on the stain of a brightfield image: it is cut into windows, normalized and forwarded to the model, and a full `(N_ref, 1536)` matrix comes back without an error or a warning. For IHC with other chromogens, other histological stains, or any brightfield acquisition that is not H&E, those numbers do not describe the tissue and must not be interpreted as morphology. Fluorescence images register with `pixel_composition`.
 
     For such modalities set `"registration_type": "none"`. The modality is still preprocessed and aligned, and its OME-TIFF stays available under `alignment/`; it is only left out of the registered outputs and the final MuData.
 
@@ -172,6 +173,41 @@ A spot without a measured pixel of an image in its footprint gets NaN for that i
 | Parameter | Type | Default | Description |
 |---|---|---|---|
 | `force_recomputing` | bool | `false` | Recompute even if the cached output matches its inputs. |
+
+---
+
+## `pixel_composition`
+
+Used for Raman and for multichannel fluorescence microscopy. Each anchor spot is described by the **composition of its pixels**: the fraction of the footprint occupied by each pixel phenotype of a dataset-level codebook. Pixels are close to one chemical or marker state; a spot is a mixture of states, which a mean spectrum does not resolve.
+
+**Algorithm**
+
+1. Group the images by channel signature (channel names and wavenumbers). Images with different channels never share a codebook; a group with fewer than 3 channels only gets channel means.
+2. Draw up to 200,000 measured pixels per group whose centres lie inside the anchor footprints, from every sample, and fit one codebook per group for the whole dataset:
+    - **Raman**: linear spectral unmixing. The number of endmembers is the Gavish-Donoho rank of 4.5 µm bin spectra plus one; the endmembers come from Vertex Component Analysis; every pixel gets its fully constrained (non-negative, sum-to-one) abundances.
+    - **Fluorescence**: Pixie pixel clustering. Gaussian smoothing (σ = 2 px), per-pixel normalization to the total signal, 99.9th percentile scaling, a 10 x 10 self-organizing map and consensus hierarchical metaclustering; the number of phenotypes (at most 20) is the elbow of the within-cluster sum of squares (the FlowSOM criterion; in Pixie the user chooses it). Every pixel gets its phenotype, or `no signal` when its channels sum to 0.
+3. Read the footprint region in tiles and average the pixel composition vectors over the measured pixels whose centres lie inside each footprint.
+
+The methods, the published sources and the FOCUS adaptations are in [Registration Methods §5](../scientific/registration_methods.md#5-pixel-composition-pixel_composition).
+
+**Output AnnData:** `X` = `(N_ref, K)` dense composition, one block per channel group summing to 1 (`endmember 1..p` for Raman, `phenotype 1..k` and `no signal` for fluorescence), NaN where a group measured no pixel of the spot; `var` columns `group` and `phenotype`; `obsm['channel_mean']` = DataFrame of the mean pixel values per channel (uniform weights); `obs['coverage']` = measured fraction of the footprint; `obsm['spatial']`; `obs['sample_id']`. The merged file stores `uns['pixel_phenotypes']` with, per group, the model, the prototype spectra or marker profiles, the pixel share of each phenotype and the criterion that set their number. Each sample also gets `{modality}_{sample_id}_pixel_phenotypes.ome.tiff`, a uint8 label map of every image (dominant phenotype per pixel, 0 where nothing was measured or read) with the source placement, for inspection in an image viewer.
+
+**Configuration**
+
+```json
+{
+  "registration_type": "pixel_composition",
+  "registration_settings": {
+    "force_recomputing": false
+  }
+}
+```
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `force_recomputing` | bool | `false` | Refit the codebooks and recompute every sample, even if the cached outputs match their inputs. |
+
+The codebooks are cached next to the merged file with the fingerprint of every sample's inputs; adding, removing or changing a sample refits them and recomputes all samples.
 
 ---
 

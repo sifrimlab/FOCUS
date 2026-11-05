@@ -159,11 +159,6 @@
     "category": "kernel",
     "reason": "Window-group readout kernel couples probe sizing, token memberships, padded queries, OOM backoff, scatter order and per-spot progress. Splitting its live batch state would obscure the numerical and memory order."
   },
-  "src/focus/registration/raman_pixel.py::RamanPixelInterpolationRegistration._load_raman_crop": {
-    "max_lines": 43,
-    "category": "kernel",
-    "reason": "One TIFF axis-normalization kernel: metadata fallback, singleton squeezing, channel transposition and crop slicing retain their original evaluation order and float32 output."
-  },
   "src/focus/registration/readout.py::plan_windows": {
     "max_lines": 61,
     "category": "kernel",

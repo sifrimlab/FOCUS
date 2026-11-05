@@ -14,6 +14,7 @@ _EXPORTS = {
     "FeatureExtractorRegistration": "focus.registration.feature_extraction",
     "SpotInterpolationRegistration": "focus.registration.spot_interpolation",
     "RamanPixelInterpolationRegistration": "focus.registration.raman_pixel",
+    "PixelCompositionRegistration": "focus.registration.pixel_composition",
 }
 
 __all__ = list(_EXPORTS)
@@ -40,4 +41,7 @@ if (
     )
     from focus.registration.raman_pixel import (
         RamanPixelInterpolationRegistration as RamanPixelInterpolationRegistration,
+    )
+    from focus.registration.pixel_composition import (
+        PixelCompositionRegistration as PixelCompositionRegistration,
     )

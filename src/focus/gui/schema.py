@@ -179,6 +179,9 @@ def _build_schema() -> dict[str, object]:
             RegistrationType.RAMAN_PIXEL_INTERPOLATION: {
                 "force_recomputing": {"type": "bool", "default": False},
             },
+            RegistrationType.PIXEL_COMPOSITION: {
+                "force_recomputing": {"type": "bool", "default": False},
+            },
             RegistrationType.NONE: {},
         },
     }

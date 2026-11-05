@@ -5,11 +5,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import numpy as np
-from skimage.transform import downscale_local_mean
 
 from focus.preprocessing.raman import flatfield, stitching
 from focus.preprocessing.raman.inventory import Acquisition
 from focus.preprocessing.raman.reader import TileStack
+from focus.spatial.spectral import nan_block_mean as _nan_downscale
 
 
 @dataclass
@@ -74,17 +74,6 @@ def own_flatfield(prepared: Prepared) -> flatfield.FlatField | None:
         return None
     profile = flatfield.estimate(prepared.tile_means, float(prepared.pixel_um[0]))
     return flatfield.FlatField(profile, "estimated from this acquisition")
-
-
-def _nan_downscale(image: np.ndarray, factor: int) -> np.ndarray:
-    """Mean over ``factor`` x ``factor`` blocks of the finite samples (NaN where none)."""
-    if factor == 1:
-        return image
-    finite = np.isfinite(image)
-    total = downscale_local_mean(np.where(finite, image, 0), (factor, factor))  # type: ignore[no-untyped-call]
-    count = downscale_local_mean(finite.astype(np.float32), (factor, factor))  # type: ignore[no-untyped-call]
-    with np.errstate(invalid="ignore", divide="ignore"):
-        return np.where(count > 0, total / count, np.nan).astype(np.float32)
 
 
 def register_and_view(

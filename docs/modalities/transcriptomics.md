@@ -153,7 +153,7 @@ When another spot-based modality (MSI or another ST instance) is the reference, 
 |----------|-----------------------|
 | Spot-based modalities only (ST + MSI) | The spot modality with the lowest spatial resolution (coarser grid); the other registers via `spot_interpolation`. |
 | Visium-centric analysis (no high-res image) | Spatial transcriptomics. Other spot modalities register via `spot_interpolation`; use `none` if ST stands alone. |
-| Dataset also includes Raman or microscopy | A spot-based modality (ST or MSI). Image-based modalities then register as **targets** (`raman_pixel_interpolation` for Raman; `feature_extraction` for microscopy, but only when it is an H&E brightfield section, otherwise `none`). An image-based reference is accepted and will align and register, but MuData compilation is skipped. |
+| Dataset also includes Raman or microscopy | A spot-based modality (ST or MSI). Image-based modalities then register as **targets** (`raman_pixel_interpolation` or `pixel_composition` for Raman; `feature_extraction` for an H&E brightfield section, `pixel_composition` for fluorescence, otherwise `none`). An image-based reference is accepted and will align and register, but MuData compilation is skipped. |
 
 The reference modality defines the output coordinate space and the number of observation slots in the final multimodal dataset.
 

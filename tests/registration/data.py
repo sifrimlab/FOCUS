@@ -4,6 +4,8 @@ from typing import cast
 
 from numpy.typing import ArrayLike
 
+import os
+
 import anndata as ad
 import numpy as np
 from scipy.spatial import cKDTree
@@ -76,3 +78,50 @@ def write_anchor(
     a.obsm[f"{target}_spatial"] = mapped.astype(np.float32)
     a.uns["spot_size"] = np.asarray(spot_size, dtype=np.float32)
     a.write_h5ad(path)
+
+
+def write_image_ome(
+    path: str,
+    images: list[tuple[np.ndarray, dict[str, object], list[str]]],
+    annotations: dict[str, object] | None = None,
+) -> None:
+    """Multi-image OME-TIFF as raman-2 writes it (``(C, Y, X)`` per image, 1 µm pixels).
+
+    ``annotations`` are the file-level FOCUS values (default: a ``raman-2`` file).
+    """
+    import zarr
+
+    from focus.io import ome_write
+
+    staged, described = [], []
+    workdir = path + ".stage"
+    for index, (data, values, names) in enumerate(images):
+        level0 = zarr.create_array(
+            store=os.path.join(workdir, f"{index}.zarr"),
+            shape=data.shape,
+            chunks=(1, 64, 64),
+            dtype=data.dtype,
+            fill_value=np.nan if data.dtype.kind == "f" else 0,
+        )
+        level0[:] = data
+        levels = ome_write.levels_from(level0, False, workdir, f"i{index}_")
+        staged.append(ome_write.StagedImage(levels, False, np.array([1.0, 1.0])))
+        described.append(
+            ome_write.OmeImage(
+                name=f"acq{index}",
+                shape_yx=data.shape[1:],
+                dtype=data.dtype,
+                rgb=False,
+                channels=[ome_write.ChannelInfo(n) for n in names],
+                colours=["FFFFFF"] * len(names),
+                pixel_size=np.array([1.0, 1.0]),
+                significant_bits=None,
+                objective=(None, None),
+                contours=[],
+                annotations=values,
+            )
+        )
+    xml = ome_write.build_ome_xml(described, annotations or {"focus_method": "raman-2"})
+    predictor = 3 if images[0][0].dtype.kind == "f" else None
+    ome_write.write_images(path, staged, xml, ("zstd", {"level": 3}, predictor))
+    ome_write.remove_workdir(workdir)

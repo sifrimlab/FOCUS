@@ -24,7 +24,7 @@ A GPU is only useful for `feature_extraction` registration, which runs the Prov-
 
 `feature_extraction` uses the GPU when one is available and otherwise falls back to CPU. Prov-GigaPath on CPU is impractically slow for real images, so a CUDA GPU is **strongly recommended** whenever you use `feature_extraction`.
 
-If you do not have a GPU, use `"registration_type": "spot_interpolation"` for `msi`/`st` modalities and `"raman_pixel_interpolation"` for `raman`, and set `"registration_type": "none"` for microscopy modalities (working with the aligned OME-TIFFs directly).
+If you do not have a GPU, use `"registration_type": "spot_interpolation"` for `msi`/`st` modalities and `"raman_pixel_interpolation"` or `"pixel_composition"` for `raman`; for microscopy, use `"pixel_composition"` on fluorescence images and `"none"` on brightfield images (working with the aligned OME-TIFFs directly).
 
 ---
 

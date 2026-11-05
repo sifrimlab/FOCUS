@@ -60,6 +60,7 @@ For each target modality \(T\), FOCUS computes a feature vector for the footprin
 - `feature_extraction` (`microscopy_image`): one Prov-GigaPath embedding per reference spot, read by a class-token query restricted to the image tokens inside its footprint, at the stored pyramid level closest to 0.5 µm per pixel; valid only for H&E-stained brightfield RGB images, which is the model's pretraining domain.
 - `spot_interpolation` (`msi`, `st`): overlap-area registration of the target spots with each anchor footprint. ST counts are shared by overlap and normalized on the merged file; MSI intensities are area-weighted means. It holds for any relative spot size.
 - `raman_pixel_interpolation` (`raman`): the same Gaussian interpolation over hyperspectral OME-TIFF pixels, each pixel acting as a spot at its centre.
+- `pixel_composition` (`raman`, fluorescence `microscopy_image`): the fraction of each footprint occupied by each pixel phenotype of a dataset-level codebook, from linear spectral unmixing (Raman) or Pixie pixel clustering (fluorescence).
 
 Generic interpolation form:
 

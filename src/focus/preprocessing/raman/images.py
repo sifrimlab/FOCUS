@@ -19,7 +19,8 @@ from zarr.codecs import BloscCodec
 from focus.io import ome_write
 from focus.preprocessing.raman import settings as tech
 from focus.preprocessing.raman import spectra
-from focus.preprocessing.raman.mosaic import Prepared, _nan_downscale
+from focus.preprocessing.raman.mosaic import Prepared
+from focus.spatial.spectral import nan_block_mean as _nan_downscale
 from focus.preprocessing.raman.parameters import RamanRunSettings
 from focus.preprocessing.raman.placement import Placement
 from focus.runtime.reporting import StepReporter

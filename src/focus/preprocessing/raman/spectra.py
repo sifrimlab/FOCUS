@@ -23,6 +23,7 @@ import numpy as np
 from focus.config.options import RamanNormalization
 from focus.preprocessing.raman import settings as tech
 from focus.preprocessing.raman.parameters import RamanRunSettings
+from focus.spatial.spectral import hard_threshold_rank
 
 
 @dataclass(frozen=True)
@@ -39,11 +40,6 @@ class SpectralModel:
         return int(self.components.shape[0])
 
 
-def _omega(beta: float) -> float:
-    """Gavish-Donoho threshold coefficient for an unknown noise level (aspect ratio ``beta``)."""
-    return 0.56 * beta**3 - 0.95 * beta**2 + 1.82 * beta + 1.43
-
-
 def fit(spectra: np.ndarray) -> SpectralModel:
     """Model of ``(N, C)`` binned spectra (rows with a non-finite value are ignored)."""
     finite = spectra[np.isfinite(spectra).all(axis=1)].astype(np.float64)
@@ -57,9 +53,7 @@ def fit(spectra: np.ndarray) -> SpectralModel:
         raise ValueError("too few measured spectra to model the acquisition")
     mean = finite.mean(axis=0)
     _, singular, vt = np.linalg.svd(finite - mean, full_matrices=False)
-    beta = min(channels, len(finite)) / max(channels, len(finite))
-    rank = int((singular > _omega(beta) * np.median(singular)).sum())
-    rank = max(1, rank)
+    rank = hard_threshold_rank(singular, len(finite), channels)
     return SpectralModel(
         mean=mean.astype(np.float32),
         components=vt[:rank].astype(np.float32),

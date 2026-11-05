@@ -47,9 +47,9 @@ If compilation runs, it reads all per-modality registered AnnData files and asse
 
 | Modality type key | Input format | Output format | Registration method |
 |-------------------|-------------|--------------|---------------------|
-| `microscopy_image` | `.ome.tiff` / `.ome.tif` / `.ome.btf` / `.tiff` / `.tif` / `.btf` / `.qptiff` / `.svs` / `.ndpi` / `.scn` / `.bif` / `.czi` / `.nd2` | Lossless OME-TIFF pyramid | `feature_extraction` (GPU recommended, H&E brightfield only; fluorescence rejected) or `none` |
+| `microscopy_image` | `.ome.tiff` / `.ome.tif` / `.ome.btf` / `.tiff` / `.tif` / `.btf` / `.qptiff` / `.svs` / `.ndpi` / `.scn` / `.bif` / `.czi` / `.nd2` | Lossless OME-TIFF pyramid | `feature_extraction` (GPU recommended, H&E brightfield only), `pixel_composition` (CPU, fluorescence only) or `none` |
 | `msi` | `.imzML` + `.ibd` | AnnData `.h5ad` | `spot_interpolation` (CPU) |
-| `raman` | `.lif` | OME-TIFF hyperspectral | `raman_pixel_interpolation` (CPU) |
+| `raman` | `.lif` | OME-TIFF hyperspectral | `raman_pixel_interpolation` or `pixel_composition` (CPU) |
 | `st` | AnnData `.h5ad` | AnnData `.h5ad` | `spot_interpolation` (CPU), or `none` |
 
 !!! note "GPU requirement"

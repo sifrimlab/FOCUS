@@ -10,7 +10,8 @@
       "none",
       "feature_extraction",
       "spot_interpolation",
-      "raman_pixel_interpolation"
+      "raman_pixel_interpolation",
+      "pixel_composition"
     ],
     "registration_compatibility": {
       "feature_extraction": [
@@ -22,6 +23,10 @@
       ],
       "raman_pixel_interpolation": [
         "raman"
+      ],
+      "pixel_composition": [
+        "raman",
+        "microscopy_image"
       ],
       "none": null
     },
@@ -222,12 +227,14 @@
       "feature_extraction": "Feature Extraction",
       "spot_interpolation": "Spot Interpolation",
       "raman_pixel_interpolation": "Raman Pixel Interpolation",
+      "pixel_composition": "Pixel Composition",
       "manual": "Manual",
       "pre_aligned": "Pre-Aligned",
       "tic": "TIC",
       "median": "Median",
       "rms": "RMS",
       "internal_standard": "Internal Standard",
+      "area": "Area (composition per pixel)",
       "white": "White",
       "black": "Black",
       "tissue": "Tissue (clean background)",
@@ -251,8 +258,7 @@
       "max": "Maximum-intensity projection",
       "best_focus": "Best-focus plane",
       "middle": "Middle plane",
-      "geojson": "GeoJSON",
-      "area": "Area (composition per pixel)"
+      "geojson": "GeoJSON"
     },
     "registration_params": {
       "feature_extraction": {
@@ -276,6 +282,12 @@
         }
       },
       "raman_pixel_interpolation": {
+        "force_recomputing": {
+          "type": "bool",
+          "default": false
+        }
+      },
+      "pixel_composition": {
         "force_recomputing": {
           "type": "bool",
           "default": false
@@ -655,6 +667,7 @@
           "black"
         ],
         "display_names": {
+          "area": "Area (composition per pixel)",
           "area_log_normalize": "Log-normalize (area)",
           "auto": "Automatic",
           "best_focus": "Best-focus plane",
@@ -678,6 +691,7 @@
           "middle": "Middle plane",
           "msi": "MSI",
           "none": "None",
+          "pixel_composition": "Pixel Composition",
           "pre_aligned": "Pre-Aligned",
           "raman": "Raman",
           "raman_pixel_interpolation": "Raman Pixel Interpolation",
@@ -692,8 +706,7 @@
           "tic": "TIC",
           "tissue": "Tissue (clean background)",
           "tissue_noisy": "Tissue (noisy background)",
-          "white": "White",
-          "area": "Area (composition per pixel)"
+          "white": "White"
         },
         "intensity_normalization": [
           "none",
@@ -876,6 +889,10 @@
             "microscopy_image"
           ],
           "none": null,
+          "pixel_composition": [
+            "raman",
+            "microscopy_image"
+          ],
           "raman_pixel_interpolation": [
             "raman"
           ],
@@ -900,6 +917,12 @@
             }
           },
           "none": {},
+          "pixel_composition": {
+            "force_recomputing": {
+              "default": false,
+              "type": "bool"
+            }
+          },
           "raman_pixel_interpolation": {
             "force_recomputing": {
               "default": false,
@@ -917,7 +940,8 @@
           "none",
           "feature_extraction",
           "spot_interpolation",
-          "raman_pixel_interpolation"
+          "raman_pixel_interpolation",
+          "pixel_composition"
         ]
       }
     ]

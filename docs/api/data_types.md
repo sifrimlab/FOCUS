@@ -154,6 +154,19 @@ Every target spot has a footprint from its own `spot_size`; the weights are the 
 
 No `.layers` are written.
 
+### Pixel composition registration (`pixel_composition`)
+
+| Attribute | Type | Shape | Description |
+|-----------|------|-------|-------------|
+| `.X` | float32 ndarray (dense) | $(n_\text{ref},\ K)$ | Composition: mean pixel composition vector over the measured pixels inside each anchor footprint, one block per channel group summing to 1; NaN where a group measured no pixel of the anchor |
+| `.var` | DataFrame | $(K,)$ | `group` (channel group) and `phenotype` (`endmember 1..p`, or `phenotype 1..k` and `no signal`) |
+| `.obsm['channel_mean']` | DataFrame float32 | $(n_\text{ref},\ n_\text{channels})$ | Mean pixel values per channel inside each footprint (uniform weights) |
+| `.obsm['spatial']` | float32 ndarray | $(n_\text{ref},\ 2)$ | Anchor coordinates in the image-0 full-resolution pixel frame |
+| `.obs['coverage']` | float32 | $(n_\text{ref},)$ | Measured fraction of the anchor footprint, the largest over the images |
+| `.uns['pixel_phenotypes']` | dict | | Merged file only. Per group: `model`, `channels`, `phenotypes`, `prototypes` (endmember spectra or phenotype mean intensities), `pixel_share`, `criterion` |
+
+Each sample also has `{modality}_{sample_id}_pixel_phenotypes.ome.tiff` in its registration folder: one uint8 label image per source image (dominant entry per pixel, 0 where nothing was measured or read), with the source placement. See [Registration Methods §5](../scientific/registration_methods.md#5-pixel-composition-pixel_composition).
+
 ---
 
 ## 4. Final MuData output (`.h5mu`)

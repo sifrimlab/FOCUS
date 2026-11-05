@@ -138,5 +138,5 @@ def _reject_fluorescence(
         raise ValueError(
             f"Modality '{name}': feature_extraction uses an H&E-pretrained encoder and does not "
             f"apply to fluorescence images (samples {', '.join(fluorescence)}); use "
-            "registration_type 'none'."
+            "registration_type 'pixel_composition'."
         )

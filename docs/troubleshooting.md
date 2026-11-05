@@ -222,6 +222,7 @@ If the sample genuinely has no MSI data, add it to `"ignore_samples"` instead so
 | `feature_extraction` | `microscopy_image` only |
 | `spot_interpolation` | `msi`, `st` |
 | `raman_pixel_interpolation` | `raman` |
+| `pixel_composition` | `raman`, `microscopy_image` (fluorescence only) |
 | `none` | any |
 
 **Fix:** Adjust `"registration_type"` to a value compatible with the modality's `"type"`.

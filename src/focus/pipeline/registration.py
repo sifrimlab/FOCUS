@@ -44,6 +44,9 @@ def _run_registration(
             apportioned (conserved), intensities are area-weighted means.
     For RamanPixelInterpolation (raman modality):
             Gaussian-weighted average of the Raman OME-TIFF pixels inside each anchor footprint.
+    For PixelComposition (raman and fluorescence microscopy):
+            Share of each anchor footprint occupied by each pixel phenotype of a dataset-level
+            codebook (unmixing endmembers for Raman, Pixie pixel clusters for fluorescence).
 
     Returns
     -------
@@ -97,10 +100,12 @@ def _register_modality(request: RegistrationRequest) -> bool:
     from focus.registration.feature_extraction import FeatureExtractorRegistration
     from focus.registration.spot_interpolation import SpotInterpolationRegistration
     from focus.registration.raman_pixel import RamanPixelInterpolationRegistration
+    from focus.registration.pixel_composition import PixelCompositionRegistration
 
     target_strategies: dict[str, TargetRegistrationFactory] = {
         RegistrationType.SPOT_INTERPOLATION: SpotInterpolationRegistration,
         RegistrationType.RAMAN_PIXEL_INTERPOLATION: RamanPixelInterpolationRegistration,
+        RegistrationType.PIXEL_COMPOSITION: PixelCompositionRegistration,
     }
     if request.kind == RegistrationType.FEATURE_EXTRACTION:
         register_image(request, FeatureExtractorRegistration)

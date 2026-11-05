@@ -233,7 +233,7 @@ Per-sample AnnData:
 - `.X`: embeddings, dense float32, shape `(N_ref, D)` with `D` the model width (1536)
 - `.obsm['spatial']`: the anchor coordinates in level-0 image pixels
 - `.obs['sample_id']`
-- `.uns`: the stamps of §5, with `focus_registration_geometry` extended by `encoder`,
+- `.uns`: the stamps of §6, with `focus_registration_geometry` extended by `encoder`,
   `encoded_level` and, when the pixel size is known, `encoded_um_per_px`
 - no `.var` metadata (`var_names` are positional strings) and no `.layers`
 
@@ -398,7 +398,156 @@ Per-sample output AnnData has:
 
 ---
 
-## 5. Merge and cache behavior
+## 5. Pixel composition (`pixel_composition`)
+
+Applicable modality types: `raman`, and `microscopy_image` recorded as fluorescence
+(`focus_image_type`). Brightfield images are rejected at config validation and at registration, with
+`feature_extraction` named as the alternative.
+
+A hyperspectral or multiplexed image holds many pixels per anchor: a 55 µm Visium spot covers about
+7,500 pixels of a 0.56 µm Raman image. Each pixel measures a small volume that is close to one
+chemical or marker state, and a spot is a mixture of such states. The mean spectrum of a spot (§4)
+does not separate the proportion of a state from its local intensity. This engine describes every
+measured pixel by a composition vector that sums to 1, from a dataset-level codebook of pixel
+phenotypes, and gives each anchor the mean vector over the pixels in its footprint: the fraction of
+the footprint occupied by each phenotype.
+
+### 5.1 Channel groups and pixel sampling
+
+1. The images of the target files (§4.1: one image per Raman acquisition with its placement, one
+   image at the identity placement for microscopy) are grouped by channel signature: the channel
+   names and, for Raman, the wavenumber axis. Images of the same group share one codebook; images
+   with different channels (a CH window and a fingerprint window) never do.
+2. A group with fewer than 3 channels has no composition and only contributes channel means
+   (§5.4).
+3. FOCUS design choice: the codebook is fitted once per dataset, on pixels of every sample, so the
+   composition columns mean the same phenotype in every sample. Every sample draws at random up to
+   `200000 / n_samples` pixels per image among the measured pixels whose centres lie inside its
+   anchor footprints (§1.3), and the group keeps at most 200,000. The drawn pixels live in memory
+   only.
+
+### 5.2 Hyperspectral images: linear spectral unmixing
+
+Raman images (any file not recorded as fluorescence) follow the linear mixing model: a pixel
+spectrum \(x\) is a non-negative combination of the spectra of \(p\) pure components (endmembers)
+\(E\), with abundances \(a\) that sum to 1,
+
+\[
+x = E^\top a + \varepsilon, \qquad a \ge 0, \quad \mathbf{1}^\top a = 1 .
+\]
+
+Multivariate curve resolution of hyperspectral SRS images uses this model to map the components
+of cells and tissue[^zhang2013], and unsupervised endmember extraction (VCA, N-FINDR) recovers
+cholesterol, lipids, proteins and nucleic acids from tissue Raman images[^bergner2012].
+
+1. **Number of endmembers.** Spectra averaged over 4.5 µm bins (the cellular-scale bins of Raman
+   denoising, [Raman methods](raman_methods.md)), mean removed, have the Gavish-Donoho rank \(r\)
+   (singular values above \(\omega(\beta)\) times their median)[^gavish2014]. \(p = r + 1\)
+   endmembers, at most the number of channels: \(p\) endmembers span a \((p-1)\)-dimensional affine
+   subspace[^nascimento2005]. Pixels are too noisy for the rank; the bins of every sample's tiles are
+   drawn at random, at most 300,000.
+2. **Endmembers.** Vertex Component Analysis on the drawn pixels[^nascimento2005]: projection on
+   the first \(p\) right singular vectors (projective) when the estimated signal-to-noise ratio
+   exceeds \(15 + 10 \log_{10} p\) dB, else on the first \(p - 1\) principal components with a
+   constant coordinate; the endmembers are the pixels at the extremes of \(p\) successive random
+   directions orthogonal to the endmembers already found, taken from the projected data in the
+   original units. VCA assumes that each endmember occurs as a nearly pure pixel, which holds at
+   the pixel scale and not at the spot scale.
+3. **Abundances.** Fully constrained least squares, the least-squares abundances on the probability
+   simplex[^heinz2001]. FOCUS solves this problem exactly with a primal active-set method that
+   carries the sum-to-one constraint as an equality on the passive set (the Lawson-Hanson active
+   set[^lawson1974] adapted to the simplex), instead of the augmented-matrix approximation of the
+   original method.
+
+Under the linear model, unmixing commutes with averaging up to the constraints: the mean abundances
+over a footprint are close to the abundances of its mean spectrum. The pixels contribute the
+endmembers, which cannot be identified from spot means.
+
+### 5.3 Multiplexed fluorescence images: pixel clustering
+
+Fluorescence images follow Pixie[^liu2023]:
+
+1. every channel is smoothed with a Gaussian of \(\sigma = 2\) pixels;
+2. every pixel is divided by its total over the channels; pixels with zero total over the channels
+   are excluded;
+3. every channel is divided by its 99.9th percentile over the drawn pixels;
+4. a 10 x 10 self-organizing map (learning rate 0.05 to 0.01, random initialisation, Euclidean
+   distance, 10 passes; trained on a random subset of the pixels) clusters the pixels into 100
+   nodes. FOCUS trains it as the FlowSOM reference code does[^vangassen2015]: codes initialised on
+   random pixels, bubble neighbourhood on the Chebyshev grid distance, learning
+   rate from 0.05 to 0.01 and radius from the 0.67 quantile of the grid distances to 0 over 10
+   passes (radius 0.5 once below 1), training stopped after a pass that moves the codes by less
+   than 1 in total;
+5. the mean of the drawn pixels of every SOM node (nodes without pixels drop out), z-scored per
+   channel and capped at 3, is grouped by consensus hierarchical clustering[^monti2003]. Pixie
+   does not state the consensus settings; FOCUS uses the ConsensusClusterPlus settings of FlowSOM's
+   metaclustering: 100 resamples of 90 % of the nodes, average linkage,
+   Euclidean distance, consensus classes from average linkage on \(1 - M\) of the consensus matrix
+   \(M\).
+
+In Pixie the user sets the number of metaclusters and adjusts them by inspection. FOCUS
+adaptation: the number of phenotypes \(k \le 20\) is set by the automatic criterion of FlowSOM
+(`MetaClustering`, default maximum 20): the elbow of
+the within-cluster sum of squares of the consensus classes for \(k = 1, \dots, 20\), after one pass of
+3-point smoothing (weight 0.2), at the split that minimises the absolute residuals of two
+least-squares lines[^vangassen2015]. The sum of squares weights every node by its pixels (FOCUS
+adaptation): the phenotypes describe pixels, and the sparse nodes that the map places between
+phenotypes would otherwise each weigh as much as a phenotype. A pixel takes the metacluster of its
+nearest node; its composition vector is one-hot. FOCUS adaptation: pixels with zero total, excluded
+from the clustering, are counted in a last `no signal` entry, so the composition of a footprint
+sums to 1 over all its measured pixels.
+
+### 5.4 Readout
+
+The union of the footprints' pixel bounding boxes (§4.1) is read in tiles of 1024 x 1024 pixels
+(with an 8-pixel margin for the Gaussian of §5.3). For every group, with \(\mathcal{N}_i\) the
+measured pixels whose centres lie inside footprint \(i\) (§1.3, uniform weights) and \(v_j\) the
+composition vector of pixel \(j\):
+
+\[
+c_i = \frac{1}{|\mathcal{N}_i|}\sum_{j\in\mathcal{N}_i} v_j, \qquad
+m_i = \frac{1}{|\mathcal{N}_i|}\sum_{j\in\mathcal{N}_i} x_j .
+\]
+
+Images of the same group add their pixels to the same sums. A footprint without a measured pixel
+of a group is NaN for that group. The coverage of a footprint is its measured pixel count over its
+area in image pixels (the anchor area times the determinant of the alignment Jacobian), the largest
+over the images, clipped to \([0, 1]\).
+
+### 5.5 Output semantics
+
+Per-sample output AnnData has:
+
+- `.X`: the composition \(c_i\), dense float32, one block per group, each block summing to 1
+  (Raman: `endmember 1..p`; fluorescence: `phenotype 1..k` and `no signal`); the names carry the
+  group in parentheses when the dataset has several groups. A dataset whose groups all have fewer
+  than 3 channels stores the channel means in `.X`.
+- `.var`: columns `group` and `phenotype`
+- `.obsm['channel_mean']`: DataFrame of \(m_i\), one column per channel of every group
+- `.obsm['spatial']`: anchor coordinates in the image-0 pixel frame
+- `.obs['coverage']`: measured fraction of the footprint (§5.4)
+- `{modality}_{sample}_pixel_phenotypes.ome.tiff` in the sample's registration folder: one uint8
+  image per source image, with its placement, holding the dominant entry of every pixel read
+  (`1..K`, `0` where nothing was measured or read); pyramid levels take every other pixel
+
+The merged file adds `uns['pixel_phenotypes']`, per group: `model` (`unmixing`, `pixel_clusters`
+or `mean`), `channels`, `phenotypes`, `prototypes` (endmember spectra, or the mean blurred
+intensities of each phenotype, in the original units), `pixel_share` (mean composition of the
+drawn pixels) and `criterion` (spectral rank and singular values, or the within-cluster sums of
+squares and \(k\)).
+
+The codebooks are stored in
+`{dataset_path}/merged/registration/{modality}_merged_processed_aligned_registered_pixel_phenotypes.npz`
+with the fingerprint of the per-sample inputs (§6). A changed sample input refits the codebooks,
+and the codebook fingerprint enters every per-sample fingerprint, so every sample is recomputed.
+
+### 5.6 Parameters
+
+- `force_recomputing` (default `false`): refits the codebooks and recomputes every sample
+
+---
+
+## 6. Merge and cache behavior
 
 All registration engines:
 
@@ -417,6 +566,7 @@ when its stored fingerprint equals the SHA-256 fingerprint of its current inputs
 
 - the registration method version and `registration_type`;
 - the algorithm marker of the spot method (`overlap-1`), so a change of that method rebuilds only the spot registrations;
+- for `pixel_composition`, its algorithm marker (`pixel-phenotypes-1`) and the codebook fingerprint (§5.5);
 - digests of the anchor's `obsm['spatial']` and `obsm['{target_name}_spatial']`, and its `spot_size`;
 - the identity of the target input: the level-0 pixel digest of a FOCUS OME-TIFF, the
   preprocessing fingerprint of an h5ad, otherwise the file's path, size and modification time;
@@ -436,14 +586,14 @@ bypasses both checks. The merged file is
 
 ---
 
-## 6. Compatibility matrix
+## 7. Compatibility matrix
 
-| Modality type | `feature_extraction` | `spot_interpolation` | `raman_pixel_interpolation` | `none` |
-|---|---:|---:|---:|---:|
-| `microscopy_image` | yes | no | no | yes |
-| `msi` | no | yes | no | yes |
-| `raman` | no | no | yes | yes |
-| `st` | no | yes | no | yes |
+| Modality type | `feature_extraction` | `spot_interpolation` | `raman_pixel_interpolation` | `pixel_composition` | `none` |
+|---|---:|---:|---:|---:|---:|
+| `microscopy_image` | brightfield | no | no | fluorescence | yes |
+| `msi` | no | yes | no | no | yes |
+| `raman` | no | no | yes | yes | yes |
+| `st` | no | yes | no | no | yes |
 
 Compatibility is enforced during config validation; an incompatible `registration_type`/modality pairing raises a `ValueError`. The reference modality itself is not registered; it defines the row index used by all registered targets.
 
@@ -458,3 +608,13 @@ Compatibility is enforced during config validation; an incompatible `registratio
 [^xu2024]: Xu H, Usuyama N, Bagga J, et al. A whole-slide foundation model for digital pathology from real-world data. *Nature* 630:181-188 (2024). [doi:10.1038/s41586-024-07441-w](https://doi.org/10.1038/s41586-024-07441-w). Slides resized to 0.5 µm per pixel and tiled at 256 x 256 pixels (Methods, "Preprocessing WSIs"); tile encoder pretrained with DINOv2; inference transform (224 px input, ImageNet normalization) from the reference code at [github.com/prov-gigapath/prov-gigapath](https://github.com/prov-gigapath/prov-gigapath).
 [^oquab2023]: Oquab M, Darcet T, Moutakanni T, et al. DINOv2: learning robust visual features without supervision. *arXiv* 2304.07193 (2023). [doi:10.48550/arXiv.2304.07193](https://doi.org/10.48550/arXiv.2304.07193)
 [^dosovitskiy2021]: Dosovitskiy A, Beyer L, Kolesnikov A, et al. An image is worth 16x16 words: transformers for image recognition at scale. *International Conference on Learning Representations* (2021). [doi:10.48550/arXiv.2010.11929](https://doi.org/10.48550/arXiv.2010.11929)
+
+[^gavish2014]: Gavish M, Donoho DL. The optimal hard threshold for singular values is 4/√3. *IEEE Trans Inf Theory* 60:5040-5053 (2014). [doi:10.1109/TIT.2014.2323359](https://doi.org/10.1109/TIT.2014.2323359). Hard threshold \(\omega(\beta)\) times the median singular value for an unknown noise level.
+[^zhang2013]: Zhang D, Wang P, Slipchenko MN, Ben-Amotz D, Weiner AM, Cheng JX. Quantitative vibrational imaging by hyperspectral stimulated Raman scattering microscopy and multivariate curve resolution analysis. *Anal Chem* 85:98-106 (2013). [doi:10.1021/ac3019119](https://doi.org/10.1021/ac3019119). Linear mixing model of hyperspectral SRS images: concentration maps and spectra of the chemical components.
+[^bergner2012]: Bergner N, Krafft C, Geiger KD, Kirsch M, Schackert G, Popp J. Unsupervised unmixing of Raman microspectroscopic images for morphochemical analysis of non-dried brain tumor specimens. *Anal Bioanal Chem* 403:719-725 (2012). [doi:10.1007/s00216-012-5858-1](https://doi.org/10.1007/s00216-012-5858-1). VCA and N-FINDR endmembers of tissue Raman images.
+[^nascimento2005]: Nascimento JMP, Bioucas-Dias JM. Vertex component analysis: a fast algorithm to unmix hyperspectral data. *IEEE Trans Geosci Remote Sens* 43:898-910 (2005). [doi:10.1109/TGRS.2005.844293](https://doi.org/10.1109/TGRS.2005.844293). Signal subspace projection, SNR switch and endmembers as extremes of orthogonal projections.
+[^heinz2001]: Heinz DC, Chang C-I. Fully constrained least squares linear spectral mixture analysis method for material quantification in hyperspectral imagery. *IEEE Trans Geosci Remote Sens* 39:529-545 (2001). [doi:10.1109/36.911111](https://doi.org/10.1109/36.911111). Abundances constrained to be non-negative and to sum to one.
+[^lawson1974]: Lawson CL, Hanson RJ. *Solving Least Squares Problems*. SIAM, Philadelphia (1995; first published 1974). [doi:10.1137/1.9781611971217](https://doi.org/10.1137/1.9781611971217). Active-set method for non-negative least squares.
+[^liu2023]: Liu CC, Greenwald NF, Kong A, et al. Robust phenotyping of highly multiplexed tissue imaging data using pixel-level clustering. *Nat Commun* 14:4618 (2023). [doi:10.1038/s41467-023-40068-5](https://doi.org/10.1038/s41467-023-40068-5). Methods, "Pixel clustering methodology": Gaussian blur (standard deviation 2), exclusion of pixels with zero expression, pixel normalization, 99.9th percentile marker normalization, 10 x 10 SOM, z-scored node means capped at 3, consensus hierarchical metaclustering; Results: SOM trained on a random subset of the pixels.
+[^vangassen2015]: Van Gassen S, Callebaut B, Van Helden MJ, et al. FlowSOM: using self-organizing maps for visualization and interpretation of cytometry data. *Cytometry A* 87:636-645 (2015). [doi:10.1002/cyto.a.22625](https://doi.org/10.1002/cyto.a.22625). Self-organizing map and consensus metaclustering; SOM training and the elbow criterion as implemented in the reference code ([github.com/SofieVG/FlowSOM](https://github.com/SofieVG/FlowSOM), `R/2_buildSOM.R`, `src/som.c`, `R/4_metaClustering.R`).
+[^monti2003]: Monti S, Tamayo P, Mesirov J, Golub T. Consensus clustering: a resampling-based method for class discovery and visualization of gene expression microarray data. *Mach Learn* 52:91-118 (2003). [doi:10.1023/A:1023949509487](https://doi.org/10.1023/A:1023949509487). Consensus matrix over resampled clusterings.

@@ -32,7 +32,7 @@ This page documents the **canonical structure** and the set of config fields tha
       "type": "microscopy_image | msi | raman | st",
       "alignment_strategy": "manual | pre_aligned",
       "alignment_force_recomputing": false,
-      "registration_type": "none | feature_extraction | spot_interpolation | raman_pixel_interpolation",
+      "registration_type": "none | feature_extraction | spot_interpolation | raman_pixel_interpolation | pixel_composition",
       "processing_settings": {},
       "registration_settings": {}
     }
@@ -82,7 +82,7 @@ This page documents the **canonical structure** and the set of config fields tha
 | `type` | string | One of `microscopy_image`, `msi`, `raman`, `st`. |
 | `alignment_strategy` | string | `manual` or `pre_aligned`. |
 | `alignment_force_recomputing` | boolean | Re-run alignment for this modality even when cached outputs exist. Default `false`. |
-| `registration_type` | string | `none`, `feature_extraction`, `spot_interpolation`, or `raman_pixel_interpolation`. |
+| `registration_type` | string | `none`, `feature_extraction`, `spot_interpolation`, `raman_pixel_interpolation`, or `pixel_composition`. |
 | `processing_settings` | object | Modality-specific preprocessing settings. |
 | `registration_settings` | object | Registration-specific settings (empty object allowed). |
 
@@ -101,6 +101,7 @@ This page documents the **canonical structure** and the set of config fields tha
 | `feature_extraction` | One Prov-GigaPath embedding per reference spot, restricted to the image inside its footprint; brightfield images only (fluorescence is rejected) | `microscopy_image` |
 | `spot_interpolation` | Overlap-area registration of the target spots with each anchor footprint, for any combination of spot sizes: MSI intensities are area-weighted means, ST counts are shared by overlap and then normalized on the merged file | `msi`, `st` |
 | `raman_pixel_interpolation` | Gaussian-weighted pixel interpolation over the hyperspectral OME-TIFF | `raman` |
+| `pixel_composition` | Share of each reference footprint occupied by each pixel phenotype of a dataset-level codebook: unmixing endmembers for Raman, Pixie pixel clusters for fluorescence; brightfield images are rejected | `raman`, `microscopy_image` |
 
 ---
 
@@ -285,6 +286,6 @@ This page documents the **canonical structure** and the set of config fields tha
 - `reference_modality` must match one modality `name` exactly.
 - Every sample directory must include every configured modality directory.
 - `feature_extraction` requires `microscopy_image` and `huggingface_token`; a CUDA-capable GPU is strongly recommended (CPU fallback).
-- `spot_interpolation` is used for `msi` and `st` and needs the reference and target coordinates in µm; `raman` uses `raman_pixel_interpolation`. The former `spot_aggregation` was removed (it is now part of `spot_interpolation`) and fails validation.
+- `spot_interpolation` is used for `msi` and `st` and needs the reference and target coordinates in µm; `raman` uses `raman_pixel_interpolation` or `pixel_composition`; fluorescence `microscopy_image` uses `pixel_composition`. The former `spot_aggregation` was removed (it is now part of `spot_interpolation`) and fails validation.
 - `pre_aligned` is only valid for non-reference modalities when coordinates are already co-registered.
 - Compilation to `.h5mu` occurs only when the reference is spot-based (`msi`/`st`) and `perform_registration` is enabled.

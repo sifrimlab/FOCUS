@@ -201,6 +201,7 @@ Example:
   - `"feature_extraction"` (`microscopy_image` only, and only for H&E-stained brightfield images; rejected for fluorescence images; see [Registration Settings](#feature_extraction))
   - `"spot_interpolation"` (`msi`, `st`)
   - `"raman_pixel_interpolation"` (`raman`)
+  - `"pixel_composition"` (`raman`, and `microscopy_image` recorded as fluorescence; rejected for brightfield images; see [Registration Settings](#pixel_composition))
 - Compatibility is enforced: an incompatible `registration_type`/modality-type pairing raises a validation error.
 
 Example:
@@ -430,6 +431,22 @@ Example:
 ### `raman_pixel_interpolation`
 
 Compatible modality type: `raman`. Uses the same Gaussian footprint interpolation as `spot_interpolation`, applied to the pixels of the hyperspectral OME-TIFF. See [Registration](../pipeline/registration.md#raman_pixel_interpolation).
+
+| Field | Type | Default |
+|---|---|---|
+| `force_recomputing` | bool | `false` |
+
+Example:
+
+```json
+"registration_settings": {
+  "force_recomputing": false
+}
+```
+
+### `pixel_composition`
+
+Compatible modality types: `raman`, and `microscopy_image` recorded as fluorescence. Each reference spot gets the fraction of its footprint occupied by each pixel phenotype of a dataset-level codebook (Raman: linear spectral unmixing endmembers; fluorescence: Pixie pixel clusters), with the mean pixel values in `obsm['channel_mean']` and a per-sample label map. The number of phenotypes is set by the data; there are no method parameters. See [Registration](../pipeline/registration.md#pixel_composition).
 
 | Field | Type | Default |
 |---|---|---|

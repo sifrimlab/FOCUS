@@ -240,13 +240,18 @@ the file it replaces, so alignments made on it stay valid.
 
 ## 7. Registration
 
-`raman_pixel_interpolation` reads every image (`raman_pixel.raman_targets`): for image `k` with
+`raman_pixel_interpolation` reads every image (`pixel_readout.raman_targets`): for image `k` with
 placement \((x_0, y_0, s_x, s_y)\) the anchor spots, aligned to image-0 pixels, are mapped to
 \(((x - x_0)/s_x, (y - y_0)/s_y)\) and the footprint geometry is fitted again from these
 coordinates. Only the pixel box the footprints can reach is read (through tifffile's zarr view).
 Each spot receives the Gaussian-weighted average of the measured (finite) pixels of the image inside
 its footprint; a spot with none gets NaN for that image's channels. Features are concatenated over
 the images; see [Registration](registration_methods.md#4-raman-pixel-interpolation-raman_pixel_interpolation).
+
+`pixel_composition` reads the images the same way and unmixes every measured pixel into the
+abundances of endmembers shared by the acquisitions with the same wavenumbers; the number of
+endmembers is the Gavish-Donoho rank of the 4.5 µm bin spectra (the rank rule of §5) plus one. See
+[Registration](registration_methods.md#5-pixel-composition-pixel_composition).
 
 ---
 

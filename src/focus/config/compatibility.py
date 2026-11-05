@@ -202,7 +202,15 @@ def validate_microscopy_settings(
     ):
         raise ValueError(
             f"Modality '{name}': feature_extraction uses an H&E-pretrained encoder and does not "
-            "apply to fluorescence images; use registration_type 'none'."
+            "apply to fluorescence images; use registration_type 'pixel_composition'."
+        )
+    if (
+        image_type == MicroscopyImageType.BRIGHTFIELD
+        and registration == RegistrationType.PIXEL_COMPOSITION
+    ):
+        raise ValueError(
+            f"Modality '{name}': pixel_composition describes multichannel fluorescence images; "
+            "use registration_type 'feature_extraction' for brightfield images."
         )
 
 

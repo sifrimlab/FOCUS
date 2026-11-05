@@ -40,6 +40,10 @@ REGISTRATION_COMPATIBILITY = {
     RegistrationType.FEATURE_EXTRACTION: [ModalityType.MICROSCOPY_IMAGE],
     RegistrationType.SPOT_INTERPOLATION: [ModalityType.MSI, ModalityType.ST],
     RegistrationType.RAMAN_PIXEL_INTERPOLATION: [ModalityType.RAMAN],
+    RegistrationType.PIXEL_COMPOSITION: [
+        ModalityType.RAMAN,
+        ModalityType.MICROSCOPY_IMAGE,
+    ],
     RegistrationType.NONE: None,
 }
 
@@ -67,6 +71,7 @@ DISPLAY_NAMES: dict[str, str] = {
     RegistrationType.FEATURE_EXTRACTION: "Feature Extraction",
     RegistrationType.SPOT_INTERPOLATION: "Spot Interpolation",
     RegistrationType.RAMAN_PIXEL_INTERPOLATION: "Raman Pixel Interpolation",
+    RegistrationType.PIXEL_COMPOSITION: "Pixel Composition",
     # Alignment strategies
     AlignmentStrategy.MANUAL: "Manual",
     AlignmentStrategy.PRE_ALIGNED: "Pre-Aligned",

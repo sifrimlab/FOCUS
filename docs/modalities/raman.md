@@ -138,7 +138,8 @@ identical keeps the alignments made on the previous one.
 The alignment GUI shows image 0 with its stored rendering. Alignment is done once per sample: the
 other images follow through their placements.
 
-`raman` is compatible with one registration type:
+`raman` is compatible with two registration types: `raman_pixel_interpolation` (mean spectrum per
+spot) and `pixel_composition` (composition of the pixels in each spot).
 
 ```yaml
 registration_type: raman_pixel_interpolation
@@ -154,6 +155,20 @@ The registered features are named after their wavenumbers; `var` holds `wavenumb
 
 Outputs written before `raman-2` (a single ASHLAR-stitched image without wavenumbers) are still
 registered, with features named `Channel_0` to `Channel_<C-1>`.
+
+```yaml
+registration_type: pixel_composition
+```
+
+A Raman pixel (about 0.5 µm) is close to one chemical state, and a 55 µm spot is a mixture of
+thousands of them. `pixel_composition` unmixes every pixel spectrum into the abundances of the
+dataset's endmembers (pure component spectra found by Vertex Component Analysis; their number is the
+Gavish-Donoho spectral rank plus one) and gives each spot the mean abundances of its pixels: the
+fraction of the spot occupied by each component. Acquisitions with the same wavenumbers share one
+set of endmembers; an acquisition with fewer than 3 channels contributes channel means only. The
+endmember spectra are stored in the merged file's `uns['pixel_phenotypes']`, the mean spectrum of
+each spot in `obsm['channel_mean']`, and the dominant endmember of every pixel in a label map. See
+[Registration](../pipeline/registration.md#pixel_composition).
 
 ---
 

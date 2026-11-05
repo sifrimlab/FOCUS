@@ -146,7 +146,9 @@ A source compressed with lossy JPEG (for example an SVS) is decoded once and sto
 
 ## Registration
 
-`microscopy_image` is compatible with two registration types: `feature_extraction`, and `none` (which aligns the modality but leaves it out of the final MuData). The spot-based types (`spot_interpolation`) and `raman_pixel_interpolation` are rejected during configuration validation.
+`microscopy_image` is compatible with three registration types: `feature_extraction` (brightfield), `pixel_composition` (fluorescence), and `none` (which aligns the modality but leaves it out of the final MuData). The spot-based types (`spot_interpolation`) and `raman_pixel_interpolation` are rejected during configuration validation.
+
+`pixel_composition` clusters the pixels of a multichannel fluorescence image into phenotypes with Pixie (Gaussian smoothing, per-pixel and per-channel normalization, self-organizing map, consensus metaclustering) and gives each anchor spot the fraction of its footprint occupied by each phenotype. See [Registration](../pipeline/registration.md#pixel_composition).
 
 `feature_extraction` gives each anchor spot one embedding of the image area inside its footprint, computed with [Prov-GigaPath](https://huggingface.co/prov-gigapath/prov-gigapath), a pathology foundation model downloaded from HuggingFace on first use, so `huggingface_token` must be set in the configuration. The image is encoded at the stored pyramid level closest to the model's 0.5 µm per pixel, using the pixel size recorded at preprocessing. It runs on a GPU when one is available and otherwise on the CPU.
 
@@ -155,7 +157,7 @@ A source compressed with lossy JPEG (for example an SVS) is decoded once and sto
 
     The stain of a brightfield image is not checked. An IHC or other-stain brightfield image is encoded the same way, and a complete embedding matrix is returned with no error; the values do not describe the tissue. A single-channel image is replicated to RGB first, so it runs to completion rather than failing.
 
-    For any such modality use `registration_type: none`. Preprocessing and alignment still run and the aligned OME-TIFF remains available; only the embedding step is skipped.
+    For any such brightfield modality use `registration_type: none`; for fluorescence use `pixel_composition`. Preprocessing and alignment still run and the aligned OME-TIFF remains available; only the embedding step is skipped.
 
 **Registration settings:**
 

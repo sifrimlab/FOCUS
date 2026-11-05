@@ -32,6 +32,7 @@ class RegistrationType(_AbstractEnum):
     FEATURE_EXTRACTION: Final = "feature_extraction"
     SPOT_INTERPOLATION: Final = "spot_interpolation"
     RAMAN_PIXEL_INTERPOLATION: Final = "raman_pixel_interpolation"
+    PIXEL_COMPOSITION: Final = "pixel_composition"
 
 
 class AlignmentStrategy(_AbstractEnum):

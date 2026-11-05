@@ -4,17 +4,16 @@ from __future__ import annotations
 
 from focus.io import ome_write
 from focus.preprocessing.raman import flatfield, stitching
+from focus.spatial import spectral
 
 # Bump whenever the same input and settings produce a different output image.
 METHOD_VERSION = "raman-2"
 
-# Spectral denoising: the rank is chosen on spectra averaged over bins of this size (µm), the
-# cellular scale at which compositional components rise above the per-pixel noise, then every pixel
-# is projected onto those components. FOCUS design choice, calibrated on P762 (rank 0 to 1 per pixel,
-# 2 to 3 at 4.5 µm).
-RANK_BIN_UM = 4.5
+# Spectral denoising: the rank is chosen on spectra averaged over cellular-scale bins
+# (spectral.CELLULAR_BIN_UM), then every pixel is projected onto those components.
+RANK_BIN_UM = spectral.CELLULAR_BIN_UM
 # Spectra sampled for the decomposition.
-DECOMPOSITION_SAMPLES = 300_000
+DECOMPOSITION_SAMPLES = spectral.DECOMPOSITION_SAMPLES
 # Stored values lie on a grid of this step: 1/4 of a detector count for intensities, 2^-8 for
 # area-normalised spectra. FOCUS design choice: 4 times finer than the converter step; on P762 the
 # rounding adds less than 0.5 % to the variance of the denoised measurement noise, and the float32
