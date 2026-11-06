@@ -166,14 +166,18 @@ def _compute_valid_spot_mask(
     Returns a bool mask (n_obs,) — True where a spot has non-zero coverage in
     every non-anchor modality. Returns None when no filtering is needed.
 
-    Empty rows (all zero, or zero and NaN) arise when an anchor spot's footprint holds no
-    target data:
+    A spot is uncovered in a modality when its row is empty (all zero, or zero and NaN) or holds a
+    NaN: downstream analyses (PCA, neighbours) cannot use a partly measured row. Empty rows arise
+    when an anchor spot's footprint holds no target data:
     - SpotInterpolation: no target spot overlaps the footprint (the spot is outside the target
       tissue).
     - RamanPixelInterpolation: no pixel centre lies inside the footprint.
     - FeatureExtraction: every image token of the footprint is background
       (>= 99% background pixels), or the footprint lies outside the image.
     - Any engine: the spot cannot be placed in the target frame.
+
+    Partly NaN rows arise when one image of a multi-image target (a Raman acquisition, a channel
+    group of ``pixel_composition``) does not cover the spot while another does.
     """
     mask = np.ones(n_obs, dtype=bool)
     any_empty = False
@@ -190,11 +194,20 @@ def _compute_valid_spot_mask(
             # NaN marks a feature the target did not measure at that spot (a Raman acquisition that
             # does not cover it); a row with no finite non-zero value has no coverage at all.
             dense = np.asarray(X)
-            mod_mask = ~np.all((dense == 0.0) | ~np.isfinite(dense), axis=1)
+            finite = np.isfinite(dense)
+            empty = np.all((dense == 0.0) | ~finite, axis=1)
+            partial = ~empty & ~finite.all(axis=1)
+            if partial.any():
+                logger.debug(
+                    f"Coverage check '{mod_name}': {int(partial.sum())}/{n_obs} partly measured "
+                    "spots (NaN features)"
+                )
+            mod_mask = ~(empty | partial)
         n_empty = int(np.sum(~mod_mask))
         if n_empty > 0:
             logger.debug(
-                f"Coverage check '{mod_name}': {n_empty}/{n_obs} uncovered spots (all-zero features)"
+                f"Coverage check '{mod_name}': {n_empty}/{n_obs} uncovered spots "
+                "(all-zero or NaN features)"
             )
             any_empty = True
         mask &= mod_mask

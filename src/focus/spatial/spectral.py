@@ -41,6 +41,34 @@ def signal_rank(spectra: np.ndarray, seed: int = 0) -> tuple[int, np.ndarray]:
     return hard_threshold_rank(singular, len(finite), spectra.shape[1]), singular
 
 
+MIN_OFFSET = "min"
+NO_OFFSET = "none"
+AREA = "area"
+NO_NORMALIZATION = "none"
+
+
+def spot_spectra(spectra: np.ndarray, offset: str, normalization: str) -> np.ndarray:
+    """Offset removal and normalisation of averaged ``(N, C)`` spectra (spot means, bins).
+
+    ``offset`` ``"min"`` subtracts each spectrum's minimum over the channels (the nearly flat
+    non-resonant SRS background); ``normalization`` ``"area"`` divides each spectrum by its mean
+    over the channels (NaN when that mean is not positive). FOCUS applies both to spectra averaged
+    over many pixels, never to single pixels: on a noisy pixel the minimum and the mean are biased
+    by an amount that follows the local signal-to-noise ratio, so a per-pixel normalisation prints
+    the illumination (and the tile grid) into the spectral shape.
+    """
+    out = np.asarray(spectra, dtype=np.float64).copy()
+    if out.ndim != 2 or out.shape[1] < 2:
+        return out
+    with np.errstate(invalid="ignore", divide="ignore"):
+        if offset == MIN_OFFSET:
+            out -= np.min(out, axis=1, keepdims=True)
+        if normalization == AREA:
+            level = np.mean(out, axis=1, keepdims=True)
+            out /= np.where(level > 0, level, np.nan)
+    return out
+
+
 def nan_block_mean(image: np.ndarray, factor: int) -> np.ndarray:
     """Mean over ``factor`` x ``factor`` blocks of the finite samples (NaN where none)."""
     from skimage.transform import downscale_local_mean

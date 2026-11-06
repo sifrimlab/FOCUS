@@ -83,14 +83,52 @@ class PixelCodebook:
         }
 
 
-def fit_unmixing(
-    group: str, channels: list[str], pixels: np.ndarray, binned: np.ndarray
-) -> PixelCodebook:
-    """Unmixing codebook from sampled ``(N, C)`` pixel spectra and cellular-scale bin spectra."""
-    rank, singular = spectral.signal_rank(binned)
+# Endmembers closer than this (RMS difference over the geometric mean of their norms) to one found
+# before are dropped, so two that reach the same extreme do not split its share between
+# near-identical twins (closest pair 0.08 on the P762 CH window).
+DUPLICATE_DISTANCE = 0.15
+
+
+# A component of the spot spectra counts towards the number of endmembers only when its singular
+# value reaches this fraction of the leading one. The registration reads spectra that preprocessing
+# already denoised, so the Gavish-Donoho noise floor is the quantisation step and tiny non-linear
+# residues (0.3 % of the leading value in a synthetic linear mixture) would otherwise count.
+MIN_COMPONENT_FRACTION = 0.02
+
+
+def distinct_endmembers(endmembers: np.ndarray) -> np.ndarray:
+    """``endmembers`` without those within ``DUPLICATE_DISTANCE`` of an earlier one."""
+    kept: list[int] = []
+    norms = np.linalg.norm(endmembers, axis=1)
+    for i in range(len(endmembers)):
+        if all(
+            np.linalg.norm(endmembers[i] - endmembers[j])
+            >= DUPLICATE_DISTANCE * np.sqrt(norms[i] * norms[j])
+            for j in kept
+        ):
+            kept.append(i)
+    return np.asarray(endmembers[kept])
+
+
+def fit_unmixing(group: str, channels: list[str], spectra: np.ndarray) -> PixelCodebook:
+    """Unmixing codebook from processed ``(N, C)`` spot-scale spectra.
+
+    The Gavish-Donoho rank of the spectra (components above ``MIN_COMPONENT_FRACTION`` of the leading
+    singular value) sets ``p = rank + 1`` endmembers: the archetypes of the
+    spectra (``unmixing.archetypal_analysis``), near-duplicates merged. Spot-scale spectra are
+    mixtures without pure samples; their archetypes enclose them, so a spot's composition spans the
+    simplex instead of collapsing on a face of it.
+    """
+    finite = spectra[np.isfinite(spectra).all(axis=1)]
+    rank, singular = spectral.signal_rank(finite)
+    strong = int((singular >= MIN_COMPONENT_FRACTION * singular[0]).sum())
+    rank = max(1, min(rank, strong))
     p = min(rank + 1, len(channels))
-    endmembers, _ = unmixing.vertex_component_analysis(pixels, p)
-    share = unmixing.fully_constrained_abundances(pixels, endmembers).mean(axis=0)
+    found = unmixing.archetypal_analysis(finite, p)
+    endmembers = distinct_endmembers(found).astype(np.float32)
+    share = unmixing.fully_constrained_abundances(
+        finite.astype(np.float32), endmembers
+    ).mean(axis=0)
     return PixelCodebook(
         group=group,
         channels=channels,
@@ -101,7 +139,8 @@ def fit_unmixing(
         criterion={
             "spectral_rank": rank,
             "singular_values": [float(v) for v in singular[: min(len(singular), 20)]],
-            "bin_um": spectral.CELLULAR_BIN_UM,
+            "samples": "spot-scale blocks",
+            "merged_duplicates": int(len(found) - len(endmembers)),
         },
     )
 

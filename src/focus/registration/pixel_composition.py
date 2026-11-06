@@ -1,14 +1,21 @@
 """Pixel composition registration: each anchor spot described by the phenotypes of its pixels.
 
 An image target (hyperspectral Raman, multiplexed fluorescence) has many pixels per anchor spot.
-Every measured pixel becomes a composition vector through a dataset-level codebook of its channel
-group (:mod:`focus.registration.pixel_codebook`): the abundances of the unmixing endmembers, or
-the one-hot Pixie phenotype. Each spot gets the mean vector of the pixels whose centres lie inside
-its footprint, the fraction of the spot that each phenotype occupies:
+Each channel group has a dataset-level codebook (:mod:`focus.registration.pixel_codebook`):
+
+- unmixing (Raman): endmember spectra. The spot's mean spectrum (uniform weights over the pixels
+  whose centres lie inside its footprint), with the image's offset removal and normalisation, is
+  unmixed by fully constrained least squares. Under the linear mixing model this equals the mean
+  abundance of the pixels, without the bias that the constraints give single noisy pixels.
+- Pixie (fluorescence): pixel phenotypes. Each spot gets the mean one-hot vector of its pixels,
+  the fraction of the spot that each phenotype occupies.
+
+Outputs:
 
 - ``X``: the composition, one block per channel group, each block summing to 1 (NaN where the
   group measured no pixel of the spot).
-- ``obsm['channel_mean']``: the mean of the pixel values in the same footprint (uniform weights).
+- ``obsm['channel_mean']``: the mean of the pixel values in the same footprint (uniform weights);
+  linear intensities for Raman files written by ``raman-3``.
 - ``obs['coverage']``: the largest measured fraction of the footprint over the images.
 - merged ``uns['pixel_phenotypes']``: per group, the model, the prototype (endmember spectrum or
   phenotype mean intensities), the pixel share and the criterion that set the number of entries.
@@ -40,6 +47,7 @@ from focus.registration.pixel_readout import (
     image_dims,
     image_geometry,
     raman_targets,
+    target_signature,
     tiles,
 )
 from focus.registration.provenance import registration_fingerprint
@@ -86,7 +94,13 @@ def _summary(book: PixelCodebook) -> str:
     """One activity detail on a fitted codebook."""
     if book.model == cb.phenotypes.UNMIXING:
         rank = book.criterion["spectral_rank"]
-        return f"'{book.group}': {len(book.names)} endmembers (spectral rank {rank})"
+        merged = int(cast(int, book.criterion.get("merged_duplicates", 0)))
+        extra = (
+            f", {merged} near-duplicate{'s' if merged != 1 else ''} merged"
+            if merged
+            else ""
+        )
+        return f"'{book.group}': {len(book.names)} endmembers (spectral rank {rank}{extra})"
     if book.model == cb.phenotypes.PIXEL_CLUSTERS:
         k = len(book.names) - 1
         return f"'{book.group}': {k} pixel phenotypes (within-cluster SSE elbow)"
@@ -130,11 +144,16 @@ class PixelCompositionRegistration:
         self, anchors: dict[str, AnchorArrays], files: dict[str, str]
     ) -> str:
         """Fingerprint of everything the codebooks depend on."""
-        settings = {"algorithm": cb.ALGORITHM}
         return fingerprint(
             {
                 sample: registration_fingerprint(
-                    self._REGISTRATION_TYPE, anchor, files[sample], settings
+                    self._REGISTRATION_TYPE,
+                    anchor,
+                    files[sample],
+                    {
+                        "algorithm": cb.ALGORITHM,
+                        "images": target_signature(raman_targets(files[sample])),
+                    },
                 )
                 for sample, anchor in anchors.items()
             }
@@ -203,7 +222,12 @@ class PixelCompositionRegistration:
         sums: _Sums,
         maps: LabelMaps,
     ) -> np.ndarray:
-        """Add one image's footprint sums to ``sums``; the measured fraction of every footprint."""
+        """Add one image's footprint sums to ``sums``; the measured fraction of every footprint.
+
+        Pixie groups add the pixels' one-hot vectors; unmixing groups add only the pixel values
+        (their spot composition comes from the mean spectrum) and encode the pixels for the label
+        map alone.
+        """
         shape = image_dims(filename, target.series)
         crop = footprint_crop(geom, *shape)
         count = np.zeros(len(sums.count))
@@ -212,18 +236,29 @@ class PixelCompositionRegistration:
         plane = (
             maps.plane(target, shape, book.names, book.group) if book.names else None
         )
+        unmixing = book.model == cb.phenotypes.UNMIXING
+        sigma = cb.label_sigma_px(filename, target) if unmixing else 0.0
         for tile in tiles(crop, cb.TILE_PX):
-            values = cb.read_tile(filename, target, tile, shape, book.blur)
+            if unmixing:
+                values, label_spectra = cb.read_unmixing_tile(
+                    filename, target, tile, shape, sigma
+                )
+            else:
+                values = cb.read_tile(filename, target, tile, shape, book.blur)
+                label_spectra = values
             measured = np.isfinite(values).all(axis=1)
+            encoded = measured & np.isfinite(label_spectra).all(axis=1)
             vectors = np.zeros((len(values), len(book.names)), dtype=np.float32)
-            vectors[measured] = book.encode(values[measured])
+            if book.names and (plane is not None or not unmixing):
+                vectors[encoded] = book.encode(label_spectra[encoded])
             weights = pixel_footprint_membership(geom, tile, "ones")
-            sums.composition += weights @ vectors
+            if not unmixing:
+                sums.composition += weights @ vectors
             sums.values += weights @ np.where(measured[:, None], values, 0.0)
             count += weights @ measured.astype(np.float32)
             if plane is not None:
                 c0, r0, c1, r1 = tile
-                labels = np.where(measured, vectors.argmax(axis=1) + 1, 0)
+                labels = np.where(encoded, vectors.argmax(axis=1) + 1, 0)
                 plane[0, r0:r1, c0:c1] = labels.reshape(r1 - r0, c1 - c0).astype(
                     np.uint8
                 )
@@ -234,14 +269,54 @@ class PixelCompositionRegistration:
         )
 
     @staticmethod
+    def _composition(
+        book: PixelCodebook,
+        sums: _Sums,
+        target: RamanTarget | None,
+        quality: dict[str, float] | None = None,
+    ) -> np.ndarray:
+        """``(N, K)`` spot composition of one group (NaN where the group measured nothing).
+
+        For unmixing groups, ``quality[group]`` receives the RMS residual of the spot spectra
+        reconstructed from their composition, over the RMS spread of the spot spectra.
+        """
+        if book.model != cb.phenotypes.UNMIXING:
+            return sums.means(sums.composition)
+        spectra = sums.means(sums.values)
+        if target is not None:
+            spectra = target.spot_spectra(spectra)
+        out = np.full((len(spectra), len(book.names)), np.nan, dtype=np.float32)
+        ok = np.isfinite(spectra).all(axis=1)
+        if ok.any():
+            out[ok] = book.encode(spectra[ok].astype(np.float32))
+            if quality is not None and book.endmembers is not None and ok.sum() > 1:
+                measured = spectra[ok]
+                residual = measured - out[ok] @ book.endmembers
+                spread = float(np.sqrt(measured.var(axis=0).mean()))
+                quality[book.group] = float(np.sqrt((residual**2).mean())) / max(
+                    spread, 1e-12
+                )
+        return out
+
+    @staticmethod
     def _assemble(
-        sample_id: str, anchor: AnchorArrays, books: Codebooks, sums: dict[str, _Sums]
+        sample_id: str,
+        anchor: AnchorArrays,
+        books: Codebooks,
+        sums: dict[str, _Sums],
+        targets: dict[str, RamanTarget] | None = None,
+        quality: dict[str, float] | None = None,
     ) -> anndata.AnnData:
         """Registered AnnData from the footprint sums of every group."""
+        targets = targets or {}
         many = len(books) > 1
         blocks, names, groups, entries, means, columns = [], [], [], [], [], []
         for key, book in books.items():
-            blocks.append(sums[key].means(sums[key].composition))
+            blocks.append(
+                PixelCompositionRegistration._composition(
+                    book, sums[key], targets.get(key), quality
+                )
+            )
             names += [f"{n} ({book.group})" if many else n for n in book.names]
             groups += [book.group] * len(book.names)
             entries += book.names
@@ -280,10 +355,14 @@ class PixelCompositionRegistration:
         targets = raman_targets(filename)
         n = anchor.n_obs
         sums = {k: _Sums.zeros(n, b) for k, b in books.items()}
-        maps = LabelMaps(label_map_file(self._path, sample_id, target_name))
+        maps = LabelMaps(
+            label_map_file(self._path, sample_id, target_name), cb.ALGORITHM
+        )
         coverage = np.zeros(n)
+        group_target: dict[str, RamanTarget] = {}
         for target in targets:
             key = cb.group_key(target)
+            group_target.setdefault(key, target)
             if key not in books:
                 reporter.warning(
                     f"'{target.name}': no phenotype codebook for its channels, skipped"
@@ -297,7 +376,13 @@ class PixelCompositionRegistration:
             reporter.detail(
                 f"'{target.name}': {int((fraction > 0).sum())}/{n} spots measured"
             )
-        adata = self._assemble(sample_id, anchor, books, sums)
+        quality: dict[str, float] = {}
+        adata = self._assemble(sample_id, anchor, books, sums, group_target, quality)
+        for group, ratio in quality.items():
+            reporter.detail(
+                f"'{group}': spot spectra reconstructed from their composition within "
+                f"{ratio:.2f} times their spread (RMS)"
+            )
         adata.obs[COVERAGE_KEY] = np.clip(coverage, 0.0, 1.0).astype(np.float32)
         maps.write(read_ome_physical_size_um(filename))
         return adata, {"images": len(targets)}

@@ -3,6 +3,7 @@
 import numpy as np
 
 from focus.preprocessing.raman import spectra
+from focus.spatial.spectral import spot_spectra
 from focus.preprocessing.raman.parameters import RamanRunSettings
 
 
@@ -45,19 +46,26 @@ class TestSpectra:
         grid = out[np.isfinite(out)] * 4
         np.testing.assert_allclose(grid, np.rint(grid))
 
-    def test_offset_and_area_normalisation(self) -> None:
-        """The minimum becomes 0; area-normalised spectra average 1 over their channels."""
+    def test_pixels_stay_linear(self) -> None:
+        """Offset removal and normalisation are left to averaged spectra: pixels stay linear."""
         block = np.array([[[2.0]], [[4.0]], [[6.0]]], dtype=np.float32)
         out = spectra.process_block(
-            block, None, _settings(denoise=False, remove_offset=True)
-        )
-        np.testing.assert_allclose(out[:, 0, 0], [0.0, 2.0, 4.0])
-        area = spectra.process_block(
             block,
             None,
             _settings(denoise=False, remove_offset=True, normalization="area"),
         )
-        np.testing.assert_allclose(area[:, 0, 0], [0.0, 1.0, 2.0])
+        np.testing.assert_allclose(out[:, 0, 0], [2.0, 4.0, 6.0])
+
+    def test_spot_level_offset_and_area_normalisation(self) -> None:
+        """Averaged spectra: the minimum becomes 0 and the area-normalised mean is 1."""
+        rows = np.array([[2.0, 4.0, 6.0], [1.0, 1.0, 1.0]])
+        np.testing.assert_allclose(
+            spot_spectra(rows, "min", "none"), [[0.0, 2.0, 4.0], [0.0, 0.0, 0.0]]
+        )
+        area = spot_spectra(rows, "min", "area")
+        np.testing.assert_allclose(area[0], [0.0, 1.0, 2.0])
+        assert np.isnan(area[1]).all()
+        np.testing.assert_allclose(spot_spectra(rows, "none", "none"), rows)
 
     def test_single_channel_is_only_quantised(self) -> None:
         """One-channel acquisitions are not denoised, offset or normalised."""

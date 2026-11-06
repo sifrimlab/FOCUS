@@ -54,11 +54,13 @@ For a spot-based reference, compilation proceeds as follows:
     - its `sample_id` sequence matches the anchor's **element-wise**.
 
     The element-wise `sample_id` check is a safety guard: matching row counts alone is not enough, because the per-sample concatenation order during registration can diverge from the anchor's. Mis-paired rows would otherwise produce a MuData that cannot be read back.
-4. **Drop uncovered spots.** A reference spot is removed from **all** modalities if its feature vector is **all-zero in any target modality**. This is why the final MuData can have fewer observations than the reference spot grid. All-zero rows come from these sources:
+4. **Drop uncovered spots.** A reference spot is removed from **all** modalities if it is uncovered in **any target modality**: its row is empty (all zero, or zero and NaN), or, for a dense matrix, holds any NaN. Downstream analyses (PCA, neighbours) cannot use a partly measured row. This is why the final MuData can have fewer observations than the reference spot grid. Empty rows come from these sources:
     - **spot interpolation**: no target spot overlapped the reference spot's footprint (the spot lies outside the target tissue section);
-    - **Raman pixel interpolation**: no pixel centre fell within the reference spot's footprint (the spot lies outside the image);
+    - **Raman pixel interpolation** and **pixel composition**: no pixel centre fell within the reference spot's footprint (the spot lies outside the images);
     - **feature extraction**: every image token inside the footprint was at least 99% background pixels, or the footprint lies outside the image;
     - **any mode**: the reference spot could not be placed in the target frame (non-finite aligned coordinates).
+
+    Partly NaN rows come from multi-image targets: one image (a Raman acquisition, or a channel group of `pixel_composition`) does not cover the spot while another does.
 
     If this leaves zero spots, compilation is skipped.
 5. **Synchronize observation names** across modalities to the (possibly filtered) anchor's `obs_names`, so row _i_ is the same reference spot everywhere.
@@ -97,7 +99,7 @@ mdata.mod["msi"].var_names     # e.g. 'msi:0', 'msi:1', ...
 
 ## 6. Common surprises
 
-- **Fewer spots than the reference grid.** The coverage filter ([step 4](#4-algorithm)) removes spots uncovered in any modality. Check `focus.log` for `Removing N/M anchor spots with no coverage`.
+- **Fewer spots than the reference grid.** The coverage filter ([step 4](#4-algorithm)) removes spots uncovered in any modality, including spots that only some acquisitions of a Raman target cover. Check `focus.log` for `N/M reference spots removed: no coverage in at least one modality`.
 - **A modality is missing from `.mod`.** It failed row-alignment validation ([step 3](#4-algorithm)). Look for the corresponding warning in `focus.log` (missing file, observation-count mismatch, or sample-ID sequence mismatch).
 - **No `.h5mu` was written.** See [§2](#2-when-it-runs) for the skip conditions; the reason is logged.
 - **Feature lookups fail.** Use the namespaced names (`{modality}:{name}`), not the bare ones.

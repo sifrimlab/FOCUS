@@ -12,6 +12,10 @@ component spectra (endmembers) whose abundances sum to one: ``x = E a + noise``,
   2001), the least-squares solution on the probability simplex. FOCUS solves it exactly with a
   primal active-set method (Lawson and Hanson 1974) that carries the sum-to-one constraint as an
   equality on the passive set, instead of the augmented-matrix approximation of Heinz and Chang.
+- ``archetypal_analysis``: archetypes (Cutler and Breiman 1994), for data without pure samples.
+  Each archetype is a convex combination of the data and the data are approximated by convex
+  combinations of the archetypes, so the archetypes lie on the boundary of the data and enclose
+  them, where VCA endmembers of mixed data leave most samples outside their simplex.
 """
 
 from __future__ import annotations
@@ -21,6 +25,8 @@ from numba import njit
 
 # Pixels per batch of the abundance solver (bounds the (N, p) intermediates).
 _BATCH = 262_144
+# Robust VCA: fewest rows averaged into an endmember.
+ROBUST_MINIMUM = 20
 
 
 def _snr_db(spectra: np.ndarray, projected: np.ndarray, mean: np.ndarray) -> float:
@@ -39,14 +45,19 @@ def _snr_db(spectra: np.ndarray, projected: np.ndarray, mean: np.ndarray) -> flo
 
 
 def vertex_component_analysis(
-    spectra: np.ndarray, p: int, seed: int = 0
+    spectra: np.ndarray, p: int, seed: int = 0, top_fraction: float = 0.0
 ) -> tuple[np.ndarray, np.ndarray]:
-    """``(p, C)`` endmembers of ``(N, C)`` spectra and the indices of the pixels they come from.
+    """``(p, C)`` endmembers of ``(N, C)`` spectra and the indices of the rows they come from.
 
     Follows the reference algorithm: a projective projection on the first ``p`` right singular
     vectors at high SNR (above ``15 + 10 log10(p)`` dB), else an orthogonal projection on the first
     ``p - 1`` principal components lifted by a constant coordinate. The endmembers are the selected
-    pixels in the projected (noise-reduced) data, in the original units.
+    rows in the projected (noise-reduced) data, in the original units.
+
+    ``top_fraction`` > 0 makes the extraction robust (FOCUS adaptation): each endmember is the mean
+    of the ``max(ROBUST_MINIMUM, top_fraction * N)`` rows furthest along its direction instead of
+    the single furthest row, which is the noisiest one, and negative values are clipped to 0.
+    The returned index is then the furthest row.
     """
     data = np.asarray(spectra, dtype=np.float64)
     n, channels = data.shape
@@ -74,13 +85,23 @@ def vertex_component_analysis(
     a = np.zeros((p, p))
     a[-1, 0] = 1.0
     picks = np.zeros(p, dtype=np.int64)
+    count = max(ROBUST_MINIMUM, int(top_fraction * n)) if top_fraction > 0 else 1
+    count = min(count, n)
+    endmembers = np.zeros((p, channels))
     for i in range(p):
         w = rng.random(p)
         f = w - a @ np.linalg.pinv(a) @ w
         f /= max(float(np.linalg.norm(f)), 1e-300)
-        picks[i] = int(np.argmax(np.abs(y @ f)))
-        a[:, i] = y[picks[i]]
-    return denoised[picks].astype(np.float32), picks
+        reach = np.abs(y @ f)
+        picks[i] = int(np.argmax(reach))
+        if count > 1:
+            top = np.argpartition(reach, n - count)[n - count :]
+            a[:, i] = y[top].mean(axis=0)
+            endmembers[i] = np.clip(denoised[top].mean(axis=0), 0.0, None)
+        else:
+            a[:, i] = y[picks[i]]
+            endmembers[i] = denoised[picks[i]]
+    return endmembers.astype(np.float32), picks
 
 
 @njit(cache=True)
@@ -174,3 +195,53 @@ def fully_constrained_abundances(
     np.clip(out, 0.0, 1.0, out=out)
     out /= np.maximum(out.sum(axis=1, keepdims=True), 1e-300)
     return out.astype(np.float32)
+
+
+# Archetypal analysis: alternating iterations, candidate samples the archetypes are mixed from, and
+# the relative change of the residual that stops the iterations.
+ARCHETYPE_ITERATIONS = 50
+ARCHETYPE_CANDIDATES = 4000
+ARCHETYPE_TOLERANCE = 1e-5
+
+
+def archetypal_analysis(spectra: np.ndarray, p: int, seed: int = 0) -> np.ndarray:
+    """``(p, C)`` archetypes of ``(N, C)`` finite spectra.
+
+    Alternating least squares on the two convex constraints of Cutler and Breiman (1994):
+
+    1. the abundances ``A`` of every spectrum on the archetypes ``Z`` (fully constrained least
+       squares);
+    2. the unconstrained least-squares archetypes for those abundances, each projected on the convex
+       hull of the candidate spectra (fully constrained least squares again): ``Z = B X_c`` with the
+       rows of ``B`` on the simplex.
+
+    The archetypes start from VCA endmembers. The candidates are ``ARCHETYPE_CANDIDATES`` spectra
+    drawn at random plus the three furthest spectra on each side of each of the first ``p``
+    principal axes, so the extremes are available. Iterations stop when the RMS residual changes by
+    less than ``ARCHETYPE_TOLERANCE`` (relative) or after ``ARCHETYPE_ITERATIONS``.
+    """
+    data = np.asarray(spectra, dtype=np.float64)
+    n = len(data)
+    p = int(min(p, n, data.shape[1]))
+    rng = np.random.default_rng(seed)
+    centred = data - data.mean(axis=0)
+    _, _, vt = np.linalg.svd(centred, full_matrices=False)
+    scores = centred @ vt[:p].T
+    extremes = np.unique(
+        np.concatenate([np.argsort(scores[:, k])[np.r_[0:3, -3:0]] for k in range(p)])
+    )
+    drawn = rng.choice(n, min(ARCHETYPE_CANDIDATES, n), replace=False)
+    candidates = data[np.unique(np.concatenate([drawn, extremes]))].astype(np.float32)
+    archetypes, _ = vertex_component_analysis(data, p, seed)
+    archetypes = archetypes.astype(np.float64)
+    previous = np.inf
+    for _ in range(ARCHETYPE_ITERATIONS):
+        abundances = fully_constrained_abundances(data, archetypes).astype(np.float64)
+        free = np.linalg.lstsq(abundances, data, rcond=None)[0]
+        mixing = fully_constrained_abundances(free, candidates).astype(np.float64)
+        archetypes = mixing @ candidates
+        residual = float(np.sqrt(np.mean((data - abundances @ archetypes) ** 2)))
+        if previous - residual < ARCHETYPE_TOLERANCE * previous:
+            break
+        previous = residual
+    return archetypes.astype(np.float32)

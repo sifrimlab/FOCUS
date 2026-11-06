@@ -116,9 +116,11 @@ def stitch(prepared: list[Prepared], reporter: StepReporter) -> None:
                 )
         mosaic.register_and_view(p, flat, _factors(float(np.mean(p.pixel_um))))
         p.tile_means = np.empty((0, 0, 0), dtype=np.float32)
+        p.channel_blocks = np.empty((0, 0, 0, 0), dtype=np.float32)
         low, high = flat.span
+        offset = f"; {flat.offset_fit.describe()}" if flat.offset_fit else ""
         reporter.detail(
-            f"{p.acquisition.name}: illumination {low:.2f} to {high:.2f} ({flat.source}); "
+            f"{p.acquisition.name}: illumination {low:.2f} to {high:.2f} ({flat.source}{offset}); "
             f"{p.check.describe() if p.check else ''}"
         )
         assert p.registration is not None
@@ -161,6 +163,24 @@ def place_all(
                 f"'{p.acquisition.name}' lies {found.moved_um:.0f} µm from its stage position "
                 "relative to the reference (the slide or stage frame moved between scans); "
                 f"placed by {found.method}"
+            )
+        if not found.blocks:
+            reporter.warning(
+                f"'{p.acquisition.name}': too few blocks match the image it was placed on; "
+                f"its placement ({found.method}) is not refined and may be off by tens of µm"
+            )
+        elif (
+            found.residual_um is not None
+            and found.residual_um > tech.PLACEMENT_RESIDUAL_WARNING_UM
+        ):
+            reporter.warning(
+                f"'{p.acquisition.name}': its matched blocks disagree with a rotation, scale and "
+                f"shift by {found.residual_um:.1f} µm (median); the tissue may be deformed"
+            )
+        if abs(found.scale_ratio - 1.0) > tech.PLACEMENT_SCALE_WARNING:
+            reporter.warning(
+                f"'{p.acquisition.name}': fitted scale {found.scale_ratio:.3f} times the ratio of "
+                "the recorded pixel sizes; check the pixel size metadata"
             )
     return ordered, placements
 

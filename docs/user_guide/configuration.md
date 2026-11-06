@@ -249,15 +249,12 @@ Additional settings for the chosen registration method. May be an empty object w
 
     | Parameter | Type | Description |
     |-----------|------|-------------|
-    | `max_workers` | int | Threads used to correct spectral channels with BaSiC, and `joblib` workers used for spectral cleaning. Default `8`. |
-    | `savgol_window` | int | Savitzky-Golay window length, in channels, for spectral smoothing. Default `7`. |
-    | `savgol_polyorder` | int | Polynomial order for the Savitzky-Golay filter; must be smaller than `savgol_window`. Default `3`. |
-    | `bg_min_area_fraction` | float | Minimum area of a tissue contour, as a fraction of the segmentation mosaic area, for it to be kept. Default `0.05`. |
-    | `otsu_threshold_factor` | float | Multiplier applied to the Otsu threshold for tissue segmentation; below `1.0` it keeps more pixels as tissue. Default `0.7`. |
-    | `min_object_size` | int | Connected components of this many pixels or fewer are removed from the tissue mask. Default `500`. |
-    | `force_recomputing` | bool | Reprocess even if the output or an intermediate `.npy` cache already exists. Default `false`. |
+    | `denoise` | bool | Project every pixel spectrum of a multi-channel acquisition on the spectral components that are real at the cellular scale (4.5 µm). Default `true`. |
+    | `remove_offset` | bool | Subtract from each averaged spectrum (spot mean, spot-sized block) its minimum over the spectral window, the near-flat non-resonant background. Applied by registration; the stored pixels are not changed. Default `false`. |
+    | `normalization` | string | `"none"` (default, concentration-linear spot spectra) or `"area"`: registration divides each averaged spectrum by its mean over the acquisition's channels; the stored pixels are not changed. |
+    | `force_recomputing` | bool | Reprocess even if the output carries the current fingerprint. Default `false`. |
 
-    All five Raman steps (LIF loading, BaSiC correction, background removal, spectral cleaning, ASHLAR stitching) always run; these parameters only change how they behave.
+    The output always stores linear intensities. `remove_offset` and `normalization` are recorded per image and applied by registration to spectra averaged over many pixels, because on a single noisy pixel the minimum and the mean are biased by an amount that follows the local illumination. The settings `savgol_window`, `savgol_polyorder`, `bg_min_area_fraction`, `otsu_threshold_factor`, `min_object_size` and `max_workers` were removed and fail validation. See [Raman](../modalities/raman.md#processing-parameters).
 
 ---
 

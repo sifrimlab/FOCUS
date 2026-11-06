@@ -142,7 +142,7 @@ class MsiIntensityNormalization(_AbstractEnum):
 
 
 class RamanNormalization(_AbstractEnum):
-    """Raman per-pixel normalizations, applied within one acquisition."""
+    """Raman spectrum normalizations, applied by registration to averaged spectra of one acquisition."""
 
     NONE: Final = "none"
     AREA: Final = "area"  # spectrum divided by its mean over the acquisition's channels

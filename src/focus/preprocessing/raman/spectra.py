@@ -1,4 +1,4 @@
-"""Spectral processing of one multi-channel acquisition: denoise, offset, normalisation, quantisation.
+"""Spectral processing of one multi-channel acquisition: denoising and quantisation.
 
 Denoising projects every pixel's spectrum on the principal components that are real at the cellular
 scale. The components and the rank come from spectra averaged over ``RANK_BIN_UM`` bins (saturated
@@ -6,12 +6,16 @@ or partly measured bins left out); the rank is the number of singular values abo
 Gavish-Donoho optimal hard threshold for an unknown noise level (Gavish and Donoho 2014),
 ``omega(beta) * median(singular values)``. At least the first component is kept. The spectral
 directions left out are noise at the cellular scale; removing them reduces the per-pixel noise
-without smoothing in space or along the spectrum.
+without smoothing in space or along the spectrum. The projection is linear, so the stored pixels
+stay linear in concentration (Freudiger et al. 2008).
 
-The non-resonant SRS background (cross-phase modulation, thermal lensing, two-photon absorption) is
-nearly flat across a spectral window (Berto et al. 2014); ``remove_offset`` subtracts each pixel's
-minimum over the window. ``area`` normalisation divides each spectrum by its mean over the window,
-so it describes composition independent of local density.
+Offset removal (``remove_offset``: the non-resonant SRS background, nearly flat across a window,
+Berto et al. 2014) and ``area`` normalisation are not applied to pixels: registration applies them
+to spectra averaged over spots and bins (:func:`focus.spatial.spectral.spot_spectra`). On a single
+noisy pixel the minimum and the mean over the window are biased by an amount that follows the local
+signal-to-noise ratio; on P762 a per-pixel normalisation printed the tile illumination into the
+spectral shape (a within-tile pattern of 0.4 to 1.5 times the tissue variation, reproducible between
+tiles at r 0.8 to 0.97).
 """
 
 from __future__ import annotations
@@ -20,7 +24,6 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from focus.config.options import RamanNormalization
 from focus.preprocessing.raman import settings as tech
 from focus.preprocessing.raman.parameters import RamanRunSettings
 from focus.spatial.spectral import hard_threshold_rank
@@ -62,9 +65,7 @@ def fit(spectra: np.ndarray) -> SpectralModel:
 
 
 def quantization_step(settings: RamanRunSettings, channels: int) -> float:
-    """Grid step of the stored values (detector counts, or area-normalised units)."""
-    if settings.normalization == RamanNormalization.AREA and channels > 1:
-        return tech.QUANTIZATION_AREA
+    """Grid step of the stored values (detector counts above the offset)."""
     return tech.QUANTIZATION_COUNTS
 
 
@@ -73,22 +74,14 @@ def process_block(
     model: SpectralModel | None,
     settings: RamanRunSettings,
 ) -> np.ndarray:
-    """Process a ``(C, Y, X)`` block of flat-field corrected spectra (NaN where not measured)."""
+    """Denoise and quantise a ``(C, Y, X)`` block of flat-field corrected spectra (NaN unmeasured)."""
     channels = block.shape[0]
     out = block.astype(np.float32, copy=True)
-    if channels > 1:
+    if channels > 1 and model is not None:
         flat = out.reshape(channels, -1)
-        if model is not None:
-            centred = flat.T - model.mean
-            projected = centred @ model.components.T @ model.components + model.mean
-            flat[:] = projected.T
-        if settings.remove_offset:
-            with np.errstate(invalid="ignore"):
-                flat -= np.min(flat, axis=0, keepdims=True)
-        if settings.normalization == RamanNormalization.AREA:
-            with np.errstate(invalid="ignore", divide="ignore"):
-                level = np.mean(flat, axis=0, keepdims=True)
-                flat /= np.where(level > 0, level, np.nan)
+        centred = flat.T - model.mean
+        projected = centred @ model.components.T @ model.components + model.mean
+        flat[:] = projected.T
     step = quantization_step(settings, channels)
     quantised: np.ndarray = (np.rint(out / step) * step).astype(np.float32)
     return quantised

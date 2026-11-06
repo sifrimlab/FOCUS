@@ -26,6 +26,7 @@ from focus.registration.pixel_readout import (
     image_geometry,
     load_crop,
     raman_targets,
+    target_signature,
 )
 from focus.spatial.membership import pixel_footprint_membership, row_normalize
 from focus.runtime.reporter_context import get_reporter
@@ -112,7 +113,8 @@ class RamanPixelInterpolationRegistration:
         totals = np.asarray(weights.sum(axis=1)).ravel()
         values = row_normalize(weights) @ np.where(measured[:, None], features, 0.0)
         hit = totals > 0
-        out[hit] = np.asarray(values, dtype=np.float32)[hit]
+        spectra = target.spot_spectra(np.asarray(values, dtype=np.float64)[hit])
+        out[hit] = spectra.astype(np.float32)
         return out, int(hit.sum())
 
     def _compute_sample(
@@ -216,7 +218,9 @@ class RamanPixelInterpolationRegistration:
                 anchor_name=anchor_name,
                 target_name=target_name,
                 registration_type=self._REGISTRATION_TYPE,
-                settings={},
+                settings=lambda sample: {
+                    "images": target_signature(raman_targets(target_files[sample]))
+                },
                 compute=partial(self._compute_sample, target_files, reporter),
                 force_recomputing=force_recomputing,
                 reporter=reporter,

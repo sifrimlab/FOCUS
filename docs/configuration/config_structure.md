@@ -137,12 +137,9 @@ This page documents the **canonical structure** and the set of config fields tha
 
 ```json
 {
-  "savgol_window": 7,
-  "savgol_polyorder": 3,
-  "otsu_threshold_factor": 0.7,
-  "bg_min_area_fraction": 0.05,
-  "min_object_size": 500,
-  "max_workers": 8,
+  "denoise": true,
+  "remove_offset": false,
+  "normalization": "none",
   "force_recomputing": false
 }
 ```
@@ -245,12 +242,9 @@ This page documents the **canonical structure** and the set of config fields tha
       "alignment_force_recomputing": false,
       "registration_type": "raman_pixel_interpolation",
       "processing_settings": {
-        "savgol_window": 7,
-        "savgol_polyorder": 3,
-        "otsu_threshold_factor": 0.7,
-        "bg_min_area_fraction": 0.05,
-        "min_object_size": 500,
-        "max_workers": 8,
+        "denoise": true,
+        "remove_offset": false,
+        "normalization": "none",
         "force_recomputing": false
       },
       "registration_settings": {

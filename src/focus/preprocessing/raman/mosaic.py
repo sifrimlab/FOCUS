@@ -24,6 +24,7 @@ class Prepared:
     stack: TileStack
     pixel_um: tuple[float, float]
     tile_means: np.ndarray
+    channel_blocks: np.ndarray
     flat: flatfield.FlatField | None
     check: flatfield.OverlapCheck | None
     registration: stitching.Registration | None
@@ -46,19 +47,23 @@ class Prepared:
 
 
 def read_tile_means(acquisition: Acquisition, stack: TileStack) -> Prepared:
-    """Channel-mean tiles (saturated samples ignored), before any correction."""
+    """Channel-mean tiles and per-channel block maps (saturated samples ignored), uncorrected."""
     first = acquisition.first
-    means = np.stack(
-        [
-            flatfield.channel_mean(stack.tile(t), stack.saturation)
-            for t in range(stack.tiles)
-        ]
-    )
+    factor = max(1, int(round(flatfield.OFFSET_BLOCK_UM / float(first.pixel_um[0]))))
+    means, blocks = [], []
+    for t in range(stack.tiles):
+        tile = stack.tile(t)
+        means.append(flatfield.channel_mean(tile, stack.saturation))
+        if stack.channels >= flatfield.OFFSET_MIN_CHANNELS:
+            blocks.append(flatfield.channel_blocks(tile, stack.saturation, factor))
     return Prepared(
         acquisition=acquisition,
         stack=stack,
         pixel_um=first.pixel_um,
-        tile_means=means,
+        tile_means=np.stack(means),
+        channel_blocks=np.stack(blocks)
+        if blocks
+        else np.zeros((0, 0, 0, 0), dtype=np.float32),
         flat=None,
         check=None,
         registration=None,
@@ -69,11 +74,21 @@ def read_tile_means(acquisition: Acquisition, stack: TileStack) -> Prepared:
 
 
 def own_flatfield(prepared: Prepared) -> flatfield.FlatField | None:
-    """The acquisition's own flat-field, or None when it has too few tiles to estimate one."""
+    """The acquisition's own flat-field above its detector offset, or None with too few tiles."""
     if prepared.stack.tiles < flatfield.MIN_TILES:
         return None
-    profile = flatfield.estimate(prepared.tile_means, float(prepared.pixel_um[0]))
-    return flatfield.FlatField(profile, "estimated from this acquisition")
+    pixel = float(prepared.pixel_um[0])
+    if prepared.channel_blocks.size:
+        factor = max(1, int(round(flatfield.OFFSET_BLOCK_UM / pixel)))
+        fit = flatfield.detector_offset(prepared.channel_blocks, factor * pixel)
+    else:
+        fit = flatfield.no_offset(
+            f"fewer than {flatfield.OFFSET_MIN_CHANNELS} channels"
+        )
+    profile = flatfield.estimate(prepared.tile_means - fit.counts, pixel)
+    return flatfield.FlatField(
+        profile, "estimated from this acquisition", fit.counts, fit
+    )
 
 
 def register_and_view(
@@ -81,7 +96,8 @@ def register_and_view(
 ) -> None:
     """Register the tiles on flat-field corrected channel means, then build the low-res views."""
     prepared.flat = flat
-    corrected = prepared.tile_means / flat.profile
+    above = prepared.tile_means - flat.offset
+    corrected = above / flat.profile
     stage_px = stitching.stage_pixels(prepared.acquisition.stage_um, prepared.pixel_um)
     registration = stitching.register(
         lambda i: corrected[i],
@@ -91,7 +107,7 @@ def register_and_view(
     )
     prepared.registration = registration
     prepared.check = flatfield.overlap_check(
-        prepared.tile_means,
+        above,
         registration.positions.astype(np.float64),
         registration.pairs,
         flat.profile,

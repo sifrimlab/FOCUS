@@ -308,35 +308,29 @@ Example:
 
 ## `raman`
 
-| Field | Type | Default | Step |
+| Field | Type | Default | Applied by |
 |---|---|---|---|
-| `savgol_window` | int | `7` | Spectral cleaning |
-| `savgol_polyorder` | int | `3` | Spectral cleaning |
-| `otsu_threshold_factor` | float | `0.7` | Background removal |
-| `bg_min_area_fraction` | float | `0.05` | Background removal |
-| `min_object_size` | int | `500` | Background removal |
-| `max_workers` | int | `8` | BaSiC correction, spectral cleaning |
-| `force_recomputing` | bool | `false` | All |
+| `denoise` | bool | `true` | Preprocessing (stored pixels) |
+| `remove_offset` | bool | `false` | Registration (averaged spectra) |
+| `normalization` | string | `"none"` | Registration (averaged spectra) |
+| `force_recomputing` | bool | `false` | Preprocessing |
 
-- `savgol_window` / `savgol_polyorder`: window length in channels and polynomial order of the Savitzky-Golay filter in the RamanSPy cleaning pipeline. SciPy raises `ValueError` when the order is not smaller than the window, or when the window is longer than a scan's channel block. The other three cleaning stages (Whitaker-Hayes despiking, IASLS baseline, min-max normalisation) use their library defaults and are not configurable.
-- `otsu_threshold_factor`: the Otsu threshold computed on the segmentation preview mosaic is multiplied by this value before binarisation. Below `1.0` it lowers the threshold, keeping more pixels as tissue.
-- `bg_min_area_fraction`: tissue contours are kept when their area is at least this fraction of the preview mosaic area.
-- `min_object_size`: connected components of this many pixels or fewer are removed from the mask (`skimage.morphology.remove_small_objects(..., max_size=...)`, inclusive).
-- `max_workers`: number of threads used to correct spectral channels with BaSiC, and number of `joblib` workers used to clean tile × scan work units.
-- `force_recomputing`: also invalidates the per-step `.npy` caches (`basic_corrected_tiles.npy`, `segmented_tiles.npy`, `raman_corrected_tiles.npy`), which are otherwise reused whenever present.
+- `denoise`: projects every pixel spectrum of a multi-channel acquisition on the spectral components that are real at the cellular scale (4.5 µm bins). The projection is linear, so the stored values stay linear in concentration.
+- `remove_offset`: recorded per multi-channel image as `focus_spot_offset: "min"`. Registration (`raman_pixel_interpolation`, `pixel_composition`) subtracts from each averaged spectrum (spot mean, spot-sized block) its minimum over the image's channels, the near-flat non-resonant background. The stored pixels are not changed.
+- `normalization`: `"none"` or `"area"`. `"area"` is recorded per multi-channel image as `focus_spot_normalization: "area"`; registration divides each averaged spectrum by its mean over the image's channels (NaN when that mean is not positive). `"none"` keeps concentration-linear spot spectra.
+- `force_recomputing`: Raman keeps no intermediate caches. The only cache is the output OME-TIFF, reused while it carries the current fingerprint and this flag is false.
 
-No step of the Raman pipeline can be switched off from the configuration; these fields only change how each step behaves.
+The stored pixels are always linear intensities: on a single noisy pixel the minimum and the mean are biased by an amount that follows the illumination, so offset removal and normalization are applied to spectra averaged over many pixels. `remove_offset` and `normalization` stay in the preprocessing fingerprint: changing one reprocesses the sample but leaves its pixels unchanged, so the alignments stay valid and the registration is recomputed. Single-channel acquisitions are neither offset-corrected nor normalized. See [Raman](../modalities/raman.md#processing-parameters) and [Raman Preprocessing Methods](../scientific/raman_methods.md#51-offset-and-normalisation).
+
+Validation rejects a `normalization` outside the values above and non-boolean `denoise` or `remove_offset`. The settings `savgol_window`, `savgol_polyorder`, `bg_min_area_fraction`, `otsu_threshold_factor`, `min_object_size` and `max_workers` were removed in `raman-2`; a configuration that sets one fails validation and names the reason.
 
 Example:
 
 ```json
 "processing_settings": {
-  "savgol_window": 7,
-  "savgol_polyorder": 3,
-  "otsu_threshold_factor": 0.7,
-  "bg_min_area_fraction": 0.05,
-  "min_object_size": 500,
-  "max_workers": 8,
+  "denoise": true,
+  "remove_offset": false,
+  "normalization": "none",
   "force_recomputing": false
 }
 ```
@@ -517,12 +511,9 @@ Example:
       "alignment_force_recomputing": false,
       "registration_type": "raman_pixel_interpolation",
       "processing_settings": {
-        "savgol_window": 7,
-        "savgol_polyorder": 3,
-        "otsu_threshold_factor": 0.7,
-        "bg_min_area_fraction": 0.05,
-        "min_object_size": 500,
-        "max_workers": 8,
+        "denoise": true,
+        "remove_offset": false,
+        "normalization": "none",
         "force_recomputing": false
       },
       "registration_settings": {

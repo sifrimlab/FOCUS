@@ -377,13 +377,14 @@ footprint average of §4.2 to the pixels of every image.
    its centre \((\text{col}+0.5,\text{row}+0.5)\) (§1.4), with a feature vector equal to its
    spectral intensities. Pixels with a non-finite value (not measured by the acquisition) are not
    target points.
-2. The alignment maps the reference spots into image-0 pixels. Image \(k\), stored with placement
-   \((x_0, y_0, s_x, s_y)\) (its pixel \((c, r)\) lies at image-0 pixel
-   \((x_0 + s_x c, y_0 + s_y r)\)), receives the spots at \(((x - x_0)/s_x, (y - y_0)/s_y)\), and the
-   footprint map (§1.1) is fitted again on these coordinates, so the reference's `spot_size` is
-   honoured whatever the Raman pixel size. Only the pixels inside the union of the footprints' pixel
-   bounding boxes are read. Files written before `raman-2` hold one image at the identity
-   placement.
+2. The alignment maps the reference spots into image-0 pixels. Image \(k\) is stored with an affine
+   placement \(A = [L \mid t]\): its pixel \((c, r)\) lies at image-0 pixel \(L(c, r)^\top + t\)
+   (`focus_placement` `a,b,tx,c,d,ty`, a rotation, scale and shift for `raman-3` files; the legacy
+   `x0,y0,sx,sy` is read as \(L = \mathrm{diag}(s_x, s_y)\), \(t = (x_0, y_0)\)). It receives the
+   spots at \(L^{-1}((x, y)^\top - t)\), and the footprint map (§1.1) is fitted again on these
+   coordinates, so the reference's `spot_size` is honoured whatever the Raman pixel size. Only the
+   pixels inside the union of the footprints' pixel bounding boxes are read. Files written before
+   `raman-2` hold one image at the identity placement.
 
 ### 4.2 Kernel and interpolation
 
@@ -396,13 +397,24 @@ footprint \(\mathcal{N}_i\), row-normalized, per image:
 
 An anchor row with no measured pixel of an image in its
 footprint is NaN for that image's channels; if no footprint reaches an image, a warning is logged.
-The images' features are concatenated.
+
+`raman-3` images store linear intensities and record the spot-level processing chosen at
+preprocessing (`focus_spot_offset`, `focus_spot_normalization`; [Raman methods
+§5.1](raman_methods.md#51-offset-and-normalisation)). Each averaged spectrum \(\hat f(r_i)\) gets it
+(`spatial.spectral.spot_spectra`): with `min` its minimum over the image's channels is subtracted;
+with `area` it is then divided by its mean over the channels (NaN when that mean is not positive).
+FOCUS design choice: on a single noisy pixel the minimum and the mean are biased by an amount that
+follows the local signal-to-noise ratio, so the processing is applied after averaging. Images
+without these annotations (older files, whose pixels were processed at preprocessing) are read as
+stored. The images' features are concatenated.
 
 ### 4.3 Output semantics
 
 Per-sample output AnnData has:
 
-- `.X`: interpolated spectra, dense float32, shape \((N_R, C)\) with \(C\) the channels of all images
+- `.X`: interpolated spectra after the spot-level processing (§4.2), dense float32, shape
+  \((N_R, C)\) with \(C\) the channels of all images; NaN for the channels of an image that measured
+  no pixel of the footprint
 - `.obsm['spatial']`: anchor coordinates in the Raman image-0 pixel frame
 - `.var`: indexed by channel name, read from the OME-XML (`<wavenumber> cm-1`; the acquisition name
   is appended when a wavenumber is measured by several acquisitions; `Channel_N` when the file has
@@ -425,11 +437,12 @@ A hyperspectral or multiplexed image holds many pixels per anchor: a 55 µm Visi
 7,500 pixels of a 0.56 µm Raman image. Each pixel measures a small volume that is close to one
 chemical or marker state, and a spot is a mixture of such states. The mean spectrum of a spot (§4)
 does not separate the proportion of a state from its local intensity. This engine describes every
-measured pixel by a composition vector that sums to 1, from a dataset-level codebook of pixel
-phenotypes, and gives each anchor the mean vector over the pixels in its footprint: the fraction of
-the footprint occupied by each phenotype.
+anchor by a composition vector that sums to 1 over a dataset-level codebook of pixel phenotypes:
+the fraction of the footprint occupied by each phenotype. For hyperspectral images it is the
+unmixed mean spectrum of the footprint, for fluorescence the mean phenotype vector of its pixels
+(§5.4).
 
-### 5.1 Channel groups and pixel sampling
+### 5.1 Channel groups and sampling
 
 1. The images of the target files (§4.1: one image per Raman acquisition with its placement, one
    image at the identity placement for microscopy) are grouped by channel signature: the channel
@@ -437,11 +450,21 @@ the footprint occupied by each phenotype.
    with different channels (a CH window and a fingerprint window) never do.
 2. A group with fewer than 3 channels has no composition and only contributes channel means
    (§5.4).
-3. FOCUS design choice: the codebook is fitted once per dataset, on pixels of every sample, so the
-   composition columns mean the same phenotype in every sample. Every sample draws at random up to
-   `200000 / n_samples` pixels per image among the measured pixels whose centres lie inside its
-   anchor footprints (§1.3), and the group keeps at most 200,000. The drawn pixels live in memory
-   only.
+3. FOCUS design choice: the codebook is fitted once per dataset, on spectra drawn from the
+   footprints of every sample, so the composition columns mean the same phenotype in every sample.
+   Every sample draws at random about `200000 / n_samples` spectra per image, and the group keeps at
+   most 200,000:
+    - unmixing (§5.2): spectra averaged over spot-sized square blocks (side: the square root of the
+      median footprint area in the image's pixels, tiles aligned to it) of which at least half the
+      pixel centres lie inside the anchor footprints (§1.3), with the image's spot-level offset
+      removal and normalisation (§4.2); blocks with a non-finite value are left out. No single
+      pixel is drawn. When the normalisation is the area (§4.2), blocks whose signal above the
+      offset (their mean before normalisation) lies below the 5th percentile of the group's drawn
+      blocks are left out of §5.2: they are nearly empty (glass, holes) and their shape is
+      undefined;
+    - pixel clustering (§5.3): measured pixels whose centres lie inside the anchor footprints.
+
+    The drawn spectra live in memory only.
 
 ### 5.2 Hyperspectral images: linear spectral unmixing
 
@@ -457,28 +480,55 @@ Multivariate curve resolution of hyperspectral SRS images uses this model to map
 of cells and tissue[^zhang2013], and unsupervised endmember extraction (VCA, N-FINDR) recovers
 cholesterol, lipids, proteins and nucleic acids from tissue Raman images[^bergner2012].
 
-1. **Number of endmembers.** Spectra averaged over 4.5 µm bins (the cellular-scale bins of Raman
-   denoising, [Raman methods](raman_methods.md)), mean removed, have the Gavish-Donoho rank \(r\)
-   (singular values above \(\omega(\beta)\) times their median)[^gavish2014]. \(p = r + 1\)
-   endmembers, at most the number of channels: \(p\) endmembers span a \((p-1)\)-dimensional affine
-   subspace[^nascimento2005]. Pixels are too noisy for the rank; the bins of every sample's tiles are
-   drawn at random, at most 300,000.
-2. **Endmembers.** Vertex Component Analysis on the drawn pixels[^nascimento2005]: projection on
-   the first \(p\) right singular vectors (projective) when the estimated signal-to-noise ratio
-   exceeds \(15 + 10 \log_{10} p\) dB, else on the first \(p - 1\) principal components with a
-   constant coordinate; the endmembers are the pixels at the extremes of \(p\) successive random
-   directions orthogonal to the endmembers already found, taken from the projected data in the
-   original units. VCA assumes that each endmember occurs as a nearly pure pixel, which holds at
-   the pixel scale and not at the spot scale.
+1. **Number of endmembers.** The drawn block spectra (§5.1), mean removed, have the Gavish-Donoho
+   rank \(r\) (singular values above \(\omega(\beta)\) times their median)[^gavish2014], counting
+   only the components whose singular value reaches 2 % of the leading one (FOCUS adaptation: the
+   spectra were denoised by preprocessing, so the Gavish-Donoho noise floor is the quantisation
+   step and tiny non-linear residues would otherwise count). \(p = r + 1\) endmembers, at most the
+   number of channels: \(p\) endmembers span a \((p-1)\)-dimensional affine
+   subspace[^nascimento2005].
+2. **Endmembers: archetypes.** Spot-scale spectra are mixtures without pure samples, so the
+   endmembers are their archetypes[^cutler1994]: each archetype is a convex combination of the
+   drawn spectra, and the drawn spectra are approximated by convex combinations of the archetypes.
+   FOCUS fits them by alternating least squares: (i) the abundances of every spectrum on the
+   archetypes (fully constrained least squares, item 3); (ii) the unconstrained least-squares
+   archetypes for those abundances, each projected on the convex hull of 4,000 candidate spectra
+   (drawn at random, plus the three furthest on each side of each of the first \(p\) principal
+   axes) by fully constrained least squares. The archetypes start from Vertex Component Analysis
+   endmembers[^nascimento2005]; the iterations stop when the RMS residual changes by less than
+   \(10^{-5}\) (relative) or after 50. FOCUS adaptation: an archetype closer than 0.15 (RMS
+   difference over the geometric mean of the two norms) to one found before is dropped, so two
+   that reach the same extreme do not split its share between near-identical twins; the codebook
+   criterion records how many were merged.
 3. **Abundances.** Fully constrained least squares, the least-squares abundances on the probability
    simplex[^heinz2001]. FOCUS solves this problem exactly with a primal active-set method that
    carries the sum-to-one constraint as an equality on the passive set (the Lawson-Hanson active
    set[^lawson1974] adapted to the simplex), instead of the augmented-matrix approximation of the
    original method.
 
-Under the linear model, unmixing commutes with averaging up to the constraints: the mean abundances
-over a footprint are close to the abundances of its mean spectrum. The pixels contribute the
-endmembers, which cannot be identified from spot means.
+FOCUS design choice, with its calibration on P762: the composition must describe spots, and the
+endmembers are learned at their scale. Endmembers of finer samples do not enclose the spots:
+
+- single pixels (`raman-2`): their extremes are noise, glass and tissue edges, far outside the
+  spectra of real tissue; every spot sits near the centre of their simplex (CH composition range
+  0.20 from the 1st to the 99th percentile, variance 0.014);
+- 4.5 µm bins with robust VCA (`raman-3` data): every CH spot needed a negative unconstrained
+  abundance, so fully constrained least squares put the spots on a face of the simplex (residual
+  1.6 times the spread of the spot spectra, 89 % of each spot on one endmember on average, R²
+  against MSI 0.106);
+- archetypes of spot-sized blocks (this method): residual 0.31 times the spread of the spot
+  spectra, range 0.46, variance 0.105 (7.3 times that of `raman-2`), largest share 0.61 on
+  average, R² against MSI 0.166 (0.147 for `raman-2`; 0.184 against 0.167 for the composition of
+  all three windows). The CH archetypes are CH-stretching spectra: two CH₃ protein spectra peaking
+  at 2939 and 2955 cm⁻¹, a lipid/protein mixture with the CH₂ band at 2860 to 2907 cm⁻¹, and three
+  rising towards 3100 cm⁻¹.
+
+The activity log reports, per group and sample, the RMS residual of the spot spectra reconstructed
+from their composition relative to the RMS spread of the spot spectra.
+
+Under the linear model, unmixing commutes with averaging: the abundances of a footprint's mean
+spectrum equal the mean abundances of its pixels, without the bias that the constraints give single
+noisy pixels, so each spot's mean spectrum is unmixed (§5.4).
 
 ### 5.3 Multiplexed fluorescence images: pixel clustering
 
@@ -517,19 +567,33 @@ sums to 1 over all its measured pixels.
 ### 5.4 Readout
 
 The union of the footprints' pixel bounding boxes (§4.1) is read in tiles of 1024 x 1024 pixels
-(with an 8-pixel margin for the Gaussian of §5.3). For every group, with \(\mathcal{N}_i\) the
-measured pixels whose centres lie inside footprint \(i\) (§1.3, uniform weights) and \(v_j\) the
-composition vector of pixel \(j\):
+(with a margin of 4 σ for the Gaussian of §5.3 or of the label maps below). For every group, with
+\(\mathcal{N}_i\) the measured pixels whose centres lie inside footprint \(i\) (§1.3, uniform
+weights) and \(x_j\) the stored spectrum of pixel \(j\) (linear for `raman-3` files), the mean
+spectrum is
 
 \[
-c_i = \frac{1}{|\mathcal{N}_i|}\sum_{j\in\mathcal{N}_i} v_j, \qquad
-m_i = \frac{1}{|\mathcal{N}_i|}\sum_{j\in\mathcal{N}_i} x_j .
+m_i = \frac{1}{|\mathcal{N}_i|}\sum_{j\in\mathcal{N}_i} x_j ,
 \]
+
+and the composition \(c_i\) is:
+
+- unmixing: the fully constrained abundances (§5.2) of \(g(m_i)\), with \(g\) the image's
+  spot-level offset removal and normalisation (§4.2); NaN where \(g(m_i)\) is not finite. With
+  `area` normalisation the composition weighs each pixel by its signal above the offset;
+- pixel clustering: \(c_i = \frac{1}{|\mathcal{N}_i|}\sum_{j\in\mathcal{N}_i} v_j\), with \(v_j\) the
+  one-hot phenotype vector of pixel \(j\).
 
 Images of the same group add their pixels to the same sums. A footprint without a measured pixel
 of a group is NaN for that group. The coverage of a footprint is its measured pixel count over its
 area in image pixels (the anchor area times the determinant of the alignment Jacobian), the largest
 over the images, clipped to \([0, 1]\).
+
+The label maps (§5.5) are for display and do not enter \(c_i\). A pixel of a fluorescence group
+takes its phenotype. A pixel of an unmixing group takes the endmember with the largest fully
+constrained abundance of its spectrum after the spot-level processing, with its offset (minimum)
+and normaliser (mean) taken from a copy of the tile smoothed with a Gaussian of \(\sigma = 2\) µm
+(2 px without a pixel size), so the per-pixel noise does not bias the spectral shape.
 
 ### 5.5 Output semantics
 
@@ -540,23 +604,27 @@ Per-sample output AnnData has:
   group in parentheses when the dataset has several groups. A dataset whose groups all have fewer
   than 3 channels stores the channel means in `.X`.
 - `.var`: columns `group` and `phenotype`
-- `.obsm['channel_mean']`: DataFrame of \(m_i\), one column per channel of every group
+- `.obsm['channel_mean']`: DataFrame of \(m_i\), one column per channel of every group, without
+  the spot-level processing (linear intensities for `raman-3` files)
 - `.obsm['spatial']`: anchor coordinates in the image-0 pixel frame
 - `.obs['coverage']`: measured fraction of the footprint (§5.4)
 - `{modality}_{sample}_pixel_phenotypes.ome.tiff` in the sample's registration folder: one uint8
   image per source image, with its placement, holding the dominant entry of every pixel read
-  (`1..K`, `0` where nothing was measured or read); pyramid levels take every other pixel
+  (`1..K`, `0` where nothing was measured or read; §5.4); pyramid levels take every other pixel;
+  the file-level `focus_method` is the algorithm marker (`pixel-phenotypes-2`)
 
 The merged file adds `uns['pixel_phenotypes']`, per group: `model` (`unmixing`, `pixel_clusters`
-or `mean`), `channels`, `phenotypes`, `prototypes` (endmember spectra, or the mean blurred
-intensities of each phenotype, in the original units), `pixel_share` (mean composition of the
-drawn pixels) and `criterion` (spectral rank and singular values, or the within-cluster sums of
-squares and \(k\)).
+or `mean`), `channels`, `phenotypes`, `prototypes` (endmember spectra in the units of the processed
+bins, or the mean blurred intensities of each phenotype in the original units), `pixel_share` (mean
+composition of the drawn bins or pixels) and `criterion` (spectral rank and singular values, or the
+within-cluster sums of squares and \(k\)).
 
 The codebooks are stored in
 `{dataset_path}/merged/registration/{modality}_merged_processed_aligned_registered_pixel_phenotypes.npz`
-with the fingerprint of the per-sample inputs (§6). A changed sample input refits the codebooks,
-and the codebook fingerprint enters every per-sample fingerprint, so every sample is recomputed.
+with the fingerprint of the per-sample inputs (§6), which includes the algorithm marker and the
+placement and spot-level processing of every image (the pixel digest does not cover the image
+annotations). A changed sample input refits the codebooks, and the codebook fingerprint enters
+every per-sample fingerprint, so every sample is recomputed.
 
 ### 5.6 Parameters
 
@@ -583,7 +651,10 @@ when its stored fingerprint equals the SHA-256 fingerprint of its current inputs
 
 - the registration method version and `registration_type`;
 - the algorithm marker of the spot method (`overlap-1`), so a change of that method rebuilds only the spot registrations;
-- for `pixel_composition`, its algorithm marker (`pixel-phenotypes-1`) and the codebook fingerprint (§5.5);
+- for `pixel_composition`, its algorithm marker (`pixel-phenotypes-2`) and the codebook fingerprint (§5.5);
+- for `raman_pixel_interpolation`, the placement and spot-level processing of every image
+  (`pixel_readout.target_signature`): the pixel digest of the target does not cover its
+  annotations, so a changed placement would otherwise reuse outputs read through the old one;
 - for `feature_extraction`, its algorithm marker (`token-mean-1`, §2.2), so outputs of the earlier
   masked-CLS readout are rebuilt;
 - digests of the anchor's `obsm['spatial']` and `obsm['{target_name}_spatial']`, and its `spot_size`;
@@ -632,6 +703,8 @@ Compatibility is enforced during config validation; an incompatible `registratio
 [^zhang2013]: Zhang D, Wang P, Slipchenko MN, Ben-Amotz D, Weiner AM, Cheng JX. Quantitative vibrational imaging by hyperspectral stimulated Raman scattering microscopy and multivariate curve resolution analysis. *Anal Chem* 85:98-106 (2013). [doi:10.1021/ac3019119](https://doi.org/10.1021/ac3019119). Linear mixing model of hyperspectral SRS images: concentration maps and spectra of the chemical components.
 [^bergner2012]: Bergner N, Krafft C, Geiger KD, Kirsch M, Schackert G, Popp J. Unsupervised unmixing of Raman microspectroscopic images for morphochemical analysis of non-dried brain tumor specimens. *Anal Bioanal Chem* 403:719-725 (2012). [doi:10.1007/s00216-012-5858-1](https://doi.org/10.1007/s00216-012-5858-1). VCA and N-FINDR endmembers of tissue Raman images.
 [^nascimento2005]: Nascimento JMP, Bioucas-Dias JM. Vertex component analysis: a fast algorithm to unmix hyperspectral data. *IEEE Trans Geosci Remote Sens* 43:898-910 (2005). [doi:10.1109/TGRS.2005.844293](https://doi.org/10.1109/TGRS.2005.844293). Signal subspace projection, SNR switch and endmembers as extremes of orthogonal projections.
+[^cutler1994]: Cutler A, Breiman L. Archetypal analysis. *Technometrics* 36:338-347 (1994). [doi:10.1080/00401706.1994.10485840](https://doi.org/10.1080/00401706.1994.10485840). Archetypes as convex combinations of the data that approximate the data by convex combinations.
+
 [^heinz2001]: Heinz DC, Chang C-I. Fully constrained least squares linear spectral mixture analysis method for material quantification in hyperspectral imagery. *IEEE Trans Geosci Remote Sens* 39:529-545 (2001). [doi:10.1109/36.911111](https://doi.org/10.1109/36.911111). Abundances constrained to be non-negative and to sum to one.
 [^lawson1974]: Lawson CL, Hanson RJ. *Solving Least Squares Problems*. SIAM, Philadelphia (1995; first published 1974). [doi:10.1137/1.9781611971217](https://doi.org/10.1137/1.9781611971217). Active-set method for non-negative least squares.
 [^liu2023]: Liu CC, Greenwald NF, Kong A, et al. Robust phenotyping of highly multiplexed tissue imaging data using pixel-level clustering. *Nat Commun* 14:4618 (2023). [doi:10.1038/s41467-023-40068-5](https://doi.org/10.1038/s41467-023-40068-5). Methods, "Pixel clustering methodology": Gaussian blur (standard deviation 2), exclusion of pixels with zero expression, pixel normalization, 99.9th percentile marker normalization, 10 x 10 SOM, z-scored node means capped at 3, consensus hierarchical metaclustering; Results: SOM trained on a random subset of the pixels.

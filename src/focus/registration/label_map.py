@@ -17,7 +17,12 @@ import numpy as np
 import zarr
 
 from focus.io import ome_write
-from focus.registration.pixel_readout import IDENTITY_PLACEMENT, RamanTarget
+from focus.registration.pixel_readout import (
+    IDENTITY_PLACEMENT,
+    RamanTarget,
+    format_placement,
+    placement_scale,
+)
 
 NOT_MEASURED = "not measured"
 SUFFIX = "_pixel_phenotypes.ome.tiff"
@@ -35,9 +40,10 @@ def label_map_file(path: str, sample_id: str, modality: str) -> str:
 class LabelMaps:
     """Staged label planes of one sample, written as one OME-TIFF by :meth:`write`."""
 
-    def __init__(self, output: str) -> None:
-        """Stage the planes next to ``output`` (removed after writing)."""
+    def __init__(self, output: str, method: str = "pixel-phenotypes-2") -> None:
+        """Stage the planes next to ``output`` (removed after writing); ``method`` is recorded."""
         self._output = output
+        self._method = method
         self._workdir = output + ".stage"
         self._images: list[tuple[RamanTarget, zarr.Array[Any], list[str], str]] = []
 
@@ -83,7 +89,7 @@ class LabelMaps:
             return None
         staged, described = [], []
         for index, (target, plane, names, group) in enumerate(self._images):
-            scale = np.asarray(target.placement[2:], dtype=np.float64)
+            scale = placement_scale(target.placement)
             size = None if pixel_size is None else pixel_size * scale
             staged.append(
                 ome_write.StagedImage(self._levels(index, plane), False, size)
@@ -93,7 +99,7 @@ class LabelMaps:
                 "focus_phenotype_labels": json.dumps([NOT_MEASURED, *names]),
             }
             if target.placement != IDENTITY_PLACEMENT:
-                values["focus_placement"] = ",".join(f"{v:g}" for v in target.placement)
+                values["focus_placement"] = format_placement(target.placement)
             described.append(
                 ome_write.OmeImage(
                     name=target.name,
@@ -109,7 +115,7 @@ class LabelMaps:
                     annotations=values,
                 )
             )
-        xml = ome_write.build_ome_xml(described, {"focus_method": "pixel-phenotypes-1"})
+        xml = ome_write.build_ome_xml(described, {"focus_method": self._method})
         ome_write.write_images(self._output, staged, xml, _CODEC)
         shutil.rmtree(self._workdir, ignore_errors=True)
         return self._output

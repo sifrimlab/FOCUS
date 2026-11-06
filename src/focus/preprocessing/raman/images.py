@@ -1,8 +1,10 @@
 """Second pass over one acquisition: assemble every channel, process the spectra, stage the pyramid.
 
 The assembled mosaic is staged as the native detector samples (no correction yet, losslessly), with
-one flat-field mosaic beside it. Correction, denoising, offset, normalisation and quantisation then
-run block by block into the float32 level 0 that is written.
+one flat-field mosaic beside it. Offset-aware flat-field correction (``(raw - offset) / profile``),
+denoising and quantisation then run block by block into the float32 level 0 that is written: linear
+intensities. Offset removal and normalisation are recorded for registration, which applies them to
+averaged spectra.
 """
 
 from __future__ import annotations
@@ -23,7 +25,9 @@ from focus.preprocessing.raman.mosaic import Prepared
 from focus.spatial.spectral import nan_block_mean as _nan_downscale
 from focus.preprocessing.raman.parameters import RamanRunSettings
 from focus.preprocessing.raman.placement import Placement
+from focus.config.options import RamanNormalization
 from focus.runtime.reporting import StepReporter
+from focus.spatial import spectral
 
 _BLOCK = 2 * ome_write.TILE
 
@@ -105,18 +109,28 @@ def image_annotations(
         if first.laser_power_w is None
         else f"{first.laser_power_w:g}",
         "focus_bit_depth": str(first.bits),
-        "focus_flatfield": f"{prepared.flat.source}; illumination {low:.2f} to {high:.2f}",
+        "focus_flatfield": f"{prepared.flat.source}; illumination {low:.2f} to {high:.2f}"
+        + (
+            f"; {prepared.flat.offset_fit.describe()}"
+            if prepared.flat.offset_fit is not None
+            else ""
+        ),
+        "focus_detector_offset": f"{prepared.flat.offset:.4g}",
         "focus_flatfield_check": prepared.check.describe() if prepared.check else "",
         "focus_tile_registration": prepared.registration.describe(),
         "focus_placement": placement.annotation(),
         "focus_placement_method": placement.describe(),
         "focus_superseded": json.dumps(prepared.acquisition.superseded),
-        "focus_offset_removed": str(
-            bool(settings.remove_offset and prepared.stack.channels > 1)
-        ),
-        "focus_normalization": settings.normalization
-        if prepared.stack.channels > 1
-        else "none",
+        # The stored pixels are linear; averaged spectra get the offset and normalisation below.
+        "focus_offset_removed": "False",
+        "focus_normalization": "none",
+        "focus_spot_offset": spectral.MIN_OFFSET
+        if settings.remove_offset and prepared.stack.channels > 1
+        else spectral.NO_OFFSET,
+        "focus_spot_normalization": spectral.AREA
+        if settings.normalization == RamanNormalization.AREA
+        and prepared.stack.channels > 1
+        else spectral.NO_NORMALIZATION,
         "focus_quantization_step": f"{spectra.quantization_step(settings, prepared.stack.channels):g}",
     }
     return values
@@ -138,6 +152,7 @@ def build(
     pixel = float(np.mean(prepared.pixel_um))
     h, w = stack.tile_shape
     positions = prepared.registration.positions
+    offset = np.float32(prepared.flat.offset)
 
     flat_mosaic = np.full((rows, cols), np.nan, dtype=np.float32)
     for k, (x, y) in enumerate(positions):
@@ -167,7 +182,7 @@ def build(
         clipped = (plane >= stack.saturation) & covered
         saturated.append(float(clipped.sum()) / max(covered_count, 1))
         if channels > 1 and settings.denoise:
-            corrected = plane.astype(np.float32) / flat_mosaic
+            corrected = (plane.astype(np.float32) - offset) / flat_mosaic
             binned.append(_nan_downscale(corrected, bin_factor))
             flags = _nan_downscale(clipped.astype(np.float32), bin_factor) > 0
             saturated_bins = (
@@ -197,7 +212,7 @@ def build(
             raw = np.asarray(native[:, y : y + _BLOCK, x : x + _BLOCK]).astype(
                 np.float32
             )
-            block = raw / flat_mosaic[y : y + _BLOCK, x : x + _BLOCK]
+            block = (raw - offset) / flat_mosaic[y : y + _BLOCK, x : x + _BLOCK]
             level0[:, y : y + _BLOCK, x : x + _BLOCK] = spectra.process_block(
                 block, model, settings
             )

@@ -92,7 +92,10 @@ class TestRamanImages:
             with tifffile.TiffFile(raman) as tif:
                 assert len(tif.series[0].levels) > 1  # read through a real pyramid
             targets = raman_targets(raman)
-            assert [t.placement for t in targets] == [(0, 0, 1, 1), (150, 100, 1, 1)]
+            assert [t.placement for t in targets] == [
+                (1, 0, 0, 0, 1, 0),
+                (1, 0, 150, 0, 1, 100),
+            ]
 
             spatial = hex_lattice(n=8, pitch=40.0) - 480.0  # 20 to 300 px
             anchor = os.path.join(tmp, "anchor.h5ad")
@@ -127,3 +130,37 @@ class TestRamanImages:
             np.testing.assert_allclose(out.X[inside, 2:], 7.0, rtol=1e-5)
             assert np.isnan(out.X[outside, 2:]).all()
             assert np.isfinite(out.X[within, :2]).all()
+
+
+class TestSpotProcessing:
+    """``raman-3`` files store linear pixels; the spot spectra get the offset and normalisation."""
+
+    def test_spot_means_are_offset_and_area_normalised(self) -> None:
+        """Spectra of the spot means, not of single pixels, lose their minimum and their area."""
+        with tempfile.TemporaryDirectory() as tmp:
+            h = w = 200
+            rng = np.random.default_rng(0)
+            density = 1.0 + np.mgrid[0:h, 0:w][1] / w
+            shape = np.array([0.0, 2.0, 4.0])
+            image = (
+                5.0
+                + density[None] * shape[:, None, None]
+                + rng.normal(0, 0.5, (3, h, w))
+            ).astype(np.float32)
+            values: dict[str, object] = {
+                "focus_spot_offset": "min",
+                "focus_spot_normalization": "area",
+            }
+            raman = os.path.join(tmp, "raman.ome.tiff")
+            write_image_ome(raman, [(image, values, ["a", "b", "c"])])
+            spatial = hex_lattice(n=4, pitch=40.0) - 380.0
+            anchor = os.path.join(tmp, "anchor.h5ad")
+            write_anchor(anchor, spatial, spatial, "raman", [30.0, 30.0])
+            files = RamanPixelInterpolationRegistration(tmp).register_dataset(
+                {"s1": anchor}, {"s1": raman}, "st", "raman"
+            )
+            out = ad.read_h5ad(files["s1"])
+            measured = np.isfinite(out.X).all(axis=1)
+            assert measured.sum() >= 6
+            expected = np.tile(shape / 2, (int(measured.sum()), 1))
+            np.testing.assert_allclose(out.X[measured], expected, atol=0.03)

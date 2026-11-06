@@ -29,9 +29,9 @@ This page documents the canonical data schemas that FOCUS writes at each pipelin
     | `focus_superseded_signature` | Present when a regenerated file is pixel-identical to the file it replaced: that file's path, size and modification time (JSON), so alignments made on it stay valid |
 
     See [OME-XML](../scientific/microscopy_methods.md#73-ome-xml) for the full layout.
-- **Raman preprocessing** writes the OME-TIFF pyramid produced by the ASHLAR stitching step (via the external `FOCUS_ASHLAR` environment): `uint8`, one channel per spectral channel in scan order, Adobe-Deflate compressed with a horizontal predictor, with successive 2× levels. Its OME-XML holds the physical pixel size in µm; it carries no channel names and no wavenumber values, so the spectral axis cannot be read back from the file.
+- **Raman preprocessing** (method `raman-3`) writes one BigTIFF with one OME image per acquisition, image 0 being the reference acquisition: `float32` linear intensities (detector counts above the detector offset, divided by the flat-field, denoised, on a grid of 1/4 count; NaN where no tile measured), one page per channel ordered by increasing wavenumber and named `<wavenumber> cm-1`, zstd compressed without a predictor, with SubIFD levels. Each image's `focus.image` MapAnnotation holds its placement in image 0 (`focus_placement`, `a,b,tx,c,d,ty`), its detector offset and the offset removal and normalization that registration applies to spot spectra (`focus_spot_offset`, `focus_spot_normalization`). See [Raman](../modalities/raman.md#output) for the full layout.
 
-In both cases the full-resolution level is at index `0` and higher indices are progressively downsampled, stored as SubIFDs of a single series (`tifffile.TiffFile(...).series[0].levels`). OME-TIFF files can be read with `tifffile.TiffFile`, `bioformats`, QuPath, or Napari.
+In both cases the full-resolution level is at index `0` and higher indices are progressively downsampled, stored as SubIFDs of their series (`tifffile.TiffFile(...).series[k].levels`; a microscopy file has one series, a Raman file one per acquisition). OME-TIFF files can be read with `tifffile.TiffFile`, `bioformats`, QuPath, or Napari.
 
 ---
 
@@ -151,7 +151,7 @@ Every target spot has a footprint from its own `spot_size`; the weights are the 
 
 | Attribute | Type | Shape | Description |
 |-----------|------|-------|-------------|
-| `.X` | float32 ndarray (dense) | $(n_\text{ref},\ n_\text{channels})$ | Gaussian-weighted average of the Raman pixels inside each anchor footprint, using the Gaussian kernel of §1.4 of the registration methods. Anchors with no pixel inside are all-zero |
+| `.X` | float32 ndarray (dense) | $(n_\text{ref},\ n_\text{channels})$ | Gaussian-weighted average of the Raman pixels inside each anchor footprint, using the Gaussian kernel of §1.4 of the registration methods, then the image's spot-level offset removal and normalization (`focus_spot_offset`, `focus_spot_normalization`; none for files written before `raman-3`). NaN for the channels of an image with no measured pixel inside the footprint |
 | `.obsm['spatial']` | float32 ndarray | $(n_\text{ref},\ 2)$ | Anchor coordinates in the Raman image's full-resolution pixel frame; pixel $(\text{col}, \text{row})$ is the point $(\text{col}+0.5, \text{row}+0.5)$ |
 | `.var_names` | Index | $(n_\text{channels},)$ | Channel names from the OME-XML, falling back to `Channel_0 … Channel_{C-1}` |
 
@@ -161,14 +161,14 @@ No `.layers` are written.
 
 | Attribute | Type | Shape | Description |
 |-----------|------|-------|-------------|
-| `.X` | float32 ndarray (dense) | $(n_\text{ref},\ K)$ | Composition: mean pixel composition vector over the measured pixels inside each anchor footprint, one block per channel group summing to 1; NaN where a group measured no pixel of the anchor |
+| `.X` | float32 ndarray (dense) | $(n_\text{ref},\ K)$ | Composition, one block per channel group summing to 1; NaN where a group measured no pixel of the anchor. Raman: fully constrained abundances of the mean spectrum of the measured pixels inside the footprint, after the image's spot-level offset removal and normalization. Fluorescence: mean one-hot phenotype vector of those pixels |
 | `.var` | DataFrame | $(K,)$ | `group` (channel group) and `phenotype` (`endmember 1..p`, or `phenotype 1..k` and `no signal`) |
-| `.obsm['channel_mean']` | DataFrame float32 | $(n_\text{ref},\ n_\text{channels})$ | Mean pixel values per channel inside each footprint (uniform weights) |
+| `.obsm['channel_mean']` | DataFrame float32 | $(n_\text{ref},\ n_\text{channels})$ | Mean pixel values per channel inside each footprint (uniform weights), without spot-level processing: linear intensities for `raman-3` Raman files |
 | `.obsm['spatial']` | float32 ndarray | $(n_\text{ref},\ 2)$ | Anchor coordinates in the image-0 full-resolution pixel frame |
 | `.obs['coverage']` | float32 | $(n_\text{ref},)$ | Measured fraction of the anchor footprint, the largest over the images |
-| `.uns['pixel_phenotypes']` | dict | | Merged file only. Per group: `model`, `channels`, `phenotypes`, `prototypes` (endmember spectra or phenotype mean intensities), `pixel_share`, `criterion` |
+| `.uns['pixel_phenotypes']` | dict | | Merged file only. Per group: `model`, `channels`, `phenotypes`, `prototypes` (endmember spectra or phenotype mean intensities), `pixel_share` (mean composition of the drawn spot-sized blocks for Raman, of the drawn pixels for fluorescence), `criterion` |
 
-Each sample also has `{modality}_{sample_id}_pixel_phenotypes.ome.tiff` in its registration folder: one uint8 label image per source image (dominant entry per pixel, 0 where nothing was measured or read), with the source placement. See [Registration Methods §5](../scientific/registration_methods.md#5-pixel-composition-pixel_composition).
+Each sample also has `{modality}_{sample_id}_pixel_phenotypes.ome.tiff` in its registration folder: one uint8 label image per source image (dominant entry per pixel, 0 where nothing was measured or read), with the source placement and the algorithm marker `pixel-phenotypes-2`. The label maps are for display; they do not enter `.X`. See [Registration Methods §5](../scientific/registration_methods.md#5-pixel-composition-pixel_composition).
 
 ---
 

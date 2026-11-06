@@ -1,9 +1,15 @@
 """Pixel access shared by the image-target registrations: images, placements, crops and tiles.
 
-A preprocessed image file holds one or several OME images. A Raman ``raman-2`` file holds one image
-per acquisition, each with its channel names (wavenumbers) and a ``focus_placement``
-``"x0,y0,sx,sy"`` that maps it into image 0's level-0 pixels. A microscopy file holds one image at
-the identity placement. Anchor spots are located in image 0's level-0 pixels by the alignment.
+A preprocessed image file holds one or several OME images. A Raman file holds one image per
+acquisition, each with its channel names (wavenumbers) and a ``focus_placement`` that maps it into
+image 0's level-0 pixels: ``"a,b,tx,c,d,ty"`` (``raman-3``, an affine map: image pixel
+``(col, row)`` lies at image-0 pixel ``(a col + b row + tx, c col + d row + ty)``), or
+``"x0,y0,sx,sy"`` in older files (shift and scale only). A microscopy file holds one image at the
+identity placement. Anchor spots are located in image 0's level-0 pixels by the alignment.
+
+``raman-3`` images store linear intensities; ``focus_spot_offset`` and
+``focus_spot_normalization`` say how averaged spectra (spot means, bins) are to be processed. Older
+files stored processed pixels, so nothing is left to apply.
 """
 
 from __future__ import annotations
@@ -19,20 +25,62 @@ import zarr
 
 from focus.io.ome import hw_from_axes, read_image_annotations
 from focus.registration.anchor import AnchorArrays
+from focus.spatial import spectral
 from focus.spatial.footprint import AnchorGeometry
 
-IDENTITY_PLACEMENT = (0.0, 0.0, 1.0, 1.0)
+Placement = tuple[float, float, float, float, float, float]
+# ``(a, b, tx, c, d, ty)``: image pixel (col, row) -> image-0 pixel (a col + b row + tx, ...).
+IDENTITY_PLACEMENT: Placement = (1.0, 0.0, 0.0, 0.0, 1.0, 0.0)
+
+
+def parse_placement(text: str) -> Placement:
+    """The affine placement of a ``focus_placement`` value (6 numbers, or legacy 4)."""
+    values = [float(v) for v in text.split(",")]
+    if len(values) == 6:
+        a, b, tx, c, d, ty = values
+        return (a, b, tx, c, d, ty)
+    if len(values) == 4:
+        x0, y0, sx, sy = values
+        return (sx, 0.0, x0, 0.0, sy, y0)
+    raise ValueError(f"focus_placement must have 4 or 6 values, got {text!r}")
+
+
+def placement_matrix(placement: Placement) -> np.ndarray:
+    """``(2, 3)`` affine matrix of a placement."""
+    return np.asarray(placement, dtype=np.float64).reshape(2, 3)
+
+
+def placement_scale(placement: Placement) -> float:
+    """Linear scale of a placement (image-0 pixels per image pixel)."""
+    m = placement_matrix(placement)
+    return float(np.sqrt(abs(np.linalg.det(m[:, :2]))))
+
+
+def format_placement(placement: Placement) -> str:
+    """``focus_placement`` text of a placement."""
+    return ",".join(f"{v:.10g}" for v in placement)
 
 
 @dataclass(frozen=True)
 class RamanTarget:
-    """One OME image of an image file and its placement in image 0's level-0 pixels."""
+    """One OME image of an image file and its placement in image 0's level-0 pixels.
+
+    ``spot_offset`` and ``spot_normalization`` are the processing of averaged spectra
+    (:func:`focus.spatial.spectral.spot_spectra`); ``"none"`` for files whose pixels were already
+    processed.
+    """
 
     series: int
     name: str
     channels: list[str]
     wavenumbers: list[float] | None
-    placement: tuple[float, float, float, float]
+    placement: Placement
+    spot_offset: str = spectral.NO_OFFSET
+    spot_normalization: str = spectral.NO_NORMALIZATION
+
+    def spot_spectra(self, spectra: np.ndarray) -> np.ndarray:
+        """``spectra`` with this image's spot-level offset removal and normalisation."""
+        return spectral.spot_spectra(spectra, self.spot_offset, self.spot_normalization)
 
 
 def raman_targets(filename: str) -> list[RamanTarget]:
@@ -47,8 +95,7 @@ def raman_targets(filename: str) -> list[RamanTarget]:
         values = cast(dict[str, str], image["annotations"])
         placement = IDENTITY_PLACEMENT
         if "focus_placement" in values:
-            x0, y0, sx, sy = (float(v) for v in values["focus_placement"].split(","))
-            placement = (x0, y0, sx, sy)
+            placement = parse_placement(values["focus_placement"])
         wavenumbers = (
             [float(v) for v in json.loads(values["focus_wavenumbers_cm1"])]
             if "focus_wavenumbers_cm1" in values
@@ -61,9 +108,25 @@ def raman_targets(filename: str) -> list[RamanTarget]:
                 channels=[str(c) for c in cast(list[str], image["channels"])],
                 wavenumbers=wavenumbers,
                 placement=placement,
+                spot_offset=values.get("focus_spot_offset", spectral.NO_OFFSET),
+                spot_normalization=values.get(
+                    "focus_spot_normalization", spectral.NO_NORMALIZATION
+                ),
             )
         )
     return targets
+
+
+def target_signature(targets: list[RamanTarget]) -> list[list[object]]:
+    """Placement and spot processing of every image, for registration cache keys.
+
+    The pixel digest of a FOCUS file does not cover the annotations, so a changed placement would
+    otherwise reuse outputs read through the old one.
+    """
+    return [
+        [t.series, format_placement(t.placement), t.spot_offset, t.spot_normalization]
+        for t in targets
+    ]
 
 
 def image_dims(filename: str, series: int) -> tuple[int, int]:
@@ -115,8 +178,9 @@ def image_geometry(
     """Anchor footprints in one image's pixels (image 0's geometry composed with the placement)."""
     if target.series == 0 and target.placement == IDENTITY_PLACEMENT:
         return geom
-    x0, y0, sx, sy = target.placement
-    mapped = (np.asarray(anchor.mapped, dtype=np.float64) - [x0, y0]) / [sx, sy]
+    m = placement_matrix(target.placement)
+    shifted = np.asarray(anchor.mapped, dtype=np.float64) - m[:, 2]
+    mapped = np.linalg.solve(m[:, :2], shifted.T).T
     return AnchorGeometry.from_arrays(anchor.spatial, mapped, anchor.spot_size)
 
 
