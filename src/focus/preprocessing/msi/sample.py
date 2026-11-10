@@ -13,6 +13,7 @@ from focus.preprocessing.msi.metadata_loading import initialize_sample
 from focus.preprocessing.msi.types import SampleMetadata
 
 from functools import cached_property
+import os
 
 from focus.preprocessing.msi.imzml import ImzmlReader
 from focus.preprocessing.msi.binary import BinaryValidator
@@ -104,6 +105,8 @@ class MsiSample(SampleSource):
         self._aligned_mz: dict[
             str, np.ndarray
         ] = {}  # For each ion mode, store the aligned M/Z values (obtained from preprocessing)
+        # Scratch IBDs of centroids picked from profile spectra; they live for one run.
+        self._scratch_files: list[str] = []
 
     @property
     def ion_modes(self) -> list[str]:
@@ -167,6 +170,13 @@ class MsiSample(SampleSource):
         foreground_mask = np.zeros(n_spectra, dtype=bool)
         foreground_mask[self.filtered_idx] = True
         return foreground_mask
+
+    def release_scratch(self) -> None:
+        """Delete the scratch IBDs of this run, whatever its outcome."""
+        for path in self._scratch_files:
+            if os.path.exists(path):
+                os.remove(path)
+        self._scratch_files.clear()
 
     def initialize_sample(self) -> None:
         """Load metadata and reconcile spot coordinates before payload processing."""

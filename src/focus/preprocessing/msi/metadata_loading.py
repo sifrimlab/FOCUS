@@ -2,13 +2,25 @@
 
 from __future__ import annotations
 from typing import TYPE_CHECKING, cast
+import os
 import numpy as np
 from sklearn.linear_model import LinearRegression
 from focus.config.keys import MsiMetadata
 from focus.config.options import MsiIonMode
 from focus.io.discovery import find_imzml_pair
 from focus.runtime.reporter_context import get_reporter
+from focus.preprocessing.msi.binary import check_ibd_size
+from focus.preprocessing.msi.centroiding import (
+    CENTROID_INTENSITY_DTYPE,
+    CENTROID_MZ_DTYPE,
+    centroid_profile,
+)
 from focus.preprocessing.msi.coordinates import compute_raster_coordinates
+from focus.preprocessing.msi.representation import (
+    PROFILE,
+    needs_centroiding,
+    probe_representation,
+)
 
 if TYPE_CHECKING:
     from focus.preprocessing.msi.sample import MsiSample
@@ -48,11 +60,61 @@ def _load_mode(sample: MsiSample, mode: str, input_path: str) -> None:
     # Parse the imzML file to extract the metadata and the parsed spectra
     sample._metadata[mode] = sample.reader._parse_imzml(sample._metadata_files[mode])
 
+    # A sampled profile is peak-picked once into a scratch IBD, so that validation, pairing and every
+    # later read see centroids. Spectra that cannot be picked join the corrupt ones below.
+    unpicked = _centroid_profile(sample, mode)
+
     # Validate the binary payload before any downstream processing.
     # Raises ValueError on truncation; returns indices of NaN/Inf spectra.
-    corrupt_indices = sample.binary._validate_binary_data(mode)
+    corrupt_indices = sample.binary._validate_binary_data(mode) | unpicked
     if corrupt_indices:
         _filter_corrupt_spectra(sample, mode, corrupt_indices)
+
+
+def _centroid_profile(sample: MsiSample, mode: str) -> set[int]:
+    """Replace a sampled profile by its centroids in a scratch IBD; return the spectra not picked.
+
+    The content of the spectra decides, not the header (see representation.py). Centroid files are
+    left as they are.
+    """
+    meta = sample._metadata[mode]
+    path = sample._binary_files[mode]
+    mz_meta = meta[MsiMetadata.MZ_BINARY_METADATA]
+    int_meta = meta[MsiMetadata.INTENSITIES_BINARY_METADATA]
+    mz_dtype = meta[MsiMetadata.MZ_DTYPE]
+    int_dtype = meta[MsiMetadata.INTENSITIES_DTYPE]
+    # Reading a truncated file through a memory map would fault, so the size is checked first.
+    check_ibd_size(path, mz_meta, int_meta, mz_dtype, int_dtype, sample.sample_id, mode)
+    representation = probe_representation(path, mz_dtype, int_dtype, mz_meta, int_meta)
+    declared = meta.get(MsiMetadata.DECLARED_REPRESENTATION, "")
+    name = os.path.basename(sample._metadata_files[mode])
+    if not needs_centroiding(representation, declared, name):
+        return set()
+    assert representation.kind == PROFILE and representation.grid is not None
+
+    scratch = os.path.join(sample.output_path, f".{sample.modality_name}_{mode}.ibd")
+    sample._scratch_files.append(scratch)
+    result = centroid_profile(
+        path,
+        mz_dtype,
+        int_dtype,
+        mz_meta,
+        int_meta,
+        representation.grid,
+        scratch,
+        f"Centroiding ({str(mode).upper()}, {sample.sample_id})",
+    )
+    sample._binary_files[mode] = scratch
+    meta[MsiMetadata.MZ_BINARY_METADATA] = result.mz_meta
+    meta[MsiMetadata.INTENSITIES_BINARY_METADATA] = result.intensity_meta
+    meta[MsiMetadata.MZ_DTYPE] = CENTROID_MZ_DTYPE
+    meta[MsiMetadata.INTENSITIES_DTYPE] = CENTROID_INTENSITY_DTYPE
+    get_reporter().detail(
+        f"Spectra ({str(mode).upper()}): sampled profile, "
+        f"{representation.points_per_peak:.1f} points per peak; centroided to "
+        f"{result.mean_peaks:,.0f} peaks per spectrum"
+    )
+    return result.corrupt
 
 
 def _filter_corrupt_spectra(

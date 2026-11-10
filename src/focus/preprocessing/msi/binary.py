@@ -26,6 +26,41 @@ def _read(mm: mmap.mmap, dtype: type[np.generic], meta: np.ndarray) -> np.ndarra
     return np.frombuffer(mm, dtype=dtype, count=count, offset=int(meta[2]))
 
 
+def check_ibd_size(
+    path: str,
+    mz_meta: np.ndarray,
+    int_meta: np.ndarray,
+    mz_dtype: type[np.generic],
+    int_dtype: type[np.generic],
+    sample_id: str,
+    mode: str,
+) -> None:
+    """Raise ``ValueError`` when the IBD is smaller than the byte range its spectra declare.
+
+    The required size is the highest byte address any spectrum occupies: the maximum over all
+    spectra of offset + count x itemsize. A truncated file is unrecoverable, and reading it through
+    a memory map past its end would fault, so every reader checks it first.
+    """
+    n_spectra = mz_meta.shape[0]
+    actual_size = os.path.getsize(path)
+    last_mz_byte = int(
+        np.max(mz_meta[:, 2] + mz_meta[:, 0] * np.dtype(mz_dtype).itemsize)
+    )
+    last_int_byte = int(
+        np.max(int_meta[:, 2] + int_meta[:, 0] * np.dtype(int_dtype).itemsize)
+    )
+    required_size = max(last_mz_byte, last_int_byte)
+    if actual_size < required_size:
+        missing = required_size - actual_size
+        raise ValueError(
+            f"[Sample '{sample_id}' – {str(mode).upper()} mode] "
+            f"IBD file is truncated: {actual_size:,} bytes on disk, "
+            f"{required_size:,} bytes required for {n_spectra:,} spectra "
+            f"({missing:,} bytes missing, {missing / required_size * 100:.1f}% absent).\n"
+            f"  File: {path}"
+        )
+
+
 class BinaryValidator:
     """Check IBD ranges and finite spectrum values before downstream sample processing."""
 
@@ -64,27 +99,17 @@ class BinaryValidator:
         mz_dtype = meta[MsiMetadata.MZ_DTYPE]
         int_dtype = meta[MsiMetadata.INTENSITIES_DTYPE]
         n_spectra: int = mz_meta.shape[0]
-        mz_itemsize: int = np.dtype(mz_dtype).itemsize
-        int_itemsize: int = np.dtype(int_dtype).itemsize
 
         # ── 1. File-size check ─────────────────────────────────────────────────
-        actual_size = os.path.getsize(ibd_path)
-
-        # The minimum required file size is the highest byte address that any
-        # spectrum occupies: max over all spectra of (offset + count × itemsize).
-        last_mz_byte = int(np.max(mz_meta[:, 2] + mz_meta[:, 0] * mz_itemsize))
-        last_int_byte = int(np.max(int_meta[:, 2] + int_meta[:, 0] * int_itemsize))
-        required_size = max(last_mz_byte, last_int_byte)
-
-        if actual_size < required_size:
-            missing = required_size - actual_size
-            raise ValueError(
-                f"[Sample '{self.sample.sample_id}' – {str(mode).upper()} mode] "
-                f"IBD file is truncated: {actual_size:,} bytes on disk, "
-                f"{required_size:,} bytes required for {n_spectra:,} spectra "
-                f"({missing:,} bytes missing, {missing / required_size * 100:.1f}% absent).\n"
-                f"  File: {ibd_path}"
-            )
+        check_ibd_size(
+            ibd_path,
+            mz_meta,
+            int_meta,
+            mz_dtype,
+            int_dtype,
+            self.sample.sample_id,
+            mode,
+        )
 
         # ── 2. Full NaN / Inf scan ─────────────────────────────────────────────
         # Read every spectrum via memory-mapped I/O and validate with np.isfinite.

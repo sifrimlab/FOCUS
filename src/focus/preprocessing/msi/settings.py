@@ -28,7 +28,7 @@ def _step(index: int) -> tuple[int, int, str]:
 
 # Part of the preprocessing fingerprint: bump whenever the same input and settings produce a
 # different output, so cached results are rebuilt.
-METHOD_VERSION = "msi-16"
+METHOD_VERSION = "msi-17"
 
 
 # --- Dual polarity pairing (docs/scientific/msi_methods.md §2.2) ---
@@ -201,3 +201,50 @@ _MICROGRID_DEFAULT_TOLERANCE_PPM = 10
 
 # Spectra concatenated per vectorised block.
 _MICROGRID_BLOCK_SPECTRA = 20_000
+
+
+# --- Spectrum representation and centroiding (docs/scientific/msi_methods.md §1.1 and §1.2) ---
+
+# The representation probe reads this many evenly spaced spectra; a spectrum with fewer points than
+# _PROFILE_MIN_POINTS says nothing about the sampling and is skipped.
+_PROFILE_PROBE_SPECTRA = 512
+
+_PROFILE_MIN_POINTS = 8
+
+# Log-spaced m/z bands over which the grid step is measured and the baseline and noise are estimated.
+_PROFILE_BANDS = 64
+
+# A spacing belongs to the sampling grid when it lies within this fraction of the band's grid step; a
+# spectrum is a sampled profile when at least _PROFILE_REGULARITY of its spacings do.
+_PROFILE_GRID_TOLERANCE = 0.25
+
+_PROFILE_REGULARITY = 0.75
+
+# Share of the probed spectra that must be sampled profiles for the file to be one; a file between the
+# two bounds mixes both representations and is refused.
+_PROFILE_SHARE = (0.1, 0.9)
+
+# A sampled profile is picked only when its largest peaks span at least this many grid steps at half
+# maximum (the median of each probed spectrum's _PROFILE_TOP_APEXES largest apexes), and its grid step
+# is at most _PROFILE_MAX_STEP Da: a regular grid of coarser steps is a list of isotopes, not a profile.
+_PROFILE_MIN_POINTS_PER_PEAK = 3.0
+
+_PROFILE_MAX_STEP = 0.1
+
+_PROFILE_TOP_APEXES = 10
+
+# Only apexes at least this many noise deviations above the baseline are measured: a maximum of noise
+# is one or two points wide whatever the sampling.
+_PROFILE_APEX_SIGMA = 10.0
+
+# Peak picking: two points are neighbours on the grid when closer than this multiple of the grid step;
+# an apex is a peak when it stands this multiple of the baseline noise above the baseline; two apexes
+# are one peak unless the signal between them falls below this fraction of the lower one.
+_PICK_GAP = 1.5
+
+_PICK_SIGNAL_TO_NOISE = 3.0
+
+_PICK_VALLEY = 0.5
+
+# Source points per picking batch: bounds the transient memory whatever the spectrum length.
+_PICK_BATCH_POINTS = 4_000_000

@@ -46,6 +46,7 @@ class MsiMetadata(_AbstractEnum):
     STAGE_COORDINATES: Final = "stage_coordinates"  # True when every spectrum carries its stage position (3DPositionX/Y)
     PAIRING_BANDS: Final = "pairing_bands"  # per-spectrum m/z band sums, used to register the two polarities
     STAGE_POSITIONS: Final = "stage_positions"  # recorded stage positions before the scan-line rotation correction
+    DECLARED_REPRESENTATION: Final = "declared_representation"  # "profile", "centroid" or "" as declared by the imzML header
 
 
 class ConfigParameters(_AbstractEnum):

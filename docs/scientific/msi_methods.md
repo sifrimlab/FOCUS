@@ -42,15 +42,89 @@ because the micrometre scale of the sample is unknown. FOCUS design choice: the 
 `uns['spot_size']` and sets every downstream footprint, so it is never assumed.
 
 **Encoding check.** The IBD arrays are read uncompressed (m/z as 32- or 64-bit floats, intensities as 32- or
-64-bit floats or integers, integers cast to float32) and every (m/z, intensity) pair is taken as a
-peak. A file whose file description, referenceable parameter groups or first spectrum
-declare a binary compression other than `no compression` (zlib, MS-Numpress), or `profile spectrum`
-without `centroid spectrum`, raises `ValueError`[^schramm2012].
+64-bit floats or integers, integers cast to float32). A file whose file description, referenceable
+parameter groups or first spectrum declare a binary compression other than `no compression` (zlib,
+MS-Numpress) raises `ValueError`[^schramm2012]. The same terms also declare the spectrum type,
+`profile spectrum` or `centroid spectrum`; §1.1 decides from the stored spectra whether the declaration
+holds, and §1.2 converts profile spectra to centroids before anything else reads them.
 
 Prior to any processing the IBD payload is validated:
 a truncated file (smaller than the largest `offset + length × itemsize`) raises `ValueError`, and
 spectra containing non-finite m/z or intensity values are dropped. Peaks at m/z 0 or below are
 dropped at read: the logarithmic m/z grid (§4.1.1) and the ppm tolerance are undefined there.
+
+### 1.1 Spectrum representation
+
+Everything after this section works on peak lists, so the spectra are classified from their content
+before they are used; the header is only a hint. FOCUS design choice: the content decides because
+exporters mislabel files in both directions. The probe reads up to 512 evenly spaced spectra (spectra
+with fewer than 8 points say nothing about the sampling and are skipped) and is deterministic.
+
+- **Grid step.** The m/z axis is cut into 64 log-spaced bands; the grid step of a band is the median
+  spacing of consecutive m/z values in it, over all probed spectra.
+- **Sampled profile.** A spectrum is a sampled profile when at least 75% of its spacings lie within
+  25% of the grid step of their band. Zero-trimmed profiles (stored runs of points around each peak)
+  qualify, as do continuous files that share one m/z axis. A list of peaks has irregular spacings.
+- **Resolution.** The sampling of a profile is judged from its largest apexes: the 10 largest apexes
+  of each profile spectrum that stand at least 10 noise deviations above the baseline of §1.2. For
+  each, the full width at half maximum above the baseline is measured in grid steps by interpolating
+  the crossings. The median over the probe is the number of points per peak, and the median grid step
+  is reported in Da.
+
+| Probed spectra | Content | Declared `profile` | Declared `centroid` or nothing |
+|---|---|---|---|
+| At least 90% sampled profiles, at least 3 points per peak, grid step at most 0.1 Da | resolved profile | centroided | centroided; a warning when `centroid` was declared |
+| At least 90% sampled profiles, fewer points per peak or a coarser grid | not resolved | `ValueError` with the measured values | read as a peak list, as before |
+| Fewer than 10% sampled profiles | peak list | read as centroids, with a warning | read as centroids |
+| Anything between | mixed | `ValueError` | `ValueError` |
+
+FOCUS design choice for the thresholds: with fewer than 3 points across a peak the apex cannot be
+located from its neighbours (the fit below needs one point on each flank and a curvature), so such a
+file is refused instead of picked unreliably. A regular grid coarser than 0.1 Da is not a profile at
+any resolving power used in imaging, and a ladder of isotopes in a centroid file has that regularity.
+A profile stored with one point per peak is indistinguishable from a peak list and is read as one.
+
+### 1.2 Centroiding of profile spectra
+
+A resolved profile is converted to centroids once per run, in the loading step, so that validation,
+the registration of the two polarities and every later read see a peak list. FOCUS adaptation of the
+standard local-maximum peak detection (MALDIquant `detectPeaks` with a noise-scaled threshold and
+`estimateNoise` from the median absolute deviation[^gibb2012][^rousseeuw1993]); the grid-aware baseline
+and the merging rule below are FOCUS design choices.
+
+1. **Runs.** Two consecutive points are neighbours when they are closer than 1.5 grid steps of their
+   band; a larger spacing ends a run.
+2. **Baseline and noise, per band.** The median and \(1.4826 \cdot \mathrm{MAD}\) of the signal over
+   the sampling grid of the band, where the grid positions without a stored point count as zeros. A
+   sparse or zero-trimmed profile therefore gets baseline and noise 0, and a dense profile a real
+   estimate. Values are interpolated between band centres in log m/z; a band without enough grid
+   positions takes its nearest band.
+3. **Apexes.** A local maximum of a run (a plateau gives its lowest-m/z point) is a peak when its height
+   above the baseline is positive and at least 3 noise deviations[^long1983]. Unlike a vendor export,
+   the noise maxima above that limit are kept: the noise gates of §4.2 and §6 are calibrated on
+   centroids that include them, and about one maximum in a thousand points of pure noise passes.
+4. **One peak per ion.** Two apexes of a run are one peak unless the signal between them falls below
+   half of the lower one above the baseline; the higher apex is kept. This merges a noisy flat top and
+   unresolved shoulders, which binning would otherwise add twice (§8).
+5. **Position and height.** A Gaussian through the apex and its two neighbours (a parabola on the
+   logarithm of the signal above the baseline, valid for any spacing); a parabola on the signal when a
+   neighbour is not above the baseline; the apex point itself when a neighbour is not on the grid. The
+   centroid intensity is the fitted apex height above the baseline, never lower than the apex point.
+   FOCUS design choice: height and not area, as in vendor centroids, because the area of a peak grows
+   with its width, which grows with m/z at constant resolving power, and would reweight the
+   normalizations of §9 and the signal-to-noise limits of §4.2 and §6.
+
+The conversion reads the profile once, in batches of at most 4 million points, with one thread per
+available CPU; the batches are written in spectrum order, so the result does not depend on the number
+of threads. The centroids are stored in a scratch IBD (m/z float64, heights float32) next to the
+sample's outputs, deleted when the run ends or fails, and never part of the output. Spectra with
+non-finite values or arrays of different lengths cannot be picked and are dropped with the corrupt
+spectra of §1. The step reports the points per peak and the mean number of peaks per spectrum.
+
+Limits. The fit locates a symmetric peak to within 3% of its width at 3 to 10 points per peak and a
+strongly skewed one (right flank twice as wide) to within 15%. The picker is not the instrument
+vendor's centroiding, which can use lock masses or peak-shape models; an export of centroided spectra
+remains the most faithful input.
 
 ---
 

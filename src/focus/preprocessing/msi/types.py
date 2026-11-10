@@ -54,3 +54,4 @@ class SampleMetadata(TypedDict, total=False):
     intensities_binary_metadata: NDArray[np.int64]
     pairing_bands: NDArray[np.float32]
     stage_positions: NDArray[np.float32 | np.float64]
+    declared_representation: str

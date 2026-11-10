@@ -132,14 +132,15 @@ class ImzmlReader:
         }
 
     @staticmethod
-    def _check_encoding(root: ET.Element, filename: str) -> None:
+    def _check_encoding(root: ET.Element, filename: str) -> str:
         """
-        Reject binary encodings the IBD reader does not decode.
+        Reject compressed binary arrays and return the declared spectrum representation.
 
-        The IBD arrays are read as uncompressed floats and every (m/z, intensity) pair is taken as
-        a peak, so compressed arrays and profile spectra are refused instead of being decoded into
-        wrong values. The cvParams are read from the file description, the referenceable parameter
-        groups and the first spectrum, where exporters declare them.
+        The IBD arrays are read as uncompressed floats, so compressed arrays are refused instead of
+        being decoded into wrong values. The cvParams are read from the file description, the
+        referenceable parameter groups and the first spectrum, where exporters declare them. The
+        result is "profile" or "centroid" when exactly one of the two terms is declared, "" otherwise;
+        what the spectra really hold is decided from their content (see representation.py).
         """
         scopes: list[ET.Element] = []
         for key in (
@@ -174,9 +175,10 @@ class ImzmlReader:
                 "export the imzML without compression"
             )
         if "profile spectrum" in names and "centroid spectrum" not in names:
-            raise ValueError(
-                f"{filename}: profile spectra are not supported; export centroided (peak-picked) spectra"
-            )
+            return "profile"
+        if "centroid spectrum" in names and "profile spectrum" not in names:
+            return "centroid"
+        return ""
 
     @staticmethod
     def _infer_pixel_size(
@@ -303,7 +305,7 @@ class ImzmlReader:
         if not np.issubdtype(mz_dtype, np.floating):
             raise ValueError(f"{filename}: integer m/z arrays are not supported")
 
-        self._check_encoding(root, filename)
+        declared_representation = self._check_encoding(root, filename)
 
         # Extract the raster size in micrometers (a decimal value such as "20.0" is accepted).
         raster_size = np.array([0.0, 0.0], dtype=np.float32)
@@ -384,6 +386,7 @@ class ImzmlReader:
             MsiMetadata.MZ_DTYPE: cast(type[np.floating], mz_dtype),
             MsiMetadata.RASTER_SIZE: raster_size,
             MsiMetadata.LINE_AXIS: line_axis,
+            MsiMetadata.DECLARED_REPRESENTATION: declared_representation,
             MsiMetadata.STAGE_COORDINATES: stage_positions is not None,
             MsiMetadata.PIXEL_COORDINATES: pixel_coordinates,
             MsiMetadata.PHYSICAL_COORDINATES: physical_coordinates,

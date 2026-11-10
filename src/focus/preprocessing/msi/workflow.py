@@ -52,27 +52,32 @@ def process_samples(
     reporter: StepReporter,
 ) -> None:
     """Execute the ordered numerical stages, preserving resume state and write barriers."""
-    profile = sample_profile(settings.sample_type)
-    initialize_samples(resume.samples, reporter, profile)
-    select_references(
-        dataset,
-        resume.samples,
-        resume.stored_references,
-        resume.stored_pools,
-        settings.mass_tolerance,
-        settings.references,
-        settings.standards,
-        reporter,
-    )
-    build_features(
-        dataset,
-        resume.samples,
-        resume.partial,
-        settings.mass_tolerance,
-        profile,
-        reporter,
-    )
-    features = feature_metadata(
-        dataset, settings.normalization, settings.standards, settings.mass_tolerance
-    )
-    write_samples(dataset, resume, features, key, settings, profile, reporter)
+    try:
+        profile = sample_profile(settings.sample_type)
+        initialize_samples(resume.samples, reporter, profile)
+        select_references(
+            dataset,
+            resume.samples,
+            resume.stored_references,
+            resume.stored_pools,
+            settings.mass_tolerance,
+            settings.references,
+            settings.standards,
+            reporter,
+        )
+        build_features(
+            dataset,
+            resume.samples,
+            resume.partial,
+            settings.mass_tolerance,
+            profile,
+            reporter,
+        )
+        features = feature_metadata(
+            dataset, settings.normalization, settings.standards, settings.mass_tolerance
+        )
+        write_samples(dataset, resume, features, key, settings, profile, reporter)
+    finally:
+        # The scratch IBDs of profile spectra live for one run, whatever its outcome.
+        for sample in resume.samples:
+            sample.release_scratch()

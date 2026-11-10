@@ -49,23 +49,40 @@ def test_pixel_grid_coordinates_follow_the_stage_axes(tmp_path: Path) -> None:
     assert np.ptp(grid[:, 1]) == pytest.approx((_LINES - 1) * 40.0)
 
 
-@pytest.mark.parametrize(
-    ("term", "message"),
-    [
-        ("zlib compression", "compressed binary arrays"),
-        ("profile spectrum", "profile spectra"),
-    ],
-)
-def test_unsupported_encodings_raise(tmp_path: Path, term: str, message: str) -> None:
-    """Compressed arrays and profile spectra are refused instead of decoded as peaks."""
+def test_compressed_arrays_raise(tmp_path: Path) -> None:
+    """Compressed arrays are refused instead of decoded as peaks."""
     path = write(tmp_path, stage=True)
     text = path.read_text().replace(
         '<cvParam name="32-bit float" value=""/>',
-        f'<cvParam name="32-bit float" value=""/><cvParam name="{term}" value=""/>',
+        '<cvParam name="32-bit float" value=""/><cvParam name="zlib compression" value=""/>',
     )
     path.write_text(text)
-    with pytest.raises(ValueError, match=message):
+    with pytest.raises(ValueError, match="compressed binary arrays"):
         parse(path)
+
+
+@pytest.mark.parametrize(
+    ("terms", "declared"),
+    [
+        (["profile spectrum"], "profile"),
+        (["centroid spectrum"], "centroid"),
+        (["profile spectrum", "centroid spectrum"], ""),
+        ([], ""),
+    ],
+)
+def test_declared_representation_is_reported(
+    tmp_path: Path, terms: list[str], declared: str
+) -> None:
+    """The header's spectrum type is recorded; what the spectra hold is decided from their content."""
+    path = write(tmp_path, stage=True)
+    added = "".join(f'<cvParam name="{term}" value=""/>' for term in terms)
+    path.write_text(
+        path.read_text().replace(
+            '<cvParam name="32-bit float" value=""/>',
+            f'<cvParam name="32-bit float" value=""/>{added}',
+        )
+    )
+    assert parse(path)["declared_representation"] == declared
 
 
 def test_declared_centroid_uncompressed_data_is_accepted(tmp_path: Path) -> None:
