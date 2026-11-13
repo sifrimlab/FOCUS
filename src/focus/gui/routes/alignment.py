@@ -106,6 +106,13 @@ def register_routes(gui: DirectMappingAlignmentGUI) -> None:
         else:
             return jsonify({"message": f"Unknown modality type: {modality_type}"}), 500
 
+    @gui.app.route("/initial_state", methods=["GET"])
+    def get_initial_state() -> ResponseReturnValue:
+        """Return the previously confirmed warp of the current sample, or an empty object."""
+        if gui._sample_id is None:
+            return jsonify({"message": "Sample not ready"}), 400
+        return jsonify(gui._initial_state or {})
+
     @gui.app.route("/confirm", methods=["POST"])
     def confirm_alignment() -> ResponseReturnValue:
         """Accept the browser transformation and signal the waiting alignment worker."""

@@ -36,7 +36,18 @@ export class Graphics extends Container {
   rect = chain; poly = chain; circle = chain;
   clear() { this.fills = 0; return this; }
   fill() { this.fills += 1; return this; }
-  moveTo = chain; lineTo = chain; stroke = chain; setStrokeStyle = chain;
+  moveTo = chain; lineTo = chain; stroke = chain; setStrokeStyle = chain; closePath = chain;
+}
+
+export class Text extends Container {
+  text: string;
+  visible = true;
+  style: Record<string, unknown>;
+  constructor(options: { text?: string; style?: Record<string, unknown> } = {}) {
+    super();
+    this.text = options.text ?? '';
+    this.style = { ...(options.style ?? {}) };
+  }
 }
 
 export class Sprite extends Container {

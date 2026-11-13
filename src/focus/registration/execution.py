@@ -111,7 +111,7 @@ def sample_geometry(
         reporter.warning("No spot_size in the anchor: using the default [1.0, 1.0]")
     try:
         geom = AnchorGeometry.from_arrays(
-            anchor.spatial, anchor.mapped, anchor.spot_size
+            anchor.spatial, anchor.mapped, anchor.spot_size, anchor.nonrigid
         )
     except ValueError as e:
         reporter.warning(f"Sample skipped: {e}")

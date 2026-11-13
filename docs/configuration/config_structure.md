@@ -82,6 +82,7 @@ This page documents the **canonical structure** and the set of config fields tha
 | `type` | string | One of `microscopy_image`, `msi`, `raman`, `st`. |
 | `alignment_strategy` | string | `manual` or `pre_aligned`. |
 | `alignment_force_recomputing` | boolean | Re-run alignment for this modality even when cached outputs exist. Default `false`. |
+| `alignment_guide` | string or null | Optional. Name of another non-reference modality, aligned directly to the reference, to align this modality onto instead of the reference (e.g. the H&E of the reference's section when this modality comes from a consecutive cut). Only for `msi`/`st` modalities with `manual` alignment. |
 | `registration_type` | string | `none`, `feature_extraction`, `spot_interpolation`, `raman_pixel_interpolation`, or `pixel_composition`. |
 | `processing_settings` | object | Modality-specific preprocessing settings. |
 | `registration_settings` | object | Registration-specific settings (empty object allowed). |

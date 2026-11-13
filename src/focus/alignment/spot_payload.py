@@ -16,19 +16,33 @@ def pack_spots(
     classes: ArrayLike,
     foreground: ArrayLike,
     ids: ArrayLike | None = None,
+    features: np.ndarray | None = None,
 ) -> bytes:
-    """FSP1: 16-byte LE header, xy f32, class u32, row id u32, foreground u8."""
+    """
+    FSP1: 16-byte LE header (magic, n, version 1, 0), xy f32, class u32, row id u32,
+    foreground u8.
+
+    With ``features`` (n x m uint8 feature images), version 2: the last header field holds ``m``
+    and the images follow spot by spot (``features[i, :]``), 0 meaning no value.
+    """
     n = len(coords)
     ids = np.arange(n, dtype=np.uint32) if ids is None else ids
-    return b"".join(
-        (
-            struct.pack("<4sIII", b"FSP1", n, 1, 0),
-            np.asarray(coords, dtype="<f4").tobytes(),
-            np.asarray(classes, dtype="<u4").tobytes(),
-            np.asarray(ids, dtype="<u4").tobytes(),
-            np.asarray(foreground, dtype="u1").tobytes(),
-        )
+    images = (
+        None if features is None else np.asarray(features, dtype="u1").reshape(n, -1)
     )
+    version, m = (
+        (1, 0) if images is None or images.shape[1] == 0 else (2, images.shape[1])
+    )
+    parts = [
+        struct.pack("<4sIII", b"FSP1", n, version, m),
+        np.asarray(coords, dtype="<f4").tobytes(),
+        np.asarray(classes, dtype="<u4").tobytes(),
+        np.asarray(ids, dtype="<u4").tobytes(),
+        np.asarray(foreground, dtype="u1").tobytes(),
+    ]
+    if version == 2:
+        parts.append(np.ascontiguousarray(images).tobytes())
+    return b"".join(parts)
 
 
 def acquisition_footprint(adata: AnnData) -> tuple[list[list[float]], str] | None:

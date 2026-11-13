@@ -1,5 +1,31 @@
 import { mat3, vec2 } from 'gl-matrix';
 import type { Metadata, SpotModalityPayload } from '../api/types';
+import type { Exclusions, Landmark, Pt } from './warp';
+
+/** Landmark warp state of the moving layer, exported only when it is in use. */
+export interface WarpExtras { landmarks: Landmark[]; anchors?: Pt[]; smoothing: number; exclusions: Exclusions }
+
+/**
+ * Landmark fields for the confirm payload: `landmarks` (src on the moving layer, native;
+ * dst on the fixed layer, display; the moving layer's outline anchors), `smoothing` and `exclusions`. Empty when unused, so a
+ * matrix-only alignment posts exactly what it always did.
+ */
+function warpFields(extras?: WarpExtras): Record<string, unknown> {
+  if (!extras) return {};
+  const out: Record<string, unknown> = {};
+  if (extras.landmarks.length) {
+    out.landmarks = {
+      src: extras.landmarks.map(l => [l.src[0], l.src[1]]),
+      dst: extras.landmarks.map(l => [l.dst[0], l.dst[1]]),
+      anchors: (extras.anchors ?? []).map(a => [a[0], a[1]]),
+    };
+    out.smoothing = extras.smoothing;
+  }
+  if (extras.exclusions.moving.length || extras.exclusions.fixed.length) {
+    out.exclusions = { moving: extras.exclusions.moving, fixed: extras.exclusions.fixed };
+  }
+  return out;
+}
 
 export function computeExportPayload(
   refMeta: Metadata,
@@ -7,7 +33,8 @@ export function computeExportPayload(
   refData: any,
   tgtData: any,
   targetTransform: mat3,
-  referenceTransform: mat3
+  referenceTransform: mat3,
+  extras?: WarpExtras,
 ): any {
   // Calculate mapping matrix T = M_ref^-1 * M_target
   // P_ref = T * P_target
@@ -70,6 +97,7 @@ export function computeExportPayload(
       spots: mappedSpots,
       spot_size_px: spotSizePx,
       transform_matrix: Array.from(mapMatrix),
+      ...warpFields(extras),
     };
   }
 
@@ -129,6 +157,7 @@ export function computeExportPayload(
     return {
       spots: mappedSpots,
       transform_matrix: Array.from(mapMatrix),
+      ...warpFields(extras),
     };
   }
 

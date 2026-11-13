@@ -32,6 +32,11 @@ export interface Metadata {
   channels?: ImageChannel[];
   // Exact-spot mode (microgrid experiments): only foreground spots are sent
   foreground_only?: boolean;
+  // Clustered with a merge tree: cluster_labels are the fine clusters; a resolution of L clusters
+  // applies the first (n_fine - L) merges (pairs of fine labels).
+  cluster_tree?: { merges: [string, string][]; default_level: number };
+  // Labels of the per-spot feature images (ions, genes) appended to an FSP v2 payload.
+  feature_images?: string[];
 }
 
 export interface Spot {
@@ -42,7 +47,13 @@ export interface Spot {
   color?: string;
 }
 
-export type SpotModalityPayload = Spot[];
+export type SpotModalityPayload = Spot[] & {
+  /** FSP v2: per-spot feature images, spot-major (n x nFeatures), 0 = no value. */
+  features?: Uint8Array;
+  nFeatures?: number;
+  /** FSP: class index of every spot, without building Spot objects. */
+  classes?: Uint32Array;
+};
 
 export interface ConfirmPayload {
   // Dynamic based on modality pair, defined in export logic

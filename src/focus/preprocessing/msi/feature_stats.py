@@ -180,3 +180,36 @@ def noise_histograms(
             level = min(max(level, 0), n_levels - 1)
             histogram[block, level] += 1
     return histogram
+
+
+@njit(cache=True)
+def feature_intensity_fraction(
+    flat_mz: np.ndarray,
+    flat_intensity: np.ndarray,
+    offsets: np.ndarray,
+    log_bin_width: float,
+    lookup_lo: int,
+    lookup: np.ndarray,
+    selected: np.ndarray,
+) -> np.ndarray:
+    """
+    Per spectrum, the share of its total peak intensity in the `selected` features.
+
+    0 for a spectrum without peaks. `selected` is a bool per feature of the lookup.
+    """
+    n_spectra = offsets.size - 1
+    out = np.zeros(n_spectra, dtype=np.float64)
+    for s in range(n_spectra):
+        total = 0.0
+        inside = 0.0
+        for k in range(offsets[s], offsets[s + 1]):
+            value = flat_intensity[k]
+            if value <= 0.0:
+                continue
+            total += value
+            j = _feature_of(flat_mz[k], log_bin_width, lookup_lo, lookup)
+            if j >= 0 and selected[j]:
+                inside += value
+        if total > 0.0:
+            out[s] = inside / total
+    return out

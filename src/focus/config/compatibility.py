@@ -4,6 +4,7 @@ from collections.abc import Mapping
 from typing import cast
 
 from focus.config.types import PipelineConfig, ModalityConfig
+from focus.config.guides import validate_alignment_guides
 
 
 from focus.config.keys import (
@@ -280,6 +281,7 @@ def validate_alignment(config: PipelineConfig) -> None:
         )
 
     validate_alignment_pair(config, ref_name, ref_type)
+    validate_alignment_guides(config, ref_name)
 
 
 def validate_pre_aligned(

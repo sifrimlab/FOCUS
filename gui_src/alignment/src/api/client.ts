@@ -1,5 +1,6 @@
 import axios from 'axios';
 import type { SampleStatus, Metadata } from './types';
+import type { InitialState } from '../store/main';
 
 const apiClient = axios.create({
   // Empty baseURL means requests will be relative to the current origin (e.g. http://localhost:8000)
@@ -28,6 +29,13 @@ export const api = {
     const params = channels ? { channels: channels.join(',') } : undefined;
     const response = await apiClient.get(`/${type}/payload`, { responseType, params });
     return response.data;
+  },
+
+  /** The warp confirmed for this sample in an earlier run, or null. */
+  async getInitialState(): Promise<InitialState | null> {
+    const response = await apiClient.get<Partial<InitialState>>('/initial_state');
+    const state = response.data;
+    return state && Array.isArray(state.matrix) && state.matrix.length === 9 ? state as InitialState : null;
   },
 
   async confirm(payload: any): Promise<void> {

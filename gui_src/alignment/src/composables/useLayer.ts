@@ -33,8 +33,17 @@ export function useLayer(role: LayerRole) {
     setChannels: (channels: number[]) => store.setChannels(role, channels),
     /** The store's own array: fields assign into it in place. */
     spotSize: computed(() => (isTarget ? store.targetSpotSize : store.referenceSpotSize)),
-    colorOf: (cls: number) => classColor(meta.value, cls, isTarget),
-    labelOf: (cls: number) => meta.value?.cluster_labels?.[cls] ?? String(cls),
+    /** Clusters at a resolution or a feature image; null for plain classes and images. */
+    view: computed(() => store.spotViews[role]),
+    display: computed(() => (isTarget ? store.targetDisplay : store.referenceDisplay)),
+    colorOf: (cls: number) => {
+      const display = isTarget ? store.targetDisplay : store.referenceDisplay;
+      return display ? display.colors[cls] ?? classColor(meta.value, cls, isTarget) : classColor(meta.value, cls, isTarget);
+    },
+    labelOf: (cls: number) => {
+      const display = isTarget ? store.targetDisplay : store.referenceDisplay;
+      return display ? display.labels[cls] ?? String(cls) : meta.value?.cluster_labels?.[cls] ?? String(cls);
+    },
   });
 }
 

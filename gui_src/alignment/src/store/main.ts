@@ -4,8 +4,13 @@ import type { SampleStatus, Metadata, SpotModalityPayload } from '../api/types';
 import { mat3 } from 'gl-matrix';
 import { createIdentity } from '../utils/matrix';
 import { computeExportPayload } from '../utils/export';
+import {
+  buildWarp, DEFAULT_SMOOTHING, flagOutliers, leaveOneOut,
+  type Exclusions, type Landmark, type Pt, type Warp,
+} from '../utils/warp';
 import { markRaw } from 'vue';
 import { decodeSpots } from '../api/packedSpots';
+import { initialView, spotDisplay, type SpotDisplay, type SpotView } from '../utils/spotDisplay';
 
 export type CommandType =
   | 'zoom' | 'rotate' | 'flip' | 'reset' | 'resetDistort'
@@ -16,6 +21,19 @@ export type CommandType =
 export interface PendingCommand { type: CommandType; value?: any }
 
 export type ForegroundMode = 'all' | 'foreground' | 'background';
+
+export type ControlMode = 'aligner' | 'camera' | 'landmark' | 'exclude';
+
+/** A previously confirmed warp, served by the backend when a sample is re-aligned. */
+export interface InitialState {
+  /** Pair matrix (moving native -> fixed display), gl-matrix column-major. */
+  matrix: number[];
+  landmarks?: { src: Pt[]; dst: Pt[] };
+  smoothing?: number;
+  exclusions?: Exclusions;
+}
+
+const emptyExclusions = (): Exclusions => ({ moving: [], fixed: [] });
 
 /** Latest channel re-render request per layer; older responses are dropped. */
 const channelRequests = { reference: 0, target: 0 };
@@ -49,21 +67,112 @@ export const useMainStore = defineStore('main', {
     pendingCommand: null as PendingCommand | null,
     referenceSpotBoost: 1.0,
     targetSpotBoost: 1.0,
-    controlMode: 'aligner' as 'aligner' | 'camera',
+    controlMode: 'aligner' as ControlMode,
+    // Landmark warp (utils/warp.ts): pins attached to the moving layer (src, native) and
+    // pinned on the fixed layer (dst, display), the spline stiffness, and excluded regions.
+    landmarks: [] as Landmark[],
+    smoothing: DEFAULT_SMOOTHING,
+    exclusions: emptyExclusions(),
+    excludeLayer: 'moving' as 'moving' | 'fixed',
+    /** Outline anchors of the moving layer (native), set when it is placed. */
+    borderAnchors: [] as Pt[],
+    /** True once the fixed layer has published its fit (referenceTransform is meaningful). */
+    referenceFitted: false,
+    /** Stored warp to restore once both layers are placed; consumed by the target canvas. */
+    initialState: null as InitialState | null,
+    /** Folded grid cells under the current warp; confirming with folds takes a second click. */
+    foldCount: 0,
+    confirmArmed: false,
     referenceSpotSize: [1, 1] as [number, number],
     targetSpotSize: [1, 1] as [number, number],
     referenceForegroundMode: 'all' as ForegroundMode,
     targetForegroundMode: 'all' as ForegroundMode,
     loadingMessage: null as string | null,
+    /** Per spot layer: clusters at a resolution, or a feature image (null: plain classes). */
+    spotViews: { target: null as SpotView | null, reference: null as SpotView | null },
   }),
   getters: {
     commonSpotBoost(state): number {
         return Math.max(state.referenceSpotBoost, state.targetSpotBoost);
-    }
+    },
+    /** Display keys and colours of the moving spot layer under its view (null: plain classes). */
+    targetDisplay(state): SpotDisplay | null {
+        const d = spotDisplay(state.targetMeta, state.targetData as SpotModalityPayload | null, state.spotViews.target, true);
+        return d ? markRaw(d) : null;
+    },
+    referenceDisplay(state): SpotDisplay | null {
+        const d = spotDisplay(state.referenceMeta, state.referenceData as SpotModalityPayload | null, state.spotViews.reference, false);
+        return d ? markRaw(d) : null;
+    },
+    /** Moving native -> fixed display: inv(M_fixed) · M_moving (what the export sends). */
+    mapMatrix(state): mat3 {
+        const inv = mat3.create();
+        mat3.invert(inv, state.referenceTransform);
+        return mat3.multiply(mat3.create(), inv, state.targetTransform);
+    },
+    /** The pair matrix refined by the landmarks. */
+    warp(): Warp {
+        return buildWarp(this.mapMatrix, this.landmarks, this.smoothing, this.borderAnchors);
+    },
+    /** Fixed-display-pixel error of each landmark predicted from the others (NaN below 2). */
+    landmarkErrors(): number[] {
+        return leaveOneOut(this.mapMatrix, this.landmarks, this.smoothing, this.borderAnchors);
+    },
+    /** Landmarks whose error stands out from the others. */
+    landmarkFlags(): boolean[] {
+        return flagOutliers(this.landmarkErrors);
+    },
+    /** True when the moving layer is drawn through a landmark warp rather than one matrix. */
+    hasLandmarkWarp(state): boolean {
+        return state.landmarks.length > 0 && state.targetMeta?.modality_type === 'SPOT';
+    },
   },
   actions: {
-    setControlMode(mode: 'aligner' | 'camera') {
+    setControlMode(mode: ControlMode) {
         this.controlMode = mode;
+    },
+    /** Change a spot layer's view; its classes become the keys of the new view, all shown. */
+    setSpotView(role: 'target' | 'reference', patch: Partial<SpotView>) {
+        const current = this.spotViews[role];
+        if (!current) return;
+        this.spotViews = { ...this.spotViews, [role]: { ...current, ...patch } };
+        this.syncDisplayClasses(role);
+    },
+    syncDisplayClasses(role: 'target' | 'reference') {
+        const display = role === 'target' ? this.targetDisplay : this.referenceDisplay;
+        if (!display) return;
+        const classes = display.colors.map((_, k) => k);
+        if (role === 'target') { this.targetSpotClasses = classes; this.targetClassFilter = [...classes]; }
+        else { this.referenceSpotClasses = classes; this.referenceClassFilter = [...classes]; }
+    },
+    addLandmark(l: Landmark) {
+        this.landmarks = [...this.landmarks, { src: [...l.src], dst: [...l.dst] }];
+        this.confirmArmed = false;
+    },
+    moveLandmark(index: number, dst: Pt) {
+        this.landmarks = this.landmarks.map((l, i) => (i === index ? { src: l.src, dst: [dst[0], dst[1]] } : l));
+        this.confirmArmed = false;
+    },
+    removeLandmark(index: number) {
+        this.landmarks = this.landmarks.filter((_, i) => i !== index);
+        this.confirmArmed = false;
+    },
+    clearLandmarks() {
+        this.landmarks = [];
+        this.confirmArmed = false;
+    },
+    setSmoothing(value: number) {
+        this.smoothing = value;
+        this.confirmArmed = false;
+    },
+    addExclusion(layer: 'moving' | 'fixed', polygon: Pt[]) {
+        this.exclusions = { ...this.exclusions, [layer]: [...this.exclusions[layer], polygon] };
+    },
+    removeExclusion(layer: 'moving' | 'fixed', index: number) {
+        this.exclusions = { ...this.exclusions, [layer]: this.exclusions[layer].filter((_, i) => i !== index) };
+    },
+    clearExclusions() {
+        this.exclusions = emptyExclusions();
     },
     setReferenceSpotBoost(val: number) {
         if (Math.abs(this.referenceSpotBoost - val) > 0.0001) {
@@ -127,6 +236,9 @@ export const useMainStore = defineStore('main', {
         this.referenceImage = null;
         this.targetImage = null;
 
+        // A warp confirmed in an earlier run, restored once both layers are placed.
+        this.initialState = await api.getInitialState().catch(() => null);
+
         // Fetch payloads
         const [refData, tgtData] = await Promise.all([
           api.getPayload('reference', refMeta.modality_type === 'IMAGE' ? 'blob' : refMeta.spot_encoding ? 'arraybuffer' : 'json'),
@@ -138,6 +250,16 @@ export const useMainStore = defineStore('main', {
         // Reset transform
         this.targetTransform = createIdentity();
         this.referenceTransform = createIdentity(); // Will be updated by UI when rendered
+        this.referenceFitted = false;
+        this.landmarks = [];
+        this.borderAnchors = [];
+        this.smoothing = DEFAULT_SMOOTHING;
+        this.exclusions = emptyExclusions();
+        this.foldCount = 0;
+        this.confirmArmed = false;
+        if (this.controlMode === 'landmark' || this.controlMode === 'exclude') {
+            if (tgtMeta.modality_type !== 'SPOT') this.controlMode = 'aligner';
+        }
         this.globalZoom = 1.0;
         this.viewOffset = [0, 0];
         this.referenceForegroundMode = 'all';
@@ -173,6 +295,10 @@ export const useMainStore = defineStore('main', {
              this.targetSpotClasses = tgtClasses;
              this.targetClassFilter = [...tgtClasses];
         }
+        // Clustered with a merge tree: start at the default resolution; classes become its groups.
+        this.spotViews = { target: initialView(tgtMeta), reference: initialView(refMeta) };
+        this.syncDisplayClasses('target');
+        this.syncDisplayClasses('reference');
 
       } catch (e: any) {
         console.error(e);
@@ -199,10 +325,16 @@ export const useMainStore = defineStore('main', {
 
     updateReferenceTransform(newMatrix: mat3) {
         this.referenceTransform = newMatrix;
+        this.referenceFitted = true;
     },
 
     async confirm() {
         if (!this.referenceMeta || !this.targetMeta || !this.referenceData || !this.targetData) return;
+        // A warp that folds tissue is confirmed only on a second, deliberate click.
+        if (this.foldCount > 0 && !this.confirmArmed) {
+            this.confirmArmed = true;
+            return;
+        }
         
         try {
             this.isLoading = true;
@@ -216,7 +348,11 @@ export const useMainStore = defineStore('main', {
                 // same matrix without constructing a massive redundant JSON spot list.
                 this.targetMeta.spot_encoding && this.targetMeta.modality_type === 'SPOT' ? [] : this.targetData,
                 this.targetTransform,
-                this.referenceTransform
+                this.referenceTransform,
+                {
+                    landmarks: this.landmarks, anchors: this.borderAnchors,
+                    smoothing: this.smoothing, exclusions: this.exclusions,
+                },
             );
             await api.confirm(payload);
             

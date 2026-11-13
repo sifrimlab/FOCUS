@@ -24,7 +24,7 @@ export interface PlannedStage {
 }
 
 /** Modality types whose reference allows building the multimodal dataset (SPOT_MODALITY_TYPES). */
-const SPOT_TYPES = ['msi', 'st'];
+export const SPOT_TYPES = ['msi', 'st'];
 
 export function plannedStages(cfg: Config): PlannedStage[] {
   const names = (list: Modality[]) => list.map(m => m.name);

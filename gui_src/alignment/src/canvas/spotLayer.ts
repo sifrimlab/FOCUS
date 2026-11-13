@@ -4,10 +4,9 @@
  * by foreground state. Display only: nothing here reaches the export.
  */
 import type { Graphics } from 'pixi.js';
-import type { mat3 } from 'gl-matrix';
 import type { SpotModalityPayload } from '../api/types';
 import type { ForegroundMode } from '../store/main';
-import { projectiveTransformPoint } from '../utils/matrix';
+import type { PointMap } from './warpView';
 import { getReferenceColor, getTargetColor } from '../utils/colors';
 
 export interface SpotStyle {
@@ -21,9 +20,10 @@ export interface SpotStyle {
 
 /**
  * Moving layer. Affine transforms are applied by the container; projective
- * ones are applied per spot here (the container then stays at identity).
+ * ones and landmark warps are applied per spot here through `map` (the
+ * container then stays at identity).
  */
-export function drawTargetSpots(g: Graphics, data: SpotModalityPayload, style: SpotStyle, m: mat3, projective: boolean) {
+export function drawTargetSpots(g: Graphics, data: SpotModalityPayload, style: SpotStyle, map: PointMap | null) {
   const [rx, ry] = style.spotSize;
   const drawRx = rx * style.boost;
   const drawRy = ry * style.boost;
@@ -34,11 +34,12 @@ export function drawTargetSpots(g: Graphics, data: SpotModalityPayload, style: S
     if (style.foregroundMode === 'background' && spot.foreground) continue;
     const color = style.colorOf?.(spot.class) ?? getTargetColor(spot.class);
     const lx = spot.spatial[0]; const ly = spot.spatial[1];
-    if (projective) {
-      const c0 = projectiveTransformPoint(m, lx - drawRx/2, ly - drawRy/2);
-      const c1 = projectiveTransformPoint(m, lx + drawRx/2, ly - drawRy/2);
-      const c2 = projectiveTransformPoint(m, lx + drawRx/2, ly + drawRy/2);
-      const c3 = projectiveTransformPoint(m, lx - drawRx/2, ly + drawRy/2);
+    if (map) {
+      const corner = map.forSpot(lx, ly);
+      const c0 = corner(lx - drawRx/2, ly - drawRy/2);
+      const c1 = corner(lx + drawRx/2, ly - drawRy/2);
+      const c2 = corner(lx + drawRx/2, ly + drawRy/2);
+      const c3 = corner(lx - drawRx/2, ly + drawRy/2);
       g.poly([c0[0], c0[1], c1[0], c1[1], c2[0], c2[1], c3[0], c3[1]]);
     } else {
       g.rect(lx - drawRx/2, ly - drawRy/2, drawRx, drawRy);

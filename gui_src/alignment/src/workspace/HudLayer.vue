@@ -11,6 +11,7 @@ import SampleBadge from './hud/SampleBadge.vue';
 import ToolRail from './hud/ToolRail.vue';
 import TransformBar from './hud/TransformBar.vue';
 import LayerDock from './hud/LayerDock.vue';
+import LandmarkPanel from './hud/LandmarkPanel.vue';
 
 const store = useMainStore();
 useUndoShortcuts();
@@ -21,15 +22,16 @@ useUndoShortcuts();
     <SampleBadge class="[grid-area:badge] self-start justify-self-center" />
     <ToolRail class="[grid-area:rail] self-center justify-self-start" />
     <LayerDock class="[grid-area:dock] self-end justify-self-start" />
+    <LandmarkPanel class="[grid-area:pins] self-center justify-self-end" />
     <TransformBar class="[grid-area:transform] self-end justify-self-center" />
     <BaseButton
-      variant="primary"
+      :variant="store.confirmArmed ? 'destructive-filled' : 'primary'"
       size="xl"
       icon="check"
       class="[grid-area:confirm] self-end justify-self-end"
       @click="store.confirm"
     >
-      Confirm alignment
+      {{ store.confirmArmed ? 'Confirm despite folds' : 'Confirm alignment' }}
     </BaseButton>
   </div>
 </template>

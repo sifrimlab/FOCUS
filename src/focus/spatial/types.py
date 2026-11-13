@@ -63,6 +63,9 @@ class ClusteringParameters(TypedDict, total=False):
     gradient_bins: int
     random_state: int
     max_units: int
+    feature_selection: str
+    n_spatial_features: int
+    n_image_features: int
     mode: str
     signal: str | None
     signal_target: float | None
@@ -102,3 +105,11 @@ class ClusterInfo(MergeInfo, total=False):
     pc_variance_ratio: NDArray[np.float32 | np.float64]
     pc_log_counts_spearman: NDArray[np.float64]
     label_coherence: float
+    feature_selection: str
+    spatial_coherence: NDArray[np.float64]
+    cluster_merges: NDArray[np.int64]
+    cluster_default_level: int
+    n_fine_clusters: int
+    image_features: NDArray[np.str_]
+    image_labels: NDArray[np.str_]
+    display: object  # SpotDisplay, popped by store_display before the info is persisted

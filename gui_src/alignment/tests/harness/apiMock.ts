@@ -8,10 +8,12 @@ export const backend = {
   queue: [] as Pending[],
   current: null as Pending | null,
   confirmed: [] as unknown[],
+  /** Stored warp served for the next sample (GET /initial_state). */
+  initialState: null as unknown,
   enqueue(ref: Side, tgt: Side) {
     this.queue.push({ ref, tgt, refData: ref.data(), tgtData: tgt.data() });
   },
-  reset() { this.queue = []; this.current = null; this.confirmed = []; },
+  reset() { this.queue = []; this.current = null; this.confirmed = []; this.initialState = null; },
 };
 
 export async function pollStatus() {
@@ -28,5 +30,6 @@ export const api = {
   async getPayload(type: 'reference' | 'target') {
     return type === 'reference' ? backend.current!.refData : backend.current!.tgtData;
   },
+  async getInitialState() { return backend.initialState; },
   async confirm(payload: unknown) { backend.confirmed.push(payload); },
 };

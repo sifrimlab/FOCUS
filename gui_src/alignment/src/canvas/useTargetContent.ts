@@ -12,6 +12,7 @@ import { applyTargetContentTransform } from './contentTransform';
 import { isProjective } from './targetGeometry';
 import { NativeSpotLayer } from './nativeSpotLayer';
 import { classColor } from '../utils/colors';
+import { matrixPointMap, warpPointMap, type PointMap } from './warpView';
 
 export function useTargetContent(layer: ReturnType<typeof usePixiLayer>, store: ReturnType<typeof useMainStore>) {
   let spotGraphics: Graphics | null = null; // reused across frames to avoid GPU alloc/free per draw
@@ -29,7 +30,18 @@ export function useTargetContent(layer: ReturnType<typeof usePixiLayer>, store: 
     nativeSpots = null;
   };
 
-  const drawSpots = (projective: boolean) => {
+  /** Per-spot map of the current state: the landmark warp, a projective matrix, or none (affine). */
+  const pointMap = (): PointMap | null => {
+    if (store.targetMeta?.modality_type === 'IMAGE') return null;
+    if (store.hasLandmarkWarp) return warpPointMap(store);
+    if (isProjective(store.targetTransform)) return matrixPointMap(store.targetTransform);
+    return null;
+  };
+
+  /** True when spots are drawn at world positions (the container stays at identity). */
+  const isPointwise = () => pointMap() !== null;
+
+  const drawSpots = () => {
     if ((!spotGraphics && !nativeSpots) || !store.targetData || !store.targetMeta || store.targetMeta.modality_type === 'IMAGE') return;
     const style = {
       spotSize: store.targetSpotSize,
@@ -39,14 +51,15 @@ export function useTargetContent(layer: ReturnType<typeof usePixiLayer>, store: 
       basis: store.targetMeta.spot_basis,
       colorOf: (cls: number) => classColor(store.targetMeta, cls, true),
     };
-    if (nativeSpots) nativeSpots.update(style, projective ? store.targetTransform : undefined);
-    else drawTargetSpots(spotGraphics!, store.targetData as SpotModalityPayload, style, store.targetTransform, projective);
+    const map = pointMap();
+    if (nativeSpots) nativeSpots.update(style, map ?? undefined);
+    else drawTargetSpots(spotGraphics!, store.targetData as SpotModalityPayload, style, map);
   };
 
   const updateContentTransform = () => {
     const content = layer.content();
     if (!content || !store.targetTransform) return;
-    applyTargetContentTransform(content, store.targetTransform, store.targetOpacity);
+    applyTargetContentTransform(content, store.targetTransform, store.targetOpacity, store.hasLandmarkWarp);
   };
 
   const loadImage = async (content: Container) => {
@@ -77,14 +90,14 @@ export function useTargetContent(layer: ReturnType<typeof usePixiLayer>, store: 
         destroyChildren();
         store.setTargetSpotBoost(1.0);
         if (store.targetMeta.spot_encoding) {
-          nativeSpots = new NativeSpotLayer(store.targetData as SpotModalityPayload, store.targetMeta, true);
+          nativeSpots = new NativeSpotLayer(store.targetData as SpotModalityPayload, store.targetMeta, true, store.targetDisplay);
           content.addChild(nativeSpots);
         } else {
           spotGraphics = new Graphics();
           content.addChild(spotGraphics);
         }
       }
-      drawSpots(isProjective(store.targetTransform));
+      drawSpots();
     }
     updateContentTransform();
   };
@@ -92,6 +105,7 @@ export function useTargetContent(layer: ReturnType<typeof usePixiLayer>, store: 
   return {
     destroyChildren,
     drawSpots,
+    isPointwise,
     updateContent,
     updateContentTransform,
     hasSpots: () => spotGraphics !== null || nativeSpots !== null,

@@ -93,11 +93,13 @@ class TestClustering:
             return rows, label
 
         with patch("scanpy.pp.pca", side_effect=record):
-            cluster_spots(
+            _, _, info = cluster_spots(
                 X, xy, preset(DOMAINS), marked, feature_names=np.arange(80).astype(str)
             )
-        np.testing.assert_allclose(seen[1], seen[0], rtol=1e-6)
-        assert not np.allclose(seen[1], X)
+        # The PCA sees the represented rows of the selected features only.
+        columns = info["selected_features"].astype(int)
+        np.testing.assert_allclose(seen[1], seen[0][:, columns], rtol=1e-6)
+        assert not np.allclose(seen[1], X[:, columns])
 
     def test_excluded_spots_are_unassigned_and_never_summed(self) -> None:
         """Background spots take no part, also inside aggregated blocks."""

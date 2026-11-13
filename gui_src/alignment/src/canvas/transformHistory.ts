@@ -4,6 +4,7 @@
  * out, so restoring one is an exact byte copy, never a recomputation.
  */
 import { mat3 } from 'gl-matrix';
+import type { Exclusions, Landmark, Pt } from '../utils/warp';
 
 export const HISTORY_CHANGES = 10;
 
@@ -11,11 +12,23 @@ export interface TransformSnapshot {
   transform: mat3;
   /** Affine transform saved before the current distortion ("Reset distortion" target). */
   distortBefore: mat3 | null;
+  /** Landmark warp state; layer-native coordinates, so a resize never rewrites it. */
+  landmarks?: Landmark[];
+  smoothing?: number;
+  exclusions?: Exclusions;
 }
+
+// Plain copies (store state arrives as reactive proxies, which structuredClone rejects).
+const copyPolys = (polys: Pt[][]): Pt[][] => polys.map(poly => poly.map(([x, y]) => [x, y] as Pt));
 
 const copy = (s: TransformSnapshot): TransformSnapshot => ({
   transform: mat3.clone(s.transform),
   distortBefore: s.distortBefore ? mat3.clone(s.distortBefore) : null,
+  landmarks: s.landmarks?.map(l => ({ src: [l.src[0], l.src[1]] as Pt, dst: [l.dst[0], l.dst[1]] as Pt })),
+  smoothing: s.smoothing,
+  exclusions: s.exclusions
+    ? { moving: copyPolys(s.exclusions.moving), fixed: copyPolys(s.exclusions.fixed) }
+    : undefined,
 });
 
 export function createTransformHistory(capacity = HISTORY_CHANGES) {
@@ -52,6 +65,7 @@ export function createTransformHistory(capacity = HISTORY_CHANGES) {
     /** Rewrites every state (a window resize moves all of them together). */
     map(fn: (m: mat3) => mat3) {
       states = states.map(s => ({
+        ...s,
         transform: fn(s.transform),
         distortBefore: s.distortBefore ? fn(s.distortBefore) : null,
       }));

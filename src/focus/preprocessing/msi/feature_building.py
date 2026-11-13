@@ -154,7 +154,11 @@ def build_features(
     for sample in reporter.tqdm(iter_samples, *_step(4), unit="sample"):
         mz_vectors, intensity_vectors = sample.load_payload(mass_tolerance)
         contexts = sample.foreground.detect(
-            mz_vectors, intensity_vectors, mass_tolerance, profile
+            mz_vectors,
+            intensity_vectors,
+            mass_tolerance,
+            profile,
+            dataset.lipid_annotation_db,
         )
         foreground = sample.foreground_mask
         for mode in sample.ion_modes:

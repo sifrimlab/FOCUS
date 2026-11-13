@@ -27,6 +27,7 @@ import scanpy as sc
 
 from focus.preprocessing.transcriptomics.clustering import spot_cluster_labels
 from focus.spot_colors import cluster_colors, label_order
+from focus.spatial.display import store_display
 
 
 def unit_area(adata: AnnData, tech: Technology) -> np.ndarray | None:
@@ -118,6 +119,7 @@ def label_sample(
         reporter,
     )
     adata.obs["clustering_eligible"] = eligible
+    store_display(adata, cluster_labels, provenance)
     adata.uns["focus_clustering"] = provenance
     adata.uns["focus_preprocessing_fingerprint"] = cache_key
     return cluster_labels

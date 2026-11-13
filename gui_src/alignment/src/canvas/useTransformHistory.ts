@@ -21,6 +21,10 @@ const sameBytes = (a: mat3, b: mat3) => {
   return true;
 };
 
+/** Landmark warp state as a comparable key (absent and empty compare equal). */
+const warpKey = (s: { landmarks?: unknown[]; smoothing?: number; exclusions?: { moving: unknown[]; fixed: unknown[] } }) =>
+  JSON.stringify([s.landmarks ?? [], s.landmarks?.length ? s.smoothing : null, s.exclusions?.moving ?? [], s.exclusions?.fixed ?? []]);
+
 /**
  * Text-like fields hold a gesture open while focused; sliders and buttons do
  * not. Read live from document.activeElement: a field removed while focused
@@ -36,7 +40,17 @@ export function useTransformHistory(store: Store, distort: { before: mat3 | null
   let pointerDown = false;
   let timer: ReturnType<typeof setTimeout> | null = null;
 
-  const snapshot = (): TransformSnapshot => ({ transform: store.targetTransform, distortBefore: distort.before });
+  const snapshot = (): TransformSnapshot => ({
+    transform: store.targetTransform,
+    distortBefore: distort.before,
+    landmarks: store.landmarks,
+    smoothing: store.smoothing,
+    exclusions: store.exclusions,
+  });
+
+  /** True when the live state differs from the history's current entry. */
+  const changed = (current: TransformSnapshot) =>
+    !sameBytes(current.transform, store.targetTransform) || warpKey(current) !== warpKey(store);
 
   const sync = () => {
     ui.canUndo = history.canUndo || pending;
@@ -54,7 +68,7 @@ export function useTransformHistory(store: Store, distort: { before: mat3 | null
     if (!pending) return;
     pending = false;
     const current = history.current();
-    if (current && !sameBytes(current.transform, store.targetTransform)) history.push(snapshot());
+    if (current && changed(current)) history.push(snapshot());
     sync();
   };
 
@@ -63,9 +77,9 @@ export function useTransformHistory(store: Store, distort: { before: mat3 | null
     if (pending && !pointerDown && !isEditField(document.activeElement)) timer = setTimeout(flush, SETTLE_MS);
   };
 
-  watch(() => store.targetTransform, () => {
+  watch(() => [store.targetTransform, store.landmarks, store.smoothing, store.exclusions], () => {
     const current = history.current();
-    if (!current || sameBytes(current.transform, store.targetTransform)) return;
+    if (!current || !changed(current)) return;
     pending = true;
     sync();
     schedule();
@@ -74,6 +88,9 @@ export function useTransformHistory(store: Store, distort: { before: mat3 | null
   const restore = (s: TransformSnapshot | null) => {
     if (!s) return;
     distort.before = s.distortBefore;
+    store.landmarks = s.landmarks ?? [];
+    if (s.smoothing !== undefined) store.smoothing = s.smoothing;
+    store.exclusions = s.exclusions ?? { moving: [], fixed: [] };
     store.updateTargetTransform(s.transform);
     sync();
   };
@@ -105,7 +122,7 @@ export function useTransformHistory(store: Store, distort: { before: mat3 | null
     reset(transform: mat3, distortBefore: mat3 | null) {
       cancelTimer();
       pending = false;
-      history.reset({ transform, distortBefore });
+      history.reset({ ...snapshot(), transform, distortBefore });
       sync();
     },
     undo() { flush(); restore(history.undo()); },

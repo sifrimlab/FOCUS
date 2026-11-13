@@ -20,6 +20,7 @@ from PIL import Image
 from focus.alignment.image_view import ImageView, load_view
 
 from focus.alignment.spot_payload import pack_spots, acquisition_footprint
+from focus.alignment.spot_display import read_spot_display
 from focus.spot_colors import cluster_colors, label_order
 
 
@@ -142,13 +143,9 @@ class AlignmentInputs:
         coordinates, spot_size, foreground, labels, colors = self._load_anndata_spots(
             filename
         )
-        unique = label_order(labels)
-        indices = {label: i for i, label in enumerate(unique)}
-        classes = np.fromiter(
-            (indices[str(label)] for label in labels),
-            dtype=np.uint32,
-            count=len(labels),
-        )
+        display = read_spot_display(filename)
+        # With a merge tree the classes are the fine clusters, merged by the browser.
+        unique, classes = _classes(labels if display is None else display.fine_labels)
         metadata: ModalityMetadata = {
             "modality_type": "SPOT",
             "modality_name": modality_name,
@@ -161,19 +158,19 @@ class AlignmentInputs:
         footprint = getattr(self.aligner, "_spot_footprint", None)
         if footprint is not None:
             metadata["spot_basis"], metadata["spot_shape"] = footprint
+        if display is not None:
+            metadata.update(display.metadata())
         valid = np.flatnonzero(np.isfinite(coordinates).all(axis=1))
         if not len(valid):
             raise ValueError(f"No finite display coordinates in {filename}")
-        # Reorder delivery for mesh culling, preserving every original center and row ID.
-        xy = coordinates[valid]
-        tiles = np.floor(
-            (xy - xy.min(axis=0)) / (np.maximum(spot_size, 1e-6) * 32)
-        ).astype(np.int64)
-        order = valid[np.lexsort((tiles[:, 1], tiles[:, 0]))]
+        order = _delivery_order(coordinates, valid, spot_size)
         metadata["spot_count"] = len(order)
+        features = None if display is None else display.payload_images(order)
         return (
             metadata,
-            pack_spots(coordinates[order], classes[order], foreground[order], order),
+            pack_spots(
+                coordinates[order], classes[order], foreground[order], order, features
+            ),
             coordinates,
             np.array([1.0, 1.0]),
         )
@@ -222,3 +219,24 @@ class AlignmentInputs:
             return self._prepare_spot_data(filename, modality_name)
         else:
             raise ValueError(f"Unsupported modality type: {modality_type}")
+
+
+def _classes(labels: np.ndarray) -> tuple[list[str], np.ndarray]:
+    """Ordered class labels and the uint32 class index of every spot."""
+    unique = label_order(labels)
+    indices = {label: i for i, label in enumerate(unique)}
+    classes = np.fromiter(
+        (indices[str(label)] for label in labels), dtype=np.uint32, count=len(labels)
+    )
+    return unique, classes
+
+
+def _delivery_order(
+    coordinates: np.ndarray, valid: np.ndarray, spot_size: np.ndarray
+) -> np.ndarray:
+    """Valid spots reordered for mesh culling, every original center and row ID kept."""
+    xy = coordinates[valid]
+    tiles = np.floor((xy - xy.min(axis=0)) / (np.maximum(spot_size, 1e-6) * 32)).astype(
+        np.int64
+    )
+    return np.asarray(valid[np.lexsort((tiles[:, 1], tiles[:, 0]))])

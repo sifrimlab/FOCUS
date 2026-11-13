@@ -14,6 +14,7 @@ import anndata
 import numpy as np
 
 from focus.io.paths import alignment_file
+from focus.alignment.warps import WARPS_KEY
 from focus.config.options import ModalityType
 from focus.io.provenance import (
     cached_fingerprint,
@@ -61,7 +62,7 @@ class AlignmentCache:
                 "ome.tiff",
             )
         return alignment_file(
-            self.aligner._path, sample_id, self.aligner._target_modality_name, "h5ad"
+            self.aligner._path, sample_id, self.aligner._owner_name, "h5ad"
         )
 
     def _fixed_annotations(self, sample_id: str) -> dict[str, str]:
@@ -232,7 +233,7 @@ class AlignmentCache:
         # Always refresh counts/labels/metadata from preprocessing. Preserve other pair
         # coordinates only when observation identity and native geometry still agree.
         """Read the latest preprocessing data while retaining existing alignment coordinate keys."""
-        adata = anndata.read_h5ad(self.aligner._target_modality[sample_id])
+        adata = anndata.read_h5ad(self.aligner._owner_files[sample_id])
         path = self._aligned_output_path(sample_id)
         if os.path.exists(path):
             old = anndata.read_h5ad(path, backed="r")
@@ -247,5 +248,7 @@ class AlignmentCache:
                 adata.uns["focus_alignment_inputs"] = dict(
                     old.uns.get("focus_alignment_inputs", {})
                 )
+                if WARPS_KEY in old.uns:
+                    adata.uns[WARPS_KEY] = dict(old.uns[WARPS_KEY])
             old.file.close()
         return adata

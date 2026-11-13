@@ -217,7 +217,8 @@ export function useTargetPointer({ app, store, geometry, view, distort }: Target
     e.preventDefault();
     const zoom = e.deltaY > 0 ? 0.98 : 1.02;
 
-    if (store.controlMode === 'camera') {
+    // Only the aligner scales the layer; every other tool zooms the view.
+    if (store.controlMode !== 'aligner') {
         store.globalZoom *= zoom;
         return;
     }

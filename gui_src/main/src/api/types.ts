@@ -27,6 +27,8 @@ export interface Modality {
   registration_settings: Record<string, unknown>;
   alignment_strategy: string;
   alignment_force_recomputing: boolean;
+  /** Modality aligned to instead of the reference (consecutive sections); absent or null: none. */
+  alignment_guide?: string | null;
 }
 
 export interface SpatialAnnotations {

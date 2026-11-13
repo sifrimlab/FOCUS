@@ -1,7 +1,8 @@
 /* Grid templates of the alignment workspace (DESIGN.md 8.17). */
 
 /* Floating HUD: identity top-center (the top row spans all columns, so it
-   centers on the viewport), tools on the left edge, layers bottom-left,
+   centers on the viewport), tools on the left edge, the landmark panel on the
+   right edge (landmark and exclude tools only), layers bottom-left,
    transform island bottom-center, confirm bottom-right. The top-right corner
    is left to the shared chrome cluster. Below 960px the transform island
    takes its own row so it never overlaps the layer dock (the single row needs
@@ -13,7 +14,7 @@
   grid-template-rows: auto 1fr auto;
   grid-template-areas:
     "badge badge     badge"
-    "rail  .         ."
+    "rail  .         pins"
     "dock  transform confirm";
   pointer-events: none;
 
@@ -23,7 +24,7 @@
     grid-template-rows: auto 1fr auto auto;
     grid-template-areas:
       "badge     badge     badge"
-      "rail      .         ."
+      "rail      .         pins"
       "transform transform transform"
       "dock      .         confirm";
   }

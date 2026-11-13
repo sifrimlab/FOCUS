@@ -6,7 +6,7 @@ from focus.alignment.preview import _first
 from focus.alignment.settings import _H5AD_COMPRESSION
 from focus.alignment.settings import _STEP_MERGE
 from focus.alignment.settings import _STEP_SAVE
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast
 
 if TYPE_CHECKING:
     from focus.alignment.coordinator import DirectMappingAligner
@@ -17,6 +17,7 @@ import numpy as np
 import zarr
 
 from focus.io.ome import read_channel_names, read_ome_physical_size_um
+from focus.alignment.warps import WARPS_KEY
 from focus.io.paths import merged_alignment_file
 from focus.io.anndata import write_h5ad_compat, concat_on_disk_compat
 
@@ -84,6 +85,11 @@ class AlignmentWriter:
             adata.uns.setdefault("focus_alignment_inputs", {})[
                 self.aligner._reference_modality_name
             ] = self.aligner.cache._input_key(sample_id)
+            _store_warp(
+                adata.uns,
+                self.aligner._reference_modality_name,
+                self.aligner._warps.get(sample_id),
+            )
             write_h5ad_compat(adata, aligned_file, compression=_H5AD_COMPRESSION)
             del adata
 
@@ -103,7 +109,7 @@ class AlignmentWriter:
 
         if aligned_files:
             merged_file = merged_alignment_file(
-                self.aligner._path, self.aligner._target_modality_name, "h5ad"
+                self.aligner._path, self.aligner._owner_name, "h5ad"
             )
             rebuild = not os.path.exists(merged_file) or bool(
                 self.aligner._aligned_coordinates
@@ -138,6 +144,7 @@ class AlignmentWriter:
         adata.uns.setdefault("focus_alignment_inputs", {})[
             self.aligner._reference_modality_name
         ] = self.aligner.cache._input_key(sample_id, pre_aligned=True)
+        _store_warp(adata.uns, self.aligner._reference_modality_name, None)
         write_h5ad_compat(adata, aligned_file, compression=_H5AD_COMPRESSION)
         del adata
 
@@ -157,7 +164,7 @@ class AlignmentWriter:
             aligned_samples[sample_id] = aligned_file
 
         merged_file = merged_alignment_file(
-            self.aligner._path, self.aligner._target_modality_name, "h5ad"
+            self.aligner._path, self.aligner._owner_name, "h5ad"
         )
         aligned_samples["merged"] = merged_file
 
@@ -224,3 +231,16 @@ def _write_crop(path: str, source: str, data: np.ndarray, axes: str, rgb: bool) 
         tile=(512, 512),
         compression="zlib",
     )
+
+
+def _store_warp(uns: dict[str, Any], fixed_name: str, warp_json: str | None) -> None:
+    """Record (or, for a pair without one, drop) the confirmed warp of ``fixed_name``."""
+    warps = dict(uns.get(WARPS_KEY, {}))
+    if warp_json is None:
+        warps.pop(fixed_name, None)
+    else:
+        warps[fixed_name] = warp_json
+    if warps:
+        uns[WARPS_KEY] = warps
+    else:
+        uns.pop(WARPS_KEY, None)

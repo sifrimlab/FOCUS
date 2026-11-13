@@ -14,6 +14,7 @@ from anndata.io import read_elem
 
 from focus.config.options import ModalityType
 from focus.spatial.footprint_shape import read_spot_size
+from focus.spatial.warp import stored_warp_is_nonrigid
 from focus.runtime.reporter_context import get_reporter
 from focus.io.ome import read_ome_physical_size_um
 
@@ -30,6 +31,9 @@ class AnchorArrays:
     ]  # (N, 2) the same spots in the target frame
     spot_size: NDArray[np.float64 | np.float32]  # (2,) anchor spot size, anchor units
     spot_size_given: bool  # False when the anchor carried no usable spot_size
+    nonrigid: bool = (
+        False  # the alignment stored a non-rigid (landmark) warp for this target
+    )
 
     @property
     def n_obs(self) -> int:
@@ -46,6 +50,8 @@ def read_anchor_arrays(path: str, target_name: str) -> AnchorArrays | None:
         spatial = np.asarray(read_elem(f["obsm/spatial"]), dtype=np.float32)
         mapped = np.asarray(read_elem(f[key]), dtype=np.float32)
         raw = read_elem(f["uns/spot_size"]) if "uns/spot_size" in f else None
+        warp_key = f"uns/focus_alignment_warps/{target_name}"
+        warp = read_elem(f[warp_key]) if warp_key in f else None
     spot_size = read_spot_size(raw)
     given = spot_size is not None
     return AnchorArrays(
@@ -53,6 +59,7 @@ def read_anchor_arrays(path: str, target_name: str) -> AnchorArrays | None:
         mapped,
         cast(np.ndarray, spot_size) if given else _DEFAULT_SPOT_SIZE.copy(),
         given,
+        stored_warp_is_nonrigid(warp),
     )
 
 

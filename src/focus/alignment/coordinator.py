@@ -2,7 +2,7 @@
 
 from focus.alignment.validation import validate_inputs
 
-from focus.alignment.result import parse_alignment_result
+from focus.alignment.warps import browser_state, confirmed_coordinates, read_stored_warp
 from typing import cast
 from collections.abc import Callable
 from typing import Unpack, TypedDict
@@ -124,6 +124,7 @@ class DirectMappingAligner:
 
         self._dataset_completed_event = threading.Event()
         self._aligned_coordinates: dict[str, np.ndarray] = {}
+        self._warps: dict[str, str] = {}  # sample -> confirmed LandmarkWarp JSON
         self._gui_interface = DirectMappingAlignmentGUI(
             dataset_size=len(self._common_samples),
             dataset_completed_event=self._dataset_completed_event,
@@ -158,6 +159,10 @@ class DirectMappingAligner:
 
         # Launch GUI for this sample (blocks until user confirms).
         # Only the display payload is sent to the browser; full coordinates stay here.
+        # A warp stored by an earlier confirmation is offered as the starting state.
+        stored = read_stored_warp(
+            self.cache._aligned_output_path(sample_id), self._warp_key
+        )
         alignment_result = self._gui_interface.align_sample(
             sample_id=sample_id,
             sample_index=sample_index + 1,
@@ -165,23 +170,22 @@ class DirectMappingAligner:
             target_metadata=tgt_metadata,
             reference_payload=ref_payload,
             target_payload=tgt_payload,
+            initial_state=browser_state(stored, ref_scale_factors),
         )
 
-        # Parse alignment result; pass full coordinates so the transform is applied
-        # to every spot in the original dataset, not just the displayed subset.
-        aligned_coordinates = parse_alignment_result(
+        # Apply the confirmed matrix (and landmark warp) to every spot of the dataset, not
+        # just the displayed subset, in the fixed modality's full-resolution frame.
+        aligned_coordinates, warp = confirmed_coordinates(
             cast(AlignmentResult, alignment_result),
             tgt_payload,
             tgt_full_coords,
+            ref_scale_factors,
+            self._reporter,
         )
-
         if aligned_coordinates is not None:
-            # Scale coordinates from display resolution to original resolution
-            # aligned_coordinates: (N, 2) where col 0 = x, col 1 = y
-            # ref_scale_factors: [y_scale, x_scale]
-            aligned_coordinates[:, 0] *= ref_scale_factors[1]  # x
-            aligned_coordinates[:, 1] *= ref_scale_factors[0]  # y
             self._aligned_coordinates[sample_id] = aligned_coordinates.copy()
+            if warp is not None:
+                self._warps[sample_id] = warp.to_json()
 
     # --- Alignment Thread ---
 
@@ -269,9 +273,7 @@ class DirectMappingAligner:
         is_target_image = self._target_modality_type in _IMAGE_MODALITIES
         if is_target_image:
             return False
-        merged_file = merged_alignment_file(
-            self._path, self._target_modality_name, "h5ad"
-        )
+        merged_file = merged_alignment_file(self._path, self._owner_name, "h5ad")
         if os.path.exists(merged_file):
             return False
         for sample_id in self._common_samples:
@@ -296,9 +298,7 @@ class DirectMappingAligner:
                 if not is_target_image:
                     aligned_files.append(aligned_file)
         if aligned_files:
-            merged_file = merged_alignment_file(
-                self._path, self._target_modality_name, "h5ad"
-            )
+            merged_file = merged_alignment_file(self._path, self._owner_name, "h5ad")
             active_ids = set(self._common_samples)
             merged_ids = (
                 read_merged_sample_ids(merged_file)
@@ -365,7 +365,10 @@ class DirectMappingAligner:
         if on_gui_done is not None:
             on_gui_done()
 
-        # Determine combination and save
+        return self._save_results(aligned_samples)
+
+    def _save_results(self, aligned_samples: dict[str, str]) -> dict[str, str]:
+        """Write the confirmed samples in the representation of this modality pair."""
         is_ref_image = self._reference_modality_type in _IMAGE_MODALITIES
         is_ref_spot = self._reference_modality_type in _SPOT_MODALITIES
         is_target_image = self._target_modality_type in _IMAGE_MODALITIES
@@ -386,6 +389,25 @@ class DirectMappingAligner:
             )
 
         return aligned_samples
+
+    # The modality whose aligned file receives the coordinates (the moving one; a guided
+    # alignment writes into the reference's file instead), its per-sample processed files,
+    # and the key the confirmed warp is stored under in that file.
+
+    @property
+    def _owner_name(self) -> str:
+        """Name of the modality that owns the aligned output file."""
+        return self._target_modality_name
+
+    @property
+    def _owner_files(self) -> dict[str, str]:
+        """Processed files of the owning modality, per sample."""
+        return self._target_modality
+
+    @property
+    def _warp_key(self) -> str:
+        """Key of ``uns['focus_alignment_warps']`` holding this pair's warp."""
+        return self._reference_modality_name
 
     @cached_property
     def inputs(self) -> AlignmentInputs:

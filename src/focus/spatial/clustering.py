@@ -13,10 +13,13 @@ import scipy.sparse as sp
 from focus.runtime.reporter_context import get_reporter
 from focus.runtime.reporting import StepReporter
 from focus.spatial.clusters import label_coherence
+from focus.spatial.display import all_spot_matrix, levels, spot_display
+from focus.spatial.selection import clustering_features
 from focus.spatial.partition import Neighbourhood, partition
 from focus.spatial.smoothing import similarity_operator
 from focus.spatial.settings import (
     COUNTS,
+    DOMAINS,
     FOREGROUND,
     GRADIENT,
     PARAMETERS,
@@ -35,7 +38,7 @@ from focus.spatial.units import (
 )
 
 # Version of the shared clustering method, recorded in every sample's provenance.
-CLUSTERING_VERSION = "clusters-3"
+CLUSTERING_VERSION = "clusters-4"
 
 # (summed raw rows of the kept units, units, kept unit ids) -> (log-scale rows, description)
 Represent: TypeAlias = Callable[
@@ -195,27 +198,51 @@ def cluster_spots(
     X, info["representation"] = represent(
         cast(sp.csr_matrix, summed[kept]), units, kept
     )
-    sub = _selected_features(X, feature_names, params["n_top_features"], info)
-    if sub is None:
+    sub, ranking = clustering_features(X, feature_names, units, unit_ok, params, info)
+    unit_labels = _partition(sub, summed[kept], units, unit_ok, preset, params, info)
+    if sub is None or unit_labels is None:
         info["status"] = "insufficient_features"
         return _finish(labels, eligible, info)
-    depth = np.log1p(np.asarray(summed[kept].sum(axis=1), dtype=np.float64).ravel())
-    neighbourhood = _neighbourhood(units, unit_ok, preset["rings"])
-    unit_labels = partition(sub, preset["mode"], params, depth, info, neighbourhood)
+    fine, unit_labels = levels(
+        sub, unit_labels, preset["mode"] == DOMAINS, units, unit_ok, info
+    )
     del sub
     gc.collect()
-    if unit_labels is None:
-        info["status"] = "insufficient_features"
-        return _finish(labels, eligible, info)
-
     info["status"] = "complete"
     info["n_clusters"] = int(np.unique(unit_labels).size)
     labels[eligible] = unit_labels[np.searchsorted(kept, bin_ids[eligible])]
-    coherence = label_coherence(unit_labels, units, unit_ok)
-    if coherence is not None:
-        info["label_coherence"] = coherence
+    spots = (eligible, kept, bin_ids)
+    everywhere = all_spot_matrix(raw, represent, units)
+    info["display"] = spot_display(fine, X, ranking, feature_names, spots, everywhere)
+    _record_coherence(unit_labels, units, unit_ok, info)
     reporter.detail(_summary(info, preset["mode"]))
     return _finish(labels, eligible, info)
+
+
+def _partition(
+    sub: ad.AnnData | None,
+    summed: sp.csr_matrix,
+    units: SpatialUnits,
+    unit_ok: np.ndarray,
+    preset: ClusteringPreset,
+    params: ClusteringParameters,
+    info: ClusterInfo,
+) -> np.ndarray | None:
+    """Unit labels of the preset's mode (:func:`partition`); None without features."""
+    if sub is None:
+        return None
+    depth = np.log1p(np.asarray(summed.sum(axis=1), dtype=np.float64).ravel())
+    neighbourhood = _neighbourhood(units, unit_ok, preset["rings"])
+    return partition(sub, preset["mode"], params, depth, info, neighbourhood)
+
+
+def _record_coherence(
+    labels: np.ndarray, units: SpatialUnits, unit_ok: np.ndarray, info: ClusterInfo
+) -> None:
+    """Record the chance-corrected neighbour agreement of the labels, when defined."""
+    coherence = label_coherence(labels, units, unit_ok)
+    if coherence is not None:
+        info["label_coherence"] = coherence
 
 
 def _neighbourhood(
@@ -307,29 +334,6 @@ def _eligible_units(
     if unit_eligible is not None:
         unit_ok &= unit_eligible(summed)
     return summed, unit_ok
-
-
-def _selected_features(
-    X: sp.csr_matrix, feature_names: np.ndarray, n_top: int, info: ClusterInfo
-) -> ad.AnnData | None:
-    """Expressed features of the represented units, at most ``n_top`` highly variable ones.
-
-    None when fewer than three features are expressed.
-    """
-    import scanpy as sc
-
-    sub = ad.AnnData(X=sp.csr_matrix(X, dtype=np.float32))
-    sub.var_names = np.asarray(feature_names, dtype=str)
-    sub = sub[:, np.diff(sp.csc_matrix(sub.X).indptr) > 0].copy()
-    if sub.n_vars < 3:
-        return None
-    if sub.n_vars > n_top:
-        # Seurat dispersion selection consumes log-scale data and needs no extra dependency.
-        sc.pp.highly_variable_genes(sub, flavor="seurat", n_top_genes=n_top)
-        sub = sub[:, sub.var["highly_variable"].to_numpy()].copy()
-    info["selected_features"] = sub.var_names.to_numpy(dtype=str)
-    info["n_selected_features"] = sub.n_vars
-    return sub
 
 
 def _summary(info: ClusterInfo, mode: str) -> str:

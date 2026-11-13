@@ -156,8 +156,11 @@ shared with MSI, described in [Alignment Clustering](spatial_clustering.md), thr
   is part of the sample fingerprint.
 
 `.obs['clustering_eligible']` records eligibility and `.uns['focus_clustering']` the provenance
-([Alignment Clustering §8](spatial_clustering.md#8-provenance-and-calibration)). The per-sample
-matrix keeps raw counts.
+([Alignment Clustering §8](spatial_clustering.md#8-provenance-and-calibration)). The fine clusters
+and their merge order (`.obs['cluster_fine']`, the runtime resolution of the alignment tool) and up
+to 12 gene images (`.obsm['focus_feature_images']`) are stored for the alignment tool
+([Alignment Clustering §5.1–5.2](spatial_clustering.md#51-merge-tree-and-runtime-resolution)). The
+per-sample matrix keeps raw counts.
 
 ### 3.7 Output metadata and persistence
 

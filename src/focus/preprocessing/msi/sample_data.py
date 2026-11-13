@@ -1,6 +1,7 @@
 """MSI sample readout and assembly before asynchronous serialization."""
 
 from __future__ import annotations
+from collections.abc import Callable
 from typing import TYPE_CHECKING
 from focus.preprocessing.msi.run_state import SampleArrays, ResumeState, FeatureState
 from focus.preprocessing.msi.interpolation import empty_csr, interpolate_mode
@@ -26,6 +27,7 @@ from focus.preprocessing.msi.normalization import normalize_intensities
 from focus.preprocessing.msi.technology import SampleProfile
 from focus.runtime.reporter_context import get_reporter
 from focus.spatial.clustering import Represent, cluster_spots, unit_mean
+from focus.spatial.display import store_display
 from focus.spatial.settings import FEATURES, FOREGROUND, clustering_preset
 from focus.spatial.units import SpatialUnits
 from focus.spot_colors import cluster_colors, label_order
@@ -46,7 +48,13 @@ def interpolate_sample(
     # Recalibrated spectra; a resumed run detects the foreground of a queued sample here.
     original_mzs, intensities = sample.load_payload(mass_tolerance)
     if sample.filtered_idx is None:
-        sample.foreground.detect(original_mzs, intensities, mass_tolerance, profile)
+        sample.foreground.detect(
+            original_mzs,
+            intensities,
+            mass_tolerance,
+            profile,
+            dataset.lipid_annotation_db,
+        )
     dataset.foreground_masks[sample_id] = sample.foreground_mask
 
     interp_by_mode: dict[str, sp.csr_matrix] = {}
@@ -267,12 +275,31 @@ def label_sample(
     )
     info["resolution"] = resolution
     info["sample_type"] = profile.sample_type
+    store_display(adata, labels, info, _feature_label(adata))
     categories = label_order(labels)
     adata.obs["clustering_eligible"] = eligible
     adata.obs["cluster"] = pd.Categorical(labels, categories=categories)
     colors = cluster_colors(categories)
     adata.uns["cluster_colors"] = [colors[label] for label in categories]
     adata.uns["focus_clustering"] = info
+
+
+def _feature_label(adata: ad.AnnData) -> Callable[[str], str]:
+    """Display label of a feature image: its m/z and, when annotated, the first annotation."""
+    var = adata.var
+
+    def label(name: str) -> str:
+        """'m/z 760.5855 · PC 34:1 [M+H]+' (the annotation cut at its first '; ')."""
+        if name not in var.index or "mz" not in var.columns:
+            return str(name)
+        row = var.loc[name]
+        text = f"m/z {float(row['mz']):.4f}"
+        annotation = str(row.get("lipid_annotation", "Unannotated"))
+        if annotation and annotation != "Unannotated":
+            text += f" · {annotation.split('; ')[0]}"
+        return text
+
+    return label
 
 
 def _representation(

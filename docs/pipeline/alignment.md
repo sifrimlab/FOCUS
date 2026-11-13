@@ -70,6 +70,15 @@ The transform is recorded as a 3×3 matrix, not as a list of moved points. The G
 
 **Use when:** the two modalities were acquired on different instruments or at different times, i.e., they have independent coordinate systems. This is the typical case for MSI + microscopy, Raman + MSI, or any cross-instrument combination.
 
+### Modalities from different sections
+
+When two modalities come from **consecutive sections** (e.g. Visium ST on one cut, MSI on the next), no single matrix maps one onto the other: the sections stretch and tear differently. Two features address this:
+
+- **Landmarks and excluded regions** (spot moving layer). Pin a structure on the moving layer and drag it onto the same structure on the fixed layer; the tissue around the pin bends to follow it while the layer's outline stays where the Aligner placed it (a regularised thin-plate spline on top of the matrix). Lasso tissue that has no counterpart (a tear, a fold, a missing piece) to leave its spots unplaced. See [Pointer controls with landmarks](#pointer-controls-with-landmarks).
+- **Align through a guide** (`alignment_guide`). Align a spot modality onto another modality that is already aligned to the reference, instead of onto the reference itself. With an ST reference whose H&E is pre-aligned, set `alignment_guide: HE` on the MSI modality: the tool shows the MSI spots over the H&E, which is much easier to judge than MSI over ST spots, and FOCUS places the ST spots in the MSI frame through the H&E. Guides are aligned first. The guide must be aligned to the reference directly; the guided modality must be `msi` or `st` with `manual` alignment.
+
+The method is described in [Alignment Methods §2a–2b](../scientific/alignment_methods.md#2a-landmark-warp-consecutive-sections).
+
 ### `pre_aligned`
 
 No GUI is launched. The pipeline copies `obsm['spatial']` from the **reference** AnnData into `obsm['{target_name}_spatial']` in the same reference AnnData, recording that the reference spots are already expressed in the target's coordinate frame. This is appropriate when the reference modality is spot-based and its spot coordinates are already in the target modality's coordinate system. One example is Visium ST spots whose coordinates are already in H&E microscopy image pixel coordinates.
@@ -110,13 +119,16 @@ The window is split into a display viewport (80% of the width) and a control pan
 | Control | Effect |
 |---------|--------|
 | **Aligner** / **Camera** | Aligner: the pointer manipulates the reference layer. Camera: the pointer pans and zooms the view without changing the transform |
+| **Landmarks** / **Exclude** | Spot moving layer only: pin structures to bend the layer, or lasso regions to exclude (see below). A panel on the right lists the pins, sets the stiffness and warns about folds |
 | **Flip Horizontal**, **Flip Vertical** | Mirror the reference layer |
 | **Scale** −/+, **Reset** | Scale the reference layer |
 | **Rotation °** −/+, **Reset** | Rotate the reference layer |
 | **Reset Distortion** | Undo corner and edge dragging, keeping the rest of the transform |
 | **Reset Transform** | Return the reference layer to its initial position |
 | **Opacity** | Opacity of the reference layer (0.7 at start) |
-| **Spot Classes** (All / None) | Show or hide individual cluster labels; available for each spot-based layer |
+| **Clusters / Feature images** | Spot layers clustered by FOCUS: colour the spots by cluster or by one feature image (an ion for MSI, a gene for ST), chosen from up to 12 spatially distinct features. Feature images show every spot, including the background that the clusters leave grey, so they help when the background detection removes tissue |
+| **Clusters** slider | Number of clusters shown, from 2 to all fine clusters (starts at the clustering's default). Lower it to suppress overclustering on noisy data |
+| **Spot Classes** (All / None) | Show or hide individual clusters (at the current number of clusters); available for each spot-based layer |
 | **Foreground** (All / FG / BG) | Restrict a spot layer to foreground or background spots; available for each spot-based layer |
 | **View Zoom** −/+, **Reset** | Zoom the viewport |
 | **Confirm Alignment** | Save the transform and load the next sample |
@@ -134,6 +146,23 @@ Each layer has its own panel section headed by that modality's name and type.
 | Mouse wheel | Scale the reference layer about the pointer |
 
 In Camera mode the mouse wheel is view zoom and the transform is untouched.
+
+### Pointer controls with landmarks
+
+| Gesture | Landmarks mode | Exclude mode |
+|---------|----------------|--------------|
+| Press and drag on the moving layer | Pin the structure under the pointer and drag it onto its counterpart | Draw a lasso around tissue to exclude |
+| Click without dragging | Pin that point where it is (holds the area in place) | — |
+| Press an existing pin | Move it again | — |
+| Right-click | Remove the pin (or press Delete while hovering it) | Remove the region under the pointer |
+| Mouse wheel / middle-button drag | Zoom / pan the view | Zoom / pan the view |
+
+Tips:
+
+- Place the layer roughly with the Aligner first: pins correct local differences and hold the layer's outline in place. A pin near the border releases the outline there, so the border can be moved too.
+- A pin listed in orange disagrees with its neighbours (large leave-one-out error): it is probably on the wrong structure.
+- Red shading means the warp folds tissue over itself, usually from two crossed pins. Move or remove them, or raise the stiffness; confirming with folds needs a second click.
+- Undo and redo cover pins and regions. A sample aligned before reopens with its pins and regions.
 
 ## Output
 
@@ -182,6 +211,7 @@ modalities:
     type: msi
     alignment_strategy: manual  # or pre_aligned
     alignment_force_recomputing: false  # set to true to redo this pair's alignment
+    alignment_guide: microscopy  # optional: align msi onto the microscopy image instead of st
     ...
   - name: microscopy
     type: microscopy_image
@@ -195,6 +225,7 @@ modalities:
 | `perform_alignment` | global | `true` | Whether to run the alignment stage |
 | `alignment_strategy` | per modality | `manual` | `manual` or `pre_aligned` |
 | `alignment_force_recomputing` | per modality | `false` | Re-run even if cached output exists for this pair |
+| `alignment_guide` | per modality | none | Align this (spot, manual) modality onto the named modality instead of the reference; the reference reaches it through that modality |
 
 ---
 

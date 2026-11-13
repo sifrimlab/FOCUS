@@ -1,8 +1,10 @@
 """Foreground detection on recalibrated spectra, one scenario per sample type."""
 
 import numpy as np
+import pandas as pd
 
 from focus.config.options import MsiSampleType
+from focus.preprocessing.msi.foreground import _lipid_score
 from focus.preprocessing.msi.microgrid import detect_microgrid_spots
 from focus.preprocessing.msi.technology import sample_profile
 from focus.preprocessing.msi.tissue import detect_foreground, spectra_context
@@ -137,3 +139,118 @@ class TestForeground:
         mask, background = detect(mz_list, intensity_list, coords, MsiSampleType.TISSUE)
         assert mask.all()
         assert not background
+
+
+# --- Matrix-covered glass and the lipid fraction ---------------------------------------------
+
+_MATRIX_RNG = np.random.default_rng(11)
+MATRIX_CLUSTERS = np.sort(_MATRIX_RNG.uniform(300, 1200, 400))
+# Keep clusters clear of the tissue ions (more than 50 ppm apart) and of each other.
+MATRIX_CLUSTERS = MATRIX_CLUSTERS[
+    np.min(np.abs(MATRIX_CLUSTERS[:, None] / KIND_IONS[None, :] - 1), axis=1) > 50e-6
+]
+MATRIX_CLUSTERS = MATRIX_CLUSTERS[
+    np.concatenate(([True], np.diff(MATRIX_CLUSTERS) / MATRIX_CLUSTERS[1:] > 50e-6))
+][:200]
+
+
+def glass_raster(
+    is_tissue: np.ndarray, lipid_level: np.ndarray | None = None, seed: int = 3
+) -> tuple[list[np.ndarray], list[np.ndarray], np.ndarray]:
+    """
+    Matrix-covered glass: every pixel holds recurring matrix clusters; tissue pixels also hold the
+    KIND ions (the lipids, scaled by `lipid_level`) and fewer clusters (suppression). Glass and
+    tissue hold about as many recurrent ions.
+    """
+    rng = np.random.default_rng(seed)
+    coords = np.array([(y, x) for y in range(SIDE) for x in range(SIDE)], np.int32)
+    level = np.ones((SIDE, SIDE)) if lipid_level is None else lipid_level
+    mz_list, intensity_list = [], []
+    for (y, x), tissue in zip(coords, is_tissue.ravel()):
+        share = 0.35 if tissue else 0.75
+        present = rng.random(MATRIX_CLUSTERS.size) < share
+        parts = [
+            MATRIX_CLUSTERS[present] * (1 + rng.normal(0, 1, present.sum()) * 1e-6)
+        ]
+        values = [rng.lognormal(np.log(800), 0.3, present.sum())]
+        if tissue:
+            lipids = rng.random(KIND_IONS.size) < 0.6
+            parts.append(
+                KIND_IONS[lipids] * (1 + rng.normal(0, 1, lipids.sum()) * 1e-6)
+            )
+            values.append(level[y, x] * rng.lognormal(np.log(2000), 0.3, lipids.sum()))
+        mz, intensity = np.concatenate(parts), np.concatenate(values)
+        order = np.argsort(mz)
+        mz_list.append(mz[order])
+        intensity_list.append(intensity[order].astype(np.float32))
+    return mz_list, intensity_list, coords
+
+
+def lipid_database(masses: np.ndarray) -> pd.DataFrame:
+    """A database whose positive-mode entries are `masses`."""
+    return pd.DataFrame(
+        {
+            "db_name": [f"L{i}" for i in range(masses.size)],
+            "ionized_mass": masses,
+            "ion_mode": "pos",
+        }
+    )
+
+
+def detect_with_lipids(
+    data: tuple[list[np.ndarray], list[np.ndarray], np.ndarray],
+    database: pd.DataFrame | None,
+    sample_type: str = MsiSampleType.TISSUE,
+) -> tuple[np.ndarray, bool, str]:
+    """Foreground with the lipid score of `database` (None: recurrent ions only)."""
+    mz_list, intensity_list, coords = data
+    context = spectra_context(mz_list, 10)
+    score = _lipid_score(mz_list, intensity_list, context, database, "pos", 10)
+    result = detect_foreground(
+        mz_list, intensity_list, coords, context, sample_profile(sample_type), score
+    )
+    return result.mask.reshape(SIDE, SIDE), result.background, result.summary
+
+
+class TestLipidFraction:
+    """Matrix-covered glass holds as many recurrent ions as tissue but few lipids."""
+
+    def setup_method(self) -> None:
+        """A tissue disc on matrix-covered glass."""
+        y, x = np.mgrid[:SIDE, :SIDE]
+        self.disc = (y - 20) ** 2 + (x - 20) ** 2 <= 12**2
+        self.data = glass_raster(self.disc)
+
+    def test_recurrent_ions_alone_keep_the_glass(self) -> None:
+        """The failure being fixed: the ion score does not separate matrix-covered glass."""
+        mask, background, _ = detect_with_lipids(self.data, None)
+        assert mask.all()
+        assert not background
+
+    def test_lipid_fraction_separates_the_glass(self) -> None:
+        """With a lipid database the glass becomes background and the disc stays foreground."""
+        mask, background, summary = detect_with_lipids(
+            self.data, lipid_database(KIND_IONS)
+        )
+        assert background
+        assert "lipid fraction" in summary
+        assert mask[self.disc].mean() > 0.97
+        assert not mask[~self.disc].any()
+
+    def test_tissue_regions_differing_in_lipids_are_not_background(self) -> None:
+        """Two tissue regions with different lipid content both stay foreground."""
+        level = np.where(np.mgrid[:SIDE, :SIDE][1] < SIDE // 2, 1.0, 0.6)
+        data = glass_raster(np.ones((SIDE, SIDE), bool), level)
+        mask, background, _ = detect_with_lipids(data, lipid_database(KIND_IONS))
+        assert mask.all()
+        assert not background
+
+    def test_annotation_at_chance_is_not_used(self) -> None:
+        """A database matching only noise-level numbers of ions gives no lipid score."""
+        mz_list, intensity_list, _ = self.data
+        context = spectra_context(mz_list, 10)
+        few = lipid_database(KIND_IONS[:5])
+        assert _lipid_score(mz_list, intensity_list, context, few, "pos", 10) is None
+        assert _lipid_score(mz_list, intensity_list, context, None, "pos", 10) is None
+        dense = lipid_database(np.exp(np.arange(np.log(300), np.log(1200), 15e-6)))
+        assert _lipid_score(mz_list, intensity_list, context, dense, "pos", 10) is None

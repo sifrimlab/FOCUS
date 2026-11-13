@@ -26,10 +26,17 @@ class AnchorGeometry:
 
     @classmethod
     def from_arrays(
-        cls, spatial: np.ndarray, mapped: np.ndarray, spot_size: np.ndarray
+        cls,
+        spatial: np.ndarray,
+        mapped: np.ndarray,
+        spot_size: np.ndarray,
+        nonrigid: bool = False,
     ) -> "AnchorGeometry":
-        """Fit anchor footprints from native coordinates, mapped coordinates, and spot size."""
-        transform, valid = fit_anchor_to_target(spatial, mapped, spot_size)
+        """Fit anchor footprints from native coordinates, mapped coordinates, and spot size.
+
+        ``nonrigid`` marks coordinates produced by a landmark warp (see
+        :func:`focus.spatial.transforms.fit_anchor_to_target`)."""
+        transform, valid = fit_anchor_to_target(spatial, mapped, spot_size, nonrigid)
         centres = np.asarray(spatial, dtype=np.float64)
         shape = footprint_shape(centres[valid], spot_size)
         geom = cls(centres, valid, shape, transform)

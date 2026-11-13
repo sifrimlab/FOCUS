@@ -60,6 +60,18 @@ MIN_SEPARATION = 2.0
 # higher one. Two tissue regions that differ in their number of ions stay foreground.
 MAX_BACKGROUND_RATIO = 0.5
 
+# With a lipid database, the share of a spectrum's intensity in the annotated recurrent ions is a
+# tissue score: matrix-covered glass holds as many recurrent ions as tissue (matrix clusters), but
+# few lipids. It is used when at least this many recurrent ions are annotated...
+LIPID_MIN_ANNOTATED = 10
+# ...and they hold at least this many times the intensity share of the ions annotated at decoy
+# masses (DECOY_OFFSETS): weighted by intensity like the score, so a dense database that annotates
+# many weak ions by chance still qualifies when the intense ions are true lipids.
+LIPID_MIN_ENRICHMENT = 2.0
+# ...and its lower component must hold at most this share of the lipid fraction of the higher one;
+# otherwise two tissue regions differ in lipid content and the recurrent-ion score decides.
+LIPID_MAX_BACKGROUND_RATIO = 0.5
+
 
 @dataclass(frozen=True)
 class SampleProfile:
@@ -129,5 +141,8 @@ def calibration() -> dict[str, object]:
         "component_min_fraction": COMPONENT_MIN_FRACTION,
         "min_separation": MIN_SEPARATION,
         "max_background_ratio": MAX_BACKGROUND_RATIO,
+        "lipid_min_annotated": LIPID_MIN_ANNOTATED,
+        "lipid_min_enrichment": LIPID_MIN_ENRICHMENT,
+        "lipid_max_background_ratio": LIPID_MAX_BACKGROUND_RATIO,
         "profiles": {name: asdict(profile) for name, profile in _PROFILES.items()},
     }

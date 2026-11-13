@@ -7,10 +7,15 @@ annotation or export step reads them. Both modalities run one shared routine,
 three parts: the spots that take part, the eligibility of a unit, and the normalized representation
 of the summed counts or intensities.
 
-Method version `clusters-3`, introduced with ST `st-7`: blocks on hexagonal lattices are upright
-bricks (§2). Every ST output is rebuilt once, and every ST alignment pair is aligned again once,
-because the alignment key is the preprocessing fingerprint. MSI rasters are never hexagonal, so
-their labels are unchanged and MSI keeps `msi-16`.
+Method version `clusters-4`, introduced with ST `st-8` and MSI `msi-19`:
+
+- features are selected by spatial coherence instead of dispersion (§3.1);
+- Leiden overclusters into about 40 clusters, and their Ward merge order is stored, so the
+  alignment tool sets the number of clusters at runtime (§5.1);
+- up to 12 per-sample feature images are stored for the tool's alternative view (§5.2).
+
+Every ST and MSI output is rebuilt once. (`clusters-3` made blocks on hexagonal lattices upright
+bricks, §2.)
 
 ## 1. Presets
 
@@ -119,11 +124,44 @@ processed data shows.
   the intensity range whatever the instrument's scale. TIC and RMS divisors follow the most intense
   ions, and so do the labels computed on them; the median divisor does not.
 
-Features without a nonzero value in any eligible unit are removed. Samples with more than 2,000
-features keep the 2,000 most variable ones by normalized dispersion[^satija2015] (Scanpy
-`highly_variable_genes`, `flavor="seurat"`[^wolf2018]). The feature selection never subsets the
-exported matrix. Sparse centered PCA then gives min(50, n_units - 1, n_features - 1) components,
-with seed 0.
+### 3.1 Feature selection
+
+The clustering keeps the 100 features most coherent at the scale of tissue structures
+(`focus.spatial.features`, `feature_selection: spatial`).
+
+1. **Candidates.** The expressed features with the highest mean over the units: the top 30 %, but
+   at least 300 (all, when fewer are expressed) and at most 1,500.
+2. **Band-pass.** Each candidate's map, on a raster of the median unit spacing, minus its
+   large-scale background: a Gaussian of 8 spacings, normalised over the occupied cells.
+3. **Coherence.** The correlation of that residual with the mean residual of the unit's 1-ring
+   neighbours. Features below 0.1 are noise at that scale and are never selected.
+4. **Line artifacts.** A feature whose residual variance lies for more than 15 % in thin line
+   deviations is left out. Thin line deviations are the means of whole raster rows or columns
+   minus their running median over 21 lines. A defective scan band is a few lines wide; a domain
+   boundary along a row is a step that the running median follows.
+5. **Fallback.** With fewer than 20 coherent features, the dispersion selection is used instead:
+   the 2,000 most variable features by normalized dispersion[^satija2015] (Scanpy
+   `highly_variable_genes`, `flavor="seurat"`[^wolf2018]). This happens on very sparse units,
+   where only the sum of many weak features carries the signal: on a synthetic raster of 0.03–0.09
+   counts per feature and pixel, 4 features passed and gave a random map, while all 300 features
+   found both domains.
+
+FOCUS design choice: dispersion favours whatever varies most, which on MSI includes acquisition
+artifacts (defective scan bands, partial-line streaks, slow drifts along the scan; rows of a
+horizontal line scan are acquisition time). On prostate MALDI sections (30 µm, positive mode) the
+dispersion selection followed these and Leiden cut straight-edged blocks. The 100 most coherent
+features (mostly lipids, coherence 0.5–0.75 against a median of 0.08–0.26 over the candidates)
+gave clusters along glands, lumens and stroma. Spatially variable features are the usual choice for
+spatial domains[^svensson2018].
+
+Limits:
+- The band-pass removes regional differences from the *selection* (not from the clustered values),
+  so a sample whose only structure is a few large regions selects fewer features.
+- A structure that is a perfectly straight band along a raster axis, a few lines wide, would read
+  as a line artifact.
+
+The feature selection never subsets the exported matrix. Sparse centered PCA then gives
+min(50, n_units - 1, n_features - 1) components, with seed 0.
 
 ## 4. Neighbourhood embedding and partition
 
@@ -150,7 +188,7 @@ the azimuthal Gabor term of BANKSY is not used. Expression itself is never smoot
 
 In `domains` mode, a neighbour graph (15 neighbours, seed 0, approximate for large inputs) on the
 embedding and Leiden[^traag2019] (`flavor="igraph"`, `n_iterations=2`, `directed=False`, seed 0)
-partition the eligible units into about 25 clusters: the resolution is searched by geometric
+partition the eligible units into about 40 clusters: the resolution is searched by geometric
 bisection between 0.05 and 8 (at most eight runs) for the partition closest to that count. The
 target is capped so the mean cluster holds at least 300 units. FOCUS design choice: Leiden splits
 every domain into several clusters and the merge of §5 joins the splits; the number of clusters at
@@ -221,6 +259,48 @@ In `foreground` mode (MSI `microgrid`) the foreground spectra with a peak are la
 rest `unassigned`, without PCA or clustering. FOCUS design choice: a microgrid cell covers about one
 pixel, and its spectrum carries too little signal to cluster; the alignment GUI shows the foreground
 spots of a microgrid in one class.
+
+## 5.1 Merge tree and runtime resolution
+
+The Leiden clusters (the *fine* clusters, `.obs['cluster_fine']`, numbered by decreasing size) are
+merged into a tree by Ward's criterion[^ward1963]: the cost of joining two groups is
+\(n_a n_b / (n_a + n_b)\,\lVert\mu_a - \mu_b\rVert^2\) on the clustering embedding. Pairs are
+taken in this order of priority:
+
+1. within the same group of the density-valley merge (§5), so the tree passes through that
+   partition;
+2. spatially touching (units in each other's 1-ring), so separate tissue pieces join last;
+3. by cost.
+
+`.uns['focus_clustering']` stores the merges (`cluster_merges`, pairs of fine labels, the first one
+kept as the group's representative), `n_fine_clusters` and `cluster_default_level`, the number of
+groups of §5. `.obs['cluster']` is the tree at that level, the same partition as §5. The alignment
+tool lets the operator move between 2 clusters and all fine clusters: a level of L clusters applies
+the first n_fine − L merges.
+
+FOCUS design choice: the default stays the density-valley count; the slider lowers it to suppress
+overclustering on noisy data, or raises it for detail. The Leiden target is capped so the mean
+cluster holds at least 300 units, so small samples (e.g. Visium spots, about 2,500 per section)
+offer few fine clusters.
+
+## 5.2 Feature images
+
+Up to 12 features from the ranking of §3.1, in that order, become per-spot images for the
+alignment tool's alternative view. A feature qualifies when it is detected in at least 20 % of the
+units and its band-passed residual correlates by less than 0.5 (absolute) with every image already
+chosen, so the images show different structures. Each image holds the log-scale value of a spot
+scaled to 1–255 over the 1st–99th percentile of all spots.
+
+The images do not depend on the clustering mask. On native units every spot shows its own
+represented value, including the spots left out of the clustering (MSI background and any tissue
+the foreground detection removed, ST spots below the eligibility thresholds): the representation
+of §3 is applied to every spot. 0 ("no value") appears only when units are aggregated blocks
+(`sub_cellular`, or more than 250,000 spots): there a spot outside the kept units has no value,
+and the others show the value of their unit.
+
+The images are stored in `.obsm['focus_feature_images']` (uint8, always 12 columns, zero-padded so
+per-sample files concatenate). `.uns['focus_clustering']` stores the names (`image_features`) and
+display labels (`image_labels`: m/z and first lipid annotation for MSI, gene symbol for ST).
 
 ## 8. Provenance and calibration
 

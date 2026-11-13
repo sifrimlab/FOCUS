@@ -244,6 +244,8 @@ export const useMainStore = defineStore('main', {
     removeModality(index: number) {
       const removed = this.config.modalities[index];
       this.config.modalities.splice(index, 1);
+      // Modalities guided by the removed one fall back to the reference
+      if (removed) this.clearGuides(g => g === removed.name);
       // If removed was the reference, pick the next available or clear
       if (removed && removed.name === this.config.reference_modality) {
         const next = this.config.modalities.find((m: Modality) => m.name);
@@ -260,7 +262,15 @@ export const useMainStore = defineStore('main', {
         registration_type: 'none',
         registration_settings: {},
         alignment_strategy: 'manual',
+        alignment_guide: null,
       });
+    },
+
+    /** Drop `alignment_guide` wherever `drop(guide)` holds. */
+    clearGuides(drop: (guide: string) => boolean) {
+      for (const m of this.config.modalities) {
+        if (m.alignment_guide && drop(m.alignment_guide)) m.alignment_guide = null;
+      }
     },
 
     /** Set a force-recompute flag; each stage stores it in a different place of the modality. */
@@ -295,6 +305,10 @@ export const useMainStore = defineStore('main', {
           if (this.config.spatial_annotations?.modality_name === m.name) {
             this.config.spatial_annotations.modality_name = updates.name;
           }
+          // ...and every alignment guide that names this modality
+          for (const other of this.config.modalities) {
+            if (other.alignment_guide === m.name) other.alignment_guide = updates.name;
+          }
         }
         // Fire-and-forget: create modality subfolders when type changes
         if (updates.type !== undefined && updates.type !== m.type && this.config.dataset_path) {
@@ -308,6 +322,10 @@ export const useMainStore = defineStore('main', {
 
     setReferenceModality(name: string) {
       this.config.reference_modality = name;
+      // The reference is never guided, nor a guide (it is aligned to directly)
+      const newRef = this.config.modalities.find((m: Modality) => m.name === name);
+      if (newRef) newRef.alignment_guide = null;
+      this.clearGuides(g => g === name);
       // The reference modality is never registered — reset its type
       const ref = this.config.modalities.find((m: Modality) => m.name === name);
       if (ref && ref.registration_type !== 'none') {

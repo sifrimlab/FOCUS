@@ -1,9 +1,9 @@
 /** Native footprints in bounded GPU meshes: no Graphics path per observation and no spatial pooling. */
 import { Container, Mesh, MeshGeometry, Texture } from 'pixi.js';
-import type { mat3 } from 'gl-matrix';
 import type { Metadata, SpotModalityPayload, SpotShape } from '../api/types';
 import type { SpotStyle } from './spotLayer';
-import { projectiveTransformPoint } from '../utils/matrix';
+import type { PointMap } from './warpView';
+import type { SpotDisplay } from '../utils/spotDisplay';
 import { classColor } from '../utils/colors';
 
 const H = 1 / Math.sqrt(3);
@@ -40,7 +40,8 @@ export class NativeSpotLayer extends Container {
   private data: SpotModalityPayload;
   private shape: SpotShape;
 
-  constructor(data: SpotModalityPayload, meta: Metadata, target: boolean) {
+  /** Meshes group spots by class, or by `display` key (clusters at a resolution, feature levels). */
+  constructor(data: SpotModalityPayload, meta: Metadata, target: boolean, display: SpotDisplay | null = null) {
     super();
     this.data = data;
     this.shape = meta.spot_shape ?? 'rectangle';
@@ -50,9 +51,10 @@ export class NativeSpotLayer extends Container {
     const groups = new Map<string, { rows: number[]; cls: number; foreground: boolean }>();
     for (let i = 0; i < data.length; i++) {
       const spot = data[i]!;
-      const key = `${spot.class}:${Number(spot.foreground)}`;
+      const cls = display ? display.keys[i]! : spot.class;
+      const key = `${cls}:${Number(spot.foreground)}`;
       let group = groups.get(key);
-      if (!group) { group = { rows: [], cls: spot.class, foreground: spot.foreground }; groups.set(key, group); }
+      if (!group) { group = { rows: [], cls, foreground: spot.foreground }; groups.set(key, group); }
       group.rows.push(i);
     }
     for (const group of groups.values()) {
@@ -63,15 +65,16 @@ export class NativeSpotLayer extends Container {
         const geometry = new MeshGeometry({ positions: new Float32Array(rows.length * corners * 2), indices });
         geometry.batchMode = 'no-batch';
         const mesh = new Mesh({ geometry, texture: Texture.WHITE });
-        mesh.tint = classColor(meta, group.cls, target);
+        mesh.tint = display ? display.colors[group.cls]! : classColor(meta, group.cls, target);
         this.addChild(mesh);
         this.chunks.push({ mesh, rows, cls: group.cls, foreground: group.foreground, shown: true });
       }
     }
   }
 
-  update(style: SpotStyle, matrix?: mat3) {
-    const key = JSON.stringify([style.spotSize, style.boost, style.basis, matrix && Array.from(matrix)]);
+  /** Rebuilds positions when the style or the point map changed; `map` absent: native positions. */
+  update(style: SpotStyle, map?: PointMap) {
+    const key = JSON.stringify([style.spotSize, style.boost, style.basis, map?.key]);
     const rebuild = key !== this.shapeKey;
     const visible = new Set(style.classFilter);
     const offsets = footprintOffsets(style, this.shape);
@@ -83,9 +86,10 @@ export class NativeSpotLayer extends Container {
       const positions = chunk.mesh.geometry.positions;
       for (let j = 0; j < chunk.rows.length; j++) {
         const [x, y] = this.data[chunk.rows[j]!]!.spatial;
+        const corner = map?.forSpot(x, y);
         for (let k = 0; k < offsets.length; k += 2) {
           let px = x + offsets[k]!, py = y + offsets[k+1]!;
-          if (matrix) [px, py] = projectiveTransformPoint(matrix, px, py);
+          if (corner) [px, py] = corner(px, py);
           positions[j * offsets.length + k] = px; positions[j * offsets.length + k + 1] = py;
         }
       }

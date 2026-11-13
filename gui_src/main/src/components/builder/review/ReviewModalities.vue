@@ -13,7 +13,8 @@ const summary = (m: Modality): string => {
   if (m.name === cfg.reference_modality) return 'Reference';
   const parts: string[] = [];
   if (cfg.perform_alignment && cfg.modalities.length >= 2) {
-    parts.push(m.alignment_strategy === 'pre_aligned' ? 'Pre-aligned' : 'Manual alignment');
+    if (m.alignment_strategy === 'pre_aligned') parts.push('Pre-aligned');
+    else parts.push(m.alignment_guide ? `Manual alignment via ${m.alignment_guide}` : 'Manual alignment');
     if (cfg.perform_registration) {
       parts.push(m.registration_type === 'none' ? 'No registration' : store.displayName(m.registration_type));
     }

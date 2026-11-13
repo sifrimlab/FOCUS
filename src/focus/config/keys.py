@@ -81,6 +81,7 @@ class ModalityParameters(_AbstractEnum):
     REGISTRATION_SETTINGS: Final = "registration_settings"
     ALIGNMENT_STRATEGY: Final = "alignment_strategy"
     ALIGNMENT_FORCE_RECOMPUTING: Final = "alignment_force_recomputing"
+    ALIGNMENT_GUIDE: Final = "alignment_guide"
 
 
 class MicroscopyImageProcessingParams(_AbstractEnum):

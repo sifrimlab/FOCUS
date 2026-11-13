@@ -226,3 +226,4 @@ CLAUDE.md
 
 # Local example datasets (multi-GB), never committed
 test_data/
+test_notebooks/

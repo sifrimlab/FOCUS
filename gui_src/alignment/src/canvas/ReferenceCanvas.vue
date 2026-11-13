@@ -127,7 +127,7 @@ const updateContent = async () => {
       colorOf: (cls: number) => classColor(store.referenceMeta, cls, false),
     };
     if (store.referenceMeta.spot_encoding) {
-      nativeSpots = new NativeSpotLayer(spots, store.referenceMeta, false);
+      nativeSpots = new NativeSpotLayer(spots, store.referenceMeta, false, store.referenceDisplay);
       content.addChild(nativeSpots);
       nativeSpots.update(style);
     } else {
@@ -171,7 +171,7 @@ watch(() => store.referenceImage, async () => {
   if (app && app.renderer) app.render();
 });
 
-watch(() => [store.referenceClassFilter, store.commonSpotBoost, store.referenceSpotSize, store.referenceForegroundMode], async () => {
+watch(() => [store.referenceClassFilter, store.commonSpotBoost, store.referenceSpotSize, store.referenceForegroundMode, store.referenceDisplay], async () => {
   await updateContent();
   const app = layer.app();
   if (app && app.renderer) app.render();

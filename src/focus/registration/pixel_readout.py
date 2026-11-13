@@ -181,7 +181,9 @@ def image_geometry(
     m = placement_matrix(target.placement)
     shifted = np.asarray(anchor.mapped, dtype=np.float64) - m[:, 2]
     mapped = np.linalg.solve(m[:, :2], shifted.T).T
-    return AnchorGeometry.from_arrays(anchor.spatial, mapped, anchor.spot_size)
+    return AnchorGeometry.from_arrays(
+        anchor.spatial, mapped, anchor.spot_size, anchor.nonrigid
+    )
 
 
 def footprint_crop(

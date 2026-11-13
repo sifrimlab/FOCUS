@@ -30,6 +30,8 @@ export interface SessionOptions {
    * invariant goldens can compare every other operation byte for byte.
    */
   startAtIdentity?: boolean;
+  /** Stored warp the backend serves at /initial_state for the sample. */
+  initialState?: unknown;
 }
 
 const startAt = async (store: ReturnType<typeof useMainStore>, opts: SessionOptions) => {
@@ -58,6 +60,7 @@ export async function openSession(
   resizeCallbacks.length = 0;
   backend.reset();
   backend.enqueue(pair.ref, pair.tgt);
+  backend.initialState = opts.initialState ?? null;
 
   const pinia = createPinia();
   setActivePinia(pinia);

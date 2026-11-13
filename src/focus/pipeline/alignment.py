@@ -12,6 +12,7 @@ from focus.config.options import AlignmentStrategy
 from focus.runtime.resources import release_memory
 from focus.runtime.reporting import StepReporter
 from focus.alignment.coordinator import DirectMappingAligner
+from focus.alignment.guided import GuidedAligner
 from focus.pipeline.context import _get_reference_modality, _is_microgrid_experiment
 
 
@@ -28,6 +29,10 @@ def _run_alignment(
     "fixed frame". After alignment, the reference modality's AnnData accumulates one
     obsm key per non-reference modality: obsm['{mod_name}_spatial'] contains the reference
     spots expressed in that modality's coordinate system.
+
+    A modality with an ``alignment_guide`` is instead aligned (as the moving layer) onto its
+    guide, and the reference reaches it through its own alignment to the guide; guides are
+    therefore aligned first.
 
     Returns
     -------
@@ -73,6 +78,8 @@ class AlignmentStage:
             for modality in self.modalities
             if modality[ModalityParameters.NAME] != self.reference
         ]
+        # Guides first: a guided pair composes with the reference -> guide coordinates.
+        targets.sort(key=lambda m: bool(m.get(ModalityParameters.ALIGNMENT_GUIDE)))
         for index, modality in enumerate(targets, 1):
             name = modality[ModalityParameters.NAME]
             kind = modality[ModalityParameters.TYPE]
@@ -81,7 +88,12 @@ class AlignmentStage:
                 modality.get(ModalityParameters.ALIGNMENT_FORCE_RECOMPUTING, False),
             )
             with self.reporter.modality(name, index, len(targets)):
-                aligner = self.create_aligner(name, kind)
+                guide = modality.get(ModalityParameters.ALIGNMENT_GUIDE)
+                aligner = (
+                    self.create_guided_aligner(name, kind, guide)
+                    if guide
+                    else self.create_aligner(name, kind)
+                )
                 self.results[name] = self.align_pair(aligner, modality, name, force)
                 del aligner
                 release_memory(gpu=False)
@@ -97,6 +109,27 @@ class AlignmentStage:
             target_modality_name=self.reference,
             reference_modality_type=kind,
             target_modality_type=self.reference_type,
+            exact_spots=self.exact,
+            reporter=self.reporter,
+        )
+
+    def create_guided_aligner(self, name: str, kind: str, guide: str) -> GuidedAligner:
+        """Bind the guide as the fixed frame and the guided modality as the moving layer."""
+        guide_type = next(
+            m[ModalityParameters.TYPE]
+            for m in self.modalities
+            if m[ModalityParameters.NAME] == guide
+        )
+        return GuidedAligner(
+            path=self.path,
+            guide_files=self.files[guide],
+            moving_files=self.files[name],
+            guide_name=guide,
+            moving_name=name,
+            guide_type=guide_type,
+            moving_type=kind,
+            anchor_name=self.reference,
+            anchor_files=self.files[self.reference],
             exact_spots=self.exact,
             reporter=self.reporter,
         )
@@ -119,8 +152,12 @@ class AlignmentStage:
             return aligner.uniform_aligned_dataset(force_recomputing=force)
         if aligner.is_alignment_needed(force_recomputing=force):
             self.reporter.set_state("alignment_waiting")
+            guide = modality.get(ModalityParameters.ALIGNMENT_GUIDE)
             self.reporter.detail(
-                f"Waiting for the alignment tool: align '{self.reference}' into '{name}' space"
+                f"Waiting for the alignment tool: align '{name}' onto its guide '{guide}' "
+                f"('{self.reference}' reaches '{name}' through '{guide}')"
+                if guide
+                else f"Waiting for the alignment tool: align '{self.reference}' into '{name}' space"
             )
             return aligner.align_dataset(
                 force_recomputing=force,

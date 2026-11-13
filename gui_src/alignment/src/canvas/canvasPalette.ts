@@ -6,7 +6,11 @@ import { nextTick, shallowRef, watch } from 'vue';
 import { useTheme } from '@focus/ui/composables/useTheme';
 
 export interface PixiColor { color: number; alpha: number }
-export interface CanvasPalette { handle: PixiColor; handleFill: PixiColor; handleHalo: PixiColor }
+export interface CanvasPalette {
+  handle: PixiColor; handleFill: PixiColor; handleHalo: PixiColor;
+  /** Landmark pins that disagree with their neighbours, and folded tissue. */
+  warning: PixiColor; danger: PixiColor;
+}
 
 /** Resolves a custom property to a concrete color through a hidden probe element. */
 function resolveToken(name: string): PixiColor {
@@ -24,6 +28,8 @@ const read = (): CanvasPalette => ({
   handle: resolveToken('--canvas-handle'),
   handleFill: resolveToken('--canvas-handle-fill'),
   handleHalo: resolveToken('--canvas-handle-halo'),
+  warning: resolveToken('--warning'),
+  danger: resolveToken('--danger'),
 });
 
 export function useCanvasPalette() {

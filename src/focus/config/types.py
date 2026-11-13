@@ -58,6 +58,8 @@ class ModalityConfig(TypedDict, total=False):
     registration_settings: RegistrationSettings
     alignment_strategy: str
     alignment_force_recomputing: bool
+    # Modality aligned to instead of the reference; the reference reaches this one through it
+    alignment_guide: str | None
 
 
 class AnnotationConfig(TypedDict):

@@ -181,3 +181,78 @@ def merge_unsupported_clusters(
         "merge_ratios": np.asarray(merges, dtype=np.float64),
     }
     return relabel[codes].astype(str), info
+
+
+def _cheapest_pair(
+    alive: list[int],
+    size: np.ndarray,
+    mean: np.ndarray,
+    touch: np.ndarray,
+    group: np.ndarray,
+) -> tuple[int, int]:
+    """The pair to merge next: same partition group, then touching, then lowest Ward cost."""
+    best: tuple[bool, bool, float, int, int] | None = None
+    for x, a in enumerate(alive):
+        for b in alive[x + 1 :]:
+            cost = size[a] * size[b] / (size[a] + size[b])
+            cost *= float(np.sum((mean[a] - mean[b]) ** 2))
+            key = (bool(group[a] != group[b]), bool(touch[a, b] <= 0), cost, a, b)
+            if best is None or key < best:
+                best = key
+    assert best is not None
+    return best[3], best[4]
+
+
+def merge_tree(
+    embedding: np.ndarray,
+    codes: np.ndarray,
+    contact: np.ndarray,
+    partition: np.ndarray | None = None,
+) -> list[tuple[int, int]]:
+    """
+    Ward merge order of the clusters ``codes`` (0..k-1) down to one group.
+
+    The cost of joining two groups is Ward's increase of the within-group sum of squares on
+    ``embedding``, ``n_a n_b / (n_a + n_b) |mu_a - mu_b|^2``. Pairs are taken in this order of
+    priority: within the same group of ``partition`` (k,) when given, so the tree passes through
+    that partition; in spatial ``contact`` (k x k, symmetric, > 0 where clusters touch), so
+    separate tissue pieces are joined last; then by cost. Each merge ``(a, b)`` keeps ``a`` as the
+    group's representative, so a level of ``L`` groups is the first ``k - L`` merges.
+    """
+    embedding = np.asarray(embedding, dtype=np.float64)
+    k = int(codes.max()) + 1 if len(codes) else 0
+    size = np.bincount(codes, minlength=k).astype(np.float64)
+    mean = (
+        np.stack([embedding[codes == c].mean(axis=0) for c in range(k)])
+        if k
+        else np.zeros((0, embedding.shape[1]))
+    )
+    touch = np.asarray(contact, dtype=np.float64).copy()
+    group = (
+        np.zeros(k, dtype=np.int64)
+        if partition is None
+        else np.asarray(partition).copy()
+    )
+    alive = list(range(k))
+    merges: list[tuple[int, int]] = []
+    while len(alive) > 1:
+        a, b = _cheapest_pair(alive, size, mean, touch, group)
+        mean[a] = (mean[a] * size[a] + mean[b] * size[b]) / (size[a] + size[b])
+        size[a] += size[b]
+        touch[a] += touch[b]
+        touch[:, a] += touch[:, b]
+        touch[a, a] = 0
+        alive.remove(b)
+        merges.append((a, b))
+    return merges
+
+
+def cut_tree(
+    codes: np.ndarray, merges: list[tuple[int, int]], level: int
+) -> np.ndarray:
+    """Group of every element of ``codes`` after the first ``k - level`` merges of ``merges``."""
+    k = int(codes.max()) + 1 if len(codes) else 0
+    parent = np.arange(k)
+    for a, b in merges[: max(0, k - level)]:
+        parent[parent == b] = a
+    return np.asarray(parent[codes])

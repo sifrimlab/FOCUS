@@ -47,5 +47,5 @@ export const FORCE_KEY = 'force_recomputing';
 /** True when a modality carries settings that a type or reference change would discard. */
 export function hasCustomSettings(m: Modality): boolean {
   const custom = Object.keys(m.processing_settings ?? {}).some(k => k !== FORCE_KEY);
-  return custom || m.registration_type !== 'none' || m.alignment_strategy !== 'manual';
+  return custom || m.registration_type !== 'none' || m.alignment_strategy !== 'manual' || !!m.alignment_guide;
 }

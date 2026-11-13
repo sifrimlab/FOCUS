@@ -166,7 +166,10 @@ def _local_affine(
 
 
 def fit_anchor_to_target(
-    src: np.ndarray, dst: np.ndarray, spot_size: np.ndarray
+    src: np.ndarray,
+    dst: np.ndarray,
+    spot_size: np.ndarray,
+    nonrigid: bool = False,
 ) -> tuple[AnchorToTarget, np.ndarray]:
     """
     Recover the anchor -> target map from the stored correspondences.
@@ -185,6 +188,9 @@ def fit_anchor_to_target(
         ``(N, 2)`` the same spots in the target frame (``obsm['{target}_spatial']``).
     spot_size : np.ndarray
         ``(2,)`` anchor spot size, used to scale the verification tolerance.
+    nonrigid : bool
+        The alignment stored a non-rigid (landmark) warp, so the local affine map is the
+        expected outcome and is logged without a warning.
 
     Returns
     -------
@@ -252,8 +258,17 @@ def fit_anchor_to_target(
     if np.isfinite(residual) and residual <= tol:
         return _matrix_transform("homography", matrix, residual), valid
 
-    logger.warning(
-        "The aligned coordinates are not one projective transform of the anchor coordinates "
-        f"(max residual {residual:.3g} > {tol:.3g}): using a local affine map per spot"
-    )
+    _report_local_affine(nonrigid, residual, tol)
     return _local_affine(src, dst, valid), valid
+
+
+def _report_local_affine(nonrigid: bool, residual: float, tol: float) -> None:
+    """Log the fallback to a per-spot affine map: expected for a landmark warp, else a warning."""
+    if nonrigid:
+        logger.info("Landmark-warped alignment: using a local affine map per spot")
+        return
+    logger.warning(
+        "The aligned coordinates are not one projective transform of the anchor "
+        f"coordinates (max residual {residual:.3g} > {tol:.3g}): using a local affine "
+        "map per spot"
+    )

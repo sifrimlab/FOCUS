@@ -9,6 +9,10 @@ A Vue 3 desktop-only web application for aligning heterogeneous modalities (Imag
 - **Canvas-first workspace**: the canvas fills the window; controls float at its edges (see `../DESIGN.md` section 8.17).
 - **Dual layers**: Reference (static, bottom) and Target (interactive, top).
 - **Interactive alignment**: translate, distort (corner and edge handles), rotate, scale and flip the target layer.
+- **Landmarks** (spot target layer): pin a structure and drag it onto its counterpart; each pin bends the tissue around it while the layer's outline stays put (a regularised thin-plate spline with outline anchors `src/utils/warp.ts`, mirrored by `focus.spatial.warp`). The panel lists each pin's leave-one-out error, sets the stiffness, and warns when the warp folds tissue (confirming then takes a second click).
+- **Excluded regions** (spot target layer): lasso tissue with no counterpart (tears, folds, missing pieces) on either layer; spots there are left unplaced.
+- **Restored state**: a sample aligned before starts from its stored warp (`GET /initial_state`).
+- **Spot views** (`src/utils/spotDisplay.ts`, `workspace/hud/SpotViewControls.vue`). A spot layer clustered with a merge tree shows a **Clusters** slider (2 to all fine clusters; the fine classes are merged along the stored merge order) and a switch to **Feature images**. Feature images are ion or gene maps carried in an FSP v2 payload and coloured with magma. Both views reduce to one display key per spot with a colour per key, so the meshes, the class filter and culling work unchanged.
 - **Heterogeneous support**: Image (PNG) and Spot (JSON) data types.
 - **Export logic**: computes coordinate mappings from the two layer transforms.
 - **Desktop only**: a notice replaces the workspace below 720 px.
@@ -20,14 +24,15 @@ A Vue 3 desktop-only web application for aligning heterogeneous modalities (Imag
 |---|---|---|
 | Top center | `SampleBadge` | Sample ID and progress through the dataset |
 | Top right | `ChromeCluster` (shared, `collapsible`) | Three-dots button; opens to project links and theme |
-| Left edge | `ToolRail` | Undo and redo, Aligner / Camera mode, flips, resets (menu) |
+| Left edge | `ToolRail` | Undo and redo, Aligner / Camera / Landmarks / Exclude mode, flips, resets (menu) |
+| Right edge | `LandmarkPanel` | Pins and their errors, stiffness, exclusion layer, fold warning (landmark and exclude tools) |
 | Bottom left | `LayerDock`, `LayerPanel` | One collapsible panel per layer: clusters, spots shown, spot size; opacity for the target |
 | Bottom center | `TransformBar`, `TransformValue` | Scale, rotation and view zoom as values; pressing one opens its stepper |
 | Bottom right | Confirm button | Submits the alignment |
 
 ## Undo
 
-Undo and redo cover the moving layer's transform. The history keeps the sample's starting state plus the last 10 changes (`canvas/transformHistory.ts`). `canvas/useTransformHistory.ts` commits one entry per gesture: a drag, a held step button or a typed value is one change. Undo restores stored bytes and never recomputes a transform, so the alignment math is untouched. Buttons sit at the top of the tool rail; Cmd/Ctrl+Z and Shift+Cmd/Ctrl+Z work outside text fields.
+Undo and redo cover the moving layer's transform, its landmarks, stiffness and excluded regions. The history keeps the sample's starting state plus the last 10 changes (`canvas/transformHistory.ts`). `canvas/useTransformHistory.ts` commits one entry per gesture: a drag, a held step button or a typed value is one change. Undo restores stored bytes and never recomputes a transform, so the alignment math is untouched. Buttons sit at the top of the tool rail; Cmd/Ctrl+Z and Shift+Cmd/Ctrl+Z work outside text fields.
 
 ## Project structure
 
@@ -37,7 +42,7 @@ Undo and redo cover the moving layer's transform. The history keeps the sample's
 - `src/screens/`: full-screen states (loading, finished, error, offline, small screen) as data.
 - `src/store/`: `main.ts` (alignment state, unchanged) and `ui.ts` (panel state, never sent).
 - `src/styles/`: style entry and the HUD grid.
-- `src/utils/`: matrix math and export logic.
+- `src/utils/`: matrix math, the landmark warp (`warp.ts`) and export logic.
 - `src/workspace/`: the workspace view and its floating controls (`hud/`).
 - `tests/`: golden equivalence tests (see below).
 

@@ -12,8 +12,28 @@ from focus.config.options import SpotResolution
 # acquisition lattice when one is detected, Voronoi supercells otherwise.
 _SPATIAL_CAP = 250_000
 
-# Features entering the clustering PCA, for ST (highly variable genes) and MSI (highly variable features).
+# Features entering the clustering PCA under the dispersion selection (highly variable genes or
+# features); the fallback when too few features are spatially coherent.
 N_TOP_FEATURES = 2000
+
+# Feature selection of the clustering: "spatial" keeps the features most coherent at the scale of
+# tissue structures (focus.spatial.features), "dispersion" the highly variable ones. On noisy MSI
+# acquisitions (prostate, 30 um MALDI) the dispersion selection followed scan-line defects and
+# drifts and Leiden cut straight-edged blocks; the 100 most coherent features (mostly lipids,
+# neighbour correlation of the band-passed map 0.5-0.75, against a median of 0.08-0.26) gave
+# clusters along glands, lumens and stroma.
+SPATIAL: Final = "spatial"
+DISPERSION: Final = "dispersion"
+N_SPATIAL_FEATURES = 100
+
+# The spatial selection needs at least this many coherent features; otherwise (very sparse units,
+# where only the sum of many weak features carries the signal) the dispersion selection is used.
+# On a sparse synthetic raster (0.03-0.09 counts per feature and pixel, 3 x 3 blocks) 4 features
+# passed and gave a random map, while all 300 features found both domains.
+MIN_SPATIAL_FEATURES = 20
+
+# Per-spot feature images offered by the alignment tool next to the clusters.
+N_IMAGE_FEATURES = 12
 
 # The signal criterion never coarsens a sample below this many units.
 _MIN_UNITS = 1_000
@@ -28,7 +48,7 @@ _LLOYD_ITERATIONS = 5
 # clusters at a fixed resolution grows with the number of units (MALDI-TOF samples of 71k and 183k
 # spectra and Visium HD samples of 25k blocks needed resolutions 0.5 to 2.0); every sample that
 # matched its domains had 22 to 29 Leiden clusters (docs/scientific/spatial_clustering.md section 8).
-_LEIDEN_CLUSTERS = 25
+_LEIDEN_CLUSTERS = 40
 
 # The Leiden target is capped so the mean cluster holds at least this many units. On two halves of a cut Gaussian, the valley ratio falls below 0.8 in 25 % of cases at 50
 # units per cluster, 8 % at 200, 4 % at 300 and 1 % at 500, and such false valleys keep fragments
@@ -97,6 +117,9 @@ PARAMETERS: ClusteringParameters = {
     "gradient_bins": _GRADIENT_BINS,
     "random_state": 0,
     "max_units": _SPATIAL_CAP,
+    "feature_selection": SPATIAL,
+    "n_spatial_features": N_SPATIAL_FEATURES,
+    "n_image_features": N_IMAGE_FEATURES,
 }
 
 

@@ -612,17 +612,17 @@ warnings, with the recalibration summary and the selected masses.
 ## 5. Foreground detection
 
 Foreground detection (`MsiForeground.detect`) runs on the recalibrated spectra of every ion mode
-and keeps the union of the per-mode foregrounds. It always runs and needs no lipid database;
-`sample_type` sets the detector and its spatial cleanup (`focus.preprocessing.msi.technology`). The
+and keeps the union of the per-mode foregrounds. It always runs; with a lipid database it also uses
+the lipid fraction of every spectrum (§5.1.1). `sample_type` sets the detector and its spatial cleanup (`focus.preprocessing.msi.technology`). The
 foreground is stored in `.obs['foreground']` and the score in `.obs['foreground_score']`; **all**
 spectra remain in the matrix. A sample in which no foreground is found keeps every spectrum with
 peaks as foreground, with a warning.
 
 | `sample_type` | Experiment | Score | Classifier | Cleanup |
 |---|---|---|---|---|
-| `tissue` | section on a clean or empty background | recurrent ions (§5.1) | mixture (§5.2) | fill holes, 3 x 3 opening |
-| `tissue_noisy` | section on a background rich in noise centroids | recurrent ions, 3 x 3 median on the raster | mixture | fill holes, 5 x 5 opening, components below 10 % of the largest removed |
-| `cell_culture` | uniform culture, domains along gradients | recurrent ions | mixture | 3 x 3 majority vote |
+| `tissue` | section on a clean or empty background | lipid fraction (§5.1.1), then recurrent ions (§5.1) | mixture (§5.2) | fill holes, 3 x 3 opening |
+| `tissue_noisy` | section on a background rich in noise centroids | lipid fraction, then recurrent ions, 3 x 3 median on the raster | mixture | fill holes, 5 x 5 opening, components below 10 % of the largest removed |
+| `cell_culture` | uniform culture, domains along gradients | lipid fraction, then recurrent ions | mixture | 3 x 3 majority vote |
 | `microgrid` | isolated cells of about one pixel in matrix | local outliers (§5.4) | hysteresis | none |
 
 ### 5.1 Recurrent-ion score
@@ -642,6 +642,33 @@ only those ions, below the tissue that holds them and its own. Entropy, peak cou
 features of the previous detector, rise on a background of noise centroids, which holds more peaks
 and a flatter intensity distribution than tissue.
 
+#### 5.1.1 Lipid fraction
+
+Matrix-covered glass is not a background of noise: matrix clusters recur in every spectrum, so glass
+can hold about as many recurrent ions as tissue and the score of §5.1 does not separate it. On a
+prostate dataset (MALDI, positive mode, 30 µm), 5 of 15 samples kept every spectrum ("overlapping
+score modes", Ashman's \(D\) 1.2–1.9) and the others separated only empty spectra, although 13–27 %
+of the spectra of the five samples checked lay on glass.
+
+With a lipid database, the recurrent ions of the mode present in at least
+`FREQUENCY_THRESHOLD` of the spectra of the most present one are annotated as in feature selection
+(§6). The score of spectrum \(i\) is
+
+\[
+\text{lipid}_i = \frac{\sum_{k \in \text{annotated}} I_{ik}}{\sum_k I_{ik}}
+\]
+
+the share of its peak intensity in the annotated ions (`lipid_fraction`). It is used when at least
+10 ions are annotated and they hold, on average over the spectra, at least twice the intensity share
+of the ions annotated at the decoy masses of §6 (`LIPID_MIN_ENRICHMENT`). The test is weighted by
+intensity like the score: on the prostate samples the combined positive/negative database annotates
+875 recurrent ions against about 554 at decoy masses, yet the annotated ions hold 32–33 % of the
+intensity against about 9 % at decoy masses, because the intense ions are true lipids. It is tried first by the
+mixture classification (§5.2); the recurrent-ion score decides when it does not split. FOCUS design
+choice: tissue holds lipids that glass lacks, whatever the matrix contributes to both. On the
+prostate samples the lipid fraction has modes near 0.03–0.11 (glass) and 0.29–0.44 (tissue), with
+Ashman's \(D\) 3.3–6.0. `.obs['foreground_score']` remains the recurrent-ion score.
+
 ### 5.2 Mixture classification
 
 A 1- and a 2-component Gaussian mixture are fitted to the scores of the spectra with peaks
@@ -652,7 +679,8 @@ foreground when
 - the two components overlap: Ashman's \(D = \sqrt{2}\,|\mu_1-\mu_2| / \sqrt{s_1^2+s_2^2} < 2\), the
   criterion for a clean separation of two Gaussians[^ashman1994];
 - the lower component holds more than half of the recurrent ions of the higher one, \(e^{\mu_1}-1 >
-  0.5\,(e^{\mu_2}-1)\).
+  0.5\,(e^{\mu_2}-1)\); for the lipid fraction, more than half of its lipid fraction,
+  \(\mu_1 > 0.5\,\mu_2\) (`LIPID_MAX_BACKGROUND_RATIO`).
 
 Otherwise a spectrum is foreground when its posterior of the higher-mean component is at least 0.5.
 FOCUS design choice, for the last two rules: BIC also prefers two components when two tissue regions
@@ -890,7 +918,11 @@ in the alignment GUI only. MSI runs the clustering shared with ST, described in
   features instead ([Alignment Clustering §3](spatial_clustering.md#3-representation)).
 
 `.obs['clustering_eligible']` records eligibility, `.uns['focus_clustering']` the provenance
-(including `sample_type`) and `.uns['cluster_colors']` the colours of the categories. The merged
+(including `sample_type`) and `.uns['cluster_colors']` the colours of the categories. The fine
+clusters and their merge order (`.obs['cluster_fine']`) and up to 12 ion images
+(`.obsm['focus_feature_images']`, labelled with m/z and the first lipid annotation) are stored for
+the alignment tool's resolution slider and feature images
+([Alignment Clustering §3.1, §5.1–5.2](spatial_clustering.md#31-feature-selection)). The merged
 file keeps the per-sample provenance in `.uns['focus_clustering'][sample_id]` and the colours of
 the merged categories. The alignment GUI renders native spots
 ([Alignment §4b](alignment_methods.md#4b-native-spot-display-and-compact-transport)).
@@ -917,7 +949,9 @@ Key fields:
 - `.layers['raw']`: binned intensities before normalization (float32 CSR, §8)
 - `.obsm['spatial']`: physical coordinates
 - `.obsm['raster_coordinates']`: raster bounding boxes
-- `.obs['foreground']`, `.obs['cluster']`, `.obs['sample_id']` (all categorical)
+- `.obs['foreground']`, `.obs['cluster']`, `.obs['cluster_fine']`, `.obs['sample_id']` (all
+  categorical)
+- `.obsm['focus_feature_images']` (`uint8`, 12 columns): ion images for the alignment tool
 - `.obs['foreground_score']` (`float32`): the detector's score (§5.1, robust z for microgrids)
 - `.obs['recalibration_ppm_<mode>']` (`float32`): applied correction \(a_{l(i)} + \delta_i\) at
   \(\bar\mu\) (§4.2), NaN in a sample without that ion mode

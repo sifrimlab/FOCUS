@@ -1,8 +1,9 @@
 <script setup lang="ts">
 /**
  * Floating panel of one layer. The header (identity dot, name, type) is
- * always visible and toggles the details; the moving layer also keeps its
- * opacity slider visible, since it is the most used layer control.
+ * always visible and toggles the details; a clustered spot layer keeps its
+ * view controls (resolution slider, feature images) visible, and the moving
+ * layer its opacity slider, since they are the most used layer controls.
  */
 import { computed } from 'vue';
 import ChromeSurface from '@focus/ui/components/ui/ChromeSurface.vue';
@@ -16,6 +17,7 @@ import ChannelList from './ChannelList.vue';
 import ClassFilterList from './ClassFilterList.vue';
 import ForegroundFilter from './ForegroundFilter.vue';
 import SpotSizeFields from './SpotSizeFields.vue';
+import SpotViewControls from './SpotViewControls.vue';
 
 const props = defineProps<{ role: LayerRole }>();
 
@@ -36,7 +38,7 @@ const opacityPercent = computed(() => (store.targetOpacity * 100).toFixed(0));
         <TagLabel>{{ layer.meta?.modality_type }}</TagLabel>
       </template>
       <div v-if="layer.isSpot" class="flex flex-col gap-4">
-        <ClassFilterList :role="role" />
+        <ClassFilterList v-if="!layer.display || layer.display.filterable" :role="role" />
         <ForegroundFilter :role="role" />
         <SpotSizeFields :role="role" />
       </div>
@@ -47,6 +49,7 @@ const opacityPercent = computed(() => (store.targetOpacity * 100).toFixed(0));
         </p>
       </div>
     </Disclosure>
+    <SpotViewControls v-if="layer.isSpot" :role="role" />
     <RangeSlider v-if="role === 'target'" v-model="store.targetOpacity" label="Opacity">
       <template #value>{{ opacityPercent }}%</template>
     </RangeSlider>

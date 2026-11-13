@@ -5,23 +5,29 @@
  * frame, executes panel commands and handles pointer input. On resize it
  * follows the reference's re-centering so an alignment in progress holds.
  * It also owns the undo history, since the history includes `distort.before`.
+ * With landmarks the spots are drawn through the landmark warp, and the
+ * landmark overlay (pins, exclusions, folds) sits above the distort frame.
+ * A warp confirmed in an earlier run is restored once both layers are placed.
  * Watchers keep the original order, which fixes the flush order of store
  * updates within a tick.
  */
 import { ref, onMounted, onUnmounted, watch } from 'vue';
-import { Graphics, type Application } from 'pixi.js';
+import { Container, Graphics, type Application } from 'pixi.js';
 import { mat3 } from 'gl-matrix';
 import { useMainStore } from '../store/main';
 import { usePixiLayer } from './usePixiLayer';
 import { applyViewTransform, type ViewState } from './viewTransform';
 import { shiftForResize, targetFitMatrix } from './layerFit';
-import { createTargetGeometry, isProjective } from './targetGeometry';
+import { createTargetGeometry } from './targetGeometry';
 import { applyTargetCommand } from './targetCommands';
 import { useTargetPointer } from './useTargetPointer';
 import { useTargetContent } from './useTargetContent';
 import { drawDistortOverlay } from './distortOverlay';
 import { useCanvasPalette } from './canvasPalette';
 import { useTransformHistory } from './useTransformHistory';
+import { useLandmarkPointer } from './useLandmarkPointer';
+import { drawLandmarkOverlay, type LandmarkOverlayState } from './landmarkOverlay';
+import { borderAnchors, foldedCells, type Pt } from '../utils/warp';
 
 const container = ref<HTMLElement | null>(null);
 const store = useMainStore();
@@ -35,15 +41,24 @@ const distort = { before: null as mat3 | null };
 let initialFit: mat3 | null = null; // where "Reset transform" returns to
 let lastScreen: { width: number; height: number } | null = null;
 let overlay: Graphics | null = null;
-let wasProjective = false;
+let landmarkGfx: Graphics | null = null;
+let landmarkLabels: Container | null = null;
+let wasPointwise = false;
+let placed = false; // the layer sits at its fit for the current sample
+let folds: LandmarkOverlayState['folds'] = { centres: [], cell: [0, 0] };
 const history = useTransformHistory(store, distort);
 
 const layer = usePixiLayer(container, {
   onInit(app) {
-    app.canvas.addEventListener('mousedown', pointer.onMouseDown);
+    app.canvas.addEventListener('mousedown', onMouseDown);
     app.canvas.addEventListener('wheel', pointer.onWheel);
+    app.canvas.addEventListener('contextmenu', landmarks.onContextMenu);
     overlay = new Graphics();
+    landmarkGfx = new Graphics();
+    landmarkLabels = new Container();
     app.stage.addChild(overlay);
+    app.stage.addChild(landmarkGfx);
+    app.stage.addChild(landmarkLabels);
     render();
   },
   // The canvas usually mounts after the sample has loaded, so the data watcher
@@ -53,6 +68,7 @@ const layer = usePixiLayer(container, {
     updateViewTransform();
     if (store.targetData) placeAtFit(app);
     await content.updateContent();
+    restoreInitialState();
     render();
   },
   onResize(app) {
@@ -71,6 +87,19 @@ const pointer = useTargetPointer({ app: layer.app, store, geometry, view, distor
 
 const content = useTargetContent(layer, store);
 
+const landmarks = useLandmarkPointer({
+  app: layer.app, store, view,
+  redraw: () => { drawOverlay(); layer.app()?.render(); },
+});
+
+/** Landmark and exclude tools take the pointer; the aligner and the camera keep theirs. */
+const onMouseDown = (e: MouseEvent) => {
+  if (store.controlMode === 'landmark' || store.controlMode === 'exclude') landmarks.onMouseDown(e);
+  else pointer.onMouseDown(e);
+};
+const onMouseMove = (e: MouseEvent) => { pointer.onMouseMove(e); landmarks.onMouseMove(e); };
+const onMouseUp = () => { pointer.onMouseUp(); landmarks.onMouseUp(); };
+
 const updateViewTransform = () => {
   const v = layer.view();
   if (!v || !layer.app()) return;
@@ -88,14 +117,59 @@ const render = () => {
 
 const drawOverlay = () => {
   if (!overlay) return;
-  if (store.controlMode !== 'aligner') { overlay.clear(); return; }
-  drawDistortOverlay(overlay, pointer.corners(), pointer.activeHandle(), palette.value);
+  if (store.controlMode !== 'aligner') overlay.clear();
+  else drawDistortOverlay(overlay, pointer.corners(), pointer.activeHandle(), palette.value);
+  if (landmarkGfx && landmarkLabels && layer.app()) {
+    drawLandmarkOverlay(landmarkGfx, landmarkLabels, store, view(), {
+      folds,
+      flagged: store.landmarkFlags,
+      lasso: landmarks.lasso() as Pt[],
+      activePin: landmarks.activePin(),
+      interactive: store.controlMode === 'landmark',
+    }, palette.value);
+  }
+};
+
+/** Re-tests the warp for folded tissue over the moving layer's extent. */
+const updateFolds = () => {
+  const bbox = geometry.getTargetBBox();
+  if (!store.hasLandmarkWarp || !bbox) {
+    folds = { centres: [], cell: [0, 0] };
+  } else {
+    folds = foldedCells(store.warp, {
+      x: bbox.minX, y: bbox.minY, width: bbox.maxX - bbox.minX, height: bbox.maxY - bbox.minY,
+    });
+  }
+  store.foldCount = folds.centres.length;
+};
+
+/**
+ * Restores a warp confirmed in an earlier run (served at /initial_state): the
+ * matrix maps moving native to fixed display, so the moving layer's world
+ * transform is M_fixed · matrix. Waits for the fixed layer's fit.
+ */
+const restoreInitialState = () => {
+  const state = store.initialState;
+  if (!state || !placed || !store.referenceFitted || !store.targetData) return;
+  store.initialState = null;
+  const m = mat3.multiply(mat3.create(), store.referenceTransform, state.matrix as unknown as mat3);
+  if (store.targetMeta?.modality_type === 'SPOT') {
+    const lm = state.landmarks;
+    store.landmarks = lm ? lm.src.map((src, i) => ({ src: [src[0], src[1]], dst: [lm.dst[i]![0], lm.dst[i]![1]] })) : [];
+    if (state.smoothing !== undefined) store.smoothing = state.smoothing;
+    store.exclusions = { moving: state.exclusions?.moving ?? [], fixed: state.exclusions?.fixed ?? [] };
+  }
+  store.updateTargetTransform(m);
+  distort.before = mat3.clone(m);
+  history.reset(m, distort.before);
 };
 
 /** Drops per-dataset caches and GPU objects. */
 const resetLayer = () => {
   geometry.reset();
-  wasProjective = false;
+  wasPointwise = false;
+  placed = false;
+  folds = { centres: [], cell: [0, 0] };
   content.destroyChildren();
 };
 
@@ -108,6 +182,11 @@ const placeAtFit = (app: Application) => {
   initialFit = mat3.clone(fitM);
   distort.before = mat3.clone(fitM);
   history.reset(fitM, fitM);
+  const bbox = geometry.getTargetBBox();
+  store.borderAnchors = bbox && store.targetMeta?.modality_type === 'SPOT'
+    ? borderAnchors([bbox.minX, bbox.minY], [bbox.maxX, bbox.maxY])
+    : [];
+  placed = true;
 };
 
 /**
@@ -135,9 +214,20 @@ watch(() => store.targetData, () => {
   if (app && store.targetData) {
     placeAtFit(app);
     content.updateContent();
+    restoreInitialState();
   } else {
     resetLayer();
   }
+});
+
+// New spot view (resolution or feature image): rebuild the spot meshes with the new keys.
+watch(() => store.targetDisplay, async () => {
+  if (!content.hasSpots()) return;
+  const boost = store.targetSpotBoost; // the rebuild resets it, the view change should not
+  content.destroyChildren();
+  await content.updateContent();
+  store.setTargetSpotBoost(boost);
+  render();
 });
 
 // Re-rendered channels: swap the sprite only; the alignment in progress is kept.
@@ -171,12 +261,15 @@ watch(() => store.pendingCommand, (cmd) => {
   store.pendingCommand = null;
 });
 
-watch(() => [store.targetTransform, store.targetOpacity], () => {
-  const isSpot = store.targetMeta?.modality_type !== 'IMAGE';
-  const projective = isSpot && isProjective(store.targetTransform);
-  // Redraw spots when projective, or on the one transition frame back to affine.
-  if ((projective || wasProjective) && content.hasSpots()) content.drawSpots(projective);
-  wasProjective = projective;
+// The fixed layer's fit arrives after the moving layer's: restore a stored warp then.
+watch(() => [store.referenceFitted, store.initialState], restoreInitialState);
+
+watch(() => [store.targetTransform, store.targetOpacity, store.referenceTransform, store.landmarks, store.smoothing, store.borderAnchors], () => {
+  const pointwise = content.isPointwise();
+  // Redraw spots when drawn per spot (projective or warped), or on the one frame back to affine.
+  if ((pointwise || wasPointwise) && content.hasSpots()) content.drawSpots();
+  wasPointwise = pointwise;
+  updateFolds();
   content.updateContentTransform();
   render();
 }, { deep: true });
@@ -188,7 +281,7 @@ watch(() => [store.globalZoom, store.viewOffset], () => {
 
 watch(() => [store.targetClassFilter, store.commonSpotBoost, store.targetSpotSize, store.targetForegroundMode], async () => {
   if (content.hasSpots()) {
-    content.drawSpots(isProjective(store.targetTransform));
+    content.drawSpots();
     render();
   } else {
     await content.updateContent();
@@ -197,7 +290,10 @@ watch(() => [store.targetClassFilter, store.commonSpotBoost, store.targetSpotSiz
 }, { deep: true });
 
 watch(
-  () => [store.targetTransform, store.globalZoom, store.viewOffset, store.controlMode],
+  () => [
+    store.targetTransform, store.referenceTransform, store.globalZoom, store.viewOffset, store.controlMode,
+    store.landmarks, store.smoothing, store.exclusions,
+  ],
   () => { drawOverlay(); layer.app()?.render(); },
   { deep: true },
 );
@@ -205,14 +301,17 @@ watch(
 watch(palette, () => { drawOverlay(); layer.app()?.render(); });
 
 onMounted(() => {
-  window.addEventListener('mouseup', pointer.onMouseUp);
-  window.addEventListener('mousemove', pointer.onMouseMove);
+  window.addEventListener('mouseup', onMouseUp);
+  window.addEventListener('mousemove', onMouseMove);
+  window.addEventListener('keydown', landmarks.onKeyDown);
 });
 
 onUnmounted(() => {
   pointer.dispose();
-  window.removeEventListener('mouseup', pointer.onMouseUp);
-  window.removeEventListener('mousemove', pointer.onMouseMove);
+  landmarks.dispose();
+  window.removeEventListener('mouseup', onMouseUp);
+  window.removeEventListener('mousemove', onMouseMove);
+  window.removeEventListener('keydown', landmarks.onKeyDown);
   content.release();
 });
 </script>

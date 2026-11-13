@@ -50,10 +50,103 @@ Interactive browser-based direct mapping (`DirectMappingAligner` + `DirectMappin
   mapping is projective and covers every spot, not only the ones drawn in the browser. The per-spot
   `spots` list in the same payload is a fallback used only when no matrix is present; the
   `corner_pixels` payload of the image→image case carries no matrix and is consumed directly.
-- No matrix is fitted from user-placed landmarks.
+- When the moving layer is spot-based, the matrix can be refined with landmarks and excluded
+  regions (§2a). A matrix-only confirmation is decoded exactly as described above.
 
 !!! note "Internal naming"
     In `DirectMappingAligner` the constructor argument named `reference_modality` is given the pipeline's **non-reference** modality (the fixed frame), and `target_modality` is given the pipeline's **reference** modality (the moving layer). The orchestrator deliberately swaps them (`_run_alignment`), so the class-internal vocabulary is inverted relative to the pipeline terms used throughout this page. This page uses pipeline terms: *reference* = moving, *target* = fixed.
+
+### 2a. Landmark warp (consecutive sections)
+
+A single matrix cannot map tissue from **different sections** (e.g. ST on one cut, MSI on the
+next): the sections deform unevenly, and forcing the corners to match maps a gland in one onto
+stroma in the other. For a spot moving layer the tool therefore adds two instruments.
+
+**Landmarks.** The operator pins a structure on the moving layer and drags it onto its
+counterpart on the fixed layer. A landmark stores its moving-native position \(\mathbf{s}_k\)
+and its fixed-layer display position \(\mathbf{d}_k\). With \(M\) the pair matrix above, the warp is
+
+\[
+W(\mathbf{x}) = R\big(M\mathbf{x}\big)
+\]
+
+where the residual map \(R\) is fitted from \(M\mathbf{s}_k \to \mathbf{d}_k\):
+
+- 0 landmarks: identity (the matrix alone);
+- otherwise a thin-plate spline with an affine part, fitted to the landmarks **and to the
+  outline anchors** \(\mathbf{o}_j\): eight points on the moving layer's outline (its bounding
+  box corners and edge midpoints, moving-native) held where the matrix puts them,
+  \(M\mathbf{o}_j \to M\mathbf{o}_j\). An anchor within 15 % of the outline's diagonal of a landmark
+  is released, so a landmark near the border can still move it. The anchors make each landmark
+  bend the tissue around it while the overall placement stays with \(M\) (the Aligner tool);
+  without them one landmark would translate the whole layer and two would rotate and scale it.
+  (Warps stored without anchors fall back to translation / similarity for 1 / 2 landmarks.)
+  In coordinates \(\mathbf{u}\) centred on the fit points
+  and divided by their RMS spread,
+  \(R(\mathbf{u}) = \mathbf{a}_0 + A\mathbf{u} + \sum_k \mathbf{w}_k\,\phi(\lVert\mathbf{u}-\mathbf{u}_k\rVert)\)
+  with \(\phi(r)=r^2\log r\), solved from
+  \(\begin{bmatrix}K+\lambda I & P\\ P^\top & 0\end{bmatrix}\begin{bmatrix}W\\ \mathbf{a}\end{bmatrix}=\begin{bmatrix}V\\0\end{bmatrix}\).
+  The smoothing \(\lambda\) (the "stiffness", default \(10^{-3}\)) is unit-free thanks to the
+  normalisation; \(\lambda=0\) interpolates every landmark exactly.
+
+Landmarks stay attached to the tissue: a later change of \(M\) refits \(R\), so the pins (and the
+outline) hold while the rest of the layer follows \(M\). The anchors travel in the confirm payload
+(`landmarks.anchors`) and in the stored warp, so the backend fits exactly the same map.
+
+Quality control in the browser: each landmark's leave-one-out error (its distance from where the
+other landmarks place it, in fixed display pixels) is listed, and a pin well above the typical
+error (more than 2.5 × the median and 2 px, with 4+ pins) is flagged. The sign of
+\(\det \nabla R\) is tested on a 48 × 48 grid over the moving layer; folded cells (the warp turns
+tissue inside out, typically from crossed pins) are shaded, and confirming then takes a second
+click. The backend repeats the fold test on every spot and warns.
+
+**Excluded regions.** Tears, folds and missing pieces cannot be modelled by any smooth map. The
+operator lassoes such tissue on either layer; a moving-layer polygon is stored in moving-native
+coordinates, a fixed-layer polygon in fixed display coordinates. A spot inside a moving-layer
+polygon, or whose warped position falls inside a fixed-layer polygon, is stored as NaN and is
+therefore unplaced in registration.
+
+**Same maths on both sides.** `gui_src/alignment/src/utils/warp.ts` draws the warp live;
+`focus.spatial.thin_plate` and `focus.spatial.warp.LandmarkWarp` apply it to every spot. The
+parity fixture `gui_src/alignment/tests/fixtures/warp_parity.json` is checked by both test suites.
+The confirmed payload adds `landmarks` (`src`, `dst`), `smoothing` and `exclusions` to
+`transform_matrix` only when they are used, so a matrix-only confirmation is unchanged.
+
+**Inverse.** \(W^{-1}\) (needed by §2b) starts from the matrix inverse of a residual map fitted in
+the reverse direction and is refined by Newton steps on \(W\) with its analytic Jacobian
+\(\nabla R(M\mathbf{x})\,\nabla M(\mathbf{x})\), to \(10^{-6}\) display pixels; non-converging points
+(inside a fold) are NaN.
+
+**Downstream.** Registration recovers the map from the stored correspondences
+(`fit_anchor_to_target`). A warped alignment is not one homography, so the per-spot local affine
+map is used; with a stored non-rigid warp this is the expected path and is logged without a
+warning. On a smooth warp the local affine reproduces it to well below 1 % of a spot.
+
+### 2b. Guide modality (`alignment_guide`)
+
+The modality used for the interactive step can differ from the reference. A spot-based target
+\(T\) aligned manually may set `alignment_guide` to another non-reference modality \(G\) that is
+itself aligned directly to the reference \(R\) (manually or `pre_aligned`). Typical use: ST is
+the reference and its Visium H&E is pre-aligned; the MSI comes from the next section. Matching
+MSI against H&E morphology is much easier than matching it against ST spots.
+
+The tool then shows \(T\)'s spots (moving) over \(G\) (fixed); landmarks and exclusions are
+available as in §2a. With \(W_{TG}\) the confirmed warp and \(\mathbf{R}^{(G)}\) the reference
+spots in \(G\)'s full-resolution frame (from the reference → guide pair),
+
+\[
+\mathbf{R}^{(T)} = W_{TG}^{-1}\big(\mathbf{R}^{(G)}\big)
+\]
+
+is stored as `obsm['{T}_spatial']` on the reference's aligned file, like any other pair, so
+registration and annotation transfer are unaffected. Guides are aligned first. When the reference
+→ guide pair is pre-aligned (Visium on its own H&E) it adds no operator error, and the composed
+error is that of the step the operator can actually judge.
+
+Validation (`focus.config.guides`): the guide must be a declared non-reference modality, not the
+modality itself, and not itself guided; the guided modality must be spot-based (`msi`, `st`) and
+`manual`. Guide chains (e.g. MSI → its own H&E → the ST H&E) are not supported yet: an image →
+image pair does not produce a transform.
 
 ### `pre_aligned`
 
@@ -150,6 +243,23 @@ in the same hue band with golden-ratio hue steps and alternating lightness, with
 Unassigned observations are neutral gray in both layers. Large categorical sets can still be
 perceptually difficult to distinguish.
 
+**Clusters at a runtime resolution and feature images.**
+- **Classes.** A spot modality clustered with a merge tree
+  ([Alignment Clustering §5.1](spatial_clustering.md#51-merge-tree-and-runtime-resolution)) is sent
+  with its fine clusters as classes. The metadata adds `cluster_tree` (the merges as pairs of fine
+  labels, and the default level).
+- **Merging in the browser.** The browser merges the classes to the level set on the layer's
+  slider (2 to all fine clusters, starting at the default) and colours the groups by decreasing size.
+- **Feature images.** These ion or gene maps
+  ([§5.2](spatial_clustering.md#52-feature-images)) travel in an FSP **version 2** payload. The
+  header's last field holds their number m, and m uint8 values per spot follow the foreground flags
+  (0 = no value). The metadata adds their labels (`feature_images`).
+- **Feature view.** It colours each spot by one image (magma, 32 levels) instead of its cluster.
+  Every spot has a value: the clustering mask (background, spots the clustering left out) does not
+  apply, so tissue removed by a failed background detection is still visible. Only a spot with no
+  stored value (aggregated clustering units) is neutral grey. The class filter is hidden there.
+- **Older files.** Files written without a tree are sent as before (FSP version 1, saved labels).
+
 The full coordinate array stays on the backend. The existing exported matrix is applied to
 all original coordinates, independently of class/foreground filtering or rendering detail.
 Binary spot exports omit the redundant per-spot JSON list. The alignment matrix calculations
@@ -204,6 +314,13 @@ obsm[f"{target_name}_spatial"]
 
 This key holds the reference coordinates expressed in that target (non-reference) modality's space. Multiple targets accumulate as multiple keys on the same reference AnnData.
 
+Each manually confirmed spot pair also stores its warp as a JSON string at
+`uns['focus_alignment_warps'][target_name]`: the matrix (row-major), the landmarks, the smoothing,
+the exclusions, the fixed-layer display → full-resolution scale and a version number. When the pair
+is aligned again, the browser starts from it (route `GET /initial_state`, re-expressed for the
+current display level). A guided pair (§2b) stores its \(T \to G\) warp under \(T\), with the guide's
+name and the signatures of \(T\) and \(G\).
+
 Merged:
 
 ```text
@@ -244,6 +361,10 @@ A manual alignment whose record was made on a file that preprocessing later repl
 pixel-identical image (the replaced file's signature is kept in the image as
 `focus_superseded_signature`, see [microscopy preprocessing](microscopy_methods.md#8-cache-key-and-regeneration))
 is accepted, and its record is re-written for the current image.
+
+A guided pair records the identities of \(T\) and \(G\) and the reference → guide record. While the
+stored guided warp was made on the current \(T\) and \(G\), the alignment tool is not reopened; if
+only the reference → guide alignment changed, \(\mathbf{R}^{(T)}\) is re-composed from the stored warp.
 
 `_compute_force_flags` in `orchestrator.py` re-runs a pair when any of the following is true:
 `alignment_force_recomputing` on the non-reference modality, `processing_settings.force_recomputing`

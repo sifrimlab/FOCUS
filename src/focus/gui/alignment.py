@@ -73,6 +73,8 @@ class DirectMappingAlignmentGUI:
         # Modalities' data (Image.Image for IMAGE modalities, list[dict] for SPOT modalities)
         self._reference_payload: AlignmentPayload = None
         self._target_payload: AlignmentPayload = None
+        # Previously confirmed warp of the current sample (GET /initial_state)
+        self._initial_state: dict[str, object] | None = None
 
         # Aligned coordinates
         self._aligned_target: AlignmentResult | None = (
@@ -126,6 +128,7 @@ class DirectMappingAlignmentGUI:
         target_metadata: ModalityMetadata,
         reference_payload: AlignmentPayload,
         target_payload: AlignmentPayload,
+        initial_state: dict[str, object] | None = None,
     ) -> AlignmentResult | None:
         """
         Align the target coordinates to the reference image for a given sample.
@@ -144,6 +147,9 @@ class DirectMappingAlignmentGUI:
                 The payload of the reference modality.
             target_payload: dict | Image.Image
                 The payload of the target modality.
+            initial_state: dict | None
+                A previously confirmed warp to start from (matrix, landmarks, exclusions),
+                served at ``/initial_state``; None starts from the automatic fit.
 
         Returns
         -------
@@ -158,6 +164,7 @@ class DirectMappingAlignmentGUI:
         self._target_metadata = target_metadata
         self._reference_payload = reference_payload
         self._target_payload = target_payload
+        self._initial_state = initial_state
 
         # Clear the user event
         self._user_event.clear()
@@ -173,6 +180,7 @@ class DirectMappingAlignmentGUI:
         self._target_metadata = None
         self._reference_payload = None
         self._target_payload = None
+        self._initial_state = None
 
         return self._aligned_target
 

@@ -1,8 +1,10 @@
 <script setup lang="ts">
 /**
  * Section 2: how the reference is aligned onto this modality. A strategy
- * choice exists only when the reference type supports "pre-aligned";
- * otherwise alignment is manual and needs no settings.
+ * choice exists only when the reference type supports "pre-aligned".
+ * A spot-based modality aligned manually can instead be aligned to a guide:
+ * another modality already aligned to the reference (typically the H&E of
+ * the reference's section, when this modality comes from a consecutive cut).
  */
 import { computed } from 'vue';
 import { useMainStore } from '../../../store/main';
@@ -11,6 +13,7 @@ import SettingsSection from './SettingsSection.vue';
 import FormRow from '@focus/ui/components/ui/FormRow.vue';
 import SelectField from '@focus/ui/components/ui/SelectField.vue';
 import Banner from '@focus/ui/components/ui/Banner.vue';
+import { SPOT_TYPES } from '../../../utils/runPlan';
 
 const props = defineProps<{ index: number }>();
 const store = useMainStore();
@@ -29,6 +32,30 @@ const strategyAvailable = computed(() => {
 const preAlignedTaken = computed(() =>
   store.config.modalities.some((m: Modality, i: number) => i !== props.index && m.alignment_strategy === 'pre_aligned'),
 );
+
+/** Modalities guided by this one: a guide must itself be aligned to the reference directly. */
+const guiding = computed(() =>
+  store.config.modalities.filter((m: Modality) => m.alignment_guide === modality.value.name).map(m => m.name),
+);
+
+/** Other non-reference modalities aligned directly to the reference. */
+const guideOptions = computed(() =>
+  store.config.modalities.filter((m: Modality, i: number) =>
+    i !== props.index && m.name && m.name !== store.config.reference_modality && !m.alignment_guide,
+  ).map(m => m.name),
+);
+
+const guideAvailable = computed(() =>
+  SPOT_TYPES.includes(modality.value.type)
+  && modality.value.alignment_strategy === 'manual'
+  && guiding.value.length === 0
+  && (guideOptions.value.length > 0 || !!modality.value.alignment_guide),
+);
+
+const setStrategy = (strategy: string) =>
+  store.updateModality(props.index, strategy === 'manual' ? { alignment_strategy: strategy } : { alignment_strategy: strategy, alignment_guide: null });
+
+const setGuide = (guide: string) => store.updateModality(props.index, { alignment_guide: guide || null });
 </script>
 
 <template>
@@ -46,7 +73,7 @@ const preAlignedTaken = computed(() =>
           class="w-56"
           :model-value="modality.alignment_strategy"
           aria-label="Alignment strategy"
-          @update:model-value="store.updateModality(index, { alignment_strategy: $event })"
+          @update:model-value="setStrategy($event)"
         >
           <option value="manual">Manual alignment</option>
           <option
@@ -65,8 +92,29 @@ const preAlignedTaken = computed(() =>
         system. No interactive alignment will be performed.
       </Banner>
     </template>
-    <p v-else class="type-callout text-fg3">
+    <p v-else-if="!guideAvailable" class="type-callout text-fg3">
       Aligned manually in the alignment tool during the run. No settings needed.
+    </p>
+    <template v-if="enabled && guideAvailable">
+      <FormRow label="Align via">
+        <SelectField
+          class="w-56"
+          :model-value="modality.alignment_guide ?? ''"
+          aria-label="Align via"
+          @update:model-value="setGuide($event)"
+        >
+          <option value="">{{ store.config.reference_modality }} (directly)</option>
+          <option v-for="g in guideOptions" :key="g" :value="g">{{ g }}</option>
+        </SelectField>
+      </FormRow>
+      <Banner v-if="modality.alignment_guide" tone="info">
+        The alignment tool shows {{ modality.name }} over {{ modality.alignment_guide }}, which is often easier
+        to judge when they come from different sections. {{ store.config.reference_modality }} then reaches
+        {{ modality.name }} through its own alignment to {{ modality.alignment_guide }}.
+      </Banner>
+    </template>
+    <p v-if="enabled && guiding.length" class="type-footnote text-fg3">
+      Guides the alignment of {{ guiding.join(', ') }}, so it is aligned to {{ store.config.reference_modality }} directly.
     </p>
   </SettingsSection>
 </template>
